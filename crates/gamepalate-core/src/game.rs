@@ -5,7 +5,7 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Game {
-    pub app_id: AppId,
+    pub id: AppId,
     pub name: String,
     pub price: Price,
     pub reviews: Reviews,
