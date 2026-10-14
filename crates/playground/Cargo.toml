@@ -1,0 +1,9 @@
+[package]
+name = "playground"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+gamepalate-core = { version = "0.1.0", path = "../gamepalate-core" }
+gamepalate-store = { version = "0.1.0", path = "../gamepalate-store" }
