@@ -153,10 +153,7 @@ mod tests {
 
     const UPDATED_AT: i64 = 1_700_000_000_000;
 
-    // Game 10: two tags, no discount.
-    // Game 20: discount with an end, early access.
-    // Game 30: discount without an end, no tags.
-    // Tag rows for game 99 have no game: foreign keys are off so they can be inserted.
+    // Foreign keys are off so the tags of game 99, which is not in games, can be inserted.
     fn test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
