@@ -32,6 +32,16 @@ pub fn add_weighted(target: &mut TagVector, source: &TagVector, weight: f64) {
     }
 }
 
+pub fn norm(tag_vector: &TagVector) -> f64 {
+    tag_vector.values().map(|v| v.powi(2)).sum::<f64>().sqrt()
+}
+
+pub fn dot(a: &TagVector, b: &TagVector) -> f64 {
+    a.iter()
+        .filter_map(|(id, a_value)| b.get(id).map(|b_value| a_value * b_value))
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
