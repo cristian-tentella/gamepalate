@@ -1,9 +1,17 @@
-use std::{env, path::PathBuf};
+use std::{
+    env,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use anyhow::Context;
 use gamepalate_core::{
     catalog::Catalog,
+    config::RelevanceConfig,
     effective_hours::effective_hours,
+    game_vector::{GameVector, game_vectors},
+    off_catalog::OffCatalogGames,
+    ranking::ranking,
     taste::{Taste, family_taste, game_name, signals_taste},
     votes::VoteKind,
 };
@@ -26,6 +34,8 @@ fn main() -> anyhow::Result<()> {
 
     let catalog = load_catalog(&data_dir.join("catalog.sqlite"))?;
     print_catalog(&catalog);
+    time_game_vectors(&catalog);
+    let vectors = game_vectors(&catalog);
 
     let signals = load_signals(&data_dir.join("signals.json"))?;
     println!("\n== signals");
@@ -87,9 +97,25 @@ fn main() -> anyhow::Result<()> {
         &config.signals,
     );
     print_taste("signals", &taste, &catalog);
+    print_ranking(
+        "signals",
+        &vectors,
+        &taste,
+        &config.relevance,
+        &catalog,
+        &off_catalog,
+    );
     for family in &families.families {
         let taste = family_taste(family, &catalog, &off_catalog, &corrections.tag_multipliers);
         print_taste(&family.name, &taste, &catalog);
+        print_ranking(
+            &family.name,
+            &vectors,
+            &taste,
+            &config.relevance,
+            &catalog,
+            &off_catalog,
+        );
     }
 
     Ok(())
@@ -110,6 +136,35 @@ fn print_taste(name: &str, taste: &Taste, catalog: &Catalog) {
             .get(id)
             .map_or_else(|| format!("#{}", id.0), |tag| tag.english.clone());
         println!("{value:>8.2}  {tag}");
+    }
+}
+
+fn print_ranking(
+    name: &str,
+    vectors: &[GameVector],
+    taste: &Taste,
+    relevance_config: &RelevanceConfig,
+    catalog: &Catalog,
+    off_catalog: &OffCatalogGames,
+) {
+    println!(
+        "
+== {name} ranking"
+    );
+
+    let start = Instant::now();
+    let Some(ranking) = ranking(vectors, taste, relevance_config) else {
+        println!("no profile");
+        return;
+    };
+    println!("time: {:?}", start.elapsed());
+
+    for game in ranking.iter().take(20) {
+        println!(
+            "{:>8.2}  {}",
+            game.relevance,
+            game_name(game.id, catalog, off_catalog)
+        );
     }
 }
 
@@ -141,4 +196,21 @@ fn print_catalog(catalog: &Catalog) {
             game.tags.len(),
         );
     }
+}
+
+fn time_game_vectors(catalog: &Catalog) {
+    const RUNS: u32 = 10;
+
+    let mut times = Vec::new();
+    let mut count = 0;
+    for _ in 0..RUNS {
+        let start = Instant::now();
+        count = game_vectors(catalog).len();
+        times.push(start.elapsed());
+    }
+
+    println!("\n== game vectors");
+    println!("games: {count}");
+    println!("best of {RUNS}: {:?}", times.iter().min().unwrap());
+    println!("mean: {:?}", times.iter().sum::<Duration>() / RUNS);
 }
