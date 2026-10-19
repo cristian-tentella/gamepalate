@@ -1,10 +1,13 @@
 pub mod catalog;
 pub mod config;
 pub mod corrections;
+pub mod effective_hours;
 pub mod families;
 pub mod game;
 pub mod ids;
 pub mod off_catalog;
 pub mod signals;
+pub mod tag_vector;
+pub mod taste;
 pub mod timestamp;
 pub mod votes;

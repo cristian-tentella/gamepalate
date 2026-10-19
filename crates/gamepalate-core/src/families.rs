@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::{catalog::Catalog, ids::AppId, off_catalog::OffCatalogGames};
+use crate::{catalog::Catalog, ids::AppId, off_catalog::OffCatalogGames, taste::game_tags};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Families {
@@ -100,12 +100,7 @@ impl Families {
 }
 
 fn has_tags(game: AppId, catalog: &Catalog, off_catalog: &OffCatalogGames) -> bool {
-    match catalog.game(game) {
-        Some(game) => !game.tags.is_empty(),
-        None => off_catalog
-            .get(&game)
-            .is_some_and(|game| !game.tags.is_empty()),
-    }
+    game_tags(game, catalog, off_catalog).is_some_and(|tags| !tags.is_empty())
 }
 
 #[cfg(test)]

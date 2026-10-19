@@ -1,0 +1,70 @@
+use std::collections::BTreeMap;
+
+use crate::{game::GameTag, ids::TagId};
+
+pub type TagVector = BTreeMap<TagId, f64>;
+
+pub fn tf_idf_vector(tags: &[GameTag], idf: &BTreeMap<TagId, f64>) -> TagVector {
+    tags.iter()
+        .map(|tag| {
+            (
+                tag.id,
+                tag.weight * idf.get(&tag.id).copied().unwrap_or(0.0),
+            )
+        })
+        .filter(|&(_, value)| value > 0.0)
+        .collect()
+}
+
+pub fn apply_multipliers(
+    tag_vector: &TagVector,
+    tag_multipliers: &BTreeMap<TagId, f64>,
+) -> TagVector {
+    tag_vector
+        .iter()
+        .map(|(id, value)| (*id, value * tag_multipliers.get(id).copied().unwrap_or(1.0)))
+        .collect()
+}
+
+pub fn add_weighted(target: &mut TagVector, source: &TagVector, weight: f64) {
+    for (&tag, &value) in source {
+        *target.entry(tag).or_insert(0.0) += value * weight;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vector(pairs: &[(u32, f64)]) -> TagVector {
+        pairs
+            .iter()
+            .map(|&(id, value)| (TagId(id), value))
+            .collect()
+    }
+
+    #[test]
+    fn tf_idf_vector_drops_tags_without_a_positive_idf() {
+        let tags = [(1, 0.5), (2, 0.3), (3, 0.2)].map(|(id, weight)| GameTag {
+            id: TagId(id),
+            weight,
+        });
+        let idf = BTreeMap::from([(TagId(1), 2.0), (TagId(2), 0.0)]);
+
+        assert_eq!(tf_idf_vector(&tags, &idf), vector(&[(1, 1.0)]));
+    }
+
+    #[test]
+    fn apply_multipliers_leaves_tags_without_a_multiplier_alone() {
+        let multipliers = BTreeMap::from([(TagId(1), 0.5)]);
+        let result = apply_multipliers(&vector(&[(1, 2.0), (2, 3.0)]), &multipliers);
+        assert_eq!(result, vector(&[(1, 1.0), (2, 3.0)]));
+    }
+
+    #[test]
+    fn add_weighted_sums_shared_tags_and_adds_new_ones() {
+        let mut target = vector(&[(1, 1.0)]);
+        add_weighted(&mut target, &vector(&[(1, 2.0), (2, 1.0)]), 0.5);
+        assert_eq!(target, vector(&[(1, 2.0), (2, 0.5)]));
+    }
+}
