@@ -1,7 +1,12 @@
 use std::{env, path::PathBuf};
 
 use anyhow::Context;
-use gamepalate_core::{catalog::Catalog, votes::VoteKind};
+use gamepalate_core::{
+    catalog::Catalog,
+    effective_hours::effective_hours,
+    taste::{Taste, family_taste, game_name, signals_taste},
+    votes::VoteKind,
+};
 use gamepalate_store::{
     catalog::load_catalog, config::load_config, corrections::load_corrections,
     families::load_families, off_catalog::load_off_catalog_games, signals::load_signals,
@@ -49,6 +54,15 @@ fn main() -> anyhow::Result<()> {
     println!("known: {}", count(VoteKind::Known));
     println!("bets: {}", votes.values().filter(|vote| vote.bet).count());
 
+    let hours = effective_hours(&signals, &votes, &config.signals);
+    let mut by_hours: Vec<_> = hours.iter().collect();
+    by_hours.sort_by(|a, b| b.1.total_cmp(a.1));
+    println!("\n== effective hours");
+    println!("games: {}", hours.len());
+    for &(&id, hours) in by_hours.iter().take(10) {
+        println!("{hours:>8.1}  {}", game_name(id, &catalog, &off_catalog));
+    }
+
     let corrections = load_corrections(&data_dir.join("corrections.toml"))?;
     println!("\n== corrections");
     println!("banned tags: {:?}", corrections.banned_tags);
@@ -65,7 +79,38 @@ fn main() -> anyhow::Result<()> {
     println!("held out: {}", families.held_out.len());
     println!("problems: {problems:?}");
 
+    let taste = signals_taste(
+        &hours,
+        &catalog,
+        &off_catalog,
+        &corrections,
+        &config.signals,
+    );
+    print_taste("signals", &taste, &catalog);
+    for family in &families.families {
+        let taste = family_taste(family, &catalog, &off_catalog, &corrections.tag_multipliers);
+        print_taste(&family.name, &taste, &catalog);
+    }
+
     Ok(())
+}
+
+fn print_taste(name: &str, taste: &Taste, catalog: &Catalog) {
+    let mut profile: Vec<_> = taste.profile().into_iter().collect();
+    profile.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+    println!(
+        "
+== {name} taste"
+    );
+    println!("games: {}", taste.games.len());
+    for (id, value) in profile.iter().take(10) {
+        let tag = catalog
+            .tags
+            .get(id)
+            .map_or_else(|| format!("#{}", id.0), |tag| tag.english.clone());
+        println!("{value:>8.2}  {tag}");
+    }
 }
 
 fn print_catalog(catalog: &Catalog) {
