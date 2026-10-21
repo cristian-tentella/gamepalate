@@ -16,9 +16,9 @@ const LEARNING_RATE: f64 = 0.5;
 const L2: f64 = 0.1;
 
 #[derive(Debug, Clone)]
-pub struct TrainingRow<'a> {
-    pub game: &'a Game,
-    pub label: f64,
+struct TrainingRow<'a> {
+    game: &'a Game,
+    label: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -54,7 +54,7 @@ impl OpinionModel {
     }
 }
 
-pub fn training_rows<'a>(votes: &'a Votes, catalog: &'a Catalog) -> Vec<TrainingRow<'a>> {
+fn training_rows<'a>(votes: &Votes, catalog: &'a Catalog) -> Vec<TrainingRow<'a>> {
     votes
         .iter()
         .filter_map(|(id, vote)| {
@@ -69,7 +69,7 @@ pub fn training_rows<'a>(votes: &'a Votes, catalog: &'a Catalog) -> Vec<Training
         .collect()
 }
 
-pub fn used_tags(training_rows: &[TrainingRow]) -> Vec<TagId> {
+fn used_tags(training_rows: &[TrainingRow]) -> Vec<TagId> {
     let mut seen: BTreeMap<TagId, usize> = BTreeMap::new();
 
     for row in training_rows {
@@ -84,32 +84,28 @@ pub fn used_tags(training_rows: &[TrainingRow]) -> Vec<TagId> {
         .collect()
 }
 
-pub fn features(game: &Game, tag_ids: &[TagId]) -> Vec<f64> {
+fn features(game: &Game, tag_ids: &[TagId]) -> Vec<f64> {
     let positive_share = if game.reviews.total == 0 {
         0.0
     } else {
         game.reviews.positive as f64 / game.reviews.total as f64
     };
 
-    let mut features: Vec<f64> = vec![
-        (1.0 + game.reviews.total as f64).log10(),
-        positive_share,
-        (1.0 + game.price.original_cents as f64).log10(),
-    ];
+    let mut features = vec![0.0; 3 + tag_ids.len()];
+    features[0] = (1.0 + game.reviews.total as f64).log10();
+    features[1] = positive_share;
+    features[2] = (1.0 + game.price.original_cents as f64).log10();
 
-    for tag_id in tag_ids {
-        features.push(
-            game.tags
-                .iter()
-                .find(|tag| tag.id == *tag_id)
-                .map_or(0.0, |tag| tag.weight),
-        );
+    for tag in &game.tags {
+        if let Ok(i) = tag_ids.binary_search(&tag.id) {
+            features[3 + i] = tag.weight;
+        }
     }
 
     features
 }
 
-pub fn standardization(features: &[Vec<f64>]) -> Standardization {
+fn standardization(features: &[Vec<f64>]) -> Standardization {
     let mut means: Vec<f64> = Vec::new();
     let mut deviations: Vec<f64> = Vec::new();
 
@@ -131,15 +127,15 @@ pub fn standardization(features: &[Vec<f64>]) -> Standardization {
     Standardization { means, deviations }
 }
 
-pub fn sigmoid(x: f64) -> f64 {
+fn sigmoid(x: f64) -> f64 {
     1.0 / (1.0 + (-x).exp())
 }
 
-pub fn dot(a: &[f64], b: &[f64]) -> f64 {
+fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(a, b)| a * b).sum()
 }
 
-pub fn train(rows: &[Vec<f64>], labels: &[f64]) -> Vec<f64> {
+fn train(rows: &[Vec<f64>], labels: &[f64]) -> Vec<f64> {
     let mut w: Vec<f64> = vec![0.0; rows[0].len()];
     let mut b: f64 = 0.0;
     let n = rows.len() as f64;
@@ -172,7 +168,7 @@ pub fn opinion_model(votes: &Votes, catalog: &Catalog) -> Option<OpinionModel> {
     let training_rows = training_rows(votes, catalog);
 
     let positive_labels = training_rows.iter().filter(|row| row.label == 1.0).count();
-    let negative_labels = training_rows.iter().filter(|row| row.label == 0.0).count();
+    let negative_labels = training_rows.len() - positive_labels;
     if positive_labels < MIN_LABELS || negative_labels < MIN_LABELS {
         return None;
     }
@@ -181,12 +177,12 @@ pub fn opinion_model(votes: &Votes, catalog: &Catalog) -> Option<OpinionModel> {
     let features = training_rows
         .iter()
         .map(|row| features(row.game, &tags))
-        .collect::<Vec<Vec<_>>>();
+        .collect::<Vec<_>>();
     let standardization = standardization(&features);
     let standardized_features = features
         .iter()
         .map(|feature| standardization.apply(feature))
-        .collect::<Vec<Vec<_>>>();
+        .collect::<Vec<_>>();
     let labels = training_rows
         .iter()
         .map(|row| row.label)
