@@ -11,9 +11,10 @@ use gamepalate_core::{
     effective_hours::effective_hours,
     game_vector::{GameVector, game_vectors},
     off_catalog::OffCatalogGames,
+    opinion::{opinion_model, opinions},
     ranking::ranking,
     taste::{Taste, family_taste, game_name, signals_taste},
-    votes::VoteKind,
+    votes::{VoteKind, Votes},
 };
 use gamepalate_store::{
     catalog::load_catalog, config::load_config, corrections::load_corrections,
@@ -63,6 +64,7 @@ fn main() -> anyhow::Result<()> {
     println!("not for me: {}", count(VoteKind::NotForMe));
     println!("known: {}", count(VoteKind::Known));
     println!("bets: {}", votes.values().filter(|vote| vote.bet).count());
+    print_opinions(&votes, &catalog, &off_catalog);
 
     let hours = effective_hours(&signals, &votes, &config.signals);
     let mut by_hours: Vec<_> = hours.iter().collect();
@@ -213,4 +215,45 @@ fn time_game_vectors(catalog: &Catalog) {
     println!("games: {count}");
     println!("best of {RUNS}: {:?}", times.iter().min().unwrap());
     println!("mean: {:?}", times.iter().sum::<Duration>() / RUNS);
+}
+
+fn print_opinions(votes: &Votes, catalog: &Catalog, off_catalog: &OffCatalogGames) {
+    const RUNS: u32 = 10;
+
+    println!("\n== opinions");
+
+    let start = Instant::now();
+    let Some(model) = opinion_model(votes, catalog) else {
+        println!("not enough votes");
+        return;
+    };
+    println!("training: {:?}", start.elapsed());
+    println!("used tags: {}", model.tags.len());
+
+    let mut times = Vec::new();
+    let mut all = Vec::new();
+    for _ in 0..RUNS {
+        let start = Instant::now();
+        all = opinions(&model, catalog);
+        times.push(start.elapsed());
+    }
+    println!("opinions best of {RUNS}: {:?}", times.iter().min().unwrap());
+    println!("opinions mean: {:?}", times.iter().sum::<Duration>() / RUNS);
+
+    let mut unvoted: Vec<_> = catalog
+        .games()
+        .iter()
+        .zip(&all)
+        .filter(|(game, _)| !votes.contains_key(&game.id))
+        .collect();
+    unvoted.sort_by(|a, b| b.1.total_cmp(a.1));
+
+    println!("highest:");
+    for (game, opinion) in unvoted.iter().take(10) {
+        println!("{opinion:>8.2}  {}", game_name(game.id, catalog, off_catalog));
+    }
+    println!("lowest:");
+    for (game, opinion) in unvoted.iter().rev().take(10) {
+        println!("{opinion:>8.2}  {}", game_name(game.id, catalog, off_catalog));
+    }
 }
