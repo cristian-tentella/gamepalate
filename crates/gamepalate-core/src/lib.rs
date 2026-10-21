@@ -4,6 +4,7 @@ pub mod config;
 pub mod corrections;
 pub mod effective_hours;
 pub mod families;
+pub mod filters;
 pub mod game;
 pub mod game_vector;
 pub mod ids;

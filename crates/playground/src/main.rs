@@ -1,19 +1,21 @@
 use std::{
     env,
     path::PathBuf,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Context;
 use gamepalate_core::{
     catalog::Catalog,
-    config::RelevanceConfig,
+    config::{Config, RelevanceConfig},
     effective_hours::effective_hours,
+    filters::{FilterContext, FilterOptions, active_filters, apply_filters},
     game_vector::{GameVector, game_vectors},
     off_catalog::OffCatalogGames,
     opinion::{opinion_model, opinions},
     ranking::ranking,
     taste::{Taste, family_taste, game_name, signals_taste},
+    timestamp::Timestamp,
     votes::{VoteKind, Votes},
 };
 use gamepalate_store::{
@@ -90,6 +92,9 @@ fn main() -> anyhow::Result<()> {
     }
     println!("held out: {}", families.held_out.len());
     println!("problems: {problems:?}");
+
+    let filter_context = FilterContext::new(&signals, &families, &votes, &corrections);
+    print_filters(&catalog, &filter_context, &config);
 
     let taste = signals_taste(
         &hours,
@@ -250,10 +255,82 @@ fn print_opinions(votes: &Votes, catalog: &Catalog, off_catalog: &OffCatalogGame
 
     println!("highest:");
     for (game, opinion) in unvoted.iter().take(10) {
-        println!("{opinion:>8.2}  {}", game_name(game.id, catalog, off_catalog));
+        println!(
+            "{opinion:>8.2}  {}",
+            game_name(game.id, catalog, off_catalog)
+        );
     }
     println!("lowest:");
     for (game, opinion) in unvoted.iter().rev().take(10) {
-        println!("{opinion:>8.2}  {}", game_name(game.id, catalog, off_catalog));
+        println!(
+            "{opinion:>8.2}  {}",
+            game_name(game.id, catalog, off_catalog)
+        );
+    }
+}
+
+fn print_filters(catalog: &Catalog, context: &FilterContext, config: &Config) {
+    let now = Timestamp(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis() as i64),
+    );
+    let cases = [
+        ("default", FilterOptions::default()),
+        (
+            "free",
+            FilterOptions {
+                max_price_cents: Some(0),
+                min_reviews: Some(0),
+                ..FilterOptions::default()
+            },
+        ),
+        (
+            "roguelike, discount at least 50%",
+            FilterOptions {
+                tags: vec!["Roguelike".to_string()],
+                min_discount_percent: Some(50),
+                ..FilterOptions::default()
+            },
+        ),
+        (
+            "souls-like, at most 10 reviews",
+            FilterOptions {
+                tags: vec!["Souls-like".to_string()],
+                max_reviews: Some(10),
+                ..FilterOptions::default()
+            },
+        ),
+        (
+            "unknown tag",
+            FilterOptions {
+                tags: vec!["Not a tag".to_string()],
+                ..FilterOptions::default()
+            },
+        ),
+    ];
+
+    println!("\n== filters");
+    for (name, options) in cases {
+        let filters = match active_filters(&options, config, catalog) {
+            Ok(filters) => filters,
+            Err(error) => {
+                println!("{name}: {error:?}");
+                continue;
+            }
+        };
+
+        let start = Instant::now();
+        let outcome = apply_filters(catalog, &filters, context, now);
+        let elapsed = start.elapsed();
+
+        let blame = outcome.blame.map_or_else(
+            || "none".to_string(),
+            |blame| format!("{} ({} games)", blame.filter, blame.discarded),
+        );
+        println!(
+            "{name}: {} candidates, blame {blame}, {elapsed:?}",
+            outcome.candidates.len()
+        );
     }
 }
