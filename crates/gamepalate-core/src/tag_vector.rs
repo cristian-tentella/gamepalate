@@ -42,6 +42,45 @@ pub fn dot(a: &TagVector, b: &TagVector) -> f64 {
         .sum()
 }
 
+// A tag vector with tags numbered from 0, in tag id order.
+pub type CompactTagVector = Vec<(usize, f64)>;
+
+// Numbers the catalog tags from 0, so a profile fits in a short array.
+#[derive(Debug, Clone)]
+pub struct TagIndex {
+    tags: Vec<TagId>,
+}
+
+impl TagIndex {
+    pub fn new(idf: &BTreeMap<TagId, f64>) -> TagIndex {
+        TagIndex {
+            tags: idf.keys().copied().collect(),
+        }
+    }
+
+    pub fn compact(&self, tag_vector: &TagVector) -> CompactTagVector {
+        tag_vector
+            .iter()
+            .filter_map(|(tag, &value)| Some((self.tags.binary_search(tag).ok()?, value)))
+            .collect()
+    }
+
+    pub fn dense(&self, tag_vector: &TagVector) -> Vec<Option<f64>> {
+        let mut dense = vec![None; self.tags.len()];
+        for (i, value) in self.compact(tag_vector) {
+            dense[i] = Some(value);
+        }
+        dense
+    }
+}
+
+// Same as `dot`, with the second vector dense.
+pub fn dense_dot(a: &[(usize, f64)], b: &[Option<f64>]) -> f64 {
+    a.iter()
+        .filter_map(|&(i, a_value)| b[i].map(|b_value| a_value * b_value))
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

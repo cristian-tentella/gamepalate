@@ -26,6 +26,17 @@ impl Taste {
 
         tag_vector
     }
+
+    pub fn without(&self, id: AppId) -> Taste {
+        Taste {
+            games: self
+                .games
+                .iter()
+                .filter(|game| game.id != id)
+                .cloned()
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

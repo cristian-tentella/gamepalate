@@ -89,6 +89,7 @@ pub fn closest_references(
     game_vector: &GameVector,
     index: &ReferenceIndex,
     dots: &mut [f64],
+    count: usize,
 ) -> Vec<ReferenceMatch> {
     if game_vector.norm == 0.0 {
         return Vec::new();
@@ -102,7 +103,7 @@ pub fn closest_references(
         }
     }
 
-    let mut closest_three: Vec<ReferenceMatch> = Vec::new();
+    let mut closest: Vec<ReferenceMatch> = Vec::new();
 
     for (reference, dot) in index.references.iter().zip(dots.iter_mut()) {
         let similarity = *dot / (game_vector.norm * reference.norm);
@@ -112,43 +113,46 @@ pub fn closest_references(
             continue;
         }
 
-        let beats_third = closest_three.len() < 3 || {
-            let third = &closest_three[2];
-            similarity > third.similarity
-                || (similarity == third.similarity && reference.id < third.id)
+        let beats_last = closest.len() < count || {
+            let last = &closest[count - 1];
+            similarity > last.similarity
+                || (similarity == last.similarity && reference.id < last.id)
         };
-        if !beats_third {
+        if !beats_last {
             continue;
         }
 
-        closest_three.push(ReferenceMatch {
+        closest.push(ReferenceMatch {
             id: reference.id,
             weight: reference.weight,
             similarity,
         });
-        closest_three.sort_by(|a, b| {
+        closest.sort_by(|a, b| {
             a.similarity
                 .total_cmp(&b.similarity)
                 .reverse()
                 .then(a.id.cmp(&b.id))
         });
-        closest_three.truncate(3);
+        closest.truncate(count);
     }
 
-    closest_three
+    closest
 }
 
-pub fn references_similarity(reference_matches: &[ReferenceMatch]) -> f64 {
-    if reference_matches.is_empty() {
-        return 0.0;
-    }
-
+pub fn references_similarity<'a>(
+    reference_matches: impl IntoIterator<Item = &'a ReferenceMatch>,
+) -> f64 {
     let mut total_weight = 0.0;
     let mut total_weighted_similarity = 0.0;
 
     for reference_match in reference_matches {
         total_weight += reference_match.weight;
         total_weighted_similarity += reference_match.weight * reference_match.similarity;
+    }
+
+    // Reference weights are positive, so zero means no references
+    if total_weight == 0.0 {
+        return 0.0;
     }
 
     total_weighted_similarity / total_weight
@@ -176,7 +180,7 @@ pub fn affinities(game_vectors: &[GameVector], taste: &Taste) -> Option<Vec<Game
         .map_init(
             || vec![0.0; index.len()],
             |dots, game_vector| {
-                let reference_matches = closest_references(game_vector, &index, dots);
+                let reference_matches = closest_references(game_vector, &index, dots, 3);
                 (
                     profile_similarity(game_vector, &profile, profile_norm),
                     references_similarity(&reference_matches),
@@ -188,25 +192,34 @@ pub fn affinities(game_vectors: &[GameVector], taste: &Taste) -> Option<Vec<Game
 
     let profile_halves: Vec<f64> = halves.iter().map(|half| half.0).collect();
     let references_halves: Vec<f64> = halves.iter().map(|half| half.1).collect();
-    let profile_half_scale = scale(&profile_halves);
-    let references_half_scale = scale(&references_halves);
+    let affinity_values = affinity_values(&profile_halves, &references_halves);
 
     let affinities = game_vectors
         .iter()
         .zip(halves)
+        .zip(affinity_values)
         .map(
-            |(game_vector, (profile_value, references_value, references))| {
-                let affinity = 0.5 * profile_value * profile_half_scale
-                    + 0.5 * references_value * references_half_scale;
-
-                GameAffinity {
-                    id: game_vector.id,
-                    affinity,
-                    references,
-                }
+            |((game_vector, (_, _, references)), affinity)| GameAffinity {
+                id: game_vector.id,
+                affinity,
+                references,
             },
         )
         .collect();
 
     Some(affinities)
+}
+
+pub fn affinity_values(profile_halves: &[f64], references_halves: &[f64]) -> Vec<f64> {
+    let profile_half_scale = scale(profile_halves);
+    let references_half_scale = scale(references_halves);
+
+    profile_halves
+        .iter()
+        .zip(references_halves)
+        .map(|(profile_value, references_value)| {
+            0.5 * profile_value * profile_half_scale
+                + 0.5 * references_value * references_half_scale
+        })
+        .collect()
 }

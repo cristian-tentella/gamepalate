@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{cmp::Ordering, collections::HashMap};
 
 use crate::{
     affinity::{ReferenceMatch, affinities},
@@ -21,8 +21,12 @@ pub fn relevance(affinity: f64, quality: f64, quality_weight: f64) -> f64 {
     affinity * (1.0 - quality_weight + quality_weight * quality)
 }
 
+pub fn ranking_order(a: &RankedGame, b: &RankedGame) -> Ordering {
+    b.relevance.total_cmp(&a.relevance).then(a.id.cmp(&b.id))
+}
+
 pub fn sort_ranking(ranked_games: &mut [RankedGame]) {
-    ranked_games.sort_unstable_by(|a, b| b.relevance.total_cmp(&a.relevance).then(a.id.cmp(&b.id)));
+    ranked_games.sort_unstable_by(ranking_order);
 }
 
 pub fn ranking(
