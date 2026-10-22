@@ -9,6 +9,7 @@ use gamepalate_core::{
     catalog::Catalog,
     config::{Config, RelevanceConfig},
     effective_hours::effective_hours,
+    evaluation::{GroupSummary, evaluate},
     filters::{FilterContext, FilterOptions, active_filters, apply_filters},
     game_vector::{GameVector, game_vectors},
     off_catalog::OffCatalogGames,
@@ -108,6 +109,7 @@ fn main() -> anyhow::Result<()> {
         config: &config,
     };
     print_recommendations(&inputs);
+    print_evaluation(&inputs);
 
     let taste = signals_taste(
         &hours,
@@ -457,5 +459,49 @@ fn print_recommendation(recommendation: &Recommendation) {
         if !game.top_tags.is_empty() {
             println!("     tags: {}", game.top_tags.join(", "));
         }
+    }
+}
+
+fn print_evaluation(inputs: &SearchInputs) {
+    println!("\n== evaluation");
+    let start = Instant::now();
+    let evaluation = evaluate(inputs);
+    println!("time: {:?}", start.elapsed());
+    println!("catalog: {} games", evaluation.catalog_size);
+
+    print_group("kept aside", &evaluation.kept_aside);
+    print_group("guardrail", &evaluation.guardrail);
+    print_group("families", &evaluation.families);
+}
+
+fn print_group(name: &str, group: &GroupSummary) {
+    let average = |value: Option<f64>| value.map_or("-".to_string(), |value| format!("{value:.1}"));
+    println!("\n-- {name}: {} games", group.games.len());
+    println!(
+        "top 100: {}, top 1000: {}, median: {}, geometric mean: {}, without position: {}",
+        group.in_top,
+        group.in_top_wide,
+        average(group.median),
+        average(group.geometric_mean),
+        group.without_position
+    );
+
+    for game in &group.games {
+        let position = game
+            .position
+            .map_or("-".to_string(), |position| position.to_string());
+        let mut details = Vec::new();
+        if let Some(hours) = game.effective_hours {
+            details.push(format!("{hours:.1} h"));
+        }
+        if !game.families.is_empty() {
+            details.push(game.families.join(", "));
+        }
+        let details = if details.is_empty() {
+            String::new()
+        } else {
+            format!("  ({})", details.join(", "))
+        };
+        println!("{position:>7}  {}{details}", game.name);
     }
 }
