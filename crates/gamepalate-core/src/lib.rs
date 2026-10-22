@@ -3,6 +3,7 @@ pub mod catalog;
 pub mod config;
 pub mod corrections;
 pub mod effective_hours;
+pub mod evaluation;
 pub mod explanation;
 pub mod families;
 pub mod filters;
