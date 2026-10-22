@@ -8,7 +8,7 @@ use crate::{
     game::GameTag,
     ids::{AppId, TagId},
     off_catalog::OffCatalogGames,
-    tag_vector::{TagVector, add_weighted, apply_multipliers, tf_idf_vector},
+    tag_vector::{TagVector, add_weighted, apply_multipliers, norm, tf_idf_vector},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -25,6 +25,11 @@ impl Taste {
         }
 
         tag_vector
+    }
+
+    // A profile with only zero weights ranks nothing, like an empty one.
+    pub fn has_profile(&self) -> bool {
+        norm(&self.profile()) > 0.0
     }
 
     pub fn without(&self, id: AppId) -> Taste {

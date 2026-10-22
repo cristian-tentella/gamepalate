@@ -89,7 +89,7 @@ fn main() -> anyhow::Result<()> {
     println!("game multipliers: {:?}", corrections.game_multipliers);
 
     let families = load_families(&data_dir.join("families.toml"))?;
-    let problems = families.problems(&catalog, &off_catalog);
+    let problems = families.problems(&catalog, &off_catalog, &corrections.tag_multipliers);
     println!("\n== families");
     for family in &families.families {
         println!("{}: {} games", family.name, family.games.len());

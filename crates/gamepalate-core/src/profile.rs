@@ -242,10 +242,10 @@ pub fn profile(inputs: &SearchInputs, limit: usize) -> Option<Profile> {
         inputs.corrections,
         &inputs.config.signals,
     );
-    let profile = taste.profile();
-    if profile.is_empty() {
+    if !taste.has_profile() {
         return None;
     }
+    let profile = taste.profile();
     let contributions = contributions(&taste, inputs);
     let describe = |tag: TagId| describe_tag(tag, &profile, &contributions, inputs);
 
@@ -263,7 +263,11 @@ pub fn profile(inputs: &SearchInputs, limit: usize) -> Option<Profile> {
         }
     }
 
-    let family_problems = inputs.families.problems(inputs.catalog, inputs.off_catalog);
+    let family_problems = inputs.families.problems(
+        inputs.catalog,
+        inputs.off_catalog,
+        &corrections.tag_multipliers,
+    );
 
     Some(Profile {
         tags,

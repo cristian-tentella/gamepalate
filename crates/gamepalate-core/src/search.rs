@@ -150,7 +150,7 @@ pub fn search_tastes(
                 &inputs.config.signals,
             );
 
-            if taste.profile().is_empty() {
+            if !taste.has_profile() {
                 return Err(SearchError::EmptySignalsProfile);
             }
 
@@ -159,7 +159,15 @@ pub fn search_tastes(
                 taste,
             }];
 
-            search_tastes.extend(inputs.families.families.iter().map(taste_of));
+            // A family without a profile would leave an empty turn
+            search_tastes.extend(
+                inputs
+                    .families
+                    .families
+                    .iter()
+                    .map(taste_of)
+                    .filter(|search_taste| search_taste.taste.has_profile()),
+            );
 
             Ok(search_tastes)
         }

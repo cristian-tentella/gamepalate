@@ -1,6 +1,11 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{catalog::Catalog, ids::AppId, off_catalog::OffCatalogGames, taste::game_tags};
+use crate::{
+    catalog::Catalog,
+    ids::{AppId, TagId},
+    off_catalog::OffCatalogGames,
+    taste::{family_taste, game_tags},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Families {
@@ -20,6 +25,7 @@ pub enum FamilyProblem {
     Empty { family: String },
     DuplicateGame { family: String, game: AppId },
     GameWithoutTags { family: String, game: AppId },
+    EmptyProfile { family: String },
     DuplicateHeldOut { game: AppId },
     HeldOutInFamily { game: AppId, family: String },
 }
@@ -31,6 +37,7 @@ impl FamilyProblem {
             | FamilyProblem::Empty { family }
             | FamilyProblem::DuplicateGame { family, .. }
             | FamilyProblem::GameWithoutTags { family, .. }
+            | FamilyProblem::EmptyProfile { family }
             | FamilyProblem::HeldOutInFamily { family, .. } => Some(family),
             FamilyProblem::DuplicateHeldOut { .. } => None,
         }
@@ -38,11 +45,17 @@ impl FamilyProblem {
 }
 
 impl Families {
-    // TODO: also report a family whose tag profile is empty.
-    pub fn problems(&self, catalog: &Catalog, off_catalog: &OffCatalogGames) -> Vec<FamilyProblem> {
+    pub fn problems(
+        &self,
+        catalog: &Catalog,
+        off_catalog: &OffCatalogGames,
+        tag_multipliers: &BTreeMap<TagId, f64>,
+    ) -> Vec<FamilyProblem> {
         let mut problems = Vec::new();
 
         for family in &self.families {
+            let problems_before = problems.len();
+
             if !family.name.chars().any(char::is_alphabetic) {
                 problems.push(FamilyProblem::NameWithoutLetters {
                     family: family.name.clone(),
@@ -67,6 +80,15 @@ impl Families {
                         game,
                     });
                 }
+            }
+
+            // Only when nothing else explains it, e.g. tag multipliers at zero
+            if problems.len() == problems_before
+                && !family_taste(family, catalog, off_catalog, tag_multipliers).has_profile()
+            {
+                problems.push(FamilyProblem::EmptyProfile {
+                    family: family.name.clone(),
+                });
             }
         }
 
@@ -105,13 +127,10 @@ fn has_tags(game: AppId, catalog: &Catalog, off_catalog: &OffCatalogGames) -> bo
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use super::*;
     use crate::{
         catalog::Freshness,
         game::{Game, GameTag, Price, Reviews},
-        ids::TagId,
         off_catalog::OffCatalogGame,
         timestamp::Timestamp,
     };
@@ -144,7 +163,7 @@ mod tests {
         Catalog::new(
             vec![game(1, 2), game(2, 0)],
             BTreeMap::new(),
-            BTreeMap::new(),
+            BTreeMap::from([(TagId(0), 1.0), (TagId(1), 1.0)]),
             Freshness {
                 prices_updated_at: Timestamp(0),
                 tags_updated_at: Timestamp(0),
@@ -172,7 +191,7 @@ mod tests {
             families,
             held_out: held_out.iter().copied().map(AppId).collect(),
         };
-        families.problems(&catalog(), &off_catalog())
+        families.problems(&catalog(), &off_catalog(), &BTreeMap::new())
     }
 
     #[test]
@@ -243,7 +262,7 @@ mod tests {
             families: vec![family("good", &[1]), family("bad", &[])],
             held_out: vec![AppId(5), AppId(5)],
         };
-        let problems = families.problems(&catalog(), &off_catalog());
+        let problems = families.problems(&catalog(), &off_catalog(), &BTreeMap::new());
 
         let kept = families.without_problems(&problems);
         assert_eq!(kept.families, [family("good", &[1])]);
