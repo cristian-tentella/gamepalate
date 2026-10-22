@@ -14,6 +14,7 @@ use gamepalate_core::{
     off_catalog::OffCatalogGames,
     opinion::{opinion_model, opinions},
     ranking::ranking,
+    search::{Recommendation, SearchInputs, SearchOptions, SortBy, recommend},
     taste::{Taste, family_taste, game_name, signals_taste},
     timestamp::Timestamp,
     votes::{VoteKind, Votes},
@@ -95,6 +96,18 @@ fn main() -> anyhow::Result<()> {
 
     let filter_context = FilterContext::new(&signals, &families, &votes, &corrections);
     print_filters(&catalog, &filter_context, &config);
+
+    let inputs = SearchInputs {
+        catalog: &catalog,
+        game_vectors: &vectors,
+        signals: &signals,
+        votes: &votes,
+        corrections: &corrections,
+        families: &families,
+        off_catalog: &off_catalog,
+        config: &config,
+    };
+    print_recommendations(&inputs);
 
     let taste = signals_taste(
         &hours,
@@ -269,12 +282,16 @@ fn print_opinions(votes: &Votes, catalog: &Catalog, off_catalog: &OffCatalogGame
     }
 }
 
-fn print_filters(catalog: &Catalog, context: &FilterContext, config: &Config) {
-    let now = Timestamp(
+fn now() -> Timestamp {
+    Timestamp(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_millis() as i64),
-    );
+    )
+}
+
+fn print_filters(catalog: &Catalog, context: &FilterContext, config: &Config) {
+    let now = now();
     let cases = [
         ("default", FilterOptions::default()),
         (
@@ -332,5 +349,113 @@ fn print_filters(catalog: &Catalog, context: &FilterContext, config: &Config) {
             "{name}: {} candidates, blame {blame}, {elapsed:?}",
             outcome.candidates.len()
         );
+    }
+}
+
+fn print_recommendations(inputs: &SearchInputs) {
+    let mut cases = vec![
+        ("default", SearchOptions::default()),
+        (
+            "only bets",
+            SearchOptions {
+                only_bets: true,
+                ..SearchOptions::default()
+            },
+        ),
+        (
+            "by discount",
+            SearchOptions {
+                sort: SortBy::Discount,
+                ..SearchOptions::default()
+            },
+        ),
+        (
+            "impossible filters",
+            SearchOptions {
+                filters: FilterOptions {
+                    max_price_cents: Some(0),
+                    min_reviews: Some(1_000_000),
+                    ..FilterOptions::default()
+                },
+                ..SearchOptions::default()
+            },
+        ),
+        (
+            "unknown family",
+            SearchOptions {
+                family: Some("not a family".to_string()),
+                ..SearchOptions::default()
+            },
+        ),
+    ];
+    if let Some(family) = inputs.families.families.first() {
+        cases.push((
+            "first family",
+            SearchOptions {
+                family: Some(family.name.to_lowercase()),
+                ..SearchOptions::default()
+            },
+        ));
+    }
+
+    for (name, options) in cases {
+        println!(
+            "
+== recommendation: {name}"
+        );
+        let start = Instant::now();
+        match recommend(inputs, &options, now()) {
+            Ok(recommendation) => {
+                println!("time: {:?}", start.elapsed());
+                print_recommendation(&recommendation);
+            }
+            Err(error) => println!("error: {error:?}"),
+        }
+    }
+}
+
+fn print_recommendation(recommendation: &Recommendation) {
+    if recommendation.stale_prices {
+        println!("prices are stale: {:?}", recommendation.freshness);
+    }
+    if recommendation.without_vote_model {
+        println!("not enough votes for the opinion");
+    }
+    if recommendation.games.is_empty() {
+        match &recommendation.empty_because {
+            Some(blame) => println!(
+                "no games, blame {} ({} games)",
+                blame.filter, blame.discarded
+            ),
+            None => println!("no games"),
+        }
+        return;
+    }
+
+    for game in &recommendation.games {
+        let price = match game.price.discount {
+            Some(discount) => format!(
+                "{:.2} € (-{}%)",
+                f64::from(game.price.final_cents()) / 100.0,
+                discount.percent
+            ),
+            None => format!("{:.2} €", f64::from(game.price.final_cents()) / 100.0),
+        };
+        let from = game.from_family.as_deref().unwrap_or("signals");
+        let bet = if game.bet { "  [bet]" } else { "" };
+        println!(
+            "{:>3}. {}  {price}  from {from}, relevance {:.2}, affinity {:.2}{bet}",
+            game.position, game.name, game.relevance, game.affinity
+        );
+
+        if let Some(similar) = &game.similar_to {
+            match game.similar_to_multiplier {
+                Some(multiplier) => println!("     similar to {similar} (x{multiplier})"),
+                None => println!("     similar to {similar}"),
+            }
+        }
+        if !game.top_tags.is_empty() {
+            println!("     tags: {}", game.top_tags.join(", "));
+        }
     }
 }

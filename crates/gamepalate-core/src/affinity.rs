@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+
 use rayon::prelude::*;
 
 use crate::{
     game_vector::GameVector,
-    ids::AppId,
+    ids::{AppId, TagId},
     tag_vector::{TagVector, dot, norm},
     taste::Taste,
 };
@@ -51,35 +53,79 @@ pub fn profile_similarity(game_vector: &GameVector, profile: &TagVector, profile
     dot(&game_vector.tag_vector, profile) / (profile_norm * game_vector.norm)
 }
 
+// For each tag, the references that have it, with their value for that tag.
+#[derive(Debug, Clone)]
+pub struct ReferenceIndex<'a> {
+    references: &'a [Reference],
+    postings: HashMap<TagId, Vec<(usize, f64)>>,
+}
+
+impl<'a> ReferenceIndex<'a> {
+    pub fn new(references: &'a [Reference]) -> ReferenceIndex<'a> {
+        let mut postings: HashMap<TagId, Vec<(usize, f64)>> = HashMap::new();
+        for (i, reference) in references.iter().enumerate() {
+            for (&tag, &value) in &reference.tag_vector {
+                postings.entry(tag).or_default().push((i, value));
+            }
+        }
+
+        ReferenceIndex {
+            references,
+            postings,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.references.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.references.is_empty()
+    }
+}
+
+// `dots` is scratch space, one slot per reference, all zero between calls.
 pub fn closest_references(
     game_vector: &GameVector,
-    references: &[Reference],
+    index: &ReferenceIndex,
+    dots: &mut [f64],
 ) -> Vec<ReferenceMatch> {
     if game_vector.norm == 0.0 {
         return Vec::new();
     }
 
+    for (tag, &value) in &game_vector.tag_vector {
+        if let Some(posting) = index.postings.get(tag) {
+            for &(i, reference_value) in posting {
+                dots[i] += value * reference_value;
+            }
+        }
+    }
+
     let mut closest_three: Vec<ReferenceMatch> = Vec::new();
 
-    for reference in references {
-        if reference.id == game_vector.id {
+    for (reference, dot) in index.references.iter().zip(dots.iter_mut()) {
+        let similarity = *dot / (game_vector.norm * reference.norm);
+        *dot = 0.0;
+
+        if similarity == 0.0 || reference.id == game_vector.id {
             continue;
         }
 
-        let similarity = dot(&game_vector.tag_vector, &reference.tag_vector)
-            / (game_vector.norm * reference.norm);
-
-        if similarity == 0.0 {
+        let beats_third = closest_three.len() < 3 || {
+            let third = &closest_three[2];
+            similarity > third.similarity
+                || (similarity == third.similarity && reference.id < third.id)
+        };
+        if !beats_third {
             continue;
         }
 
-        let reference_match = ReferenceMatch {
+        closest_three.push(ReferenceMatch {
             id: reference.id,
             weight: reference.weight,
             similarity,
-        };
-
-        closest_three.push(reference_match);
+        });
         closest_three.sort_by(|a, b| {
             a.similarity
                 .total_cmp(&b.similarity)
@@ -123,17 +169,21 @@ pub fn affinities(game_vectors: &[GameVector], taste: &Taste) -> Option<Vec<Game
         return None;
     }
     let references = references(taste);
+    let index = ReferenceIndex::new(&references);
 
     let halves: Vec<(f64, f64, Vec<ReferenceMatch>)> = game_vectors
         .par_iter()
-        .map(|game_vector| {
-            let reference_matches = closest_references(game_vector, &references);
-            (
-                profile_similarity(game_vector, &profile, profile_norm),
-                references_similarity(&reference_matches),
-                reference_matches,
-            )
-        })
+        .map_init(
+            || vec![0.0; index.len()],
+            |dots, game_vector| {
+                let reference_matches = closest_references(game_vector, &index, dots);
+                (
+                    profile_similarity(game_vector, &profile, profile_norm),
+                    references_similarity(&reference_matches),
+                    reference_matches,
+                )
+            },
+        )
         .collect();
 
     let profile_halves: Vec<f64> = halves.iter().map(|half| half.0).collect();
