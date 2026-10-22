@@ -12,8 +12,10 @@ use gamepalate_core::{
     evaluation::{GroupSummary, evaluate},
     filters::{FilterContext, FilterOptions, active_filters, apply_filters},
     game_vector::{GameVector, game_vectors},
+    ids::TagId,
     off_catalog::OffCatalogGames,
     opinion::{opinion_model, opinions},
+    profile::{DEFAULT_TAG_LIMIT, ProfileTag, profile},
     ranking::ranking,
     search::{Recommendation, SearchInputs, SearchOptions, SortBy, recommend},
     taste::{Taste, family_taste, game_name, signals_taste},
@@ -110,6 +112,7 @@ fn main() -> anyhow::Result<()> {
     };
     print_recommendations(&inputs);
     print_evaluation(&inputs);
+    print_profile(&inputs);
 
     let taste = signals_taste(
         &hours,
@@ -503,5 +506,112 @@ fn print_group(name: &str, group: &GroupSummary) {
             format!("  ({})", details.join(", "))
         };
         println!("{position:>7}  {}{details}", game.name);
+    }
+}
+
+fn tag_name(id: TagId, catalog: &Catalog) -> String {
+    catalog
+        .tags
+        .get(&id)
+        .map_or_else(|| format!("#{}", id.0), |tag| tag.italian.clone())
+}
+
+fn print_profile(inputs: &SearchInputs) {
+    println!(
+        "
+== profile"
+    );
+    let start = Instant::now();
+    let Some(profile) = profile(inputs, DEFAULT_TAG_LIMIT) else {
+        println!("no game above the hours threshold");
+        return;
+    };
+    println!("time: {:?}", start.elapsed());
+
+    println!(
+        "
+-- tags"
+    );
+    for tag in &profile.tags {
+        print_profile_tag(tag, inputs);
+    }
+
+    println!(
+        "
+-- corrected tags"
+    );
+    for tag in &profile.corrected_tags {
+        print_profile_tag(tag, inputs);
+    }
+
+    println!(
+        "
+-- corrected games"
+    );
+    for game in &profile.corrected_games {
+        let in_effect = if game.in_effect {
+            ""
+        } else {
+            "  (not in effect)"
+        };
+        println!(
+            "{:>8.2} <- {:>6.2} x{}  {}{in_effect}",
+            game.weight,
+            game.weight_before,
+            game.multiplier,
+            game_name(game.id, inputs.catalog, inputs.off_catalog)
+        );
+    }
+
+    println!(
+        "
+-- families"
+    );
+    for family in &profile.families {
+        let games: Vec<String> = family
+            .games
+            .iter()
+            .map(|&id| game_name(id, inputs.catalog, inputs.off_catalog))
+            .collect();
+        let tags: Vec<String> = family
+            .tags
+            .iter()
+            .map(|&(id, weight)| format!("{} {weight:.2}", tag_name(id, inputs.catalog)))
+            .collect();
+        println!("{}: {}", family.name, games.join(", "));
+        println!("     tags: {}", tags.join(", "));
+    }
+    println!("problems: {:?}", profile.family_problems);
+    println!("kept aside: {}", profile.kept_aside);
+}
+
+fn print_profile_tag(tag: &ProfileTag, inputs: &SearchInputs) {
+    let correction = match &tag.correction {
+        Some(correction) => {
+            let mut parts = Vec::new();
+            if let Some(ban) = correction.banned {
+                parts.push(format!("banned {ban:?}"));
+            }
+            if let Some(multiplier) = correction.multiplier {
+                parts.push(format!("x{multiplier}"));
+            }
+            format!("  ({})", parts.join(", "))
+        }
+        None => String::new(),
+    };
+    println!(
+        "{:>8.2} <- {:>8.2}  {}{correction}",
+        tag.weight,
+        tag.weight_before,
+        tag_name(tag.id, inputs.catalog)
+    );
+
+    for game in &tag.games {
+        println!(
+            "     {:>3.0}%  {}  {:?}",
+            game.share * 100.0,
+            game_name(game.id, inputs.catalog, inputs.off_catalog),
+            game.kinds
+        );
     }
 }
