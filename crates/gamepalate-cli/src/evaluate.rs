@@ -10,7 +10,7 @@ use gamepalate_core::{
 use gamepalate_store::data_files::DataFiles;
 
 use crate::{
-    format::{decimal, integer},
+    format::{decimal, integer, parse_number},
     names::check_families,
 };
 
@@ -65,15 +65,6 @@ impl EvaluateArgs {
         }
         config
     }
-}
-
-fn parse_number(text: &str) -> Result<f64, String> {
-    text.trim()
-        .replace(',', ".")
-        .parse::<f64>()
-        .ok()
-        .filter(|value| value.is_finite())
-        .ok_or_else(|| format!("\"{text}\" is not a number"))
 }
 
 fn parse_unit(text: &str) -> Result<f64, String> {
