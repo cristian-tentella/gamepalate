@@ -18,7 +18,7 @@ pub fn top_tags(game: &Game, profile: &TagVector, catalog: &Catalog) -> Vec<Stri
         .iter()
         .take(3)
         .map(|(id, _)| match catalog.tags.get(id) {
-            Some(name) => name.italian.clone(),
+            Some(name) => name.english.clone(),
             None => format!("#{}", id.0),
         })
         .collect()
