@@ -22,11 +22,7 @@ use gamepalate_core::{
     timestamp::Timestamp,
     votes::{VoteKind, Votes},
 };
-use gamepalate_store::{
-    catalog::load_catalog, config::load_config, corrections::load_corrections,
-    families::load_families, off_catalog::load_off_catalog_games, signals::load_signals,
-    votes::load_votes,
-};
+use gamepalate_store::data_files::{DataFiles, load_data_files};
 
 fn main() -> anyhow::Result<()> {
     let data_dir = match env::args().nth(1) {
@@ -36,15 +32,22 @@ fn main() -> anyhow::Result<()> {
     };
     println!("data folder: {}", data_dir.display());
 
-    let config = load_config(&data_dir.join("config.toml"))?;
+    let DataFiles {
+        config,
+        catalog,
+        corrections,
+        families,
+        signals,
+        votes,
+        off_catalog,
+    } = load_data_files(&data_dir)?;
+
     println!("\n== config\n{config:#?}");
 
-    let catalog = load_catalog(&data_dir.join("catalog.sqlite"))?;
     print_catalog(&catalog);
     time_game_vectors(&catalog);
     let vectors = game_vectors(&catalog);
 
-    let signals = load_signals(&data_dir.join("signals.json"))?;
     println!("\n== signals");
     println!("read at: {:?}", signals.read_at);
     println!("library: {}", signals.library.len());
@@ -52,7 +55,6 @@ fn main() -> anyhow::Result<()> {
     println!("wishlist: {}", signals.wishlist.len());
     println!("followed: {}", signals.followed.len());
 
-    let off_catalog = load_off_catalog_games(&data_dir.join("off-catalog-tags.json"));
     let without_tags = off_catalog
         .values()
         .filter(|game| game.tags.is_empty())
@@ -61,7 +63,6 @@ fn main() -> anyhow::Result<()> {
     println!("games: {}", off_catalog.len());
     println!("games without tags: {without_tags}");
 
-    let votes = load_votes(&data_dir.join("votes.toml"))?;
     let count = |kind: VoteKind| votes.values().filter(|vote| vote.kind == kind).count();
     println!("\n== votes");
     println!("votes: {}", votes.len());
@@ -81,14 +82,12 @@ fn main() -> anyhow::Result<()> {
         println!("{hours:>8.1}  {}", game_name(id, &catalog, &off_catalog));
     }
 
-    let corrections = load_corrections(&data_dir.join("corrections.toml"))?;
     println!("\n== corrections");
     println!("banned tags: {:?}", corrections.banned_tags);
     println!("tag multipliers: {:?}", corrections.tag_multipliers);
     println!("hidden games: {}", corrections.hidden_games.len());
     println!("game multipliers: {:?}", corrections.game_multipliers);
 
-    let families = load_families(&data_dir.join("families.toml"))?;
     let problems = families.problems(&catalog, &off_catalog, &corrections.tag_multipliers);
     println!("\n== families");
     for family in &families.families {
