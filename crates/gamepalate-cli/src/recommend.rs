@@ -4,7 +4,7 @@ use anyhow::bail;
 use clap::{Args, ValueEnum};
 use comfy_table::{CellAlignment, ContentArrangement, Table, presets::UTF8_FULL_CONDENSED};
 use gamepalate_core::{
-    filters::{FilterOptions, TagNameError},
+    filters::FilterOptions,
     game::Reviews,
     game_vector::game_vectors,
     search::{RecommendedGame, SearchError, SearchOptions, SortBy, recommend},
@@ -14,7 +14,7 @@ use gamepalate_store::data_files::DataFiles;
 
 use crate::{
     format::{date, date_time, decimal, euros, integer, multiplier, parse_euros},
-    names::check_families,
+    names::{check_families, tag_name_error_text},
 };
 
 const NAME_WIDTH: usize = 60;
@@ -289,12 +289,7 @@ fn search_error_text(error: &SearchError) -> String {
                 families.join(", ")
             )
         }
-        SearchError::TagName(TagNameError::NotFound(name)) => {
-            format!("no tag named \"{name}\"")
-        }
-        SearchError::TagName(TagNameError::Ambiguous(name)) => {
-            format!("more than one tag matches \"{name}\": write the full name")
-        }
+        SearchError::TagName(error) => tag_name_error_text(error),
         SearchError::EmptySignalsProfile => {
             "the signals give an empty profile: no game above the hours threshold has tags"
                 .to_string()

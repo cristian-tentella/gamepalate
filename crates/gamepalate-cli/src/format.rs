@@ -24,6 +24,15 @@ pub fn euros(cents: u32) -> String {
     format!("€{}.{:02}", integer(u64::from(cents / 100)), cents % 100)
 }
 
+pub fn parse_number(text: &str) -> Result<f64, String> {
+    text.trim()
+        .replace(',', ".")
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| format!("\"{text}\" is not a number"))
+}
+
 pub fn parse_euros(text: &str) -> Result<u32, String> {
     let error = || format!("\"{text}\" is not a price in euros, for example 9.99 or 9,99");
     let text = text.trim().replace(',', ".");

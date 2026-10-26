@@ -1,6 +1,7 @@
 pub mod catalog;
 pub mod config;
 pub mod corrections;
+pub mod corrections_edit;
 pub mod data_files;
 pub mod families;
 mod keys;

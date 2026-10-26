@@ -4,6 +4,7 @@ use anyhow::bail;
 use gamepalate_core::{
     catalog::Catalog,
     families::FamilyProblem,
+    filters::TagNameError,
     ids::{AppId, TagId},
     off_catalog::OffCatalogGames,
     search::SearchInputs,
@@ -40,6 +41,15 @@ pub fn tag_name(id: TagId, catalog: &Catalog) -> String {
         .tags
         .get(&id)
         .map_or_else(|| format!("#{}", id.0), |tag| tag.english.clone())
+}
+
+pub fn tag_name_error_text(error: &TagNameError) -> String {
+    match error {
+        TagNameError::NotFound(name) => format!("no tag named \"{name}\""),
+        TagNameError::Ambiguous(name) => {
+            format!("more than one tag matches \"{name}\": write the full name")
+        }
+    }
 }
 
 pub fn game_label(id: AppId, catalog: &Catalog, off_catalog: &OffCatalogGames) -> String {

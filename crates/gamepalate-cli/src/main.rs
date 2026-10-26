@@ -1,3 +1,4 @@
+mod correct;
 mod corrections;
 mod data_dir;
 mod evaluate;
@@ -34,6 +35,19 @@ enum Command {
     Evaluate(evaluate::EvaluateArgs),
     /// List the active corrections
     Corrections,
+    /// Hide a game from the recommendations
+    Hide {
+        /// Steam appid of the game
+        appid: u32,
+    },
+    /// Ban a tag from the recommendations
+    Ban(correct::BanArgs),
+    /// Boost a tag in your profile
+    Boost(correct::MultiplierArgs),
+    /// Dampen a tag in your profile, or a game of your signals with --game
+    Dampen(correct::MultiplierArgs),
+    /// Remove the corrections of a tag or a game
+    Remove(correct::RemoveArgs),
 }
 
 fn main() -> ExitCode {
@@ -69,6 +83,26 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Corrections => {
             let files = load_data_files(&data_dir)?;
             corrections::run(&files);
+        }
+        Command::Hide { appid } => {
+            let files = load_data_files(&data_dir)?;
+            correct::hide(appid, &files, &data_dir)?;
+        }
+        Command::Ban(args) => {
+            let files = load_data_files(&data_dir)?;
+            correct::ban(&args, &files, &data_dir)?;
+        }
+        Command::Boost(args) => {
+            let files = load_data_files(&data_dir)?;
+            correct::correct_multiplier(correct::Direction::Boost, &args, &files, &data_dir)?;
+        }
+        Command::Dampen(args) => {
+            let files = load_data_files(&data_dir)?;
+            correct::correct_multiplier(correct::Direction::Dampen, &args, &files, &data_dir)?;
+        }
+        Command::Remove(args) => {
+            let files = load_data_files(&data_dir)?;
+            correct::remove(&args, &files, &data_dir)?;
         }
     }
 

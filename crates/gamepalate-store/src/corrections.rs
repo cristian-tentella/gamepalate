@@ -13,8 +13,14 @@ pub enum CorrectionsError {
     #[error("could not read the corrections")]
     Io(#[from] std::io::Error),
 
+    #[error("could not save the corrections")]
+    Write(#[source] std::io::Error),
+
     #[error("the corrections file is not valid")]
     Toml(#[from] toml::de::Error),
+
+    #[error("the corrections file is not valid")]
+    Edit(#[from] toml_edit::TomlError),
 
     #[error("in [{section}], {key:?} is not an id")]
     InvalidKey { section: &'static str, key: String },
@@ -64,7 +70,7 @@ pub fn load_corrections(path: &Path) -> Result<Corrections, CorrectionsError> {
     }
 }
 
-fn parse_corrections(text: &str) -> Result<Corrections, CorrectionsError> {
+pub fn parse_corrections(text: &str) -> Result<Corrections, CorrectionsError> {
     let file: CorrectionsFile = toml::from_str(text)?;
     let mut corrections = Corrections::default();
 
