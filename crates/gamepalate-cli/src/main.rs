@@ -7,6 +7,7 @@ mod names;
 mod profile;
 mod recommend;
 mod vote;
+mod votes;
 
 use std::{path::PathBuf, process::ExitCode};
 
@@ -51,6 +52,8 @@ enum Command {
     Remove(correct::RemoveArgs),
     /// Vote a game, replacing its previous vote
     Vote(vote::VoteArgs),
+    /// List your votes, the most recent first
+    Votes,
 }
 
 fn main() -> ExitCode {
@@ -110,6 +113,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Vote(args) => {
             let files = load_data_files(&data_dir)?;
             vote::run(&args, &files, &data_dir)?;
+        }
+        Command::Votes => {
+            let files = load_data_files(&data_dir)?;
+            votes::run(&files);
         }
     }
 
