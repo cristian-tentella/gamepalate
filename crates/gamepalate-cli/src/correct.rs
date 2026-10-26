@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, bail};
-use clap::Args;
+use clap::{Args, CommandFactory, error::ErrorKind};
 use gamepalate_core::{
     corrections::Ban,
     effective_hours::effective_hours,
@@ -37,7 +37,11 @@ pub struct MultiplierArgs {
     game: Option<u32>,
 
     /// Tag name, in English or Italian, then an optional factor
-    #[arg(required_unless_present = "game", value_name = "NAME [FACTOR]")]
+    #[arg(
+        required_unless_present = "game",
+        allow_negative_numbers = true,
+        value_name = "NAME [FACTOR]"
+    )]
     words: Vec<String>,
 }
 
@@ -52,6 +56,15 @@ pub struct RemoveArgs {
 pub enum Direction {
     Boost,
     Dampen,
+}
+
+impl Direction {
+    fn command(self) -> &'static str {
+        match self {
+            Direction::Boost => "boost",
+            Direction::Dampen => "dampen",
+        }
+    }
 }
 
 pub fn hide(appid: u32, files: &DataFiles, data_dir: &Path) -> anyhow::Result<()> {
@@ -124,7 +137,10 @@ fn correct_tag(
         Direction::Dampen => files.config.corrections.dampen,
     });
     if factor <= 0.0 {
-        bail!("the factor of a tag must be a number > 0");
+        usage_error(
+            direction.command(),
+            "the factor of a tag must be a number > 0",
+        );
     }
 
     let (id, name) = tag(&name, files)?;
@@ -158,25 +174,32 @@ fn correct_game(
     files: &DataFiles,
     data_dir: &Path,
 ) -> anyhow::Result<()> {
+    let families_path = data_dir.join("families.toml");
     if direction == Direction::Boost {
-        bail!(
-            "a game cannot be boosted: to make it count, put it in a family in {}",
-            data_dir.join("families.toml").display()
+        usage_error(
+            "boost",
+            format!(
+                "a game cannot be boosted: to make it count, put it in a family in {}",
+                families_path.display()
+            ),
         );
     }
 
     let factor = match words {
         [] => files.config.corrections.dampen,
-        [factor] => parse_number(factor).map_err(anyhow::Error::msg)?,
-        _ => bail!("after --game only a factor can follow"),
+        [factor] => parse_number(factor).unwrap_or_else(|error| usage_error("dampen", error)),
+        _ => usage_error("dampen", "after --game only a factor can follow"),
     };
     if !(0.0..=1.0).contains(&factor) {
-        bail!(
+        let message = format!(
             "the factor of a game must be from 0 to 1, where 0 means it does not count: to make a game count more, put it in a family in {}",
-            data_dir.join("families.toml").display()
+            families_path.display()
         );
+        if words.is_empty() {
+            bail!("corrections.dampen of the config is {factor}: {message}");
+        }
+        usage_error("dampen", message);
     }
-
     let id = AppId(appid);
     let label = game_label(id, &files.catalog, &files.off_catalog);
     let min_hours = files.config.signals.min_hours;
@@ -282,6 +305,15 @@ fn split_factor(words: &[String]) -> (String, Option<f64>) {
         return (name.join(" "), Some(factor));
     }
     (words.join(" "), None)
+}
+
+fn usage_error(command: &str, message: impl std::fmt::Display) -> ! {
+    let mut cli = crate::Cli::command();
+    cli.build();
+    match cli.find_subcommand_mut(command) {
+        Some(command) => command.error(ErrorKind::ValueValidation, message).exit(),
+        None => cli.error(ErrorKind::ValueValidation, message).exit(),
+    }
 }
 
 fn tag(name: &str, files: &DataFiles) -> anyhow::Result<(TagId, String)> {
