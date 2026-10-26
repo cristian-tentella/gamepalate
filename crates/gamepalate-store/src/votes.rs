@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, io::ErrorKind, path::Path};
+use std::{
+    collections::BTreeMap,
+    fmt::Write as _,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+};
 
 use gamepalate_core::{
     ids::AppId,
@@ -8,10 +13,24 @@ use serde::Deserialize;
 
 use crate::keys::parse_id_key;
 
+const HEADER: &str = "\
+# Votes on the recommended games. Every key is a Steam appid, the comment after it is only a reminder.
+# gamepalate rewrites this file at every vote: comments added by hand are lost.
+#
+# would_try   you would try it, it counts as a signal
+# maybe       you might try it
+# not_for_me  not for you, it leaves the recommendations
+# known       you already know it, it leaves the recommendations
+# bet = true  the vote was given to a bet
+";
+
 #[derive(Debug, thiserror::Error)]
 pub enum VotesError {
     #[error("could not read the votes")]
     Io(#[from] std::io::Error),
+
+    #[error("could not save the votes")]
+    Write(#[source] std::io::Error),
 
     #[error("the votes file is not valid")]
     Toml(#[from] toml::de::Error),
@@ -66,6 +85,52 @@ pub fn load_votes(path: &Path) -> Result<Votes, VotesError> {
         Ok(text) => parse_votes(&text),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(Votes::new()),
         Err(error) => Err(error.into()),
+    }
+}
+
+pub fn save_votes(
+    path: &Path,
+    votes: &Votes,
+    name: impl Fn(AppId) -> Option<String>,
+) -> Result<(), VotesError> {
+    let text = votes_text(votes, name);
+    parse_votes(&text)?;
+
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(".tmp");
+    let temporary = PathBuf::from(temporary);
+    std::fs::write(&temporary, &text).map_err(VotesError::Write)?;
+    std::fs::rename(&temporary, path).map_err(|error| {
+        let _ = std::fs::remove_file(&temporary);
+        VotesError::Write(error)
+    })
+}
+
+fn votes_text(votes: &Votes, name: impl Fn(AppId) -> Option<String>) -> String {
+    let mut text = format!("{HEADER}\n[votes]\n");
+    for (&id, vote) in votes {
+        let bet = if vote.bet { ", bet = true" } else { "" };
+        let _ = write!(
+            text,
+            "{} = {{ vote = \"{}\", date = \"{}\"{bet} }}",
+            id.0,
+            kind_name(vote.kind),
+            vote.date
+        );
+        if let Some(name) = name(id) {
+            let _ = write!(text, " # {}", name.replace(['\r', '\n'], " "));
+        }
+        text.push('\n');
+    }
+    text
+}
+
+fn kind_name(kind: VoteKind) -> &'static str {
+    match kind {
+        VoteKind::WouldTry => "would_try",
+        VoteKind::Maybe => "maybe",
+        VoteKind::NotForMe => "not_for_me",
+        VoteKind::Known => "known",
     }
 }
 
