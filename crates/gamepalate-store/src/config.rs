@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use gamepalate_core::config::{Config, RelevanceConfig, ResultsConfig, SignalsConfig};
+use gamepalate_core::config::{
+    Config, CorrectionsConfig, RelevanceConfig, ResultsConfig, SignalsConfig,
+};
 use serde::Deserialize;
 
 #[derive(Debug, thiserror::Error)]
@@ -162,19 +164,20 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
         )?,
     };
 
-    // The core does not use these, but they must still be valid.
-    number(
-        "corrections.boost",
-        file.corrections.boost,
-        2.0,
-        Range::Above(0.0),
-    )?;
-    number(
-        "corrections.dampen",
-        file.corrections.dampen,
-        0.5,
-        Range::Above(0.0),
-    )?;
+    let corrections = CorrectionsConfig {
+        boost: number(
+            "corrections.boost",
+            file.corrections.boost,
+            base.corrections.boost,
+            Range::Above(0.0),
+        )?,
+        dampen: number(
+            "corrections.dampen",
+            file.corrections.dampen,
+            base.corrections.dampen,
+            Range::Above(0.0),
+        )?,
+    };
 
     let results = ResultsConfig {
         count: integer(
@@ -223,6 +226,7 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
         signals,
         relevance,
         results,
+        corrections,
         prices_max_age_hours,
     })
 }

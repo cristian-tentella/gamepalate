@@ -3,6 +3,7 @@ pub struct Config {
     pub signals: SignalsConfig,
     pub relevance: RelevanceConfig,
     pub results: ResultsConfig,
+    pub corrections: CorrectionsConfig,
     pub prices_max_age_hours: u32,
 }
 
@@ -12,6 +13,7 @@ impl Default for Config {
             signals: SignalsConfig::default(),
             relevance: RelevanceConfig::default(),
             results: ResultsConfig::default(),
+            corrections: CorrectionsConfig::default(),
             prices_max_age_hours: 24,
         }
     }
@@ -72,6 +74,21 @@ impl Default for ResultsConfig {
             early_access: true,
             min_positive_percent: 0,
             bet_every: 5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CorrectionsConfig {
+    pub boost: f64,
+    pub dampen: f64,
+}
+
+impl Default for CorrectionsConfig {
+    fn default() -> Self {
+        CorrectionsConfig {
+            boost: 2.0,
+            dampen: 0.5,
         }
     }
 }
