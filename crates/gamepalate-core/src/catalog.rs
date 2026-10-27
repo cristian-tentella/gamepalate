@@ -7,6 +7,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Catalog {
     games: Vec<Game>,
     pub tags: BTreeMap<TagId, TagName>,
@@ -43,12 +44,14 @@ impl Catalog {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TagName {
     pub english: String,
     pub italian: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Freshness {
     pub prices_updated_at: Timestamp,
     pub tags_updated_at: Timestamp,

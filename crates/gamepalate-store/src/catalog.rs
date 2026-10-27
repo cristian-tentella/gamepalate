@@ -11,6 +11,8 @@ use gamepalate_core::{
 };
 use rusqlite::{Connection, OpenFlags, Row};
 
+const CACHE_FORMAT: u32 = 1;
+
 #[derive(Debug, thiserror::Error)]
 pub enum CatalogError {
     #[error("catalog not found at {}", .0.display())]
@@ -25,9 +27,45 @@ pub fn load_catalog(path: &Path) -> Result<Catalog, CatalogError> {
         return Err(CatalogError::NotFound(path.to_path_buf()));
     }
 
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let cache = path.with_extension("bin");
+    if let Some(catalog) = read_cache(&cache, path) {
+        return Ok(catalog);
+    }
 
-    read_catalog(&conn)
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let catalog = read_catalog(&conn)?;
+    write_cache(&cache, &catalog);
+
+    Ok(catalog)
+}
+
+fn read_cache(cache: &Path, sqlite: &Path) -> Option<Catalog> {
+    let cache_modified = cache.metadata().ok()?.modified().ok()?;
+    let sqlite_modified = sqlite.metadata().ok()?.modified().ok()?;
+    if cache_modified <= sqlite_modified {
+        return None;
+    }
+
+    let bytes = std::fs::read(cache).ok()?;
+    let (format, rest): (u32, _) = postcard::take_from_bytes(&bytes).ok()?;
+    if format != CACHE_FORMAT {
+        return None;
+    }
+
+    postcard::from_bytes(rest).ok()
+}
+
+fn write_cache(cache: &Path, catalog: &Catalog) {
+    let Ok(bytes) = postcard::to_stdvec(&(CACHE_FORMAT, catalog)) else {
+        return;
+    };
+
+    let mut temporary = cache.as_os_str().to_owned();
+    temporary.push(".tmp");
+    let temporary = PathBuf::from(temporary);
+    if std::fs::write(&temporary, bytes).is_err() || std::fs::rename(&temporary, cache).is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
 }
 
 fn read_catalog(conn: &Connection) -> Result<Catalog, CatalogError> {

@@ -1,4 +1,5 @@
 #[derive(Debug, Clone, PartialEq, Eq, Copy, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Timestamp(pub i64);
 
 impl Timestamp {
