@@ -4,6 +4,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Game {
     pub id: AppId,
     pub name: String,
@@ -14,6 +15,7 @@ pub struct Game {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Price {
     pub original_cents: u32,
     pub discount: Option<Discount>,
@@ -39,6 +41,7 @@ impl Price {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Discount {
     pub percent: u8,
     pub final_cents: u32,
@@ -46,12 +49,14 @@ pub struct Discount {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Reviews {
     pub total: u32,
     pub positive: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GameTag {
     pub id: TagId,
     pub weight: f64,
