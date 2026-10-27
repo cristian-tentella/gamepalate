@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     path::{Path, PathBuf},
 };
 
@@ -32,11 +32,7 @@ pub fn load_catalog(path: &Path) -> Result<Catalog, CatalogError> {
 
 fn read_catalog(conn: &Connection) -> Result<Catalog, CatalogError> {
     let mut games = read_games(conn)?;
-    let mut tags_by_game = read_game_tags(conn)?;
-
-    for game in &mut games {
-        game.tags = tags_by_game.remove(&game.id).unwrap_or_default();
-    }
+    attach_game_tags(conn, &mut games)?;
 
     let tag_names = read_tag_names(conn)?;
     let idf = read_idf(conn)?;
@@ -88,26 +84,25 @@ fn discount_from_columns(percent: u8, final_cents: u32, end_ms: Option<i64>) -> 
     })
 }
 
-fn read_game_tags(conn: &Connection) -> Result<HashMap<AppId, Vec<GameTag>>, CatalogError> {
+fn attach_game_tags(conn: &Connection, games: &mut [Game]) -> Result<(), CatalogError> {
     let mut stmt =
         conn.prepare("SELECT appid, tagid, weight FROM game_tags ORDER BY appid, tagid")?;
+    let mut rows = stmt.query([])?;
+    let mut games = games.iter_mut().peekable();
 
-    let mut tags: HashMap<AppId, Vec<GameTag>> = HashMap::new();
+    while let Some(row) = rows.next()? {
+        let app_id = AppId(row.get(0)?);
+        while games.next_if(|game| game.id < app_id).is_some() {}
 
-    for row in stmt.query_map([], |row| {
-        Ok((
-            AppId(row.get(0)?),
-            GameTag {
+        if let Some(game) = games.peek_mut().filter(|game| game.id == app_id) {
+            game.tags.push(GameTag {
                 id: TagId(row.get(1)?),
                 weight: row.get(2)?,
-            },
-        ))
-    })? {
-        let (app_id, tag) = row?;
-        tags.entry(app_id).or_default().push(tag);
+            });
+        }
     }
 
-    Ok(tags)
+    Ok(())
 }
 
 fn read_tag_names(conn: &Connection) -> Result<BTreeMap<TagId, TagName>, CatalogError> {
@@ -116,10 +111,10 @@ fn read_tag_names(conn: &Connection) -> Result<BTreeMap<TagId, TagName>, Catalog
     Ok(stmt
         .query_map([], |row| {
             Ok((
-                TagId(row.get("tagid")?),
+                TagId(row.get(0)?),
                 TagName {
-                    english: row.get("name_en")?,
-                    italian: row.get("name_it")?,
+                    english: row.get(2)?,
+                    italian: row.get(1)?,
                 },
             ))
         })?
@@ -130,7 +125,7 @@ fn read_idf(conn: &Connection) -> Result<BTreeMap<TagId, f64>, CatalogError> {
     let mut stmt = conn.prepare("SELECT tagid, idf FROM tag_idf")?;
 
     Ok(stmt
-        .query_map([], |row| Ok((TagId(row.get("tagid")?), row.get("idf")?)))?
+        .query_map([], |row| Ok((TagId(row.get(0)?), row.get(1)?)))?
         .collect::<Result<BTreeMap<_, _>, _>>()?)
 }
 
@@ -140,8 +135,8 @@ fn read_freshness(conn: &Connection) -> Result<Freshness, CatalogError> {
         [],
         |row| {
             Ok(Freshness {
-                prices_updated_at: Timestamp(row.get("prices_updated_at")?),
-                tags_updated_at: Timestamp(row.get("tags_updated_at")?),
+                prices_updated_at: Timestamp(row.get(0)?),
+                tags_updated_at: Timestamp(row.get(1)?),
             })
         },
     )?)
