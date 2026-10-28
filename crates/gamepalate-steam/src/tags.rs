@@ -4,7 +4,7 @@ use gamepalate_core::{catalog::TagName, ids::TagId};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::transport::{Fetch, SteamError, Transport, parse};
+use crate::transport::{Get, SteamError, parse};
 
 const ENDPOINT: &str = "IStoreService/GetTagList/v1";
 
@@ -25,18 +25,13 @@ struct SteamTag {
     name: String,
 }
 
-pub async fn get_tags<F: Fetch>(
-    transport: &Transport<F>,
-) -> Result<BTreeMap<TagId, TagName>, SteamError> {
+pub async fn get_tags<S: Get>(transport: &S) -> Result<BTreeMap<TagId, TagName>, SteamError> {
     let english = get_tag_list(transport, "english").await?;
     let italian = get_tag_list(transport, "italian").await?;
     Ok(merge_languages(english, italian))
 }
 
-async fn get_tag_list<F: Fetch>(
-    transport: &Transport<F>,
-    language: &str,
-) -> Result<Vec<SteamTag>, SteamError> {
+async fn get_tag_list<S: Get>(transport: &S, language: &str) -> Result<Vec<SteamTag>, SteamError> {
     let value = transport
         .get(ENDPOINT, &[("language", language)], false)
         .await?;

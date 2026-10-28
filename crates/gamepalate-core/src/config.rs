@@ -5,6 +5,8 @@ pub struct Config {
     pub results: ResultsConfig,
     pub corrections: CorrectionsConfig,
     pub prices_max_age_hours: u32,
+    pub tags_max_age_days: f64,
+    pub kept_updates: u32,
 }
 
 impl Default for Config {
@@ -15,6 +17,8 @@ impl Default for Config {
             results: ResultsConfig::default(),
             corrections: CorrectionsConfig::default(),
             prices_max_age_hours: 24,
+            tags_max_age_days: 7.0,
+            kept_updates: 3,
         }
     }
 }
