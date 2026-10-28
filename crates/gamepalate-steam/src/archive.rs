@@ -116,6 +116,34 @@ impl Archive {
         Ok(None)
     }
 
+    pub fn rotate(&self, kept_updates: u32) -> io::Result<usize> {
+        let mut updates = self.updates_newest_first()?;
+        updates.reverse();
+        let completed: Vec<&(PathBuf, Manifest)> = updates
+            .iter()
+            .filter(|(_, manifest)| manifest.completed_at.is_some())
+            .collect();
+
+        let mut first = completed.len().saturating_sub(kept_updates as usize);
+        while first > 0 && !completed[first].1.full {
+            first -= 1;
+        }
+        let kept: Vec<&Path> = completed[first..]
+            .iter()
+            .map(|(dir, _)| dir.as_path())
+            .collect();
+
+        let mut removed = 0;
+        for number in self.folder_numbers()? {
+            let dir = self.root.join(format!("{number:0FOLDER_DIGITS$}"));
+            if !kept.contains(&dir.as_path()) {
+                fs::remove_dir_all(&dir)?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
     fn updates_newest_first(&self) -> io::Result<Vec<(PathBuf, Manifest)>> {
         let mut numbers = match self.folder_numbers() {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -811,5 +839,78 @@ mod tests {
         let next = archive.start_update(Timestamp(NOW.0 + HOUR), 24).unwrap();
 
         assert_eq!(next.dir(), root.path().join("000003"));
+    }
+
+    fn folders(root: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn make_incremental(dir: &Path) {
+        let mut manifest = read_manifest(dir);
+        manifest["full"] = json!(false);
+        fs::write(dir.join(MANIFEST_FILE), manifest.to_string()).unwrap();
+    }
+
+    #[test]
+    fn rotation_keeps_the_latest_completed_updates() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        for _ in 0..4 {
+            completed_update(&archive, NOW);
+        }
+
+        let removed = archive.rotate(3).unwrap();
+
+        assert_eq!(removed, 1);
+        assert_eq!(folders(root.path()), ["000002", "000003", "000004"]);
+    }
+
+    #[test]
+    fn rotation_removes_failed_interrupted_and_bare_folders() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        archive.start_update(NOW, 0).unwrap();
+        archive.start_update(NOW, 0).unwrap().fail(NOW).unwrap();
+        fs::create_dir(root.path().join("000003")).unwrap();
+        completed_update(&archive, NOW);
+        fs::create_dir(root.path().join("notes")).unwrap();
+
+        archive.rotate(3).unwrap();
+
+        assert_eq!(folders(root.path()), ["000004", "notes"]);
+    }
+
+    #[test]
+    fn rotation_keeps_the_full_update_the_kept_ones_build_on() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        completed_update(&archive, NOW);
+        completed_update(&archive, NOW);
+        for _ in 0..3 {
+            make_incremental(&completed_update(&archive, NOW));
+        }
+
+        archive.rotate(2).unwrap();
+
+        assert_eq!(
+            folders(root.path()),
+            ["000002", "000003", "000004", "000005"]
+        );
+    }
+
+    #[test]
+    fn rotation_of_an_archive_without_completed_updates_removes_them_all() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        archive.start_update(NOW, 0).unwrap();
+
+        archive.rotate(3).unwrap();
+
+        assert!(folders(root.path()).is_empty());
     }
 }

@@ -38,13 +38,14 @@ pub fn archive(data_dir: &Path) -> Archive {
 }
 
 pub fn run(data_dir: &Path) -> anyhow::Result<()> {
-    let resume_within_hours = match load_config(&data_dir.join("config.toml")) {
+    let config = match load_config(&data_dir.join("config.toml")) {
         Err(ConfigError::NotFound(_)) => Config::default(),
         config => config?,
-    }
-    .prices_max_age_hours;
+    };
+    let resume_within_hours = config.prices_max_age_hours;
     let transport = Transport::new(std::env::var("STEAM_API_KEY").ok())?;
-    let update = archive(data_dir)
+    let archive = archive(data_dir);
+    let update = archive
         .start_update(wall_clock(), resume_within_hours)
         .context("could not start a new update in the archive")?;
     let now = update.started_at();
@@ -65,6 +66,9 @@ pub fn run(data_dir: &Path) -> anyhow::Result<()> {
     update
         .complete(wall_clock())
         .context("could not mark the update as completed in the archive")?;
+    if let Err(error) = archive.rotate(config.kept_updates) {
+        eprintln!("warn: could not remove the old updates from the archive: {error}");
+    }
 
     println!(
         "Catalog updated: {} games out of {} apps.",

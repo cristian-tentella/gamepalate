@@ -220,7 +220,13 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
         7.0,
         Range::Above(0.0),
     )?;
-    integer::<u32>("update.kept_updates", file.update.kept_updates, 3, 1, None)?;
+    let kept_updates = integer(
+        "update.kept_updates",
+        file.update.kept_updates,
+        base.kept_updates,
+        1,
+        None,
+    )?;
 
     Ok(Config {
         signals,
@@ -228,6 +234,7 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
         results,
         corrections,
         prices_max_age_hours,
+        kept_updates,
     })
 }
 
@@ -356,6 +363,7 @@ mod tests {
         assert!(!config.results.early_access);
         assert_eq!(config.results.min_positive_percent, 80);
         assert_eq!(config.prices_max_age_hours, 12);
+        assert_eq!(config.kept_updates, 3);
     }
 
     #[test]
