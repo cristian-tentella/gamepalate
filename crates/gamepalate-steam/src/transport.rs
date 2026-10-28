@@ -5,7 +5,7 @@ use std::{
 
 use reqwest::{
     Client, Method, Request, Response, StatusCode, Url,
-    header::{ACCEPT, HeaderMap, HeaderValue, RETRY_AFTER},
+    header::{ACCEPT, HeaderMap, HeaderValue},
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -91,7 +91,7 @@ struct Pace {
 
 enum Attempt {
     Done(Value),
-    RateLimited(Option<Duration>),
+    RateLimited,
     Transient(String),
 }
 
@@ -148,11 +148,11 @@ impl<F: Fetch> Transport<F> {
                     self.speed_up();
                     return Ok(value);
                 }
-                Attempt::RateLimited(retry_after) if attempt < MAX_ATTEMPTS => {
-                    self.slow_down(retry_after.map_or(backoff, |wait| wait.max(backoff)));
+                Attempt::RateLimited if attempt < MAX_ATTEMPTS => {
+                    self.slow_down(backoff);
                     backoff *= 2;
                 }
-                Attempt::RateLimited(_) => {}
+                Attempt::RateLimited => {}
                 Attempt::Transient(reason) => match waits.next() {
                     Some(wait) if attempt < MAX_ATTEMPTS => {
                         self.pause(wait);
@@ -199,8 +199,7 @@ impl<F: Fetch> Transport<F> {
 
         let status = response.status();
         if status == StatusCode::TOO_MANY_REQUESTS {
-            log::debug!("{endpoint}: 429 headers {:?}", response.headers());
-            return Ok(Attempt::RateLimited(retry_after(&response)));
+            return Ok(Attempt::RateLimited);
         }
         if key.is_some() && matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
             return Err(SteamError::KeyRejected {
@@ -281,11 +280,6 @@ fn faster(interval: Duration) -> Duration {
     interval.saturating_sub(SPEED_UP_STEP).max(INTERVAL)
 }
 
-fn retry_after(response: &Response) -> Option<Duration> {
-    let seconds = response.headers().get(RETRY_AFTER)?.to_str().ok()?;
-    seconds.trim().parse().ok().map(Duration::from_secs)
-}
-
 fn steam_down(endpoint: &str, error: reqwest::Error) -> SteamError {
     let reason = if error.is_decode() {
         "the answer is not JSON"
@@ -310,11 +304,7 @@ mod tests {
     const APP_LIST: &str = "IStoreService/GetAppList/v1";
 
     enum Reply {
-        Answer {
-            status: u16,
-            retry_after: Option<&'static str>,
-            body: &'static str,
-        },
+        Answer { status: u16, body: &'static str },
         Hang,
     }
 
@@ -323,19 +313,11 @@ mod tests {
     }
 
     fn answer(status: u16, body: &'static str) -> Reply {
-        Reply::Answer {
-            status,
-            retry_after: None,
-            body,
-        }
+        Reply::Answer { status, body }
     }
 
-    fn rate_limited(retry_after: Option<&'static str>) -> Reply {
-        Reply::Answer {
-            status: 429,
-            retry_after,
-            body: "",
-        }
+    fn rate_limited() -> Reply {
+        answer(429, "")
     }
 
     struct FakeSteam {
@@ -362,17 +344,11 @@ mod tests {
             async move {
                 match reply {
                     Reply::Hang => std::future::pending().await,
-                    Reply::Answer {
-                        status,
-                        retry_after,
-                        body,
-                    } => {
-                        let mut response = http::Response::builder().status(status);
-                        if let Some(retry_after) = retry_after {
-                            response = response.header(RETRY_AFTER, retry_after);
-                        }
-                        Ok(response.body(body).unwrap().into())
-                    }
+                    Reply::Answer { status, body } => Ok(http::Response::builder()
+                        .status(status)
+                        .body(body)
+                        .unwrap()
+                        .into()),
                 }
             }
         }
@@ -428,25 +404,16 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn rate_limited_request_is_retried_with_doubling_waits() {
         let start = Instant::now();
-        let transport = fake_transport(vec![rate_limited(None), rate_limited(None), ok()], None);
+        let transport = fake_transport(vec![rate_limited(), rate_limited(), ok()], None);
 
         assert!(get_tags(&transport).await.is_ok());
         assert_eq!(start_offsets_ms(&transport, start), [0, 2000, 6000]);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn retry_after_longer_than_the_backoff_wins() {
-        let start = Instant::now();
-        let transport = fake_transport(vec![rate_limited(Some("30")), ok()], None);
-
-        assert!(get_tags(&transport).await.is_ok());
-        assert_eq!(start_offsets_ms(&transport, start), [0, 30_000]);
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn rate_limit_slows_down_later_requests() {
         let start = Instant::now();
-        let transport = fake_transport(vec![rate_limited(None), ok(), ok()], None);
+        let transport = fake_transport(vec![rate_limited(), ok(), ok()], None);
 
         assert!(get_tags(&transport).await.is_ok());
         assert!(get_tags(&transport).await.is_ok());
@@ -456,7 +423,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn every_good_answer_shortens_the_interval() {
         let start = Instant::now();
-        let mut replies = vec![rate_limited(None)];
+        let mut replies = vec![rate_limited()];
         replies.extend((0..12).map(|_| ok()));
         let transport = fake_transport(replies, None);
 
@@ -482,7 +449,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn seven_rate_limits_give_up() {
         let start = Instant::now();
-        let mut replies: Vec<Reply> = (0..7).map(|_| rate_limited(None)).collect();
+        let mut replies: Vec<Reply> = (0..7).map(|_| rate_limited()).collect();
         replies.push(ok());
         let transport = fake_transport(replies, None);
 
