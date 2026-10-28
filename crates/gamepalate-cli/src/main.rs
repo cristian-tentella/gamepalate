@@ -5,6 +5,7 @@ mod evaluate;
 mod format;
 mod names;
 mod profile;
+mod rebuild;
 mod recommend;
 mod update;
 mod vote;
@@ -58,6 +59,8 @@ enum Command {
     Votes,
     /// Download the Catalog from Steam, replacing catalog.sqlite
     Update,
+    /// Rebuild catalog.sqlite from the last completed update, without network
+    Rebuild,
 }
 
 fn main() -> ExitCode {
@@ -133,6 +136,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             votes::run(&files);
         }
         Command::Update => update::run(&data_dir)?,
+        Command::Rebuild => rebuild::run(&data_dir)?,
     }
 
     Ok(())

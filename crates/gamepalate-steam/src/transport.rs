@@ -1,4 +1,5 @@
 use std::{
+    path::PathBuf,
     sync::{Mutex, MutexGuard},
     time::Duration,
 };
@@ -59,6 +60,16 @@ pub enum SteamError {
 
     #[error("could not set up the HTTP client")]
     Client(#[source] reqwest::Error),
+
+    #[error("the archived update {} has no response for {endpoint}", dir.display())]
+    NotArchived { endpoint: String, dir: PathBuf },
+
+    #[error("could not use the archived response {}", path.display())]
+    Archive {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 pub(crate) fn parse<T: DeserializeOwned>(endpoint: &str, value: Value) -> Result<T, SteamError> {
@@ -70,6 +81,15 @@ pub(crate) fn parse<T: DeserializeOwned>(endpoint: &str, value: Value) -> Result
 
 pub trait Fetch {
     fn fetch(&self, request: Request) -> impl Future<Output = reqwest::Result<Response>> + Send;
+}
+
+pub trait Get {
+    fn get(
+        &self,
+        endpoint: &str,
+        params: &[(&str, &str)],
+        needs_key: bool,
+    ) -> impl Future<Output = Result<Value, SteamError>> + Send;
 }
 
 impl Fetch for Client {
@@ -110,19 +130,8 @@ impl Transport {
     }
 }
 
-impl<F: Fetch> Transport<F> {
-    pub fn with_fetch(fetch: F, api_key: Option<String>) -> Transport<F> {
-        Transport {
-            fetch,
-            api_key,
-            pace: Mutex::new(Pace {
-                next_slot: Instant::now(),
-                interval: INTERVAL,
-            }),
-        }
-    }
-
-    pub async fn get(
+impl<F: Fetch + Sync> Get for Transport<F> {
+    async fn get(
         &self,
         endpoint: &str,
         params: &[(&str, &str)],
@@ -174,6 +183,19 @@ impl<F: Fetch> Transport<F> {
             reason: format!("still rate limited after {MAX_ATTEMPTS} attempts"),
             source: None,
         })
+    }
+}
+
+impl<F: Fetch> Transport<F> {
+    pub fn with_fetch(fetch: F, api_key: Option<String>) -> Transport<F> {
+        Transport {
+            fetch,
+            api_key,
+            pace: Mutex::new(Pace {
+                next_slot: Instant::now(),
+                interval: INTERVAL,
+            }),
+        }
     }
 
     async fn send_once(

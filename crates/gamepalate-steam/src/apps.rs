@@ -2,7 +2,7 @@ use gamepalate_core::ids::AppId;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::transport::{Fetch, SteamError, Transport, parse};
+use crate::transport::{Get, SteamError, parse};
 
 const ENDPOINT: &str = "IStoreService/GetAppList/v1";
 const PAGE_SIZE: &str = "50000";
@@ -41,9 +41,7 @@ struct AppListPage {
     next: Option<u32>,
 }
 
-pub async fn get_app_list<F: Fetch>(
-    transport: &Transport<F>,
-) -> Result<Vec<AppListEntry>, SteamError> {
+pub async fn get_app_list<S: Get>(transport: &S) -> Result<Vec<AppListEntry>, SteamError> {
     let mut entries = Vec::new();
     let mut last_appid: Option<u32> = None;
 

@@ -10,7 +10,7 @@ use gamepalate_core::{
 use serde::{Deserialize, Deserializer, de};
 use serde_json::{Value, json};
 
-use crate::transport::{Fetch, SteamError, Transport, parse};
+use crate::transport::{Get, SteamError, parse};
 
 const ENDPOINT: &str = "IStoreBrowseService/GetItems/v1";
 const TAG_COUNT: u32 = 20;
@@ -117,8 +117,8 @@ pub fn batch_count(ids: usize) -> usize {
     ids.div_ceil(BATCH_SIZE)
 }
 
-pub fn item_batches<'a, F: Fetch>(
-    transport: &'a Transport<F>,
+pub fn item_batches<'a, S: Get>(
+    transport: &'a S,
     ids: &'a [AppId],
     language: &'a str,
     country_code: &'a str,
@@ -129,8 +129,8 @@ pub fn item_batches<'a, F: Fetch>(
         .buffer_unordered(concurrency)
 }
 
-pub async fn get_items<F: Fetch>(
-    transport: &Transport<F>,
+pub async fn get_items<S: Get>(
+    transport: &S,
     ids: &[AppId],
     language: &str,
     country_code: &str,
