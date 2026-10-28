@@ -7,16 +7,25 @@ use reqwest::{
     Client, Method, Request, Response, StatusCode, Url,
     header::{ACCEPT, HeaderMap, HeaderValue, RETRY_AFTER},
 };
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::time::{Instant, timeout_at};
 
 const BASE_URL: &str = "https://api.steampowered.com/";
 const USER_AGENT: &str = "gamepalate/0.1 (personal tool)";
-const TIMEOUT: Duration = Duration::from_secs(60);
+const TIMEOUT: Duration = Duration::from_secs(10);
 const INTERVAL: Duration = Duration::from_millis(500);
-const MAX_INTERVAL: Duration = Duration::from_secs(4);
+const MAX_INTERVAL: Duration = Duration::from_secs(2);
+const SLOW_DOWN_STEP: Duration = Duration::from_millis(250);
+const SPEED_UP_STEP: Duration = Duration::from_millis(25);
 const FIRST_BACKOFF: Duration = Duration::from_secs(2);
 const MAX_ATTEMPTS: u32 = 7;
+const TRANSIENT_WAITS: [Duration; 4] = [
+    Duration::from_secs(5),
+    Duration::from_secs(15),
+    Duration::from_secs(45),
+    Duration::from_secs(90),
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum SteamError {
@@ -45,8 +54,18 @@ pub enum SteamError {
         status: StatusCode,
     },
 
+    #[error("{endpoint} answered with an unexpected shape: {reason}")]
+    Shape { endpoint: String, reason: String },
+
     #[error("could not set up the HTTP client")]
     Client(#[source] reqwest::Error),
+}
+
+pub(crate) fn parse<T: DeserializeOwned>(endpoint: &str, value: Value) -> Result<T, SteamError> {
+    serde_json::from_value(value).map_err(|error| SteamError::Shape {
+        endpoint: endpoint.to_string(),
+        reason: error.to_string(),
+    })
 }
 
 pub trait Fetch {
@@ -73,6 +92,7 @@ struct Pace {
 enum Attempt {
     Done(Value),
     RateLimited(Option<Duration>),
+    Transient(String),
 }
 
 impl Transport {
@@ -121,14 +141,31 @@ impl<F: Fetch> Transport<F> {
         };
 
         let mut backoff = FIRST_BACKOFF;
+        let mut waits = TRANSIENT_WAITS.into_iter();
         for attempt in 1..=MAX_ATTEMPTS {
             match self.send_once(endpoint, params, key).await? {
-                Attempt::Done(value) => return Ok(value),
+                Attempt::Done(value) => {
+                    self.speed_up();
+                    return Ok(value);
+                }
                 Attempt::RateLimited(retry_after) if attempt < MAX_ATTEMPTS => {
                     self.slow_down(retry_after.map_or(backoff, |wait| wait.max(backoff)));
                     backoff *= 2;
                 }
                 Attempt::RateLimited(_) => {}
+                Attempt::Transient(reason) => match waits.next() {
+                    Some(wait) if attempt < MAX_ATTEMPTS => {
+                        self.pause(wait);
+                        log::warn!("{endpoint}: {reason}, trying again in {wait:?}");
+                    }
+                    _ => {
+                        return Err(SteamError::SteamDown {
+                            endpoint: endpoint.to_string(),
+                            reason,
+                            source: None,
+                        });
+                    }
+                },
             }
         }
 
@@ -153,13 +190,16 @@ impl<F: Fetch> Transport<F> {
 
         self.wait_for_slot().await;
         let deadline = Instant::now() + TIMEOUT;
-        let response = timeout_at(deadline, self.fetch.fetch(Request::new(Method::GET, url)))
-            .await
-            .map_err(|_| timed_out(endpoint))?
-            .map_err(|error| steam_down(endpoint, error))?;
+        let Ok(response) =
+            timeout_at(deadline, self.fetch.fetch(Request::new(Method::GET, url))).await
+        else {
+            return Ok(Attempt::Transient("timed out".to_string()));
+        };
+        let response = response.map_err(|error| steam_down(endpoint, error))?;
 
         let status = response.status();
         if status == StatusCode::TOO_MANY_REQUESTS {
+            log::debug!("{endpoint}: 429 headers {:?}", response.headers());
             return Ok(Attempt::RateLimited(retry_after(&response)));
         }
         if key.is_some() && matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
@@ -167,6 +207,12 @@ impl<F: Fetch> Transport<F> {
                 endpoint: endpoint.to_string(),
                 status,
             });
+        }
+        if matches!(
+            status,
+            StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT
+        ) {
+            return Ok(Attempt::Transient(format!("HTTP {status}")));
         }
         if status.is_server_error() {
             return Err(SteamError::SteamDown {
@@ -182,10 +228,10 @@ impl<F: Fetch> Transport<F> {
             });
         }
 
-        let value = timeout_at(deadline, response.json())
-            .await
-            .map_err(|_| timed_out(endpoint))?
-            .map_err(|error| steam_down(endpoint, error))?;
+        let Ok(value) = timeout_at(deadline, response.json()).await else {
+            return Ok(Attempt::Transient("timed out".to_string()));
+        };
+        let value = value.map_err(|error| steam_down(endpoint, error))?;
         Ok(Attempt::Done(value))
     }
 
@@ -200,10 +246,24 @@ impl<F: Fetch> Transport<F> {
         tokio::time::sleep_until(slot).await;
     }
 
+    fn pause(&self, wait: Duration) {
+        let mut pace = self.lock_pace();
+        pace.next_slot = pace.next_slot.max(Instant::now() + wait);
+    }
+
     fn slow_down(&self, wait: Duration) {
         let mut pace = self.lock_pace();
-        pace.interval = (pace.interval * 2).min(MAX_INTERVAL);
+        pace.interval = slower(pace.interval);
         pace.next_slot = pace.next_slot.max(Instant::now() + wait);
+        log::warn!(
+            "rate limited: waiting {wait:?}, interval now {:?}",
+            pace.interval
+        );
+    }
+
+    fn speed_up(&self) {
+        let mut pace = self.lock_pace();
+        pace.interval = faster(pace.interval);
     }
 
     fn lock_pace(&self) -> MutexGuard<'_, Pace> {
@@ -213,17 +273,17 @@ impl<F: Fetch> Transport<F> {
     }
 }
 
+fn slower(interval: Duration) -> Duration {
+    (interval + SLOW_DOWN_STEP).min(MAX_INTERVAL)
+}
+
+fn faster(interval: Duration) -> Duration {
+    interval.saturating_sub(SPEED_UP_STEP).max(INTERVAL)
+}
+
 fn retry_after(response: &Response) -> Option<Duration> {
     let seconds = response.headers().get(RETRY_AFTER)?.to_str().ok()?;
     seconds.trim().parse().ok().map(Duration::from_secs)
-}
-
-fn timed_out(endpoint: &str) -> SteamError {
-    SteamError::SteamDown {
-        endpoint: endpoint.to_string(),
-        reason: "timed out".to_string(),
-        source: None,
-    }
 }
 
 fn steam_down(endpoint: &str, error: reqwest::Error) -> SteamError {
@@ -390,11 +450,37 @@ mod tests {
 
         assert!(get_tags(&transport).await.is_ok());
         assert!(get_tags(&transport).await.is_ok());
-        assert_eq!(start_offsets_ms(&transport, start), [0, 2000, 3000]);
+        assert_eq!(start_offsets_ms(&transport, start), [0, 2000, 2750]);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn seven_rate_limits_give_up_and_cap_the_interval_at_four_seconds() {
+    async fn every_good_answer_shortens_the_interval() {
+        let start = Instant::now();
+        let mut replies = vec![rate_limited(None)];
+        replies.extend((0..12).map(|_| ok()));
+        let transport = fake_transport(replies, None);
+
+        for _ in 0..12 {
+            assert!(get_tags(&transport).await.is_ok());
+        }
+
+        assert_eq!(
+            start_offsets_ms(&transport, start),
+            [
+                0, 2000, 2750, 3475, 4175, 4850, 5500, 6125, 6725, 7300, 7850, 8375, 8875
+            ]
+        );
+    }
+
+    #[test]
+    fn the_interval_stays_between_half_a_second_and_two_seconds() {
+        assert_eq!(slower(Duration::from_millis(1900)), MAX_INTERVAL);
+        assert_eq!(faster(Duration::from_millis(520)), INTERVAL);
+        assert_eq!(faster(INTERVAL), INTERVAL);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn seven_rate_limits_give_up() {
         let start = Instant::now();
         let mut replies: Vec<Reply> = (0..7).map(|_| rate_limited(None)).collect();
         replies.push(ok());
@@ -406,17 +492,30 @@ mod tests {
         assert_eq!(reason, "still rate limited after 7 attempts");
         assert_eq!(
             start_offsets_ms(&transport, start),
-            [0, 2000, 6000, 14_000, 30_000, 62_000, 126_000, 130_000]
+            [0, 2000, 6000, 14_000, 30_000, 62_000, 126_000, 128_000]
         );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn hanging_request_times_out_after_a_minute() {
+    async fn hanging_request_is_retried_after_five_seconds() {
         let start = Instant::now();
-        let transport = fake_transport(vec![Reply::Hang], None);
+        let transport = fake_transport(vec![Reply::Hang, ok()], None);
+
+        assert!(get_tags(&transport).await.is_ok());
+        assert_eq!(start_offsets_ms(&transport, start), [0, 15_000]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hanging_five_times_gives_up() {
+        let start = Instant::now();
+        let transport = fake_transport((0..5).map(|_| Reply::Hang).collect(), None);
 
         assert_eq!(steam_down_reason(get_tags(&transport).await), "timed out");
-        assert_eq!(Instant::now() - start, TIMEOUT);
+        assert_eq!(
+            start_offsets_ms(&transport, start),
+            [0, 15_000, 40_000, 95_000, 195_000]
+        );
+        assert_eq!(Instant::now() - start, Duration::from_secs(205));
     }
 
     #[tokio::test(start_paused = true)]
@@ -430,12 +529,46 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn server_error_means_steam_is_down() {
-        let transport = fake_transport(vec![answer(503, "")], None);
+    async fn bad_gateway_is_retried_with_growing_waits() {
+        let start = Instant::now();
+        let transport = fake_transport(vec![answer(502, ""), answer(504, ""), ok()], None);
+
+        assert!(get_tags(&transport).await.is_ok());
+        assert_eq!(start_offsets_ms(&transport, start), [0, 5000, 20_000]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unavailable_five_times_means_steam_is_down() {
+        let start = Instant::now();
+        let transport = fake_transport((0..5).map(|_| answer(503, "")).collect(), None);
 
         assert_eq!(
             steam_down_reason(get_tags(&transport).await),
             "HTTP 503 Service Unavailable"
+        );
+        assert_eq!(
+            start_offsets_ms(&transport, start),
+            [0, 5000, 20_000, 65_000, 155_000]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transient_errors_do_not_slow_down_later_requests() {
+        let start = Instant::now();
+        let transport = fake_transport(vec![answer(502, ""), ok(), ok()], None);
+
+        assert!(get_tags(&transport).await.is_ok());
+        assert!(get_tags(&transport).await.is_ok());
+        assert_eq!(start_offsets_ms(&transport, start), [0, 5000, 5500]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn internal_server_error_means_steam_is_down_at_once() {
+        let transport = fake_transport(vec![answer(500, "")], None);
+
+        assert_eq!(
+            steam_down_reason(get_tags(&transport).await),
+            "HTTP 500 Internal Server Error"
         );
     }
 
