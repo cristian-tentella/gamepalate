@@ -17,6 +17,7 @@ pub mod quality;
 pub mod ranking;
 pub mod search;
 pub mod signals;
+pub mod store_item;
 pub mod tag_vector;
 pub mod taste;
 pub mod timestamp;

@@ -6,14 +6,15 @@ mod format;
 mod names;
 mod profile;
 mod recommend;
+mod update;
 mod vote;
 mod votes;
 
-use std::{path::PathBuf, process::ExitCode};
+use std::{io::Write, path::PathBuf, process::ExitCode};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use gamepalate_steam::transport::Transport;
+use env_logger::Env;
 use gamepalate_store::data_files::load_data_files;
 
 /// Recommends Steam games from your library, playtime and votes
@@ -55,11 +56,21 @@ enum Command {
     Vote(vote::VoteArgs),
     /// List your votes, the most recent first
     Votes,
-    /// tmp
-    Download,
+    /// Download the Catalog from Steam, replacing catalog.sqlite
+    Update,
 }
 
 fn main() -> ExitCode {
+    env_logger::Builder::from_env(Env::default().default_filter_or("gamepalate_steam=info"))
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "\r\x1b[2K{}: {}",
+                record.level().as_str().to_lowercase(),
+                record.args()
+            )
+        })
+        .init();
     let cli = Cli::parse();
 
     match run(cli) {
@@ -121,16 +132,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let files = load_data_files(&data_dir)?;
             votes::run(&files);
         }
-        Command::Download => {
-            let transport = Transport::new(std::env::var("STEAM_API_KEY").ok())?;
-            let response = tokio::runtime::Runtime::new()?.block_on(transport.get(
-                "IStoreService/GetTagList/v1",
-                &[("language", "english")],
-                false,
-            ))?;
-            let tag_count = response["response"]["tags"].as_array().map_or(0, Vec::len);
-            println!("{tag_count} tags");
-        }
+        Command::Update => update::run(&data_dir)?,
     }
 
     Ok(())
