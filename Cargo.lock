@@ -786,6 +786,8 @@ dependencies = [
  "gamepalate-store",
  "jiff",
  "open",
+ "serde_json",
+ "tempfile",
  "tokio",
 ]
 

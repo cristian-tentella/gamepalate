@@ -214,10 +214,10 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
         1,
         None,
     )?;
-    number(
+    let tags_max_age_days = number(
         "update.tags_max_age_days",
         file.update.tags_max_age_days,
-        7.0,
+        base.tags_max_age_days,
         Range::Above(0.0),
     )?;
     let kept_updates = integer(
@@ -234,6 +234,7 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
         results,
         corrections,
         prices_max_age_hours,
+        tags_max_age_days,
         kept_updates,
     })
 }
@@ -363,6 +364,7 @@ mod tests {
         assert!(!config.results.early_access);
         assert_eq!(config.results.min_positive_percent, 80);
         assert_eq!(config.prices_max_age_hours, 12);
+        assert_eq!(config.tags_max_age_days, 7.0);
         assert_eq!(config.kept_updates, 3);
     }
 

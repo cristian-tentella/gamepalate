@@ -10,12 +10,30 @@ use gamepalate_core::{
 use serde::{Deserialize, Deserializer, de};
 use serde_json::{Value, json};
 
-use crate::transport::{Get, SteamError, parse};
+use crate::{
+    archive::{ArchivedRecord, ArchivedUpdate},
+    transport::{Get, SteamError, parse},
+};
 
 const ENDPOINT: &str = "IStoreBrowseService/GetItems/v1";
 const TAG_COUNT: u32 = 20;
 const SUCCESS: u32 = 1;
 pub const BATCH_SIZE: usize = 260;
+
+pub struct ArchivedBatch {
+    pub asked: Vec<AppId>,
+    pub items: Vec<StoreItem>,
+}
+
+#[derive(Deserialize)]
+struct ItemsInput {
+    ids: Vec<InputId>,
+}
+
+#[derive(Deserialize)]
+struct InputId {
+    appid: u32,
+}
 
 #[derive(Deserialize)]
 struct ItemsEnvelope {
@@ -157,6 +175,34 @@ pub async fn get_items<S: Get>(
         .get(ENDPOINT, &[("input_json", &input)], false)
         .await?;
     parse_items(value)
+}
+
+pub fn archived_batches(
+    update: &ArchivedUpdate,
+) -> Result<impl Iterator<Item = Result<ArchivedBatch, SteamError>>, SteamError> {
+    Ok(update
+        .records(ENDPOINT)?
+        .map(|record| record.and_then(asked_and_items)))
+}
+
+fn asked_and_items(record: ArchivedRecord) -> Result<ArchivedBatch, SteamError> {
+    let shape = |reason: String| SteamError::Shape {
+        endpoint: ENDPOINT.to_string(),
+        reason,
+    };
+    let input = record
+        .params
+        .get("input_json")
+        .and_then(Value::as_str)
+        .ok_or_else(|| shape("the archived request has no input_json".to_string()))?;
+    let input: ItemsInput = serde_json::from_str(input)
+        .map_err(|error| shape(format!("the archived input_json: {error}")))?;
+
+    let asked = input.ids.into_iter().map(|id| AppId(id.appid)).collect();
+    Ok(ArchivedBatch {
+        asked,
+        items: parse_items(record.body)?,
+    })
 }
 
 fn parse_items(value: Value) -> Result<Vec<StoreItem>, SteamError> {
@@ -424,5 +470,37 @@ mod tests {
         }))] } }));
 
         assert!(matches!(result, Err(SteamError::Shape { .. })));
+    }
+
+    fn record(params: Value, body: Value) -> ArchivedRecord {
+        ArchivedRecord {
+            params: params.as_object().unwrap().clone(),
+            body,
+        }
+    }
+
+    #[test]
+    fn an_archived_batch_tells_what_it_asked_and_what_steam_had() {
+        let input = json!({ "ids": [{ "appid": 620 }, { "appid": 3 }] }).to_string();
+        let record = record(
+            json!({ "input_json": input }),
+            json!({ "response": { "store_items": [item(json!({})), { "id": 3, "success": 15 }] } }),
+        );
+
+        let batch = asked_and_items(record).unwrap();
+
+        assert_eq!(batch.asked, [AppId(620), AppId(3)]);
+        assert_eq!(batch.items.len(), 1);
+        assert_eq!(batch.items[0].id, AppId(620));
+    }
+
+    #[test]
+    fn an_archived_batch_without_input_json_is_a_shape_error() {
+        let record = record(json!({}), json!({ "response": {} }));
+
+        assert!(matches!(
+            asked_and_items(record),
+            Err(SteamError::Shape { .. })
+        ));
     }
 }

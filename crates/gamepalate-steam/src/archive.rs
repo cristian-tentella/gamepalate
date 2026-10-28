@@ -32,6 +32,7 @@ pub struct UpdateFolder {
 pub struct ArchivedUpdate {
     dir: PathBuf,
     started_at: Timestamp,
+    full: bool,
 }
 
 pub struct Archiving<'a, S> {
@@ -58,8 +59,10 @@ struct RecordToWrite<'a> {
 }
 
 #[derive(Deserialize)]
-struct Record {
-    body: Value,
+pub struct ArchivedRecord {
+    #[serde(default)]
+    pub params: Map<String, Value>,
+    pub body: Value,
 }
 
 impl Archive {
@@ -71,6 +74,7 @@ impl Archive {
         &self,
         now: Timestamp,
         resume_within_hours: u32,
+        tags_max_age_days: f64,
     ) -> io::Result<UpdateFolder> {
         if let Some((dir, manifest)) = self.updates_newest_first()?.into_iter().next() {
             let started_at = parse_iso(&manifest.started_at)?;
@@ -91,9 +95,15 @@ impl Archive {
         let dir = self.root.join(format!("{:0FOLDER_DIGITS$}", last + 1));
         fs::create_dir(&dir)?;
 
+        let full = match self.chain()?.last() {
+            Some(base) if base.full => {
+                now.ms_since(base.started_at) as f64 >= tags_max_age_days * 86_400_000.0
+            }
+            _ => true,
+        };
         let manifest = Manifest {
             started_at: iso(now),
-            full: true,
+            full,
             completed_at: None,
             failed_at: None,
         };
@@ -106,14 +116,23 @@ impl Archive {
         })
     }
 
-    pub fn latest_completed(&self) -> io::Result<Option<ArchivedUpdate>> {
+    pub fn chain(&self) -> io::Result<Vec<ArchivedUpdate>> {
+        let mut chain = Vec::new();
         for (dir, manifest) in self.updates_newest_first()? {
-            if manifest.completed_at.is_some() {
-                let started_at = parse_iso(&manifest.started_at)?;
-                return Ok(Some(ArchivedUpdate { dir, started_at }));
+            if manifest.completed_at.is_none() {
+                continue;
+            }
+            let full = manifest.full;
+            chain.push(ArchivedUpdate {
+                dir,
+                started_at: parse_iso(&manifest.started_at)?,
+                full,
+            });
+            if full {
+                break;
             }
         }
-        Ok(None)
+        Ok(chain)
     }
 
     pub fn rotate(&self, kept_updates: u32) -> io::Result<usize> {
@@ -196,6 +215,10 @@ impl UpdateFolder {
         self.resumed_responses
     }
 
+    pub fn full(&self) -> bool {
+        self.manifest.full
+    }
+
     pub fn complete(mut self, now: Timestamp) -> io::Result<()> {
         self.manifest.completed_at = Some(iso(now));
         write_manifest(&self.dir, &self.manifest)
@@ -215,6 +238,34 @@ impl ArchivedUpdate {
     pub fn started_at(&self) -> Timestamp {
         self.started_at
     }
+
+    pub fn full(&self) -> bool {
+        self.full
+    }
+
+    pub fn records(
+        &self,
+        endpoint: &str,
+    ) -> Result<impl Iterator<Item = Result<ArchivedRecord, SteamError>>, SteamError> {
+        let archive_error = |source| SteamError::Archive {
+            path: self.dir.clone(),
+            source,
+        };
+        let prefix = format!("{}-", file_endpoint(endpoint));
+        let mut paths = Vec::new();
+        for entry in fs::read_dir(&self.dir).map_err(archive_error)? {
+            let name = entry.map_err(archive_error)?.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with(&prefix) && name.ends_with(RESPONSE_SUFFIX) {
+                paths.push(self.dir.join(&*name));
+            }
+        }
+        paths.sort();
+
+        Ok(paths
+            .into_iter()
+            .map(|path| read_record(&path).map_err(|source| SteamError::Archive { path, source })))
+    }
 }
 
 impl Get for ArchivedUpdate {
@@ -231,7 +282,9 @@ impl Get for ArchivedUpdate {
                 dir: self.dir.clone(),
             });
         }
-        read_body(&path).map_err(|source| SteamError::Archive { path, source })
+        read_record(&path)
+            .map(|record| record.body)
+            .map_err(|source| SteamError::Archive { path, source })
     }
 }
 
@@ -250,7 +303,9 @@ impl<S: Get + Sync> Get for Archiving<'_, S> {
         };
 
         if path.exists() {
-            return read_body(&path).map_err(archive_error);
+            return read_record(&path)
+                .map(|record| record.body)
+                .map_err(archive_error);
         }
 
         let body = self.steam.get(endpoint, params, needs_key).await?;
@@ -279,16 +334,19 @@ fn response_file(endpoint: &str, params: &Map<String, Value>) -> String {
         .collect();
     format!(
         "{}-{}{RESPONSE_SUFFIX}",
-        endpoint.replace('/', "_"),
+        file_endpoint(endpoint),
         &hash[..HASH_LENGTH]
     )
 }
 
-fn read_body(path: &Path) -> io::Result<Value> {
+fn file_endpoint(endpoint: &str) -> String {
+    endpoint.replace('/', "_")
+}
+
+fn read_record(path: &Path) -> io::Result<ArchivedRecord> {
     let mut text = String::new();
     GzDecoder::new(fs::File::open(path)?).read_to_string(&mut text)?;
-    let record: Record = serde_json::from_str(&text)?;
-    Ok(record.body)
+    Ok(serde_json::from_str(&text)?)
 }
 
 fn write_record(path: &Path, record: &RecordToWrite) -> io::Result<()> {
@@ -420,7 +478,7 @@ mod tests {
         names
     }
 
-    fn read_record(path: &Path) -> Value {
+    fn read_record_json(path: &Path) -> Value {
         let mut text = String::new();
         GzDecoder::new(fs::File::open(path).unwrap())
             .read_to_string(&mut text)
@@ -436,7 +494,7 @@ mod tests {
     async fn the_first_answer_is_archived_and_the_second_comes_from_the_file() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0)
+            .start_update(NOW, 0, 0.0)
             .unwrap();
         let steam = FakeSteam::new();
         let archiving = update.archiving(&steam);
@@ -459,7 +517,7 @@ mod tests {
     async fn the_file_holds_endpoint_params_and_body() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0)
+            .start_update(NOW, 0, 0.0)
             .unwrap();
         let steam = FakeSteam::new();
 
@@ -471,7 +529,7 @@ mod tests {
 
         let files = archived_files(update.dir());
         assert_eq!(
-            read_record(&update.dir().join(&files[0])),
+            read_record_json(&update.dir().join(&files[0])),
             json!({
                 "endpoint": TAG_LIST,
                 "params": { "language": "italian" },
@@ -484,7 +542,7 @@ mod tests {
     async fn the_request_reaches_steam_unchanged() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0)
+            .start_update(NOW, 0, 0.0)
             .unwrap();
         let steam = FakeSteam::new();
 
@@ -553,7 +611,7 @@ mod tests {
     async fn a_failed_request_archives_nothing() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0)
+            .start_update(NOW, 0, 0.0)
             .unwrap();
         let steam = FakeSteam {
             fails: true,
@@ -573,7 +631,7 @@ mod tests {
     async fn a_corrupt_file_is_an_archive_error() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0)
+            .start_update(NOW, 0, 0.0)
             .unwrap();
         let params = canonical(&[("language", "english")]);
         fs::write(
@@ -599,8 +657,8 @@ mod tests {
         fs::create_dir(root.path().join("notes")).unwrap();
         let archive = Archive::new(root.path().to_path_buf());
 
-        let first = archive.start_update(NOW, 0).unwrap();
-        let second = archive.start_update(NOW, 0).unwrap();
+        let first = archive.start_update(NOW, 0, 0.0).unwrap();
+        let second = archive.start_update(NOW, 0, 0.0).unwrap();
 
         assert_eq!(first.dir(), root.path().join("000008"));
         assert_eq!(second.dir(), root.path().join("000009"));
@@ -611,7 +669,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
 
         let update = Archive::new(root.path().join("archive"))
-            .start_update(NOW, 0)
+            .start_update(NOW, 0, 0.0)
             .unwrap();
 
         assert_eq!(
@@ -624,7 +682,7 @@ mod tests {
     fn completing_records_when_it_ended() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0)
+            .start_update(NOW, 0, 0.0)
             .unwrap();
         let dir = update.dir().to_path_buf();
 
@@ -641,8 +699,12 @@ mod tests {
         assert!(!dir.join("update.json.tmp").exists());
     }
 
+    fn latest(archive: &Archive) -> ArchivedUpdate {
+        archive.chain().unwrap().into_iter().next().unwrap()
+    }
+
     fn completed_update(archive: &Archive, started_at: Timestamp) -> PathBuf {
-        let update = archive.start_update(started_at, 0).unwrap();
+        let update = archive.start_update(started_at, 0, 0.0).unwrap();
         let dir = update.dir().to_path_buf();
         update.complete(started_at).unwrap();
         dir
@@ -652,11 +714,9 @@ mod tests {
     fn an_archive_that_does_not_exist_has_no_completed_update() {
         let root = tempfile::tempdir().unwrap();
 
-        let latest = Archive::new(root.path().join("archive"))
-            .latest_completed()
-            .unwrap();
+        let chain = Archive::new(root.path().join("archive")).chain().unwrap();
 
-        assert!(latest.is_none());
+        assert!(chain.is_empty());
     }
 
     #[test]
@@ -665,10 +725,12 @@ mod tests {
         let archive = Archive::new(root.path().to_path_buf());
         completed_update(&archive, Timestamp(NOW.0 - 60_000));
         let expected = completed_update(&archive, NOW);
-        archive.start_update(Timestamp(NOW.0 + 60_000), 0).unwrap();
+        archive
+            .start_update(Timestamp(NOW.0 + 60_000), 0, 0.0)
+            .unwrap();
         fs::create_dir(root.path().join("000009")).unwrap();
 
-        let latest = archive.latest_completed().unwrap().unwrap();
+        let latest = latest(&archive);
 
         assert_eq!(latest.dir(), expected);
         assert_eq!(latest.started_at(), NOW);
@@ -678,19 +740,19 @@ mod tests {
     fn only_unfinished_updates_means_no_completed_update() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        archive.start_update(NOW, 0).unwrap();
+        archive.start_update(NOW, 0, 0.0).unwrap();
 
-        assert!(archive.latest_completed().unwrap().is_none());
+        assert!(archive.chain().unwrap().is_empty());
     }
 
     #[test]
     fn a_broken_manifest_is_an_error() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        let update = archive.start_update(NOW, 0).unwrap();
+        let update = archive.start_update(NOW, 0, 0.0).unwrap();
         fs::write(update.dir().join(MANIFEST_FILE), "{").unwrap();
 
-        let error = archive.latest_completed().err().unwrap();
+        let error = archive.chain().err().unwrap();
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
@@ -699,7 +761,7 @@ mod tests {
     async fn a_completed_update_answers_what_it_archived_without_steam() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        let update = archive.start_update(NOW, 0).unwrap();
+        let update = archive.start_update(NOW, 0, 0.0).unwrap();
         let steam = FakeSteam::new();
         let live = update
             .archiving(&steam)
@@ -708,7 +770,7 @@ mod tests {
             .unwrap();
         update.complete(NOW).unwrap();
 
-        let archived = archive.latest_completed().unwrap().unwrap();
+        let archived = latest(&archive);
         let replayed = archived
             .get(TAG_LIST, &[("language", "english")], false)
             .await
@@ -724,10 +786,7 @@ mod tests {
         let archive = Archive::new(root.path().to_path_buf());
         completed_update(&archive, NOW);
 
-        let result = archive
-            .latest_completed()
-            .unwrap()
-            .unwrap()
+        let result = latest(&archive)
             .get(TAG_LIST, &[("language", "italian")], false)
             .await;
 
@@ -742,7 +801,7 @@ mod tests {
     const HOUR: i64 = 3_600_000;
 
     async fn interrupted_update(archive: &Archive, responses: &[&str]) -> PathBuf {
-        let update = archive.start_update(NOW, 0).unwrap();
+        let update = archive.start_update(NOW, 0, 0.0).unwrap();
         let steam = FakeSteam::new();
         for language in responses {
             update
@@ -760,7 +819,9 @@ mod tests {
         let archive = Archive::new(root.path().to_path_buf());
         let dir = interrupted_update(&archive, &["english", "italian"]).await;
 
-        let resumed = archive.start_update(Timestamp(NOW.0 + HOUR), 24).unwrap();
+        let resumed = archive
+            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0)
+            .unwrap();
 
         assert_eq!(resumed.dir(), dir);
         assert_eq!(resumed.started_at(), NOW);
@@ -772,7 +833,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
         interrupted_update(&archive, &["english"]).await;
-        let resumed = archive.start_update(Timestamp(NOW.0 + HOUR), 24).unwrap();
+        let resumed = archive
+            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0)
+            .unwrap();
         let steam = FakeSteam::new();
 
         let archiving = resumed.archiving(&steam);
@@ -796,7 +859,7 @@ mod tests {
         let dir = interrupted_update(&archive, &["english"]).await;
         let later = Timestamp(NOW.0 + 24 * HOUR);
 
-        let update = archive.start_update(later, 24).unwrap();
+        let update = archive.start_update(later, 24, 0.0).unwrap();
 
         assert_ne!(update.dir(), dir);
         assert_eq!(update.started_at(), later);
@@ -807,11 +870,13 @@ mod tests {
     async fn a_failed_update_is_not_resumed() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        let update = archive.start_update(NOW, 24).unwrap();
+        let update = archive.start_update(NOW, 24, 0.0).unwrap();
         let dir = update.dir().to_path_buf();
         update.fail(Timestamp(NOW.0 + 60_000)).unwrap();
 
-        let next = archive.start_update(Timestamp(NOW.0 + HOUR), 24).unwrap();
+        let next = archive
+            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0)
+            .unwrap();
 
         assert_ne!(next.dir(), dir);
         assert_eq!(read_manifest(&dir)["failedAt"], "2026-11-02T17:01:00Z");
@@ -823,7 +888,9 @@ mod tests {
         let archive = Archive::new(root.path().to_path_buf());
         let dir = completed_update(&archive, NOW);
 
-        let next = archive.start_update(Timestamp(NOW.0 + HOUR), 24).unwrap();
+        let next = archive
+            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0)
+            .unwrap();
 
         assert_ne!(next.dir(), dir);
     }
@@ -833,10 +900,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
         interrupted_update(&archive, &["english"]).await;
-        let failed = archive.start_update(NOW, 0).unwrap();
+        let failed = archive.start_update(NOW, 0, 0.0).unwrap();
         failed.fail(NOW).unwrap();
 
-        let next = archive.start_update(Timestamp(NOW.0 + HOUR), 24).unwrap();
+        let next = archive
+            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0)
+            .unwrap();
 
         assert_eq!(next.dir(), root.path().join("000003"));
     }
@@ -874,8 +943,12 @@ mod tests {
     fn rotation_removes_failed_interrupted_and_bare_folders() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        archive.start_update(NOW, 0).unwrap();
-        archive.start_update(NOW, 0).unwrap().fail(NOW).unwrap();
+        archive.start_update(NOW, 0, 0.0).unwrap();
+        archive
+            .start_update(NOW, 0, 0.0)
+            .unwrap()
+            .fail(NOW)
+            .unwrap();
         fs::create_dir(root.path().join("000003")).unwrap();
         completed_update(&archive, NOW);
         fs::create_dir(root.path().join("notes")).unwrap();
@@ -907,10 +980,106 @@ mod tests {
     fn rotation_of_an_archive_without_completed_updates_removes_them_all() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        archive.start_update(NOW, 0).unwrap();
+        archive.start_update(NOW, 0, 0.0).unwrap();
 
         archive.rotate(3).unwrap();
 
         assert!(folders(root.path()).is_empty());
+    }
+
+    const DAY: i64 = 24 * HOUR;
+
+    #[test]
+    fn the_first_update_is_full() {
+        let root = tempfile::tempdir().unwrap();
+
+        let update = Archive::new(root.path().to_path_buf())
+            .start_update(NOW, 24, 7.0)
+            .unwrap();
+
+        assert!(update.full());
+    }
+
+    #[test]
+    fn an_update_after_a_recent_full_one_is_incremental() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        completed_update(&archive, NOW);
+
+        let update = archive
+            .start_update(Timestamp(NOW.0 + DAY), 24, 7.0)
+            .unwrap();
+
+        assert!(!update.full());
+        assert_eq!(read_manifest(update.dir())["full"], false);
+    }
+
+    #[test]
+    fn an_update_is_full_again_once_the_tags_are_old() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        completed_update(&archive, NOW);
+        make_incremental(&completed_update(&archive, Timestamp(NOW.0 + DAY)));
+
+        let update = archive
+            .start_update(Timestamp(NOW.0 + 7 * DAY), 24, 7.0)
+            .unwrap();
+
+        assert!(update.full());
+    }
+
+    #[test]
+    fn the_chain_goes_back_to_the_last_full_update() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        completed_update(&archive, NOW);
+        let base = completed_update(&archive, Timestamp(NOW.0 + HOUR));
+        let middle = completed_update(&archive, Timestamp(NOW.0 + 2 * HOUR));
+        make_incremental(&middle);
+        archive
+            .start_update(NOW, 0, 0.0)
+            .unwrap()
+            .fail(NOW)
+            .unwrap();
+        let latest = completed_update(&archive, Timestamp(NOW.0 + 3 * HOUR));
+        make_incremental(&latest);
+
+        let chain = archive.chain().unwrap();
+
+        let dirs: Vec<&Path> = chain.iter().map(ArchivedUpdate::dir).collect();
+        assert_eq!(dirs, [latest.as_path(), middle.as_path(), base.as_path()]);
+        assert_eq!(
+            chain.iter().map(ArchivedUpdate::full).collect::<Vec<_>>(),
+            [false, false, true]
+        );
+    }
+
+    #[tokio::test]
+    async fn records_are_the_responses_of_one_endpoint_with_their_params() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        let update = archive.start_update(NOW, 0, 0.0).unwrap();
+        let steam = FakeSteam::new();
+        let archiving = update.archiving(&steam);
+        for language in ["english", "italian"] {
+            archiving
+                .get(TAG_LIST, &[("language", language)], false)
+                .await
+                .unwrap();
+        }
+        archiving
+            .get("IStoreService/GetAppList/v1", &[], true)
+            .await
+            .unwrap();
+        update.complete(NOW).unwrap();
+
+        let mut languages: Vec<Value> = latest(&archive)
+            .records(TAG_LIST)
+            .unwrap()
+            .map(|record| record.unwrap().params["language"].clone())
+            .collect();
+        languages.sort_by_key(Value::to_string);
+
+        assert_eq!(languages, [json!("english"), json!("italian")]);
     }
 }
