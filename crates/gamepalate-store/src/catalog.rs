@@ -1,5 +1,6 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
+    io,
     path::{Path, PathBuf},
 };
 
@@ -9,9 +10,33 @@ use gamepalate_core::{
     ids::{AppId, TagId},
     timestamp::Timestamp,
 };
-use rusqlite::{Connection, OpenFlags, Row};
+use rusqlite::{Connection, OpenFlags, Row, params};
 
 const CACHE_FORMAT: u32 = 1;
+
+const SCHEMA: &str = "
+    CREATE TABLE games (
+        appid INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        final_price_cents INTEGER NOT NULL,
+        original_price_cents INTEGER NOT NULL,
+        discount_percent INTEGER NOT NULL,
+        discount_end_ms INTEGER,
+        review_count INTEGER NOT NULL,
+        positive_count INTEGER NOT NULL,
+        early_access INTEGER NOT NULL,
+        price_change_number INTEGER NOT NULL
+    );
+    CREATE TABLE game_tags (
+        appid INTEGER NOT NULL REFERENCES games(appid),
+        tagid INTEGER NOT NULL,
+        weight REAL NOT NULL,
+        PRIMARY KEY (appid, tagid)
+    ) WITHOUT ROWID;
+    CREATE TABLE tags (tagid INTEGER PRIMARY KEY, name_it TEXT NOT NULL, name_en TEXT NOT NULL);
+    CREATE TABLE tag_idf (tagid INTEGER PRIMARY KEY, idf REAL NOT NULL);
+    CREATE TABLE freshness (prices_updated_at INTEGER NOT NULL, tags_updated_at INTEGER NOT NULL);
+";
 
 #[derive(Debug, thiserror::Error)]
 pub enum CatalogError {
@@ -20,6 +45,16 @@ pub enum CatalogError {
 
     #[error("could not read the catalog")]
     Sqlite(#[from] rusqlite::Error),
+
+    #[error("could not write the catalog")]
+    Write(#[source] rusqlite::Error),
+
+    #[error("could not replace the catalog at {}", .path.display())]
+    Replace {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 }
 
 pub fn load_catalog(path: &Path) -> Result<Catalog, CatalogError> {
@@ -60,12 +95,105 @@ fn write_cache(cache: &Path, catalog: &Catalog) {
         return;
     };
 
-    let mut temporary = cache.as_os_str().to_owned();
-    temporary.push(".tmp");
-    let temporary = PathBuf::from(temporary);
+    let temporary = temporary_path(cache);
     if std::fs::write(&temporary, bytes).is_err() || std::fs::rename(&temporary, cache).is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
+}
+
+fn temporary_path(path: &Path) -> PathBuf {
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(".tmp");
+    PathBuf::from(temporary)
+}
+
+pub fn write_catalog(
+    path: &Path,
+    catalog: &Catalog,
+    price_change_numbers: &HashMap<AppId, u64>,
+) -> Result<(), CatalogError> {
+    let temporary = temporary_path(path);
+    let replace_error = |source| CatalogError::Replace {
+        path: path.to_path_buf(),
+        source,
+    };
+
+    match std::fs::remove_file(&temporary) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(replace_error(error)),
+        _ => {}
+    }
+
+    let mut conn = Connection::open(&temporary).map_err(CatalogError::Write)?;
+    insert_catalog(&mut conn, catalog, price_change_numbers).map_err(CatalogError::Write)?;
+    conn.close()
+        .map_err(|(_, error)| CatalogError::Write(error))?;
+
+    std::fs::rename(&temporary, path).map_err(replace_error)
+}
+
+fn insert_catalog(
+    conn: &mut Connection,
+    catalog: &Catalog,
+    price_change_numbers: &HashMap<AppId, u64>,
+) -> rusqlite::Result<()> {
+    conn.execute_batch(SCHEMA)?;
+    let transaction = conn.transaction()?;
+
+    {
+        let mut insert_game = transaction.prepare_cached(
+            "INSERT INTO games (appid, name, final_price_cents, original_price_cents,
+                discount_percent, discount_end_ms, review_count, positive_count,
+                early_access, price_change_number)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )?;
+        let mut insert_game_tag = transaction
+            .prepare_cached("INSERT INTO game_tags (appid, tagid, weight) VALUES (?, ?, ?)")?;
+
+        for game in catalog.games() {
+            let discount = game.price.discount;
+            let price_change_number =
+                i64::try_from(price_change_numbers.get(&game.id).copied().unwrap_or(0))
+                    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+            insert_game.execute(params![
+                game.id.0,
+                game.name,
+                game.price.final_cents(),
+                game.price.original_cents,
+                discount.map_or(0, |discount| discount.percent),
+                discount.and_then(|discount| discount.end).map(|end| end.0),
+                game.reviews.total,
+                game.reviews.positive,
+                game.is_early_access,
+                price_change_number,
+            ])?;
+
+            for tag in &game.tags {
+                insert_game_tag.execute(params![game.id.0, tag.id.0, tag.weight])?;
+            }
+        }
+
+        let mut insert_tag = transaction
+            .prepare_cached("INSERT INTO tags (tagid, name_it, name_en) VALUES (?, ?, ?)")?;
+        for (id, name) in &catalog.tags {
+            insert_tag.execute(params![id.0, name.italian, name.english])?;
+        }
+
+        let mut insert_idf =
+            transaction.prepare_cached("INSERT INTO tag_idf (tagid, idf) VALUES (?, ?)")?;
+        for (id, idf) in &catalog.idf {
+            insert_idf.execute(params![id.0, idf])?;
+        }
+
+        transaction.execute(
+            "INSERT INTO freshness (prices_updated_at, tags_updated_at) VALUES (?, ?)",
+            params![
+                catalog.freshness.prices_updated_at.0,
+                catalog.freshness.tags_updated_at.0
+            ],
+        )?;
+    }
+
+    transaction.commit()
 }
 
 fn read_catalog(conn: &Connection) -> Result<Catalog, CatalogError> {
@@ -189,31 +317,10 @@ mod tests {
     // Foreign keys are off so the tags of game 99, which is not in games, can be inserted.
     fn test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
         conn.execute_batch(
-            "PRAGMA foreign_keys = OFF;
-            CREATE TABLE games (
-                appid INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                final_price_cents INTEGER NOT NULL,
-                original_price_cents INTEGER NOT NULL,
-                discount_percent INTEGER NOT NULL,
-                discount_end_ms INTEGER,
-                review_count INTEGER NOT NULL,
-                positive_count INTEGER NOT NULL,
-                early_access INTEGER NOT NULL,
-                price_change_number INTEGER NOT NULL
-            );
-            CREATE TABLE game_tags (
-                appid INTEGER NOT NULL REFERENCES games(appid),
-                tagid INTEGER NOT NULL,
-                weight REAL NOT NULL,
-                PRIMARY KEY (appid, tagid)
-            ) WITHOUT ROWID;
-            CREATE TABLE tags (tagid INTEGER PRIMARY KEY, name_it TEXT NOT NULL, name_en TEXT NOT NULL);
-            CREATE TABLE tag_idf (tagid INTEGER PRIMARY KEY, idf REAL NOT NULL);
-            CREATE TABLE freshness (prices_updated_at INTEGER NOT NULL, tags_updated_at INTEGER NOT NULL);
-
-            INSERT INTO games VALUES
+            "INSERT INTO games VALUES
                 (30, 'Gamma', 800, 1000, 20, NULL, 0, 0, 0, 1),
                 (10, 'Alpha', 1500, 1500, 0, NULL, 100, 90, 0, 3),
                 (20, 'Beta', 1000, 2000, 50, 1700000000000, 300, 250, 1, 7);
@@ -341,6 +448,44 @@ mod tests {
                 tags_updated_at: Timestamp(1_690_000_000_000),
             }
         );
+    }
+
+    #[test]
+    fn a_written_catalog_reads_back_the_same() {
+        let catalog = test_catalog();
+        let mut conn = Connection::open_in_memory().unwrap();
+
+        insert_catalog(&mut conn, &catalog, &HashMap::new()).unwrap();
+        let read = read_catalog(&conn).unwrap();
+
+        assert_eq!(read.games(), catalog.games());
+        assert_eq!(read.idf, catalog.idf);
+        assert_eq!(read.freshness, catalog.freshness);
+        let names = |catalog: &Catalog| -> Vec<(TagId, String, String)> {
+            catalog
+                .tags
+                .iter()
+                .map(|(id, name)| (*id, name.english.clone(), name.italian.clone()))
+                .collect()
+        };
+        assert_eq!(names(&read), names(&catalog));
+    }
+
+    #[test]
+    fn a_written_catalog_keeps_the_price_change_number() {
+        let catalog = test_catalog();
+        let mut conn = Connection::open_in_memory().unwrap();
+
+        insert_catalog(&mut conn, &catalog, &HashMap::from([(AppId(20), 42)])).unwrap();
+
+        let numbers: Vec<(u32, i64)> = conn
+            .prepare("SELECT appid, price_change_number FROM games ORDER BY appid")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(numbers, [(10, 0), (20, 42), (30, 0)]);
     }
 
     #[test]
