@@ -43,6 +43,21 @@ impl Catalog {
     }
 }
 
+pub fn compute_idf(games: &[Game]) -> BTreeMap<TagId, f64> {
+    let mut document_frequency: BTreeMap<TagId, u32> = BTreeMap::new();
+    for tag in games.iter().flat_map(|game| &game.tags) {
+        if tag.weight > 0.0 {
+            *document_frequency.entry(tag.id).or_default() += 1;
+        }
+    }
+
+    let total = games.len() as f64;
+    document_frequency
+        .into_iter()
+        .map(|(id, df)| (id, (total / (1.0 + f64::from(df))).ln().max(0.0)))
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TagName {
@@ -66,6 +81,7 @@ impl Freshness {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::{GameTag, Price, Reviews};
 
     const HOUR_MS: i64 = 3_600_000;
     const UPDATED_AT: Timestamp = Timestamp(1_700_000_000_000);
@@ -79,6 +95,58 @@ mod tests {
 
     fn hours_after_update(hours: i64) -> Timestamp {
         Timestamp(UPDATED_AT.0 + hours * HOUR_MS)
+    }
+
+    fn game_with_tags(id: u32, tags: &[(u32, f64)]) -> Game {
+        Game {
+            id: AppId(id),
+            name: String::new(),
+            price: Price {
+                original_cents: 1000,
+                discount: None,
+            },
+            reviews: Reviews {
+                total: 0,
+                positive: 0,
+            },
+            is_early_access: false,
+            tags: tags
+                .iter()
+                .map(|&(id, weight)| GameTag {
+                    id: TagId(id),
+                    weight,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn compute_idf_follows_the_smoothed_formula() {
+        let games = [
+            game_with_tags(1, &[(2, 0.5), (5, 0.5)]),
+            game_with_tags(2, &[(2, 1.0)]),
+            game_with_tags(3, &[]),
+            game_with_tags(4, &[]),
+        ];
+
+        let idf = compute_idf(&games);
+
+        assert_eq!(idf[&TagId(5)], 2.0_f64.ln());
+        assert_eq!(idf[&TagId(2)], (4.0_f64 / 3.0).ln());
+    }
+
+    #[test]
+    fn compute_idf_is_never_negative() {
+        let games = [game_with_tags(1, &[(2, 1.0)])];
+
+        assert_eq!(compute_idf(&games)[&TagId(2)], 0.0);
+    }
+
+    #[test]
+    fn compute_idf_ignores_tags_with_zero_weight() {
+        let games = [game_with_tags(1, &[(2, 1.0), (5, 0.0)])];
+
+        assert!(!compute_idf(&games).contains_key(&TagId(5)));
     }
 
     #[test]
