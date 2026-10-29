@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::BTreeSet, path::Path};
 
 use anyhow::Context;
 use gamepalate_core::{
@@ -6,6 +6,7 @@ use gamepalate_core::{
     config::Config,
     effective_hours::effective_hours,
     families::Families,
+    ids::AppId,
     off_catalog::{OffCatalogGames, off_catalog_games, stale_off_catalog, wanted_off_catalog},
     signals::Signals,
     timestamp::Timestamp,
@@ -17,7 +18,8 @@ use gamepalate_steam::{
     transport::{Get, SteamError, Transport},
 };
 use gamepalate_store::{
-    data_files::DataFiles,
+    config::load_config,
+    data_files::{DataFiles, load_data_files, load_data_files_with},
     off_catalog::{load_off_catalog_cache, save_off_catalog_cache},
     signals::{load_reading, save_reading},
 };
@@ -27,17 +29,34 @@ use crate::{
     update::{COUNTRY_CODE, LANGUAGE, wall_clock},
 };
 
-pub fn from_steam(data_dir: &Path, files: &mut DataFiles) -> anyhow::Result<()> {
+pub fn load(data_dir: &Path, offline: bool) -> anyhow::Result<DataFiles> {
+    Ok(load_for(data_dir, offline, |config| *config)?.0)
+}
+
+pub fn load_for(
+    data_dir: &Path,
+    offline: bool,
+    adjust: impl FnOnce(&Config) -> Config,
+) -> anyhow::Result<(DataFiles, Config)> {
+    if offline {
+        let files = load_data_files(data_dir)?;
+        eprintln!("Signals read on {}.", date_time(files.signals.read_at));
+        let config = adjust(&files.config);
+        return Ok((files, config));
+    }
+
+    let config = load_config(&data_dir.join("config.toml"))?;
     let transport = Transport::new(std::env::var("STEAM_API_KEY").ok())?;
     let runtime = tokio::runtime::Runtime::new()?;
     let now = wall_clock();
 
-    let (signals, warnings) = runtime.block_on(read(data_dir, &transport, &files.config, now))?;
+    let (signals, warnings) = runtime.block_on(read(data_dir, &transport, &config, now))?;
     for warning in warnings {
         eprintln!("warn: {warning}");
     }
-    files.signals = signals;
 
+    let mut files = load_data_files_with(data_dir, config, signals)?;
+    let adjusted = adjust(&files.config);
     files.off_catalog = runtime.block_on(off_catalog(
         data_dir,
         &transport,
@@ -46,11 +65,11 @@ pub fn from_steam(data_dir: &Path, files: &mut DataFiles) -> anyhow::Result<()> 
             votes: &files.votes,
             families: &files.families,
             catalog: &files.catalog,
-            config: &files.config,
+            configs: &[&files.config, &adjusted],
         },
         now,
     ))?;
-    Ok(())
+    Ok((files, adjusted))
 }
 
 struct OffCatalogInputs<'a> {
@@ -58,7 +77,7 @@ struct OffCatalogInputs<'a> {
     votes: &'a Votes,
     families: &'a Families,
     catalog: &'a Catalog,
-    config: &'a Config,
+    configs: &'a [&'a Config],
 }
 
 async fn off_catalog<S: Get>(
@@ -67,17 +86,25 @@ async fn off_catalog<S: Get>(
     inputs: OffCatalogInputs<'_>,
     now: Timestamp,
 ) -> anyhow::Result<OffCatalogGames> {
-    let config = inputs.config;
-    let hours = effective_hours(inputs.signals, inputs.votes, &config.signals);
-    let wanted = wanted_off_catalog(
-        &hours,
-        inputs.families,
-        inputs.catalog,
-        config.signals.min_hours,
-    );
+    let wanted: Vec<AppId> = inputs
+        .configs
+        .iter()
+        .flat_map(|config| {
+            let hours = effective_hours(inputs.signals, inputs.votes, &config.signals);
+            wanted_off_catalog(
+                &hours,
+                inputs.families,
+                inputs.catalog,
+                config.signals.min_hours,
+            )
+        })
+        .collect::<BTreeSet<AppId>>()
+        .into_iter()
+        .collect();
+    let max_age_days = inputs.configs[0].tags_max_age_days;
     let path = data_dir.join("off-catalog-tags.json");
     let mut cache = load_off_catalog_cache(&path);
-    let stale = stale_off_catalog(&cache, &wanted, now, config.tags_max_age_days);
+    let stale = stale_off_catalog(&cache, &wanted, now, max_age_days);
 
     let renewed = renew_off_catalog(steam, &mut cache, &stale, now, LANGUAGE, COUNTRY_CODE)
         .await
@@ -261,22 +288,45 @@ mod tests {
         }
     }
 
-    async fn off_catalog_now(dir: &Path, steam: &FakeSteam) -> OffCatalogGames {
-        let (signals, votes, families, catalog, config) = (
-            signals(),
-            Votes::default(),
-            families(),
-            empty_catalog(),
-            config(),
-        );
+    async fn off_catalog_with(
+        dir: &Path,
+        steam: &FakeSteam,
+        configs: &[&Config],
+    ) -> OffCatalogGames {
+        let (signals, votes, families, catalog) =
+            (signals(), Votes::default(), families(), empty_catalog());
         let inputs = OffCatalogInputs {
             signals: &signals,
             votes: &votes,
             families: &families,
             catalog: &catalog,
-            config: &config,
+            configs,
         };
         off_catalog(dir, steam, inputs, NOW).await.unwrap()
+    }
+
+    async fn off_catalog_now(dir: &Path, steam: &FakeSteam) -> OffCatalogGames {
+        off_catalog_with(dir, steam, &[&config()]).await
+    }
+
+    #[tokio::test]
+    async fn a_lower_threshold_asks_for_the_games_it_adds() {
+        let dir = tempfile::tempdir().unwrap();
+        let steam = steam();
+        let mut higher = config();
+        higher.signals.min_hours = 3.0;
+        let mut lower = config();
+        lower.signals.min_hours = 1.0;
+
+        let only_higher = off_catalog_with(dir.path(), &steam, &[&higher, &higher]).await;
+        let with_lower = off_catalog_with(dir.path(), &steam, &[&higher, &lower]).await;
+
+        assert!(!only_higher.contains_key(&AppId(10)));
+        assert!(with_lower.contains_key(&AppId(10)));
+        assert_eq!(
+            *steam.asked_items.lock().unwrap(),
+            [json!([{ "appid": 20 }]), json!([{ "appid": 10 }])]
+        );
     }
 
     #[tokio::test]

@@ -15,6 +15,10 @@ use crate::{
 
 #[derive(Args)]
 pub struct ProfileArgs {
+    /// Use signals.json and the tags cache as they are, without asking Steam
+    #[arg(long)]
+    pub offline: bool,
+
     /// How many tags to show
     #[arg(long, default_value_t = DEFAULT_TAG_LIMIT as u32, value_parser = clap::value_parser!(u32).range(1..))]
     tags: u32,

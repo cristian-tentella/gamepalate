@@ -93,17 +93,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 
     match cli.command {
         Command::Profile(args) => {
-            let mut files = load_data_files(&data_dir)?;
-            signals::from_steam(&data_dir, &mut files)?;
+            let files = signals::load(&data_dir, args.offline)?;
             profile::run(&args, &files, &data_dir)?;
         }
         Command::Recommend(args) => {
-            let files = load_data_files(&data_dir)?;
+            let files = signals::load(&data_dir, args.offline)?;
             recommend::run(&args, &files, &data_dir)?;
         }
         Command::Evaluate(args) => {
-            let files = load_data_files(&data_dir)?;
-            evaluate::run(&args, &files, &data_dir)?;
+            let (files, config) =
+                signals::load_for(&data_dir, args.offline, |config| args.apply(config))?;
+            evaluate::run(&args, &files, &config, &data_dir)?;
         }
         Command::Corrections => {
             let files = load_data_files(&data_dir)?;
