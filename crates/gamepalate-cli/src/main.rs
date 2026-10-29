@@ -94,7 +94,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Profile(args) => {
             let mut files = load_data_files(&data_dir)?;
-            files.signals = signals::from_steam(&data_dir, &files.config)?;
+            signals::from_steam(&data_dir, &mut files)?;
             profile::run(&args, &files, &data_dir)?;
         }
         Command::Recommend(args) => {

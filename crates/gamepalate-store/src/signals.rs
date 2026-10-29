@@ -7,6 +7,8 @@ use gamepalate_core::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::atomic::write_atomically;
+
 #[derive(Debug, thiserror::Error)]
 pub enum SignalsError {
     #[error("signals not found at {}", .0.display())]
@@ -71,18 +73,10 @@ pub fn load_reading(path: &Path) -> Result<SignalsReading, SignalsError> {
 
 pub fn save_reading(path: &Path, reading: &SignalsReading) -> Result<(), SignalsError> {
     let text = serde_json::to_string(&signals_file(reading))?;
-    let write_error = |source| SignalsError::Write {
+
+    write_atomically(path, &text).map_err(|source| SignalsError::Write {
         path: path.to_path_buf(),
         source,
-    };
-
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
-    let temporary = PathBuf::from(temporary);
-    std::fs::write(&temporary, text).map_err(write_error)?;
-    std::fs::rename(&temporary, path).map_err(|error| {
-        let _ = std::fs::remove_file(&temporary);
-        write_error(error)
     })
 }
 

@@ -25,8 +25,8 @@ use gamepalate_store::{
 use crate::format::{date_time, integer};
 
 const CONCURRENCY: usize = 4;
-const LANGUAGE: &str = "english";
-const COUNTRY_CODE: &str = "IT";
+pub const LANGUAGE: &str = "english";
+pub const COUNTRY_CODE: &str = "IT";
 
 pub struct BuiltCatalog {
     pub catalog: Catalog,
