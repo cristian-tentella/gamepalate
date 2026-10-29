@@ -37,6 +37,7 @@ pub enum DataFilesError {
     Votes(#[from] VotesError),
 }
 
+#[derive(Debug, Clone)]
 pub struct DataFiles {
     pub config: Config,
     pub catalog: Catalog,

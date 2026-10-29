@@ -1,0 +1,11 @@
+[package]
+name = "gamepalate-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+jiff = "0.2.38"
+gamepalate-core = { version = "0.1.0", path = "../gamepalate-core" }
+gamepalate-store = { version = "0.1.0", path = "../gamepalate-store" }
+dirs = "7.0.0"
+thiserror = "2.0.21"
