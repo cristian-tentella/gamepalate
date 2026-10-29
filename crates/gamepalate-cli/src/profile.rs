@@ -9,7 +9,7 @@ use gamepalate_core::{
 use gamepalate_store::data_files::DataFiles;
 
 use crate::{
-    format::{date_time, decimal, integer, multiplier},
+    format::{decimal, integer, multiplier},
     names::{family_problem_text, game_label, tag_name},
 };
 
@@ -29,7 +29,6 @@ pub fn run(args: &ProfileArgs, files: &DataFiles, data_dir: &Path) -> anyhow::Re
     profile
         .corrected_tags
         .sort_by(|a, b| b.weight.total_cmp(&a.weight));
-    eprintln!("Signals read on {}.", date_time(profile.saved_signals_from));
 
     println!("Top tags of your profile:");
     for tag in &profile.tags {

@@ -124,7 +124,7 @@ pub fn check_base(chain: &[ArchivedUpdate], update: &Path) -> anyhow::Result<()>
     }
 }
 
-fn wall_clock() -> Timestamp {
+pub fn wall_clock() -> Timestamp {
     Timestamp(jiff::Timestamp::now().as_millisecond())
 }
 

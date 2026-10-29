@@ -7,6 +7,7 @@ mod names;
 mod profile;
 mod rebuild;
 mod recommend;
+mod signals;
 mod update;
 mod vote;
 mod votes;
@@ -92,7 +93,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 
     match cli.command {
         Command::Profile(args) => {
-            let files = load_data_files(&data_dir)?;
+            let mut files = load_data_files(&data_dir)?;
+            files.signals = signals::from_steam(&data_dir, &files.config)?;
             profile::run(&args, &files, &data_dir)?;
         }
         Command::Recommend(args) => {

@@ -13,26 +13,23 @@ const RECENTLY_PLAYED: &str = "IPlayerService/GetRecentlyPlayedGames/v1";
 const WISHLIST: &str = "IWishlistService/GetWishlist/v1";
 const FOLLOWED: &str = "IStoreService/GetGamesFollowed/v1";
 
-#[derive(Debug)]
-pub struct SteamSignals {
-    pub library: Vec<LibraryGame>,
-    pub recent: Vec<RecentGame>,
-    pub wishlist: Result<Option<Vec<AppId>>, SteamError>,
-    pub followed: Result<Option<Vec<AppId>>, SteamError>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionalList {
+    Wishlist,
+    Followed,
 }
 
-impl SteamSignals {
-    pub fn into_reading(self, now: Timestamp) -> Result<SignalsReading, SteamError> {
-        Ok(SignalsReading {
-            read_at: now,
-            library: self.library,
-            recent: self.recent,
-            wishlist: self.wishlist?,
-            followed: self.followed?,
-            wishlist_read_at: Some(now),
-            followed_read_at: Some(now),
-        })
-    }
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FailedList {
+    pub list: OptionalList,
+    pub saved_from: Option<Timestamp>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SignalsRead {
+    pub reading: SignalsReading,
+    pub saved_from: Option<Timestamp>,
+    pub failed: Vec<FailedList>,
 }
 
 #[derive(Deserialize)]
@@ -82,7 +79,9 @@ struct FollowedResponse {
 pub async fn read_signals<S: Get>(
     steam: &S,
     steam_id: SteamId,
-) -> Result<SteamSignals, SteamError> {
+    saved: Option<SignalsReading>,
+    now: Timestamp,
+) -> Result<SignalsRead, SteamError> {
     let (library, recent, wishlist, followed) = tokio::join!(
         get_owned_games(steam, steam_id),
         get_recently_played_games(steam, steam_id),
@@ -90,12 +89,91 @@ pub async fn read_signals<S: Get>(
         get_games_followed(steam, steam_id),
     );
 
-    Ok(SteamSignals {
-        library: library?,
-        recent: recent?,
+    let (library, recent) = match both(library, recent) {
+        Ok(lists) => lists,
+        Err(error) => {
+            return match saved {
+                Some(saved) if is_down(&error) => Ok(SignalsRead {
+                    saved_from: Some(saved.read_at),
+                    reading: saved,
+                    failed: Vec::new(),
+                }),
+                _ => Err(error),
+            };
+        }
+    };
+
+    let mut failed = Vec::new();
+    let (wishlist, wishlist_read_at) = settle(
+        OptionalList::Wishlist,
         wishlist,
+        saved.as_ref(),
+        now,
+        &mut failed,
+    );
+    let (followed, followed_read_at) = settle(
+        OptionalList::Followed,
         followed,
+        saved.as_ref(),
+        now,
+        &mut failed,
+    );
+
+    Ok(SignalsRead {
+        reading: SignalsReading {
+            read_at: now,
+            library,
+            recent,
+            wishlist,
+            followed,
+            wishlist_read_at,
+            followed_read_at,
+        },
+        saved_from: None,
+        failed,
     })
+}
+
+fn both<A, B>(a: Result<A, SteamError>, b: Result<B, SteamError>) -> Result<(A, B), SteamError> {
+    match (a, b) {
+        (Ok(a), Ok(b)) => Ok((a, b)),
+        (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
+        (Err(a), Err(b)) => Err(if is_down(&a) { b } else { a }),
+    }
+}
+
+fn is_down(error: &SteamError) -> bool {
+    matches!(error, SteamError::SteamDown { .. })
+}
+
+fn settle(
+    list: OptionalList,
+    read: Result<Option<Vec<AppId>>, SteamError>,
+    saved: Option<&SignalsReading>,
+    now: Timestamp,
+    failed: &mut Vec<FailedList>,
+) -> (Option<Vec<AppId>>, Option<Timestamp>) {
+    if let Ok(ids) = read {
+        return (ids, Some(now));
+    }
+    let Some(saved) = saved else {
+        failed.push(FailedList {
+            list,
+            saved_from: None,
+        });
+        return (None, None);
+    };
+
+    let (ids, read_at) = match list {
+        OptionalList::Wishlist => (&saved.wishlist, saved.wishlist_read_at),
+        OptionalList::Followed => (&saved.followed, saved.followed_read_at),
+    };
+    let read_at = read_at.unwrap_or(saved.read_at);
+    failed.push(FailedList {
+        list,
+        saved_from: ids.as_ref().map(|_| read_at),
+    });
+    (ids.clone(), Some(read_at))
 }
 
 pub async fn get_owned_games<S: Get>(
@@ -113,7 +191,9 @@ pub async fn get_recently_played_games<S: Get>(
     steam_id: SteamId,
 ) -> Result<Vec<RecentGame>, SteamError> {
     let id = steam_id.0.to_string();
-    let value = steam.get(RECENTLY_PLAYED, &[("steamid", &id)], true).await?;
+    let value = steam
+        .get(RECENTLY_PLAYED, &[("steamid", &id)], true)
+        .await?;
     parse_recently_played_games(value)
 }
 
@@ -202,6 +282,7 @@ mod tests {
 
     struct FakeSteam {
         answers: HashMap<&'static str, Value>,
+        key_rejected: bool,
     }
 
     impl Get for FakeSteam {
@@ -209,9 +290,15 @@ mod tests {
             &self,
             endpoint: &str,
             params: &[(&str, &str)],
-            _needs_key: bool,
+            needs_key: bool,
         ) -> Result<Value, SteamError> {
             assert!(params.contains(&("steamid", "76561198000000000")));
+            if needs_key && self.key_rejected {
+                return Err(SteamError::KeyRejected {
+                    endpoint: endpoint.to_string(),
+                    status: reqwest::StatusCode::FORBIDDEN,
+                });
+            }
             self.answers
                 .get(endpoint)
                 .cloned()
@@ -226,6 +313,7 @@ mod tests {
     fn steam(answers: &[(&'static str, Value)]) -> FakeSteam {
         FakeSteam {
             answers: answers.iter().cloned().collect(),
+            key_rejected: false,
         }
     }
 
@@ -311,86 +399,183 @@ mod tests {
     #[test]
     fn a_hidden_wishlist_or_followed_list_is_none() {
         assert_eq!(parse_wishlist(json!({ "response": {} })).unwrap(), None);
-        assert_eq!(parse_games_followed(json!({ "response": {} })).unwrap(), None);
+        assert_eq!(
+            parse_games_followed(json!({ "response": {} })).unwrap(),
+            None
+        );
+    }
+
+    const NOW: Timestamp = Timestamp(1_793_638_800_000);
+    const BEFORE: Timestamp = Timestamp(1_793_000_000_000);
+    const LONG_BEFORE: Timestamp = Timestamp(1_792_000_000_000);
+
+    fn wishlist() -> (&'static str, Value) {
+        (
+            WISHLIST,
+            json!({ "response": { "items": [{ "appid": 400, "priority": 1 }] } }),
+        )
+    }
+
+    fn followed() -> (&'static str, Value) {
+        (FOLLOWED, json!({ "response": { "appids": [500, 600] } }))
+    }
+
+    fn saved() -> SignalsReading {
+        SignalsReading {
+            read_at: BEFORE,
+            library: vec![LibraryGame {
+                id: AppId(1),
+                total_hours: 10.0,
+            }],
+            recent: vec![],
+            wishlist: Some(vec![AppId(4)]),
+            followed: Some(vec![AppId(5)]),
+            wishlist_read_at: Some(LONG_BEFORE),
+            followed_read_at: None,
+        }
     }
 
     #[tokio::test]
     async fn reads_the_four_signals_in_hours() {
-        let steam = steam(&[
-            library(),
-            recent(),
-            (
-                WISHLIST,
-                json!({ "response": { "items": [{ "appid": 400, "priority": 1 }] } }),
-            ),
-            (FOLLOWED, json!({ "response": { "appids": [500, 600] } })),
-        ]);
+        let steam = steam(&[library(), recent(), wishlist(), followed()]);
 
-        let signals = read_signals(&steam, ME).await.unwrap();
+        let read = read_signals(&steam, ME, Some(saved()), NOW).await.unwrap();
 
         assert_eq!(
-            signals.library,
-            [LibraryGame {
-                id: AppId(10),
-                total_hours: 1.5,
-            }]
+            read,
+            SignalsRead {
+                reading: SignalsReading {
+                    read_at: NOW,
+                    library: vec![LibraryGame {
+                        id: AppId(10),
+                        total_hours: 1.5,
+                    }],
+                    recent: vec![RecentGame {
+                        id: AppId(30),
+                        total_hours: 2.0,
+                        recent_hours: 0.25,
+                    }],
+                    wishlist: Some(vec![AppId(400)]),
+                    followed: Some(vec![AppId(500), AppId(600)]),
+                    wishlist_read_at: Some(NOW),
+                    followed_read_at: Some(NOW),
+                },
+                saved_from: None,
+                failed: vec![],
+            }
         );
-        assert_eq!(
-            signals.recent,
-            [RecentGame {
-                id: AppId(30),
-                total_hours: 2.0,
-                recent_hours: 0.25,
-            }]
-        );
-        assert_eq!(signals.wishlist.unwrap(), Some(vec![AppId(400)]));
-        assert_eq!(signals.followed.unwrap(), Some(vec![AppId(500), AppId(600)]));
     }
 
     #[tokio::test]
-    async fn a_failed_wishlist_or_followed_list_does_not_stop_the_reading() {
+    async fn a_hidden_list_is_read_now() {
+        let steam = steam(&[
+            library(),
+            recent(),
+            (WISHLIST, json!({ "response": {} })),
+            followed(),
+        ]);
+
+        let read = read_signals(&steam, ME, None, NOW).await.unwrap();
+
+        assert_eq!(read.reading.wishlist, None);
+        assert_eq!(read.reading.wishlist_read_at, Some(NOW));
+        assert!(read.failed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_list_uses_the_saved_one_with_its_date() {
         let steam = steam(&[
             library(),
             recent(),
             (WISHLIST, json!({ "response": { "items": "changed" } })),
         ]);
 
-        let signals = read_signals(&steam, ME).await.unwrap();
+        let read = read_signals(&steam, ME, Some(saved()), NOW).await.unwrap();
 
-        assert_eq!(signals.library.len(), 1);
-        assert!(matches!(signals.wishlist, Err(SteamError::Shape { .. })));
-        assert!(matches!(signals.followed, Err(SteamError::SteamDown { .. })));
+        assert_eq!(read.reading.read_at, NOW);
+        assert_eq!(read.reading.library[0].id, AppId(10));
+        assert_eq!(read.reading.wishlist, Some(vec![AppId(4)]));
+        assert_eq!(read.reading.wishlist_read_at, Some(LONG_BEFORE));
+        assert_eq!(read.reading.followed, Some(vec![AppId(5)]));
+        assert_eq!(read.reading.followed_read_at, Some(BEFORE));
+        assert_eq!(
+            read.failed,
+            [
+                FailedList {
+                    list: OptionalList::Wishlist,
+                    saved_from: Some(LONG_BEFORE),
+                },
+                FailedList {
+                    list: OptionalList::Followed,
+                    saved_from: Some(BEFORE),
+                },
+            ]
+        );
     }
 
     #[tokio::test]
-    async fn a_reading_is_dated_now_even_with_hidden_lists() {
-        let steam = steam(&[
-            library(),
-            recent(),
-            (WISHLIST, json!({ "response": {} })),
-            (FOLLOWED, json!({ "response": { "appids": [500] } })),
-        ]);
-        let now = Timestamp(1_793_638_800_000);
+    async fn a_failed_list_without_a_saved_one_is_left_out() {
+        let mut hidden = saved();
+        hidden.followed = None;
+        let steam = steam(&[library(), recent(), wishlist()]);
 
-        let reading = read_signals(&steam, ME)
-            .await
-            .unwrap()
-            .into_reading(now)
-            .unwrap();
+        let without_reading = read_signals(&steam, ME, None, NOW).await.unwrap();
+        let without_list = read_signals(&steam, ME, Some(hidden), NOW).await.unwrap();
 
-        assert_eq!(reading.read_at, now);
-        assert_eq!(reading.wishlist, None);
-        assert_eq!(reading.wishlist_read_at, Some(now));
-        assert_eq!(reading.followed, Some(vec![AppId(500)]));
-        assert_eq!(reading.followed_read_at, Some(now));
+        assert_eq!(without_reading.reading.followed, None);
+        assert_eq!(without_reading.reading.followed_read_at, None);
+        assert_eq!(without_list.reading.followed, None);
+        assert_eq!(without_list.reading.followed_read_at, Some(BEFORE));
+        for read in [without_reading, without_list] {
+            assert_eq!(
+                read.failed,
+                [FailedList {
+                    list: OptionalList::Followed,
+                    saved_from: None,
+                }]
+            );
+        }
     }
 
     #[tokio::test]
-    async fn a_failed_library_or_recent_list_stops_the_reading() {
-        let without_recent = read_signals(&steam(&[library()]), ME).await;
-        let without_library = read_signals(&steam(&[recent()]), ME).await;
+    async fn steam_down_uses_the_whole_saved_reading() {
+        let steam = steam(&[library(), wishlist(), followed()]);
 
-        assert!(matches!(without_recent, Err(SteamError::SteamDown { .. })));
-        assert!(matches!(without_library, Err(SteamError::SteamDown { .. })));
+        let read = read_signals(&steam, ME, Some(saved()), NOW).await.unwrap();
+
+        assert_eq!(
+            read,
+            SignalsRead {
+                reading: saved(),
+                saved_from: Some(BEFORE),
+                failed: vec![],
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn steam_down_without_a_saved_reading_is_an_error() {
+        let result = read_signals(&steam(&[recent()]), ME, None, NOW).await;
+
+        assert!(matches!(result, Err(SteamError::SteamDown { .. })));
+    }
+
+    #[tokio::test]
+    async fn a_rejected_key_stops_even_with_a_saved_reading() {
+        let mut steam = steam(&[library(), recent(), wishlist(), followed()]);
+        steam.key_rejected = true;
+
+        let result = read_signals(&steam, ME, Some(saved()), NOW).await;
+
+        assert!(matches!(result, Err(SteamError::KeyRejected { .. })));
+    }
+
+    #[tokio::test]
+    async fn a_hidden_library_stops_even_with_a_saved_reading() {
+        let steam = steam(&[(OWNED_GAMES, json!({ "response": {} }))]);
+
+        let result = read_signals(&steam, ME, Some(saved()), NOW).await;
+
+        assert!(matches!(result, Err(SteamError::LibraryHidden { .. })));
     }
 }
