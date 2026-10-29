@@ -1,0 +1,9 @@
+[package]
+name = "gamepalate-gui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+gamepalate-app = { version = "0.1.0", path = "../gamepalate-app" }
+iced = "0.14.0"
