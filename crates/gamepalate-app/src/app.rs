@@ -51,7 +51,7 @@ pub enum OpenError {
     DataFiles(#[from] DataFilesError),
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 #[error("{}", search_error_text(.0))]
 pub struct RecommendError(pub SearchError);
 
