@@ -49,10 +49,19 @@ pub struct DataFiles {
 
 pub fn load_data_files(dir: &Path) -> Result<DataFiles, DataFilesError> {
     let config = load_config(&dir.join("config.toml"))?;
+    let signals = load_signals(&dir.join("signals.json"))?;
+
+    load_data_files_with(dir, config, signals)
+}
+
+pub fn load_data_files_with(
+    dir: &Path,
+    config: Config,
+    signals: Signals,
+) -> Result<DataFiles, DataFilesError> {
     let catalog = load_catalog(&dir.join("catalog.sqlite"))?;
     let corrections = load_corrections(&dir.join("corrections.toml"))?;
     let families = load_families(&dir.join("families.toml"))?;
-    let signals = load_signals(&dir.join("signals.json"))?;
     let votes = load_votes(&dir.join("votes.toml"))?;
     let off_catalog = load_off_catalog_games(&dir.join("off-catalog-tags.json"));
 

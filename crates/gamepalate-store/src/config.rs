@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use gamepalate_core::config::{
-    Config, CorrectionsConfig, RelevanceConfig, ResultsConfig, SignalsConfig,
+use gamepalate_core::{
+    config::{Config, CorrectionsConfig, RelevanceConfig, ResultsConfig, SignalsConfig},
+    ids::SteamId,
 };
 use serde::Deserialize;
 
@@ -95,7 +96,7 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
     let file: ConfigFile = toml::from_str(text)?;
     let base = Config::default();
 
-    check_steam_id(file.steam_id.as_deref())?;
+    let steam_id = parse_steam_id(file.steam_id.as_deref())?;
     if file.region.as_deref().is_some_and(|region| region != "IT") {
         return Err(ConfigError::Invalid {
             field: "region",
@@ -229,6 +230,7 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
     )?;
 
     Ok(Config {
+        steam_id: Some(steam_id),
         signals,
         relevance,
         results,
@@ -239,10 +241,12 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
     })
 }
 
-fn check_steam_id(steam_id: Option<&str>) -> Result<(), ConfigError> {
+fn parse_steam_id(steam_id: Option<&str>) -> Result<SteamId, ConfigError> {
     match steam_id {
         None => Err(ConfigError::Missing("steam_id")),
-        Some(id) if id.len() == 17 && id.bytes().all(|b| b.is_ascii_digit()) => Ok(()),
+        Some(id) if id.len() == 17 && id.bytes().all(|b| b.is_ascii_digit()) => {
+            Ok(SteamId(id.parse().expect("17 digits fit in a u64")))
+        }
         Some(_) => Err(ConfigError::Invalid {
             field: "steam_id",
             expected: "a string of 17 digits".to_string(),
@@ -335,7 +339,13 @@ mod tests {
 
     #[test]
     fn parse_config_with_only_the_steam_id_gives_the_defaults() {
-        assert_eq!(parse_with("").unwrap(), Config::default());
+        assert_eq!(
+            parse_with("").unwrap(),
+            Config {
+                steam_id: Some(SteamId(76_561_198_000_000_000)),
+                ..Config::default()
+            }
+        );
     }
 
     #[test]

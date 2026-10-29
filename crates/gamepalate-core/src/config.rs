@@ -1,5 +1,8 @@
+use crate::ids::SteamId;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Config {
+    pub steam_id: Option<SteamId>,
     pub signals: SignalsConfig,
     pub relevance: RelevanceConfig,
     pub results: ResultsConfig,
@@ -12,6 +15,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            steam_id: None,
             signals: SignalsConfig::default(),
             relevance: RelevanceConfig::default(),
             results: ResultsConfig::default(),

@@ -16,6 +16,10 @@ use crate::{
 
 #[derive(Args)]
 pub struct EvaluateArgs {
+    /// Use signals.json and the tags cache as they are, without asking Steam
+    #[arg(long)]
+    pub offline: bool,
+
     /// Weight of the quality in the relevance, from 0 to 1
     #[arg(long, value_parser = parse_unit)]
     quality_weight: Option<f64>,
@@ -46,7 +50,7 @@ impl EvaluateArgs {
             || self.recent_hours_multiplier.is_some()
     }
 
-    fn apply(&self, config: &Config) -> Config {
+    pub fn apply(&self, config: &Config) -> Config {
         let mut config = *config;
         if let Some(value) = self.quality_weight {
             config.relevance.quality_weight = value;
@@ -107,14 +111,18 @@ enum Group {
     Families,
 }
 
-pub fn run(args: &EvaluateArgs, files: &DataFiles, data_dir: &Path) -> anyhow::Result<()> {
+pub fn run(
+    args: &EvaluateArgs,
+    files: &DataFiles,
+    config: &Config,
+    data_dir: &Path,
+) -> anyhow::Result<()> {
     let vectors = game_vectors(&files.catalog);
     let inputs = files.search_inputs(&vectors);
     check_families(files, &inputs, data_dir)?;
 
-    let config = args.apply(&files.config);
     let mut changed_inputs = inputs;
-    changed_inputs.config = &config;
+    changed_inputs.config = config;
 
     let evaluation = evaluate(&changed_inputs);
     let base = args.changes_config().then(|| evaluate(&inputs));

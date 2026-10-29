@@ -1,6 +1,7 @@
 use crate::{
     game::{Discount, Game, GameTag, Price, Reviews},
     ids::{AppId, TagId},
+    off_catalog::OffCatalogGame,
     timestamp::Timestamp,
 };
 
@@ -52,6 +53,15 @@ impl StoreItem {
             is_early_access: self.is_early_access,
             tags: normalize(self.tags),
         })
+    }
+}
+
+impl StoreItem {
+    pub fn into_off_catalog_game(self) -> OffCatalogGame {
+        OffCatalogGame {
+            tags: normalize(self.tags),
+            name: Some(self.name),
+        }
     }
 }
 

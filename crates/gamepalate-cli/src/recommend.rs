@@ -21,6 +21,10 @@ const NAME_WIDTH: usize = 60;
 
 #[derive(Args)]
 pub struct RecommendArgs {
+    /// Use signals.json and the tags cache as they are, without asking Steam
+    #[arg(long)]
+    pub offline: bool,
+
     /// Only games with at least this many reviews
     #[arg(long)]
     min_reviews: Option<u32>,
@@ -157,10 +161,6 @@ pub fn run(args: &RecommendArgs, files: &DataFiles, data_dir: &Path) -> anyhow::
             date_time(recommendation.freshness.prices_updated_at)
         );
     }
-    eprintln!(
-        "Signals read on {}.",
-        date_time(recommendation.saved_signals_from)
-    );
     let no_bets = "No bets: they need at least 10 would_try votes and 10 not_for_me votes.";
     if args.only_bets && recommendation.without_vote_model {
         println!("{no_bets}");

@@ -55,6 +55,11 @@ pub enum SteamError {
         status: StatusCode,
     },
 
+    #[error(
+        "Steam did not show the library of {steam_id}: check that the game details of the profile are public, that steam_id is yours and that STEAM_API_KEY belongs to your account"
+    )]
+    LibraryHidden { steam_id: u64 },
+
     #[error("{endpoint} answered with an unexpected shape: {reason}")]
     Shape { endpoint: String, reason: String },
 

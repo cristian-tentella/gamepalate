@@ -9,12 +9,16 @@ use gamepalate_core::{
 use gamepalate_store::data_files::DataFiles;
 
 use crate::{
-    format::{date_time, decimal, integer, multiplier},
+    format::{decimal, integer, multiplier},
     names::{family_problem_text, game_label, tag_name},
 };
 
 #[derive(Args)]
 pub struct ProfileArgs {
+    /// Use signals.json and the tags cache as they are, without asking Steam
+    #[arg(long)]
+    pub offline: bool,
+
     /// How many tags to show
     #[arg(long, default_value_t = DEFAULT_TAG_LIMIT as u32, value_parser = clap::value_parser!(u32).range(1..))]
     tags: u32,
@@ -29,7 +33,6 @@ pub fn run(args: &ProfileArgs, files: &DataFiles, data_dir: &Path) -> anyhow::Re
     profile
         .corrected_tags
         .sort_by(|a, b| b.weight.total_cmp(&a.weight));
-    eprintln!("Signals read on {}.", date_time(profile.saved_signals_from));
 
     println!("Top tags of your profile:");
     for tag in &profile.tags {

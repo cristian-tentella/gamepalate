@@ -3,27 +3,58 @@ use std::{collections::BTreeMap, path::Path};
 use gamepalate_core::{
     game::GameTag,
     ids::{AppId, TagId},
-    off_catalog::{OffCatalogGame, OffCatalogGames},
+    off_catalog::{
+        CachedGame, OffCatalogCache, OffCatalogGame, OffCatalogGames, off_catalog_games,
+    },
+    timestamp::Timestamp,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize)]
+use crate::atomic::write_atomically;
+
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OffCatalogEntry {
-    #[allow(dead_code)]
     fetched_at: i64,
     tags: Vec<(u32, f64)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
 }
 
 pub fn load_off_catalog_games(path: &Path) -> OffCatalogGames {
+    off_catalog_games(load_off_catalog_cache(path))
+}
+
+pub fn load_off_catalog_cache(path: &Path) -> OffCatalogCache {
     std::fs::read_to_string(path)
         .ok()
-        .and_then(|text| parse_off_catalog_games(&text).ok())
+        .and_then(|text| parse_off_catalog_cache(&text).ok())
         .unwrap_or_default()
 }
 
-fn parse_off_catalog_games(text: &str) -> Result<OffCatalogGames, serde_json::Error> {
+pub fn save_off_catalog_cache(path: &Path, cache: &OffCatalogCache) -> std::io::Result<()> {
+    let file: BTreeMap<u32, OffCatalogEntry> = cache
+        .iter()
+        .map(|(id, cached)| {
+            let entry = OffCatalogEntry {
+                fetched_at: cached.fetched_at.0,
+                tags: cached
+                    .game
+                    .tags
+                    .iter()
+                    .map(|tag| (tag.id.0, tag.weight))
+                    .collect(),
+                name: cached.game.name.clone(),
+            };
+            (id.0, entry)
+        })
+        .collect();
+    let text = serde_json::to_string(&file).map_err(std::io::Error::other)?;
+
+    write_atomically(path, &text)
+}
+
+fn parse_off_catalog_cache(text: &str) -> Result<OffCatalogCache, serde_json::Error> {
     let file: BTreeMap<u32, OffCatalogEntry> = serde_json::from_str(text)?;
 
     Ok(file
@@ -40,7 +71,11 @@ fn parse_off_catalog_games(text: &str) -> Result<OffCatalogGames, serde_json::Er
                     .collect(),
                 name: entry.name,
             };
-            (AppId(appid), game)
+            let cached = CachedGame {
+                fetched_at: Timestamp(entry.fetched_at),
+                game,
+            };
+            (AppId(appid), cached)
         })
         .collect())
 }
@@ -50,36 +85,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_off_catalog_games_reads_tags_and_name() {
-        let games = parse_off_catalog_games(
+    fn parse_off_catalog_cache_reads_dates_tags_and_name() {
+        let cache = parse_off_catalog_cache(
             r#"{
                 "730": { "fetchedAt": 1, "tags": [[1663, 0.75], [1774, 0.25]], "name": "Counter-Strike 2" },
-                "440": { "fetchedAt": 1, "tags": [] }
+                "440": { "fetchedAt": 2, "tags": [] }
             }"#,
         )
         .unwrap();
 
         assert_eq!(
-            games[&AppId(730)],
-            OffCatalogGame {
-                tags: vec![
-                    GameTag {
-                        id: TagId(1663),
-                        weight: 0.75,
-                    },
-                    GameTag {
-                        id: TagId(1774),
-                        weight: 0.25,
-                    },
-                ],
-                name: Some("Counter-Strike 2".to_string()),
+            cache[&AppId(730)],
+            CachedGame {
+                fetched_at: Timestamp(1),
+                game: OffCatalogGame {
+                    tags: vec![
+                        GameTag {
+                            id: TagId(1663),
+                            weight: 0.75,
+                        },
+                        GameTag {
+                            id: TagId(1774),
+                            weight: 0.25,
+                        },
+                    ],
+                    name: Some("Counter-Strike 2".to_string()),
+                },
             }
         );
         assert_eq!(
-            games[&AppId(440)],
-            OffCatalogGame {
-                tags: Vec::new(),
-                name: None,
+            cache[&AppId(440)],
+            CachedGame {
+                fetched_at: Timestamp(2),
+                game: OffCatalogGame {
+                    tags: Vec::new(),
+                    name: None,
+                },
             }
         );
     }
@@ -91,7 +132,44 @@ mod tests {
     }
 
     #[test]
-    fn parse_off_catalog_games_rejects_invalid_json() {
-        assert!(parse_off_catalog_games("{ not json").is_err());
+    fn parse_off_catalog_cache_rejects_invalid_json() {
+        assert!(parse_off_catalog_cache("{ not json").is_err());
+    }
+
+    #[test]
+    fn a_saved_cache_reads_back_the_same() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("off-catalog-tags.json");
+        let cache = OffCatalogCache::from([
+            (
+                AppId(730),
+                CachedGame {
+                    fetched_at: Timestamp(5),
+                    game: OffCatalogGame {
+                        tags: vec![GameTag {
+                            id: TagId(19),
+                            weight: 1.0,
+                        }],
+                        name: Some("Counter-Strike 2".to_string()),
+                    },
+                },
+            ),
+            (
+                AppId(440),
+                CachedGame {
+                    fetched_at: Timestamp(6),
+                    game: OffCatalogGame {
+                        tags: Vec::new(),
+                        name: None,
+                    },
+                },
+            ),
+        ]);
+
+        save_off_catalog_cache(&path, &cache).unwrap();
+
+        assert_eq!(load_off_catalog_cache(&path), cache);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#""440":{"fetchedAt":6,"tags":[]}"#));
     }
 }
