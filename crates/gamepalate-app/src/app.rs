@@ -22,6 +22,7 @@ use gamepalate_steam::{
 };
 use gamepalate_store::{
     data_files::{DataFiles, DataFilesError, load_data_files},
+    gui::{GuiSettings, load_gui_settings, save_gui_settings},
     votes::{VotesError, save_votes},
 };
 
@@ -30,6 +31,8 @@ use crate::{
     details::{GameDetails, StoreDetails},
     images::{ImageCache, LoadImageError},
 };
+
+const GUI_FILE: &str = "gui.toml";
 
 #[derive(Debug)]
 pub struct Gamepalate {
@@ -128,6 +131,14 @@ impl Gamepalate {
 
     pub async fn details(&self, id: AppId) -> Result<Option<GameDetails>, SteamError> {
         self.store.details(id).await
+    }
+
+    pub fn gui_settings(&self) -> GuiSettings {
+        load_gui_settings(&self.data_dir.join(GUI_FILE))
+    }
+
+    pub fn save_gui_settings(&self, settings: &GuiSettings) -> std::io::Result<()> {
+        save_gui_settings(&self.data_dir.join(GUI_FILE), settings)
     }
 
     pub fn prune_images(&self) {

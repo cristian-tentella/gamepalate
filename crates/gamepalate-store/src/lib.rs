@@ -5,6 +5,7 @@ pub mod corrections;
 pub mod corrections_edit;
 pub mod data_files;
 pub mod families;
+pub mod gui;
 mod keys;
 pub mod off_catalog;
 pub mod signals;

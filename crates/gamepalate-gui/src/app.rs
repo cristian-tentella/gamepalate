@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gamepalate_app::{Gamepalate, Timestamp};
+use gamepalate_app::{Gamepalate, GuiSettings, ThemeChoice, Timestamp};
 use iced::{
     Center, Element, Fill, Length, Shrink, Subscription, Task, Theme, mouse, padding,
     widget::{button, column, container, mouse_area, row, space, stack, text},
@@ -23,6 +23,8 @@ const MINIMIZE: char = '\u{E921}';
 const MAXIMIZE: char = '\u{E922}';
 const RESTORE: char = '\u{E923}';
 const CLOSE: char = '\u{E8BB}';
+const SUN: char = '\u{E706}';
+const MOON: char = '\u{E708}';
 
 pub struct App {
     gamepalate: Arc<Gamepalate>,
@@ -42,6 +44,7 @@ pub enum Message {
     BarPressed,
     Resized,
     Maximized(bool),
+    ToggleTheme,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -64,12 +67,13 @@ impl App {
         let (discover, task) = Discover::new(&gamepalate);
         let pruner = Arc::clone(&gamepalate);
         let prune_images = Task::future(async move { pruner.prune_images() }).discard();
+        let theme = theme(gamepalate.gui_settings().theme);
 
         (
             App {
                 gamepalate,
                 screen: Screen::Discover(Box::new(discover)),
-                theme: Theme::Light,
+                theme,
                 window: None,
                 maximized: false,
                 last_bar_press: None,
@@ -105,6 +109,14 @@ impl App {
             Message::Maximized(maximized) => {
                 self.maximized = maximized;
                 Task::none()
+            }
+            Message::ToggleTheme => {
+                self.theme = toggled(&self.theme);
+                let settings = GuiSettings {
+                    theme: choice(&self.theme),
+                };
+                let gamepalate = Arc::clone(&self.gamepalate);
+                Task::future(async move { gamepalate.save_gui_settings(&settings) }).discard()
             }
         }
     }
@@ -142,6 +154,7 @@ impl App {
                 ]
                 .height(Fill),
                 row![
+                    theme_button(&self.theme),
                     window_button(MINIMIZE, WindowAction::Minimize),
                     window_button(
                         if self.maximized { RESTORE } else { MAXIMIZE },
@@ -304,6 +317,53 @@ fn window_button<'a>(icon: char, action: WindowAction) -> Element<'a, Message> {
     .into()
 }
 
+fn toggled(theme: &Theme) -> Theme {
+    if *theme == Theme::Dark {
+        Theme::Light
+    } else {
+        Theme::Dark
+    }
+}
+
+fn theme(choice: ThemeChoice) -> Theme {
+    match choice {
+        ThemeChoice::Light => Theme::Light,
+        ThemeChoice::Dark => Theme::Dark,
+    }
+}
+
+fn choice(theme: &Theme) -> ThemeChoice {
+    if *theme == Theme::Dark {
+        ThemeChoice::Dark
+    } else {
+        ThemeChoice::Light
+    }
+}
+
+fn theme_icon(theme: &Theme) -> char {
+    if *theme == Theme::Dark { SUN } else { MOON }
+}
+
+fn theme_button<'a>(theme: &Theme) -> Element<'a, Message> {
+    button(
+        container(
+            text(theme_icon(theme))
+                .font(font::ICONS)
+                .size(14)
+                .width(Fill)
+                .height(Fill)
+                .center(),
+        )
+        .padding(padding::bottom(UNDERLINE_HEIGHT)),
+    )
+    .width(46)
+    .height(Fill)
+    .padding(0)
+    .style(style::window_button)
+    .on_press(Message::ToggleTheme)
+    .into()
+}
+
 fn resize_borders<'a>() -> Element<'a, Message> {
     column![
         row![
@@ -354,4 +414,28 @@ fn resize_border<'a>(direction: Direction) -> Element<'a, Message> {
         .interaction(interaction)
         .on_press(Message::Window(WindowAction::Resize(direction)))
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_theme_goes_from_light_to_dark_and_back() {
+        assert_eq!(toggled(&Theme::Light), Theme::Dark);
+        assert_eq!(toggled(&Theme::Dark), Theme::Light);
+    }
+
+    #[test]
+    fn the_saved_choice_is_the_theme() {
+        for choice_saved in [ThemeChoice::Light, ThemeChoice::Dark] {
+            assert_eq!(choice(&theme(choice_saved)), choice_saved);
+        }
+    }
+
+    #[test]
+    fn the_button_shows_the_theme_it_switches_to() {
+        assert_eq!(theme_icon(&Theme::Light), MOON);
+        assert_eq!(theme_icon(&Theme::Dark), SUN);
+    }
 }

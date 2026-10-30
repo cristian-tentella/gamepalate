@@ -14,4 +14,5 @@ pub use gamepalate_core::{
     votes::VoteKind,
 };
 pub use gamepalate_steam::details::{Controller, Italian, ItemDetails, SteamDeck};
+pub use gamepalate_store::gui::{GuiSettings, ThemeChoice};
 pub use images::LoadImageError;
