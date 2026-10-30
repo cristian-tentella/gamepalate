@@ -66,7 +66,7 @@ impl App {
         (
             App {
                 gamepalate,
-                screen: Screen::Discover(discover),
+                screen: Screen::Discover(Box::new(discover)),
                 theme: Theme::Light,
                 window: None,
                 maximized: false,
@@ -84,9 +84,10 @@ impl App {
             Message::Navigate(page) => self.open(page),
             Message::Discover(message) => {
                 if let Screen::Discover(screen) = &mut self.screen {
-                    screen.update(message);
+                    screen.update(message).map(Message::Discover)
+                } else {
+                    Task::none()
                 }
-                Task::none()
             }
             Message::WindowFound(id) => {
                 self.window = id;
@@ -106,7 +107,12 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        window::resize_events().map(|_| Message::Resized)
+        let screen = match &self.screen {
+            Screen::Discover(_) => Discover::subscription().map(Message::Discover),
+            Screen::Votes | Screen::Profile => Subscription::none(),
+        };
+
+        Subscription::batch([window::resize_events().map(|_| Message::Resized), screen])
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -230,7 +236,7 @@ impl App {
         match page {
             Page::Discover => {
                 let (discover, task) = Discover::new(&self.gamepalate);
-                self.screen = Screen::Discover(discover);
+                self.screen = Screen::Discover(Box::new(discover));
                 task.map(Message::Discover)
             }
             Page::Votes => {

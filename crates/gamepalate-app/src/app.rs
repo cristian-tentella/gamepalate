@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use gamepalate_core::{
     filters::TagNameError,
     game_vector::{GameVector, game_vectors},
-    search::{Recommendation, SearchError, SearchOptions, recommend},
+    ids::AppId,
+    search::{Recommendation, RecommendedGame, SearchError, SearchOptions, recommend},
     timestamp::Timestamp,
 };
 use gamepalate_store::data_files::{DataFiles, DataFilesError, load_data_files};
@@ -39,6 +40,22 @@ impl Gamepalate {
             Timestamp(jiff::Timestamp::now().as_millisecond()),
         )
         .map_err(RecommendError)
+    }
+
+    pub fn recommend_after(
+        &self,
+        options: &SearchOptions,
+        seen: &[AppId],
+    ) -> Result<Recommendation, RecommendError> {
+        let count = options.limit.unwrap_or(self.files.config.results.count);
+        let wider = SearchOptions {
+            limit: Some(count + seen.len()),
+            ..options.clone()
+        };
+        let mut recommendation = self.recommend(&wider)?;
+        recommendation.games = unseen(recommendation.games, seen, count);
+
+        Ok(recommendation)
     }
 
     pub fn signals_read_at(&self) -> Timestamp {
@@ -80,8 +97,18 @@ fn search_error_text(error: &SearchError) -> String {
     }
 }
 
+fn unseen(games: Vec<RecommendedGame>, seen: &[AppId], count: usize) -> Vec<RecommendedGame> {
+    games
+        .into_iter()
+        .filter(|game| !seen.contains(&game.id))
+        .take(count)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+    use gamepalate_core::game::{Price, Reviews};
+
     use super::*;
 
     #[test]
@@ -107,5 +134,43 @@ mod tests {
             error.to_string(),
             "more than one tag matches \"rogue\": write the full name"
         );
+    }
+
+    #[test]
+    fn skips_the_games_already_seen() {
+        let games = (1..=5).map(game).collect();
+
+        let ids: Vec<AppId> = unseen(games, &[AppId(1), AppId(3)], 2)
+            .iter()
+            .map(|game| game.id)
+            .collect();
+
+        assert_eq!(ids, vec![AppId(2), AppId(4)]);
+    }
+
+    fn game(id: u32) -> RecommendedGame {
+        RecommendedGame {
+            position: id as usize,
+            id: AppId(id),
+            name: format!("Game {id}"),
+            price: Price {
+                original_cents: 999,
+                discount: None,
+            },
+            store_url: String::new(),
+            from_family: None,
+            affinity: 1.0,
+            top_tags: Vec::new(),
+            similar_to: None,
+            similar_to_multiplier: None,
+            quality: 1.0,
+            reviews: Reviews {
+                total: 100,
+                positive: 90,
+            },
+            in_wishlist: false,
+            relevance: 1.0,
+            bet: false,
+        }
     }
 }

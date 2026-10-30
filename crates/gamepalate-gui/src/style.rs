@@ -1,5 +1,5 @@
 use iced::{
-    Border, Color, Element, Theme,
+    Border, Color, Element, Shadow, Theme, Vector,
     theme::palette,
     widget::{button, container, rule, text},
 };
@@ -126,5 +126,47 @@ pub fn keycap(theme: &Theme) -> container::Style {
             radius: 4.0.into(),
         },
         ..container::Style::default()
+    }
+}
+
+pub fn toast(theme: &Theme) -> container::Style {
+    let background = theme.extended_palette().background.base;
+
+    container::Style {
+        background: Some(background.text.scale_alpha(0.9).into()),
+        text_color: Some(background.color),
+        border: Border {
+            radius: 6.0.into(),
+            ..Border::default()
+        },
+        shadow: Shadow {
+            color: Color::BLACK.scale_alpha(0.2),
+            offset: Vector::new(0.0, 2.0),
+            blur_radius: 8.0,
+        },
+        ..container::Style::default()
+    }
+}
+
+pub fn arrow(theme: &Theme, status: button::Status) -> button::Style {
+    let background = theme.extended_palette().background;
+
+    button::Style {
+        background: match status {
+            button::Status::Hovered => Some(background.weak.color.into()),
+            button::Status::Pressed => Some(background.strong.color.into()),
+            button::Status::Active | button::Status::Disabled => None,
+        },
+        text_color: match status {
+            button::Status::Disabled => background.base.text.scale_alpha(0.2),
+            button::Status::Active | button::Status::Hovered | button::Status::Pressed => {
+                background.base.text.scale_alpha(0.6)
+            }
+        },
+        border: Border {
+            radius: 22.0.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
     }
 }
