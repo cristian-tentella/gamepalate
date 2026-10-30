@@ -17,6 +17,7 @@ pub struct StoreItem {
     pub is_coming_soon: bool,
     pub release_date: Option<Timestamp>,
     pub price: Option<ItemPrice>,
+    pub formatted_price: Option<String>,
     pub reviews: Reviews,
     pub tags: Vec<ItemTag>,
 }
@@ -118,6 +119,7 @@ mod tests {
                 discount_percent: 0,
                 discount_end: None,
             }),
+            formatted_price: Some("9,69€".to_string()),
             reviews: Reviews {
                 total: 100,
                 positive: 98,

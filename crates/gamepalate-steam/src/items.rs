@@ -99,6 +99,7 @@ struct PurchaseOption {
     final_price_in_cents: Option<Int<u32>>,
     original_price_in_cents: Option<Int<u32>>,
     discount_pct: Option<u8>,
+    formatted_final_price: Option<String>,
     #[serde(default)]
     active_discounts: Vec<ActiveDiscount>,
 }
@@ -234,6 +235,8 @@ fn to_store_item(index: usize, item: SteamItem) -> Result<StoreItem, SteamError>
         .and_then(|release| release.steam_release_date)
         .map(seconds);
 
+    let option = game_option(item.best_purchase_option, item.purchase_options);
+
     Ok(StoreItem {
         id: AppId(item.id),
         name,
@@ -242,7 +245,8 @@ fn to_store_item(index: usize, item: SteamItem) -> Result<StoreItem, SteamError>
         is_early_access: item.is_early_access,
         is_coming_soon: item.is_coming_soon || release_coming_soon,
         release_date,
-        price: game_option(item.best_purchase_option, item.purchase_options).and_then(item_price),
+        price: option.as_ref().and_then(item_price),
+        formatted_price: option.and_then(|option| option.formatted_final_price),
         reviews: reviews(item.reviews.and_then(|reviews| reviews.summary_filtered)),
         tags: item
             .tags
@@ -273,7 +277,7 @@ fn game_option(
         .map(|(_, option)| option)
 }
 
-fn item_price(option: PurchaseOption) -> Option<ItemPrice> {
+fn item_price(option: &PurchaseOption) -> Option<ItemPrice> {
     let final_cents = option.final_price_in_cents?.0;
 
     Some(ItemPrice {
@@ -340,6 +344,7 @@ mod tests {
                 "final_price_in_cents": "1119",
                 "original_price_in_cents": "1399",
                 "discount_pct": 20,
+                "formatted_final_price": "11,19€",
                 "active_discounts": [{ "discount_end_date": 1_793_638_800 }],
             },
             "unknown": "ignored",
@@ -361,6 +366,7 @@ mod tests {
                     discount_percent: 20,
                     discount_end: Some(Timestamp(1_793_638_800_000)),
                 }),
+                formatted_price: Some("11,19€".to_string()),
                 reviews: Reviews {
                     total: 3,
                     positive: 2,
@@ -396,6 +402,33 @@ mod tests {
         })));
 
         assert_eq!(item.price.unwrap().final_cents, 159);
+    }
+
+    #[test]
+    fn the_formatted_price_is_the_one_of_the_chosen_package() {
+        let item = one(item(json!({
+            "best_purchase_option": {
+                "bundleid": 234,
+                "final_price_in_cents": "500",
+                "formatted_final_price": "5,00€",
+            },
+            "purchase_options": [
+                { "packageid": 7877, "final_price_in_cents": "969", "formatted_final_price": "9,69€" },
+                { "packageid": 8187, "final_price_in_cents": "159", "formatted_final_price": "1,59€" },
+                { "bundleid": 234, "final_price_in_cents": "500", "formatted_final_price": "5,00€" },
+            ],
+        })));
+
+        assert_eq!(item.formatted_price.as_deref(), Some("1,59€"));
+    }
+
+    #[test]
+    fn without_a_formatted_price_it_is_none() {
+        let item = one(item(json!({
+            "best_purchase_option": { "packageid": 1, "final_price_in_cents": 969 },
+        })));
+
+        assert_eq!(item.formatted_price, None);
     }
 
     #[test]

@@ -72,6 +72,7 @@ mod tests {
                 discount_percent: 0,
                 discount_end: None,
             }),
+            formatted_price: Some("9,99€".to_string()),
             reviews: Reviews {
                 total: 10,
                 positive: 9,
