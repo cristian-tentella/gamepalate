@@ -112,6 +112,7 @@ pub struct Transport<F = Client> {
 struct Pace {
     next_slot: Instant,
     interval: Duration,
+    fastest: Duration,
 }
 
 enum Attempt {
@@ -199,7 +200,19 @@ impl<F: Fetch> Transport<F> {
             pace: Mutex::new(Pace {
                 next_slot: Instant::now(),
                 interval: INTERVAL,
+                fastest: INTERVAL,
             }),
+        }
+    }
+
+    pub fn with_interval(self, interval: Duration) -> Transport<F> {
+        Transport {
+            pace: Mutex::new(Pace {
+                next_slot: Instant::now(),
+                interval,
+                fastest: interval,
+            }),
+            ..self
         }
     }
 
@@ -289,7 +302,7 @@ impl<F: Fetch> Transport<F> {
 
     fn speed_up(&self) {
         let mut pace = self.lock_pace();
-        pace.interval = faster(pace.interval);
+        pace.interval = faster(pace.interval, pace.fastest);
     }
 
     fn lock_pace(&self) -> MutexGuard<'_, Pace> {
@@ -303,8 +316,8 @@ fn slower(interval: Duration) -> Duration {
     (interval + SLOW_DOWN_STEP).min(MAX_INTERVAL)
 }
 
-fn faster(interval: Duration) -> Duration {
-    interval.saturating_sub(SPEED_UP_STEP).max(INTERVAL)
+fn faster(interval: Duration, fastest: Duration) -> Duration {
+    interval.saturating_sub(SPEED_UP_STEP).max(fastest)
 }
 
 fn steam_down(endpoint: &str, error: reqwest::Error) -> SteamError {
@@ -429,6 +442,40 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_transport_without_interval_sends_requests_together() {
+        let start = Instant::now();
+        let transport = fake_transport(vec![ok(), ok(), ok()], None).with_interval(Duration::ZERO);
+
+        let (first, second, third) = tokio::join!(
+            get_tags(&transport),
+            get_tags(&transport),
+            get_tags(&transport)
+        );
+
+        assert!(first.is_ok() && second.is_ok() && third.is_ok());
+        assert_eq!(start_offsets_ms(&transport, start), [0, 0, 0]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_transport_without_interval_still_slows_down_when_rate_limited() {
+        let start = Instant::now();
+        let mut replies = vec![rate_limited()];
+        replies.extend((0..12).map(|_| ok()));
+        let transport = fake_transport(replies, None).with_interval(Duration::ZERO);
+
+        for _ in 0..12 {
+            assert!(get_tags(&transport).await.is_ok());
+        }
+
+        assert_eq!(
+            start_offsets_ms(&transport, start),
+            [
+                0, 2000, 2250, 2475, 2675, 2850, 3000, 3125, 3225, 3300, 3350, 3375, 3375
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn rate_limited_request_is_retried_with_doubling_waits() {
         let start = Instant::now();
         let transport = fake_transport(vec![rate_limited(), rate_limited(), ok()], None);
@@ -469,8 +516,12 @@ mod tests {
     #[test]
     fn the_interval_stays_between_half_a_second_and_two_seconds() {
         assert_eq!(slower(Duration::from_millis(1900)), MAX_INTERVAL);
-        assert_eq!(faster(Duration::from_millis(520)), INTERVAL);
-        assert_eq!(faster(INTERVAL), INTERVAL);
+        assert_eq!(faster(Duration::from_millis(520), INTERVAL), INTERVAL);
+        assert_eq!(faster(INTERVAL, INTERVAL), INTERVAL);
+        assert_eq!(
+            faster(Duration::from_millis(10), Duration::ZERO),
+            Duration::ZERO
+        );
     }
 
     #[tokio::test(start_paused = true)]

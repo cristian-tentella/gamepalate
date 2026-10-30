@@ -4,6 +4,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
+use futures::future::join;
 use gamepalate_core::{ids::AppId, region::Region};
 use gamepalate_steam::{
     details::{ItemDetails, get_item_details, get_store_categories},
@@ -42,8 +43,12 @@ impl<S: Get + Sync> StoreDetails<S> {
     }
 
     pub async fn details(&self, id: AppId) -> Result<Option<GameDetails>, SteamError> {
-        let names = self.categories().await;
-        let store = get_item_details(&self.transport, id, LANGUAGE, self.region.as_str()).await?;
+        let (names, store) = join(
+            self.categories(),
+            get_item_details(&self.transport, id, LANGUAGE, self.region.as_str()),
+        )
+        .await;
+        let store = store?;
 
         Ok(store.map(|store| game_details(store, &names)))
     }
@@ -121,6 +126,23 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct SlowSteam {
+        asked: Mutex<Vec<String>>,
+    }
+
+    impl Get for SlowSteam {
+        fn get(
+            &self,
+            endpoint: &str,
+            _params: &[(&str, &str)],
+            _needs_key: bool,
+        ) -> impl Future<Output = Result<Value, SteamError>> + Send {
+            self.asked.lock().unwrap().push(endpoint.to_string());
+            std::future::pending()
+        }
+    }
+
     fn store(replies: Vec<Result<Value, SteamError>>) -> StoreDetails<FakeSteam> {
         store_in(replies, Region::ITALY)
     }
@@ -193,6 +215,19 @@ mod tests {
         ]);
 
         assert_eq!(store.details(AppId(3)).await.unwrap(), None);
+    }
+
+    #[test]
+    fn asks_the_categories_and_the_details_together() {
+        let store = StoreDetails::new(SlowSteam::default(), Region::ITALY);
+        let mut details = std::pin::pin!(store.details(AppId(620)));
+
+        let poll = details
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+
+        assert!(poll.is_pending());
+        assert_eq!(*store.transport.asked.lock().unwrap(), [CATEGORIES, ITEMS]);
     }
 
     #[tokio::test]

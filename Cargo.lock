@@ -1669,6 +1669,7 @@ name = "gamepalate-app"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "futures",
  "gamepalate-core",
  "gamepalate-steam",
  "gamepalate-store",

@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use gamepalate_core::{
     currency::Currency,
@@ -41,7 +41,10 @@ impl Gamepalate {
             ImageDownloader::new()?,
         );
 
-        let store = StoreDetails::new(Transport::new(None)?, files.config.region);
+        let store = StoreDetails::new(
+            Transport::new(None)?.with_interval(Duration::ZERO),
+            files.config.region,
+        );
 
         Ok(Gamepalate {
             data_dir: dir,
