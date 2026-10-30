@@ -48,8 +48,8 @@ impl App {
         match message {
             Message::Navigate(page) => self.open(page),
             Message::Discover(message) => {
-                match &mut self.screen {
-                    Screen::Discover(screen) => screen.update(message),
+                if let Screen::Discover(screen) = &mut self.screen {
+                    screen.update(message);
                 }
                 Task::none()
             }
@@ -67,14 +67,15 @@ impl App {
                 ]
                 .spacing(12),
             ]
-            .spacing(24),
+            .spacing(20),
         )
-        .padding(8)
+        .padding([8, 12])
         .width(Fill)
         .style(bar_style);
 
         let content = match &self.screen {
             Screen::Discover(screen) => screen.view().map(Message::Discover),
+            Screen::Votes | Screen::Profile => column![].into(),
         };
 
         column![bar, scrollable(content).width(Fill).height(Fill)].into()
@@ -87,6 +88,8 @@ impl App {
     fn page(&self) -> Page {
         match &self.screen {
             Screen::Discover(_) => Page::Discover,
+            Screen::Votes => Page::Votes,
+            Screen::Profile => Page::Profile,
         }
     }
 
@@ -97,13 +100,19 @@ impl App {
                 self.screen = Screen::Discover(discover);
                 task.map(Message::Discover)
             }
-            Page::Votes | Page::Profile => Task::none(),
+            Page::Votes => {
+                self.screen = Screen::Votes;
+                Task::none()
+            }
+            Page::Profile => {
+                self.screen = Screen::Profile;
+                Task::none()
+            }
         }
     }
 
     fn tab(&self, label: &'static str, page: Page) -> Element<'_, Message> {
         let current = self.page() == page;
-        let available = matches!(page, Page::Discover);
         let content: Rich<'_, (), Message> = rich_text([span(label).underline(current)]);
 
         button(content)
@@ -115,7 +124,7 @@ impl App {
                     button::text(theme, status)
                 }
             })
-            .on_press_maybe((available && !current).then_some(Message::Navigate(page)))
+            .on_press_maybe((!current).then_some(Message::Navigate(page)))
             .into()
     }
 }
