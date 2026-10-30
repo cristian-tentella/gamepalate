@@ -101,11 +101,15 @@ struct Assets {
 struct Screenshots {
     #[serde(default)]
     all_ages_screenshots: Vec<ScreenshotFile>,
+    #[serde(default)]
+    mature_content_screenshots: Vec<ScreenshotFile>,
 }
 
 #[derive(Deserialize)]
 struct ScreenshotFile {
     filename: String,
+    #[serde(default)]
+    ordinal: u32,
 }
 
 #[derive(Default, Deserialize)]
@@ -240,8 +244,10 @@ fn to_details(item: SteamDetails) -> ItemDetails {
         screenshot_urls: item
             .screenshots
             .map(|screenshots| {
-                screenshots
-                    .all_ages_screenshots
+                let mut files = screenshots.all_ages_screenshots;
+                files.extend(screenshots.mature_content_screenshots);
+                files.sort_by_key(|file| file.ordinal);
+                files
                     .into_iter()
                     .map(|file| screenshot_url(&file.filename))
                     .collect()
@@ -353,6 +359,27 @@ mod tests {
                 }),
                 steam_deck: Some(SteamDeck::Verified),
             })
+        );
+    }
+
+    #[test]
+    fn mature_screenshots_are_read_too_in_their_order() {
+        let details = one(json!({
+            "id": 2_166_060,
+            "success": 1,
+            "screenshots": {
+                "all_ages_screenshots": [{ "filename": "steam/apps/2166060/ss_2.jpg", "ordinal": 2 }],
+                "mature_content_screenshots": [
+                    { "filename": "steam/apps/2166060/ss_1.jpg", "ordinal": 1 },
+                    { "filename": "steam/apps/2166060/ss_3.jpg", "ordinal": 3 },
+                ],
+            },
+        }))
+        .unwrap();
+
+        assert_eq!(
+            details.screenshot_urls,
+            [1, 2, 3].map(|n| format!("{ASSETS_BASE_URL}steam/apps/2166060/ss_{n}.1920x1080.jpg"))
         );
     }
 
