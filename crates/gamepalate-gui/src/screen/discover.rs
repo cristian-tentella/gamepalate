@@ -27,16 +27,24 @@ const COMPACT_VOTE_SIZE: f32 = 14.0;
 const VOTE_WIDTH: f32 = 172.0;
 const VOTE_HEIGHT: f32 = 36.0;
 const TOAST_DURATION: Duration = Duration::from_secs(4);
+const FLASH_DURATION: Duration = Duration::from_millis(600);
 const PREVIOUS: char = '\u{E76B}';
 const NEXT: char = '\u{E76C}';
+const CHECK: char = '\u{E73E}';
 
 pub struct Discover {
     gamepalate: Arc<Gamepalate>,
     options: SearchOptions,
     votes_this_session: usize,
     toast: Option<Toast>,
-    toasts_shown: u64,
+    flash: Option<Flash>,
+    timers_started: u64,
     state: State,
+}
+
+struct Flash {
+    id: u64,
+    kind: VoteKind,
 }
 
 struct Toast {
@@ -51,8 +59,16 @@ pub enum Message {
     Previous,
     Next,
     Vote(VoteKind),
-    Open(String),
+    Open(Link),
     HideToast(u64),
+    EndFlash(u64),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Link {
+    Steam,
+    Eneba,
+    Hltb,
 }
 
 enum State {
@@ -77,7 +93,8 @@ impl Discover {
                 options,
                 votes_this_session: 0,
                 toast: None,
-                toasts_shown: 0,
+                flash: None,
+                timers_started: 0,
                 state: State::Loading,
             },
             task,
@@ -120,11 +137,25 @@ impl Discover {
             Message::Vote(kind) => {
                 if let Some(game) = self.current() {
                     let text = format::voted(&game.name, kind);
-                    return Task::batch([self.show_toast(text), self.advance()]);
+                    return Task::batch([self.show_toast(text), self.flash(kind), self.advance()]);
                 }
             }
-            Message::Open(url) => {
-                let _ = Command::new("explorer").arg(url).spawn();
+            Message::Open(link) => {
+                if let Some(game) = self.current() {
+                    let url = match link {
+                        Link::Steam => game.store_url.clone(),
+                        Link::Eneba => format::eneba_url(&game.name),
+                        Link::Hltb => format::hltb_url(&game.name),
+                    };
+                    let _ = Command::new("rundll32")
+                        .args(["url.dll,FileProtocolHandler", &url])
+                        .spawn();
+                }
+            }
+            Message::EndFlash(id) => {
+                if self.flash.as_ref().is_some_and(|flash| flash.id == id) {
+                    self.flash = None;
+                }
             }
             Message::HideToast(id) => {
                 if self.toast.as_ref().is_some_and(|toast| toast.id == id) {
@@ -195,15 +226,18 @@ impl Discover {
             )
             .padding(padding::left(4))
         });
-        let votes = row(VOTES.map(|(key, kind)| vote_button(key, kind, compact, game.is_some())))
-            .push(hint)
-            .spacing(8)
-            .width(Fill)
-            .align_y(Center);
+        let flashed = self.flash.as_ref().map(|flash| flash.kind);
+        let votes = row(VOTES.map(|(key, kind)| {
+            vote_button(key, kind, compact, game.is_some(), flashed == Some(kind))
+        }))
+        .push(hint)
+        .spacing(8)
+        .width(Fill)
+        .align_y(Center);
         let links = row![
-            link_button("5 Steam ↗", game.map(|game| game.store_url.clone())),
-            link_button("6 Eneba ↗", game.map(|game| format::eneba_url(&game.name))),
-            link_button("7 HLTB ↗", game.map(|game| format::hltb_url(&game.name))),
+            link_button("5 Steam ↗", Link::Steam, game.is_some()),
+            link_button("6 Eneba ↗", Link::Eneba, game.is_some()),
+            link_button("7 HLTB ↗", Link::Hltb, game.is_some()),
         ]
         .spacing(20);
 
@@ -238,17 +272,22 @@ impl Discover {
     }
 
     fn show_toast(&mut self, text: String) -> Task<Message> {
-        self.toasts_shown += 1;
-        let id = self.toasts_shown;
+        let id = self.start_timer();
         self.toast = Some(Toast { id, text });
 
-        let (sender, receiver) = oneshot::channel();
-        thread::spawn(move || {
-            thread::sleep(TOAST_DURATION);
-            let _ = sender.send(());
-        });
+        after(TOAST_DURATION, Message::HideToast(id))
+    }
 
-        Task::perform(receiver, move |_| Message::HideToast(id))
+    fn flash(&mut self, kind: VoteKind) -> Task<Message> {
+        let id = self.start_timer();
+        self.flash = Some(Flash { id, kind });
+
+        after(FLASH_DURATION, Message::EndFlash(id))
+    }
+
+    fn start_timer(&mut self) -> u64 {
+        self.timers_started += 1;
+        self.timers_started
     }
 
     fn current(&self) -> Option<&RecommendedGame> {
@@ -301,11 +340,17 @@ fn vote_button<'a>(
     kind: VoteKind,
     compact: bool,
     enabled: bool,
+    flashed: bool,
 ) -> Element<'a, Message> {
-    let keycap = container(text(key).size(11).style(style::muted))
+    let mark = if flashed {
+        text(CHECK).font(font::ICONS).size(10)
+    } else {
+        text(key).size(11).style(style::muted)
+    };
+    let keycap = container(mark)
         .center_x(18)
         .center_y(18)
-        .style(style::keycap);
+        .style(style::keycap(flashed));
     let label = text(format::vote(kind))
         .size(if compact {
             COMPACT_VOTE_SIZE
@@ -323,12 +368,22 @@ fn vote_button<'a>(
         .width(Fill)
         .height(VOTE_HEIGHT)
         .padding(0)
-        .style(style::vote)
+        .style(style::vote(flashed))
         .on_press_maybe(enabled.then_some(Message::Vote(kind))),
     )
     .width(Fill)
     .max_width(VOTE_WIDTH)
     .into()
+}
+
+fn after(duration: Duration, message: Message) -> Task<Message> {
+    let (sender, receiver) = oneshot::channel();
+    thread::spawn(move || {
+        thread::sleep(duration);
+        let _ = sender.send(());
+    });
+
+    Task::perform(receiver, move |_| message)
 }
 
 fn arrow_button<'a>(icon: char, message: Option<Message>) -> Element<'a, Message> {
@@ -341,11 +396,11 @@ fn arrow_button<'a>(icon: char, message: Option<Message>) -> Element<'a, Message
         .into()
 }
 
-fn link_button(label: &str, url: Option<String>) -> Element<'_, Message> {
+fn link_button(label: &str, link: Link, enabled: bool) -> Element<'_, Message> {
     button(text(label).size(font::BAR_SIZE))
         .padding(0)
         .style(style::link)
-        .on_press_maybe(url.map(Message::Open))
+        .on_press_maybe(enabled.then_some(Message::Open(link)))
         .into()
 }
 
@@ -357,6 +412,64 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
     match key {
         Key::Named(Named::Space | Named::ArrowRight) => Some(Message::Next),
         Key::Named(Named::Backspace | Named::ArrowLeft) => Some(Message::Previous),
-        _ => None,
+        Key::Character(character) => match character.as_str() {
+            "5" => Some(Message::Open(Link::Steam)),
+            "6" => Some(Message::Open(Link::Eneba)),
+            "7" => Some(Message::Open(Link::Hltb)),
+            key => VOTES
+                .iter()
+                .find(|(vote_key, _)| *vote_key == key)
+                .map(|(_, kind)| Message::Vote(*kind)),
+        },
+        Key::Named(_) | Key::Unidentified => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use iced::keyboard::{Location, Modifiers, key};
+
+    use super::*;
+
+    #[test]
+    fn votes_with_the_keys_from_one_to_four() {
+        assert!(matches!(
+            key_message(pressed(Key::Character("1".into()))),
+            Some(Message::Vote(VoteKind::WouldTry))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("4".into()))),
+            Some(Message::Vote(VoteKind::Known))
+        ));
+    }
+
+    #[test]
+    fn opens_the_links_with_the_keys_from_five_to_seven() {
+        assert!(matches!(
+            key_message(pressed(Key::Character("5".into()))),
+            Some(Message::Open(Link::Steam))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("7".into()))),
+            Some(Message::Open(Link::Hltb))
+        ));
+    }
+
+    #[test]
+    fn ignores_the_other_keys() {
+        assert!(key_message(pressed(Key::Character("8".into()))).is_none());
+        assert!(key_message(pressed(Key::Named(Named::Enter))).is_none());
+    }
+
+    fn pressed(key: Key) -> keyboard::Event {
+        keyboard::Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: key::Physical::Unidentified(key::NativeCode::Unidentified),
+            location: Location::Standard,
+            modifiers: Modifiers::empty(),
+            text: None,
+            repeat: false,
+        }
     }
 }

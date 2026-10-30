@@ -98,34 +98,59 @@ pub fn close_button(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-pub fn vote(theme: &Theme, status: button::Status) -> button::Style {
-    let background = theme.extended_palette().background;
-    let deviation = match status {
-        button::Status::Hovered => 0.04,
-        button::Status::Pressed => 0.07,
-        button::Status::Active | button::Status::Disabled => 0.015,
-    };
+pub fn vote(flashed: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let palette = theme.extended_palette();
+        let background = palette.background;
+        let deviation = match status {
+            button::Status::Hovered => 0.04,
+            button::Status::Pressed => 0.07,
+            button::Status::Active | button::Status::Disabled => 0.015,
+        };
 
-    button::Style {
-        background: Some(palette::deviate(background.base.color, deviation).into()),
-        text_color: background.base.text,
-        border: Border {
-            color: background.strong.color,
-            width: 1.0,
-            radius: 6.0.into(),
-        },
-        ..button::Style::default()
+        if flashed {
+            return button::Style {
+                background: Some(palette.primary.base.color.into()),
+                text_color: palette.primary.base.text,
+                border: Border {
+                    color: palette.primary.base.color,
+                    width: 1.0,
+                    radius: 6.0.into(),
+                },
+                ..button::Style::default()
+            };
+        }
+
+        button::Style {
+            background: Some(palette::deviate(background.base.color, deviation).into()),
+            text_color: background.base.text,
+            border: Border {
+                color: background.strong.color,
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            ..button::Style::default()
+        }
     }
 }
 
-pub fn keycap(theme: &Theme) -> container::Style {
-    container::Style {
-        border: Border {
-            color: theme.extended_palette().background.strong.color,
-            width: 1.0,
-            radius: 4.0.into(),
-        },
-        ..container::Style::default()
+pub fn keycap(flashed: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let palette = theme.extended_palette();
+
+        container::Style {
+            text_color: flashed.then_some(palette.primary.base.text),
+            border: Border {
+                color: if flashed {
+                    palette.primary.base.text.scale_alpha(0.6)
+                } else {
+                    palette.background.strong.color
+                },
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..container::Style::default()
+        }
     }
 }
 
