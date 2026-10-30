@@ -3,6 +3,7 @@ pub mod app;
 mod data_dir;
 mod details;
 mod images;
+pub mod ready;
 pub mod setup;
 pub mod signals;
 pub mod update;

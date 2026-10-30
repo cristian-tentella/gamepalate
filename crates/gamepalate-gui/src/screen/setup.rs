@@ -7,6 +7,7 @@ use std::{
 use gamepalate_app::{
     Gamepalate, SteamError,
     account::{ConnectError, SteamIdError, connect, parse_steam_id},
+    ready::{ReadyCheck, check_ready},
     setup::{FirstRun, Part, error_chain},
     update::{Progress, UpdateError, download_catalog},
 };
@@ -38,6 +39,14 @@ pub struct Setup {
     error: Option<String>,
     account: Account,
     download: Download,
+    ready: Option<Ready>,
+}
+
+#[derive(Debug)]
+enum Ready {
+    Preparing,
+    Checked(ReadyCheck),
+    Failed(String),
 }
 
 #[derive(Debug, Default)]
@@ -82,6 +91,9 @@ pub enum Message {
     Download,
     Progress(Progress),
     Downloaded(Result<(), String>),
+    Prepare(bool),
+    Prepared(Result<ReadyCheck, String>),
+    StartVoting,
 }
 
 pub enum Action {
@@ -121,6 +133,7 @@ impl Setup {
             error,
             account,
             download: Download::default(),
+            ready: None,
         }
     }
 
@@ -130,7 +143,7 @@ impl Setup {
 
     pub fn update(&mut self, message: Message) -> Action {
         match message {
-            Message::CheckAgain | Message::Connected(Ok(())) | Message::Downloaded(Ok(())) => {
+            Message::CheckAgain | Message::Connected(Ok(())) | Message::StartVoting => {
                 self.check_again()
             }
             Message::OpenFolder => {
@@ -170,6 +183,19 @@ impl Setup {
                 self.download.advance(progress, Instant::now());
                 Action::None
             }
+            Message::Downloaded(Ok(())) => {
+                self.first_run = FirstRun::check(None);
+                self.download = Download::default();
+                self.prepare(false)
+            }
+            Message::Prepare(read_signals_again) => self.prepare(read_signals_again),
+            Message::Prepared(result) => {
+                self.ready = Some(match result {
+                    Ok(check) => Ready::Checked(check),
+                    Err(error) => Ready::Failed(error),
+                });
+                Action::None
+            }
             Message::Downloaded(Err(error)) => {
                 self.first_run = FirstRun::check(None);
                 self.download.running = false;
@@ -177,6 +203,22 @@ impl Setup {
                 Action::None
             }
         }
+    }
+
+    fn prepare(&mut self, read_signals_again: bool) -> Action {
+        let Some(dir) = self.first_run.data_dir.clone() else {
+            return Action::None;
+        };
+        self.ready = Some(Ready::Preparing);
+
+        Action::Run(Task::perform(
+            async move {
+                check_ready(&dir, read_signals_again)
+                    .await
+                    .map_err(|error| error_chain(&error))
+            },
+            Message::Prepared,
+        ))
     }
 
     fn download(&mut self) -> Action {
@@ -271,17 +313,13 @@ impl Setup {
             .on_press(Message::CheckAgain);
 
         container(
-            column![
-                title,
-                folder,
-                self.account_view(),
-                self.catalog_view(),
-                lines
-            ]
-            .push(error)
-            .push(check)
-            .spacing(28)
-            .max_width(WIDTH),
+            column![title, folder, self.account_view(), self.catalog_view(),]
+                .push(self.ready_view())
+                .push(lines)
+                .push(error)
+                .push(check)
+                .spacing(28)
+                .max_width(WIDTH),
         )
         .padding(40)
         .center_x(Fill)
@@ -418,6 +456,53 @@ impl Setup {
             .into()
     }
 
+    fn ready_view(&self) -> Option<Element<'_, Message>> {
+        let (done, body): (bool, Element<'_, Message>) = match self.ready.as_ref()? {
+            Ready::Preparing => (false, note("Preparing your profile…").into()),
+            Ready::Failed(error) => (
+                false,
+                column![
+                    text(error.clone()).size(font::BAR_SIZE).style(text::danger),
+                    small_button("Retry", Message::Prepare(false)),
+                ]
+                .spacing(8)
+                .into(),
+            ),
+            Ready::Checked(check) if check.empty_profile => (
+                false,
+                column![
+                    text(empty_profile_text(check.min_hours)).size(font::BAR_SIZE),
+                    small_button("Check again", Message::Prepare(true)),
+                ]
+                .spacing(8)
+                .into(),
+            ),
+            Ready::Checked(check) => (
+                true,
+                column![
+                    text(ready_text(check)).size(font::BAR_SIZE),
+                    small_button("Start voting", Message::StartVoting),
+                ]
+                .spacing(8)
+                .into(),
+            ),
+        };
+
+        Some(
+            column![
+                row![
+                    mark(done),
+                    text("Ready").size(font::INFO_SIZE).font(font::SEMIBOLD)
+                ]
+                .spacing(12)
+                .align_y(Center),
+                container(body).padding(padding::left(24)),
+            ]
+            .spacing(8)
+            .into(),
+        )
+    }
+
     fn start_view(&self) -> Element<'_, Message> {
         let download = &self.download;
         let pending = self.first_run.pending_update;
@@ -550,6 +635,32 @@ fn update_error_text(error: &UpdateError) -> String {
         }
         error => error_chain(error),
     }
+}
+
+fn empty_profile_text(min_hours: f64) -> String {
+    let hours = if min_hours == 1.0 {
+        "1 hour".to_string()
+    } else {
+        format!("{min_hours} hours")
+    };
+    format!(
+        "None of your games has {hours} of play yet. Play one for a while, or add some to your wishlist, then Check again."
+    )
+}
+
+fn ready_text(check: &ReadyCheck) -> String {
+    format!(
+        "Catalog: {} games · Your library: {} games",
+        format::count(check.games as u32),
+        format::count(check.library as u32)
+    )
+}
+
+fn small_button(label: &str, message: Message) -> Element<'_, Message> {
+    button(text(label).size(font::BAR_SIZE))
+        .padding([8, 20])
+        .on_press(message)
+        .into()
 }
 
 fn note<'a>(line: impl text::IntoFragment<'a>) -> text::Text<'a> {
@@ -748,6 +859,28 @@ mod tests {
 
         assert_eq!(download.batches.len(), RECENT_BATCHES);
         assert_eq!(download.time_left(30, 130), Some(Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn an_empty_profile_says_how_many_hours_are_needed() {
+        assert!(empty_profile_text(2.0).starts_with("None of your games has 2 hours of play yet."));
+        assert!(empty_profile_text(1.0).starts_with("None of your games has 1 hour of play yet."));
+        assert!(empty_profile_text(1.5).contains("1.5 hours"));
+    }
+
+    #[test]
+    fn a_ready_profile_counts_the_catalog_and_the_library() {
+        let check = ReadyCheck {
+            games: 84_312,
+            library: 312,
+            min_hours: 2.0,
+            empty_profile: false,
+        };
+
+        assert_eq!(
+            ready_text(&check),
+            "Catalog: 84,312 games · Your library: 312 games"
+        );
     }
 
     #[test]
