@@ -1,23 +1,26 @@
 mod images;
+mod pages;
 mod queue;
 
 use std::{process::Command, sync::Arc, time::Duration};
 
 use gamepalate_app::{
-    Gamepalate, RecommendError, Recommendation, RecommendedGame, SearchOptions, VoteKind,
+    AppId, GameDetails, Gamepalate, RecommendError, Recommendation, RecommendedGame, SearchOptions,
+    VoteKind,
 };
 use iced::{
     Center, ContentFit, Element, Fill, Subscription, Task,
     keyboard::{self, Key, key::Named},
     never, padding,
     widget::{
-        button, column, container, image, progress_bar, responsive, rich_text, row, space, span,
-        stack, text,
+        button, column, container, image, progress_bar, responsive, rich_text, row, scrollable,
+        space, span, stack, text,
     },
 };
 
 use self::{
     images::{Images, Picture},
+    pages::{Page, Pages},
     queue::Queue,
 };
 use crate::{font, format, style};
@@ -34,15 +37,19 @@ const VOTE_WIDTH: f32 = 172.0;
 const VOTE_HEIGHT: f32 = 36.0;
 const TOAST_DURATION: Duration = Duration::from_secs(4);
 const FLASH_DURATION: Duration = Duration::from_millis(600);
-const PREVIOUS: char = '\u{E76B}';
-const NEXT: char = '\u{E76C}';
 const CHECK: char = '\u{E73E}';
-const INFO_WIDTH: f32 = 640.0;
 const METER_LABEL_WIDTH: f32 = 90.0;
 const METER_VALUE_WIDTH: f32 = 90.0;
-const HEADER_WIDTH: f32 = 460.0;
-const HEADER_HEIGHT: f32 = 215.0;
+const SIDE_WIDTH: f32 = 360.0;
+const HEADER_HEIGHT: f32 = SIDE_WIDTH * 215.0 / 460.0;
+const MIN_SHOT_WIDTH: f32 = 480.0;
+const MAX_SHOT_WIDTH: f32 = 820.0;
+const CARD_SPACING: f32 = 32.0;
+const SCROLLBAR_GAP: f32 = 12.0;
+const DESCRIPTION_WIDTH: f32 = 600.0;
+const DOT_SIZE: f32 = 8.0;
 const IMAGE_RADIUS: f32 = 8.0;
+const DETAILS_AHEAD: usize = 2;
 const PRELOAD_AHEAD: usize = 5;
 const KEEP_BEHIND: usize = 5;
 
@@ -56,6 +63,9 @@ pub struct Discover {
     flash: Option<Flash>,
     timers_started: u64,
     images: Images,
+    pages: Pages,
+    screenshot: usize,
+    shown: Option<AppId>,
     state: State,
 }
 
@@ -81,6 +91,11 @@ pub enum Message {
     HideToast(u64),
     EndFlash(u64),
     ImageLoaded(String, Option<image::Handle>),
+    DetailsLoaded(AppId, Result<Option<Arc<GameDetails>>, String>),
+    PreviousScreenshot,
+    NextScreenshot,
+    ShowScreenshot(usize),
+    RetryDetails,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -117,6 +132,9 @@ impl Discover {
                 flash: None,
                 timers_started: 0,
                 images: Images::default(),
+                pages: Pages::default(),
+                screenshot: 0,
+                shown: None,
                 state: State::Loading,
             },
             task,
@@ -125,8 +143,10 @@ impl Discover {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.handle(message);
+        self.follow_current();
+        let details = self.load_details();
 
-        Task::batch([task, self.load_images()])
+        Task::batch([task, details, self.load_images()])
     }
 
     fn handle(&mut self, message: Message) -> Task<Message> {
@@ -192,6 +212,17 @@ impl Discover {
                 }
             }
             Message::ImageLoaded(url, handle) => self.images.loaded(url, handle),
+            Message::DetailsLoaded(id, result) => self.pages.loaded(id, result),
+            Message::PreviousScreenshot => self.screenshot = self.screenshot.saturating_sub(1),
+            Message::NextScreenshot => {
+                self.screenshot = next_index(self.screenshot, self.screenshot_count());
+            }
+            Message::ShowScreenshot(index) => self.screenshot = index,
+            Message::RetryDetails => {
+                if let Some(id) = self.current().map(|game| game.id) {
+                    self.pages.retry(id);
+                }
+            }
         }
 
         Task::none()
@@ -250,7 +281,7 @@ impl Discover {
         let game = self.current();
         let hint = (!compact).then(|| {
             container(
-                text("Space skip · ⌫ back")
+                text("Space skip · ⌫ back · ← → screenshots")
                     .size(font::NOTE_SIZE)
                     .style(style::muted),
             )
@@ -320,18 +351,73 @@ impl Discover {
         self.timers_started
     }
 
+    fn follow_current(&mut self) {
+        let current = self.current().map(|game| game.id);
+        if current != self.shown {
+            self.shown = current;
+            self.screenshot = 0;
+        }
+    }
+
+    fn load_details(&mut self) -> Task<Message> {
+        let State::Ready(queue) = &self.state else {
+            return Task::none();
+        };
+        let ids = |games: &[RecommendedGame]| -> Vec<AppId> {
+            games.iter().map(|game| game.id).collect()
+        };
+        let wanted = ids(queue.upcoming(DETAILS_AHEAD));
+        let nearby = ids(queue.around(KEEP_BEHIND, PRELOAD_AHEAD));
+
+        self.pages.keep_only(&nearby);
+        let started = self.pages.want(&wanted);
+
+        Task::batch(started.into_iter().map(|id| {
+            let gamepalate = Arc::clone(&self.gamepalate);
+            Task::perform(
+                async move {
+                    gamepalate
+                        .details(id)
+                        .await
+                        .map(|details| details.map(Arc::new))
+                        .map_err(|error| error.to_string())
+                },
+                move |result| Message::DetailsLoaded(id, result),
+            )
+        }))
+    }
+
     fn load_images(&mut self) -> Task<Message> {
         let State::Ready(queue) = &self.state else {
             return Task::none();
         };
-        let headers = |games: &[RecommendedGame]| -> Vec<String> {
-            games
-                .iter()
-                .map(|game| self.gamepalate.header_url(game.id))
-                .collect()
-        };
-        let wanted = headers(queue.upcoming(PRELOAD_AHEAD));
-        let nearby = headers(queue.around(KEEP_BEHIND, PRELOAD_AHEAD));
+        let first_screenshot = |game: &RecommendedGame| self.screenshots(game.id).first().cloned();
+
+        let mut wanted = Vec::new();
+        if let Some((current, next)) = queue.upcoming(PRELOAD_AHEAD).split_first() {
+            let screenshots = self.screenshots(current.id);
+            wanted.extend(screenshots.get(self.screenshot).cloned());
+            wanted.push(self.header_url(current));
+            wanted.extend(screenshots.get(self.screenshot + 1).cloned());
+            for game in next {
+                wanted.push(self.header_url(game));
+                wanted.extend(first_screenshot(game));
+            }
+        }
+
+        let mut nearby = Vec::new();
+        for game in queue.around(KEEP_BEHIND, PRELOAD_AHEAD) {
+            nearby.push(self.gamepalate.header_url(game.id));
+            nearby.extend(
+                self.pages
+                    .details(game.id)
+                    .and_then(|details| details.store.header_url.clone()),
+            );
+            nearby.extend(first_screenshot(game));
+        }
+        if let Some(current) = queue.current() {
+            nearby.extend(self.screenshots(current.id).iter().cloned());
+        }
 
         self.images.keep_only(&nearby);
         let started = self.images.want(wanted);
@@ -352,27 +438,153 @@ impl Discover {
         }))
     }
 
-    fn header(&self, game: &RecommendedGame) -> Element<'_, Message> {
+    fn screenshots(&self, id: AppId) -> &[String] {
+        self.pages
+            .details(id)
+            .map_or(&[], |details| details.store.screenshot_urls.as_slice())
+    }
+
+    fn screenshot_count(&self) -> usize {
+        self.current()
+            .map_or(0, |game| self.screenshots(game.id).len())
+    }
+
+    fn header_url(&self, game: &RecommendedGame) -> String {
         let url = self.gamepalate.header_url(game.id);
-        let content: Element<'_, Message> = match self.images.get(&url) {
+        let hashed = self
+            .pages
+            .details(game.id)
+            .and_then(|details| details.store.header_url.clone());
+
+        match (self.images.get(&url), hashed) {
+            (Some(Picture::Failed), Some(hashed)) => hashed,
+            _ => url,
+        }
+    }
+
+    fn picture<'a>(&self, url: &str, width: f32, height: f32) -> Element<'a, Message> {
+        let content: Element<'a, Message> = match self.images.get(url) {
             Some(Picture::Ready(handle)) => image(handle.clone())
-                .width(HEADER_WIDTH)
-                .height(HEADER_HEIGHT)
+                .width(width)
+                .height(height)
                 .content_fit(ContentFit::Cover)
                 .border_radius(IMAGE_RADIUS)
                 .into(),
-            Some(Picture::Failed) => text("Image unavailable")
-                .size(font::NOTE_SIZE)
-                .style(style::muted)
-                .into(),
+            Some(Picture::Failed) => note("Image unavailable"),
             Some(Picture::Loading) | None => space().into(),
         };
 
         container(content)
-            .center_x(HEADER_WIDTH)
-            .center_y(HEADER_HEIGHT)
+            .center_x(width)
+            .center_y(height)
             .style(style::picture)
             .into()
+    }
+
+    fn screenshot<'a>(
+        &self,
+        game: &RecommendedGame,
+        width: f32,
+        height: f32,
+    ) -> Element<'a, Message> {
+        let content: Element<'a, Message> = match self.pages.get(game.id) {
+            Some(Page::Ready(details)) => {
+                match details.store.screenshot_urls.get(self.screenshot) {
+                    Some(url) => return self.picture(url, width, height),
+                    None => note("No screenshots"),
+                }
+            }
+            Some(Page::Missing) => note("Not on the Steam store"),
+            Some(Page::Failed) => column![
+                note("The Steam store didn't answer: showing catalog data only."),
+                button(text("Retry").size(font::NOTE_SIZE))
+                    .padding([4, 12])
+                    .on_press(Message::RetryDetails),
+            ]
+            .spacing(8)
+            .align_x(Center)
+            .into(),
+            Some(Page::Loading) | None => space().into(),
+        };
+
+        container(content)
+            .center_x(width)
+            .center_y(height)
+            .style(style::picture)
+            .into()
+    }
+
+    fn dots<'a>(&self, count: usize) -> Option<Element<'a, Message>> {
+        (count > 1).then(|| {
+            row((0..count).map(|index| {
+                button(space().width(DOT_SIZE).height(DOT_SIZE))
+                    .padding(0)
+                    .style(style::dot(index == self.screenshot))
+                    .on_press(Message::ShowScreenshot(index))
+                    .into()
+            }))
+            .push(
+                container(
+                    text(format::screenshot_position(self.screenshot, count))
+                        .size(font::NOTE_SIZE)
+                        .style(style::muted),
+                )
+                .padding(padding::left(6)),
+            )
+            .spacing(6)
+            .align_y(Center)
+            .wrap()
+            .into()
+        })
+    }
+
+    fn card<'a>(
+        &'a self,
+        queue: &'a Queue,
+        game: &'a RecommendedGame,
+        width: f32,
+    ) -> Element<'a, Message> {
+        let (shot_width, shot_height) = screenshot_size(width);
+        let details = self.pages.details(game.id);
+        let (position, total) = queue.position();
+        let progress = if queue.is_waiting() {
+            "Loading the next games…".to_string()
+        } else {
+            format!("{position} / {total}")
+        };
+
+        let media = column![self.screenshot(game, shot_width, shot_height)]
+            .push(details.and_then(|details| self.dots(details.store.screenshot_urls.len())))
+            .push(
+                details
+                    .and_then(|details| details.store.short_description.as_deref())
+                    .map(|description| {
+                        container(text(description).size(font::BAR_SIZE))
+                            .max_width(DESCRIPTION_WIDTH)
+                    }),
+            )
+            .push(self.why(game))
+            .spacing(14)
+            .width(shot_width);
+        let info = column![
+            self.picture(&self.header_url(game), SIDE_WIDTH, HEADER_HEIGHT),
+            text(&game.name).size(font::TITLE_SIZE).font(font::SEMIBOLD),
+            price_row(game),
+            reviews_line(game),
+        ]
+        .push(similar_lines(game))
+        .push(details.map(facts))
+        .push(text(progress).size(font::NOTE_SIZE).style(style::muted))
+        .spacing(14)
+        .width(SIDE_WIDTH);
+
+        scrollable(
+            container(row![media, info].spacing(CARD_SPACING))
+                .center_x(Fill)
+                .padding(padding::right(SCROLLBAR_GAP)),
+        )
+        .height(Fill)
+        .into()
     }
 
     fn current(&self) -> Option<&RecommendedGame> {
@@ -390,34 +602,7 @@ impl Discover {
                 None => text("No games match these filters.")
                     .style(style::muted)
                     .into(),
-                Some(game) => {
-                    let (position, total) = queue.position();
-                    let progress = if queue.is_waiting() {
-                        "Loading the next games…".to_string()
-                    } else {
-                        format!("{position} / {total}")
-                    };
-
-                    let details = column![
-                        self.header(game),
-                        text(&game.name).size(font::TITLE_SIZE).font(font::SEMIBOLD),
-                        price_row(game),
-                        reviews_line(game),
-                    ]
-                    .push(similar_lines(game))
-                    .push(self.why(game))
-                    .push(text(progress).size(font::NOTE_SIZE).style(style::muted))
-                    .spacing(14)
-                    .max_width(INFO_WIDTH);
-
-                    row![
-                        arrow_button(PREVIOUS, queue.has_previous().then_some(Message::Previous)),
-                        container(details).center_x(Fill),
-                        arrow_button(NEXT, queue.has_next().then_some(Message::Next)),
-                    ]
-                    .align_y(Center)
-                    .into()
-                }
+                Some(game) => responsive(move |size| self.card(queue, game, size.width)).into(),
             },
         };
 
@@ -533,6 +718,46 @@ fn similar_lines(game: &RecommendedGame) -> Option<Element<'_, Message>> {
         .then(|| column![].push(similar).push(tags).spacing(4).into())
 }
 
+fn facts(details: &GameDetails) -> Element<'_, Message> {
+    let store = &details.store;
+    let lines = [
+        store
+            .steam_deck
+            .map(|deck| format::steam_deck(deck).to_string()),
+        Some(format::italian(store.italian)),
+        format::play(&details.modes, store.controller),
+        format::made_by(&store.developers, store.release_date),
+    ];
+
+    column(
+        lines
+            .into_iter()
+            .flatten()
+            .map(|line| text(line).size(font::BAR_SIZE).into()),
+    )
+    .spacing(4)
+    .into()
+}
+
+fn note<'a>(label: &'static str) -> Element<'a, Message> {
+    text(label)
+        .size(font::NOTE_SIZE)
+        .style(style::muted)
+        .center()
+        .into()
+}
+
+fn screenshot_size(width: f32) -> (f32, f32) {
+    let shot_width =
+        (width - SIDE_WIDTH - CARD_SPACING - SCROLLBAR_GAP).clamp(MIN_SHOT_WIDTH, MAX_SHOT_WIDTH);
+
+    (shot_width, shot_width * 9.0 / 16.0)
+}
+
+fn next_index(index: usize, count: usize) -> usize {
+    if index + 1 < count { index + 1 } else { index }
+}
+
 fn meter<'a>(label: &'a str, share: f32, value: String) -> Element<'a, Message> {
     row![
         text(label).size(font::INFO_SIZE).width(METER_LABEL_WIDTH),
@@ -593,16 +818,6 @@ fn after(duration: Duration, message: Message) -> Task<Message> {
     Task::perform(tokio::time::sleep(duration), move |_| message)
 }
 
-fn arrow_button<'a>(icon: char, message: Option<Message>) -> Element<'a, Message> {
-    button(text(icon).font(font::ICONS).size(20).center())
-        .width(44)
-        .height(44)
-        .padding(0)
-        .style(style::arrow)
-        .on_press_maybe(message)
-        .into()
-}
-
 fn link_button(label: &str, link: Link, enabled: bool) -> Element<'_, Message> {
     button(text(label).size(font::BAR_SIZE))
         .padding(0)
@@ -617,8 +832,10 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
     };
 
     match key {
-        Key::Named(Named::Space | Named::ArrowRight) => Some(Message::Next),
-        Key::Named(Named::Backspace | Named::ArrowLeft) => Some(Message::Previous),
+        Key::Named(Named::Space) => Some(Message::Next),
+        Key::Named(Named::Backspace) => Some(Message::Previous),
+        Key::Named(Named::ArrowRight) => Some(Message::NextScreenshot),
+        Key::Named(Named::ArrowLeft) => Some(Message::PreviousScreenshot),
         Key::Character(character) => match character.as_str() {
             "5" => Some(Message::Open(Link::Steam)),
             "6" => Some(Message::Open(Link::Eneba)),
@@ -669,6 +886,44 @@ mod tests {
             key_message(pressed(Key::Character("w".into()))),
             Some(Message::ToggleWhy)
         ));
+    }
+
+    #[test]
+    fn scrolls_the_screenshots_with_the_arrows() {
+        assert!(matches!(
+            key_message(pressed(Key::Named(Named::ArrowRight))),
+            Some(Message::NextScreenshot)
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Named(Named::ArrowLeft))),
+            Some(Message::PreviousScreenshot)
+        ));
+    }
+
+    #[test]
+    fn moves_between_games_with_space_and_backspace() {
+        assert!(matches!(
+            key_message(pressed(Key::Named(Named::Space))),
+            Some(Message::Next)
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Named(Named::Backspace))),
+            Some(Message::Previous)
+        ));
+    }
+
+    #[test]
+    fn stops_at_the_last_screenshot() {
+        assert_eq!(next_index(0, 3), 1);
+        assert_eq!(next_index(2, 3), 2);
+        assert_eq!(next_index(0, 0), 0);
+    }
+
+    #[test]
+    fn fits_the_screenshot_between_its_limits() {
+        assert_eq!(screenshot_size(1160.0), (756.0, 425.25));
+        assert_eq!(screenshot_size(2000.0).0, MAX_SHOT_WIDTH);
+        assert_eq!(screenshot_size(600.0).0, MIN_SHOT_WIDTH);
     }
 
     #[test]

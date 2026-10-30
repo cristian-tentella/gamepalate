@@ -61,14 +61,6 @@ impl Queue {
         self.next == Next::Waiting
     }
 
-    pub fn has_previous(&self) -> bool {
-        self.index > 0
-    }
-
-    pub fn has_next(&self) -> bool {
-        self.index + 1 < self.games.len() || self.next == Next::Idle || self.next == Next::Loading
-    }
-
     pub fn advance(&mut self) -> bool {
         if self.index + 1 < self.games.len() {
             self.index += 1;
@@ -192,27 +184,6 @@ mod tests {
 
         assert!(!queue.advance());
         assert!(!queue.is_waiting());
-    }
-
-    #[test]
-    fn has_no_previous_on_the_first_game() {
-        let mut queue = Queue::new(games(1..=2));
-
-        assert!(!queue.has_previous());
-        queue.advance();
-        assert!(queue.has_previous());
-    }
-
-    #[test]
-    fn has_a_next_game_until_the_games_run_out() {
-        let mut queue = Queue::new(games(1..=1));
-        assert!(queue.has_next());
-
-        queue.advance();
-        assert!(!queue.has_next());
-
-        queue.receive(Vec::new());
-        assert!(!queue.has_next());
     }
 
     #[test]

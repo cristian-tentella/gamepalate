@@ -173,29 +173,6 @@ pub fn toast(theme: &Theme) -> container::Style {
     }
 }
 
-pub fn arrow(theme: &Theme, status: button::Status) -> button::Style {
-    let background = theme.extended_palette().background;
-
-    button::Style {
-        background: match status {
-            button::Status::Hovered => Some(background.weak.color.into()),
-            button::Status::Pressed => Some(background.strong.color.into()),
-            button::Status::Active | button::Status::Disabled => None,
-        },
-        text_color: match status {
-            button::Status::Disabled => background.base.text.scale_alpha(0.2),
-            button::Status::Active | button::Status::Hovered | button::Status::Pressed => {
-                background.base.text.scale_alpha(0.6)
-            }
-        },
-        border: Border {
-            radius: 22.0.into(),
-            ..Border::default()
-        },
-        ..button::Style::default()
-    }
-}
-
 pub fn discount(theme: &Theme) -> text::Style {
     text::Style {
         color: Some(theme.extended_palette().success.base.color),
@@ -240,6 +217,28 @@ pub fn picture(theme: &Theme) -> container::Style {
             ..Border::default()
         },
         ..container::Style::default()
+    }
+}
+
+pub fn dot(current: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let palette = theme.extended_palette();
+        let color = if current {
+            palette.primary.base.color
+        } else if matches!(status, button::Status::Hovered) {
+            palette.background.base.text.scale_alpha(0.4)
+        } else {
+            palette.background.strong.color
+        };
+
+        button::Style {
+            background: Some(color.into()),
+            border: Border {
+                radius: 4.0.into(),
+                ..Border::default()
+            },
+            ..button::Style::default()
+        }
     }
 }
 

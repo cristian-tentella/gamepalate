@@ -1,4 +1,6 @@
-use gamepalate_app::{Price, Reviews, SearchOptions, SortBy, Timestamp, VoteKind};
+use gamepalate_app::{
+    Controller, Italian, Price, Reviews, SearchOptions, SortBy, SteamDeck, Timestamp, VoteKind,
+};
 use jiff::tz::TimeZone;
 
 pub fn when(at: Timestamp, now: Timestamp) -> String {
@@ -170,6 +172,55 @@ pub fn quality(quality: f64) -> &'static str {
 
 pub fn bet(every: usize) -> String {
     format!("It's a Bet: 1 game in {every} is one your votes would skip.")
+}
+
+pub fn screenshot_position(index: usize, count: usize) -> String {
+    format!("{} of {count}", index + 1)
+}
+
+pub fn steam_deck(deck: SteamDeck) -> &'static str {
+    match deck {
+        SteamDeck::Verified => "Steam Deck: Verified",
+        SteamDeck::Playable => "Steam Deck: Playable",
+        SteamDeck::Unsupported => "Steam Deck: Unsupported",
+    }
+}
+
+pub fn italian(italian: Option<Italian>) -> String {
+    let Some(italian) = italian else {
+        return "No Italian".to_string();
+    };
+    let mut parts = vec!["interface"];
+    if italian.subtitles {
+        parts.push("subtitles");
+    }
+    if italian.audio {
+        parts.push("audio");
+    }
+    format!("Italian: {}", parts.join(", "))
+}
+
+pub fn play(modes: &[String], controller: Option<Controller>) -> Option<String> {
+    let controller = controller.map(|controller| match controller {
+        Controller::Full => "Full controller support",
+        Controller::Partial => "Partial controller support",
+    });
+    let parts: Vec<&str> = modes.iter().map(String::as_str).chain(controller).collect();
+
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+pub fn made_by(developers: &[String], release: Option<Timestamp>) -> Option<String> {
+    let year = release
+        .and_then(|release| jiff::Timestamp::from_millisecond(release.0).ok())
+        .map(|release| release.to_zoned(TimeZone::UTC).year().to_string());
+    let parts: Vec<String> = (!developers.is_empty())
+        .then(|| developers.join(", "))
+        .into_iter()
+        .chain(year)
+        .collect();
+
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 pub fn vote(kind: VoteKind) -> &'static str {
@@ -358,6 +409,70 @@ mod tests {
             bet(5),
             "It's a Bet: 1 game in 5 is one your votes would skip."
         );
+    }
+
+    #[test]
+    fn counts_the_screenshots_from_one() {
+        assert_eq!(screenshot_position(2, 10), "3 of 10");
+    }
+
+    #[test]
+    fn names_the_steam_deck_support() {
+        assert_eq!(steam_deck(SteamDeck::Verified), "Steam Deck: Verified");
+        assert_eq!(
+            steam_deck(SteamDeck::Unsupported),
+            "Steam Deck: Unsupported"
+        );
+    }
+
+    #[test]
+    fn lists_what_is_in_italian() {
+        assert_eq!(italian(None), "No Italian");
+        assert_eq!(
+            italian(Some(Italian {
+                subtitles: false,
+                audio: false
+            })),
+            "Italian: interface"
+        );
+        assert_eq!(
+            italian(Some(Italian {
+                subtitles: true,
+                audio: true
+            })),
+            "Italian: interface, subtitles, audio"
+        );
+    }
+
+    #[test]
+    fn joins_the_modes_and_the_controller() {
+        let modes = ["Single-player".to_string(), "Online Co-op".to_string()];
+
+        assert_eq!(
+            play(&modes, Some(Controller::Full)).unwrap(),
+            "Single-player · Online Co-op · Full controller support"
+        );
+        assert_eq!(
+            play(&[], Some(Controller::Partial)).unwrap(),
+            "Partial controller support"
+        );
+        assert_eq!(play(&[], None), None);
+    }
+
+    #[test]
+    fn names_the_developers_and_the_year() {
+        let developers = ["Live Wire".to_string(), "Adglobe".to_string()];
+
+        assert_eq!(
+            made_by(&developers, Some(Timestamp(1_624_233_600_000))).unwrap(),
+            "Live Wire, Adglobe · 2021"
+        );
+        assert_eq!(made_by(&developers, None).unwrap(), "Live Wire, Adglobe");
+        assert_eq!(
+            made_by(&[], Some(Timestamp(1_624_233_600_000))).unwrap(),
+            "2021"
+        );
+        assert_eq!(made_by(&[], None), None);
     }
 
     #[test]
