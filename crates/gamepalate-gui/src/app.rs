@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use gamepalate_app::Gamepalate;
 use iced::{
-    Element, Fill, Task, widget::{button, column, container, row, scrollable, text},
+    Element, Fill, Task, Theme,
+    widget::{button, column, container, rich_text, row, scrollable, span, text, text::Rich},
 };
 
 use crate::screen::{Discover, Screen, discover};
@@ -10,6 +11,7 @@ use crate::screen::{Discover, Screen, discover};
 pub struct App {
     gamepalate: Arc<Gamepalate>,
     screen: Screen,
+    theme: Theme,
 }
 
 #[derive(Clone, Debug)]
@@ -33,6 +35,7 @@ impl App {
             App {
                 gamepalate,
                 screen: Screen::Discover(discover),
+                theme: Theme::Light,
             },
             task.map(Message::Discover),
         )
@@ -62,13 +65,17 @@ impl App {
         )
         .padding(10)
         .width(Fill)
-        .style(container::bordered_box);
+        .style(bar_style);
 
         let content = match &self.screen {
             Screen::Discover(screen) => screen.view().map(Message::Discover),
         };
 
         column![bar, scrollable(content).width(Fill).height(Fill)].into()
+    }
+
+    pub fn theme(&self) -> Theme {
+        self.theme.clone()
     }
 
     fn page(&self) -> Page {
@@ -91,15 +98,27 @@ impl App {
     fn tab(&self, label: &'static str, page: Page) -> Element<'_, Message> {
         let current = self.page() == page;
         let available = matches!(page, Page::Discover);
-        let style = if current {
-            button::primary
-        } else {
-            button::secondary
-        };
+        let content: Rich<'_, (), Message> = rich_text([span(label).underline(current)]);
 
-        button(label)
-            .style(style)
+        button(content)
+            .padding(0)
+            .style(move |theme, status| {
+                if current {
+                    button::text(theme, button::Status::Active)
+                } else {
+                    button::text(theme, status)
+                }
+            })
             .on_press_maybe((available && !current).then_some(Message::Navigate(page)))
             .into()
+    }
+}
+
+fn bar_style(theme: &Theme) -> container::Style {
+    let style = container::bordered_box(theme);
+
+    container::Style {
+        border: style.border.rounded(0),
+        ..style
     }
 }

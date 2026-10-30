@@ -15,6 +15,7 @@ fn main() -> anyhow::Result<()> {
         App::update,
         App::view,
     )
+    .theme(App::theme)
     .run()?;
 
     Ok(())
