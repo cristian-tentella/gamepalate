@@ -2,11 +2,14 @@ use std::sync::Arc;
 
 use gamepalate_app::Gamepalate;
 use iced::{
-    Element, Fill, Font, Task, Theme, font,
+    Element, Fill, Task, Theme,
     widget::{button, column, container, rich_text, row, scrollable, span, text, text::Rich},
 };
 
-use crate::screen::{Discover, Screen, discover};
+use crate::{
+    font,
+    screen::{Discover, Screen, discover},
+};
 
 pub struct App {
     gamepalate: Arc<Gamepalate>,
@@ -56,10 +59,7 @@ impl App {
     pub fn view(&self) -> Element<'_, Message> {
         let bar = container(
             row![
-                text("gamepalate").font(Font {
-                    weight: font::Weight::Bold,
-                    ..Font::DEFAULT
-                }),
+                text("gamepalate").font(font::BOLD),
                 row![
                     self.tab("Discover", Page::Discover),
                     self.tab("Votes", Page::Votes),
@@ -69,7 +69,7 @@ impl App {
             ]
             .spacing(24),
         )
-        .padding(12)
+        .padding(8)
         .width(Fill)
         .style(bar_style);
 
