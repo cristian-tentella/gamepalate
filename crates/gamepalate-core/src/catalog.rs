@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 
 use crate::{
+    currency::Currency,
     game::Game,
     ids::{AppId, TagId},
+    region::Region,
     timestamp::Timestamp,
 };
 
@@ -13,6 +15,7 @@ pub struct Catalog {
     pub tags: BTreeMap<TagId, TagName>,
     pub idf: BTreeMap<TagId, f64>,
     pub freshness: Freshness,
+    pub currency: Currency,
 }
 
 impl Catalog {
@@ -21,6 +24,7 @@ impl Catalog {
         tags: BTreeMap<TagId, TagName>,
         idf: BTreeMap<TagId, f64>,
         freshness: Freshness,
+        currency: Currency,
     ) -> Catalog {
         games.sort_unstable_by_key(|game| game.id);
         Catalog {
@@ -28,6 +32,7 @@ impl Catalog {
             tags,
             idf,
             freshness,
+            currency,
         }
     }
 
@@ -70,6 +75,7 @@ pub struct TagName {
 pub struct Freshness {
     pub prices_updated_at: Timestamp,
     pub tags_updated_at: Timestamp,
+    pub region: Region,
 }
 
 impl Freshness {
@@ -90,6 +96,7 @@ mod tests {
         Freshness {
             prices_updated_at: UPDATED_AT,
             tags_updated_at: UPDATED_AT,
+            region: Region::ITALY,
         }
     }
 

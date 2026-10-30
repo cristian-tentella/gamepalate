@@ -179,8 +179,10 @@ mod tests {
 
     use gamepalate_core::{
         catalog::Freshness,
+        currency::Currency,
         families::Family,
         ids::{AppId, SteamId},
+        region::Region,
     };
     use serde_json::{Value, json};
 
@@ -261,7 +263,9 @@ mod tests {
             Freshness {
                 prices_updated_at: NOW,
                 tags_updated_at: NOW,
+                region: Region::ITALY,
             },
+            Currency::italian(),
         )
     }
 

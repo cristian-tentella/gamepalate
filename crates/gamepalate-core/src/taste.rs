@@ -148,9 +148,11 @@ mod tests {
     use super::*;
     use crate::{
         catalog::Freshness,
+        currency::Currency,
         game::{Game, Price, Reviews},
         ids::TagId,
         off_catalog::OffCatalogGame,
+        region::Region,
         timestamp::Timestamp,
     };
 
@@ -199,7 +201,9 @@ mod tests {
             Freshness {
                 prices_updated_at: Timestamp(0),
                 tags_updated_at: Timestamp(0),
+                region: Region::ITALY,
             },
+            Currency::italian(),
         )
     }
 

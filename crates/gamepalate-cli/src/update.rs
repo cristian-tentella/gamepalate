@@ -5,8 +5,10 @@ use futures::StreamExt;
 use gamepalate_core::{
     catalog::{Catalog, Freshness, compute_idf},
     config::Config,
+    currency::Currency,
     ids::AppId,
     incremental::{KnownApps, changed_apps},
+    region::Region,
     store_item::StoreItem,
     timestamp::Timestamp,
 };
@@ -165,23 +167,29 @@ pub fn build_catalog<S: Get>(
         anyhow::Ok(())
     })?;
 
+    let mut prices = Vec::new();
     let mut known = KnownApps::new(ids.iter().copied(), now);
+    prices.extend(formatted_prices(&items));
     known.add(&asked, items);
     for update in earlier {
         for batch in archived_batches(update)? {
             let batch = batch?;
+            prices.extend(formatted_prices(&batch.items));
             known.add(&batch.asked, batch.items);
         }
     }
+    let currency = Currency::learn(prices.iter().map(|(cents, text)| (*cents, text.as_str())))
+        .unwrap_or_else(Currency::italian);
 
     let games = known.into_games();
     let idf = compute_idf(&games);
     let freshness = Freshness {
         prices_updated_at: now,
         tags_updated_at: earlier.last().map_or(now, ArchivedUpdate::started_at),
+        region: Region::new(COUNTRY_CODE).expect("the country code is a region"),
     };
     Ok(BuiltCatalog {
-        catalog: Catalog::new(games, tags, idf, freshness),
+        catalog: Catalog::new(games, tags, idf, freshness, currency),
         apps: ids.len(),
         asked: asked.len(),
         price_change_numbers: apps
@@ -189,6 +197,12 @@ pub fn build_catalog<S: Get>(
             .map(|app| (app.id, app.price_change_number))
             .collect(),
     })
+}
+
+fn formatted_prices(items: &[StoreItem]) -> impl Iterator<Item = (u32, String)> + '_ {
+    items
+        .iter()
+        .filter_map(|item| Some((item.price?.final_cents, item.formatted_price.clone()?)))
 }
 
 impl BuiltCatalog {
@@ -223,6 +237,7 @@ mod tests {
     struct FakeSteam {
         apps: Vec<(u32, u64)>,
         failure: Option<Failure>,
+        formatted_price: Option<&'static str>,
         asked_items: Mutex<Vec<u32>>,
     }
 
@@ -231,6 +246,7 @@ mod tests {
             FakeSteam {
                 apps: apps.to_vec(),
                 failure: None,
+                formatted_price: None,
                 asked_items: Mutex::new(Vec::new()),
             }
         }
@@ -238,6 +254,13 @@ mod tests {
         fn failing(apps: &[(u32, u64)], failure: Failure) -> FakeSteam {
             FakeSteam {
                 failure: Some(failure),
+                ..FakeSteam::new(apps)
+            }
+        }
+
+        fn pricing(apps: &[(u32, u64)], formatted_price: &'static str) -> FakeSteam {
+            FakeSteam {
+                formatted_price: Some(formatted_price),
                 ..FakeSteam::new(apps)
             }
         }
@@ -299,7 +322,7 @@ mod tests {
                         }
                         None => Ok(json!({ "response": { "store_items": ids
                             .iter()
-                            .map(|id| game(*id))
+                            .map(|id| game(*id, self.formatted_price))
                             .collect::<Vec<_>>() } })),
                     }
                 }
@@ -308,7 +331,7 @@ mod tests {
         }
     }
 
-    fn game(appid: u32) -> Value {
+    fn game(appid: u32, formatted_price: Option<&str>) -> Value {
         json!({
             "id": appid,
             "success": 1,
@@ -316,7 +339,11 @@ mod tests {
             "type": 0,
             "release": { "steam_release_date": 1_600_000_000 },
             "tags": [{ "tagid": 19, "weight": 100 }],
-            "best_purchase_option": { "packageid": appid, "final_price_in_cents": "999" },
+            "best_purchase_option": {
+                "packageid": appid,
+                "final_price_in_cents": "999",
+                "formatted_final_price": formatted_price,
+            },
         })
     }
 
@@ -382,6 +409,54 @@ mod tests {
         let manifests = manifests(data.path());
         assert_eq!(manifests[0]["full"], true);
         assert_eq!(manifests[1]["full"], false);
+    }
+
+    #[test]
+    fn the_catalog_learns_the_currency_of_the_store() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(
+            data.path(),
+            &FakeSteam::pricing(&[(1, 10), (2, 20)], "$9.99"),
+        )
+        .unwrap();
+
+        let catalog = load_catalog(&data.path().join("catalog.sqlite")).unwrap();
+
+        assert_eq!(catalog.freshness.region, Region::ITALY);
+        assert_eq!(
+            catalog.currency,
+            Currency {
+                prefix: "$".to_string(),
+                suffix: String::new(),
+                decimal_separator: Some('.'),
+                group_separator: None,
+            }
+        );
+    }
+
+    #[test]
+    fn an_incremental_update_learns_the_currency_from_the_archive_too() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(
+            data.path(),
+            &FakeSteam::pricing(&[(1, 10), (2, 20)], "$9.99"),
+        )
+        .unwrap();
+        run_update(data.path(), &FakeSteam::new(&[(1, 10), (2, 20)])).unwrap();
+
+        let catalog = load_catalog(&data.path().join("catalog.sqlite")).unwrap();
+
+        assert_eq!(catalog.currency.prefix, "$");
+    }
+
+    #[test]
+    fn without_formatted_prices_the_currency_is_italian() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(data.path(), &FakeSteam::new(&[(1, 10)])).unwrap();
+
+        let catalog = load_catalog(&data.path().join("catalog.sqlite")).unwrap();
+
+        assert_eq!(catalog.currency, Currency::italian());
     }
 
     #[test]

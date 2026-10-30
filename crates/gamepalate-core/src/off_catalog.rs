@@ -74,8 +74,10 @@ mod tests {
     use super::*;
     use crate::{
         catalog::Freshness,
+        currency::Currency,
         families::Family,
         game::{Game, Price, Reviews},
+        region::Region,
     };
 
     const NOW: Timestamp = Timestamp(1_793_638_800_000);
@@ -106,7 +108,9 @@ mod tests {
             Freshness {
                 prices_updated_at: NOW,
                 tags_updated_at: NOW,
+                region: Region::ITALY,
             },
+            Currency::italian(),
         )
     }
 
