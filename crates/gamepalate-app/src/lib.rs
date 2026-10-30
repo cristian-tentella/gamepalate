@@ -2,7 +2,7 @@ pub mod app;
 mod data_dir;
 mod details;
 mod images;
-pub use app::{Gamepalate, OpenError, RecommendError};
+pub use app::{Gamepalate, OpenError, RecommendError, VoteError};
 pub use details::GameDetails;
 pub use gamepalate_core::{
     currency::Currency,

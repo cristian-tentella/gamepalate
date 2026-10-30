@@ -5,8 +5,8 @@ mod queue;
 use std::{process::Command, sync::Arc, time::Duration};
 
 use gamepalate_app::{
-    AppId, Currency, GameDetails, Gamepalate, RecommendError, Recommendation, RecommendedGame,
-    SearchOptions, VoteKind,
+    AppId, Currency, FilterOptions, GameDetails, Gamepalate, RecommendError, Recommendation,
+    RecommendedGame, SearchOptions, VoteKind,
 };
 use iced::{
     Center, ContentFit, Element, Fill, Subscription, Task,
@@ -88,6 +88,7 @@ pub enum Message {
     Previous,
     Next,
     Vote(VoteKind),
+    VoteSaved(Result<(), String>),
     Open(Link),
     ToggleWhy,
     HideToast(u64),
@@ -116,7 +117,13 @@ enum State {
 
 impl Discover {
     pub fn new(gamepalate: &Arc<Gamepalate>) -> (Discover, Task<Message>) {
-        let options = SearchOptions::default();
+        let options = SearchOptions {
+            filters: FilterOptions {
+                without_voted: true,
+                ..FilterOptions::default()
+            },
+            ..SearchOptions::default()
+        };
         let search = options.clone();
         let recommender = Arc::clone(gamepalate);
         let task = Task::perform(
@@ -189,9 +196,26 @@ impl Discover {
             Message::Vote(kind) => {
                 if let Some(game) = self.current() {
                     let text = format::voted(&game.name, kind);
-                    return Task::batch([self.show_toast(text), self.flash(kind), self.advance()]);
+                    let gamepalate = Arc::clone(&self.gamepalate);
+                    let (id, bet) = (game.id, game.bet);
+                    let save = Task::perform(
+                        async move {
+                            gamepalate
+                                .vote(id, kind, bet)
+                                .map_err(|error| error.to_string())
+                        },
+                        Message::VoteSaved,
+                    );
+                    return Task::batch([
+                        save,
+                        self.show_toast(text),
+                        self.flash(kind),
+                        self.advance(),
+                    ]);
                 }
             }
+            Message::VoteSaved(Ok(())) => self.votes_this_session += 1,
+            Message::VoteSaved(Err(error)) => return self.show_toast(error),
             Message::Open(link) => {
                 if let Some(game) = self.current() {
                     let url = match link {

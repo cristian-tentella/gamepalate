@@ -1,18 +1,29 @@
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, MutexGuard},
+    time::Duration,
+};
 
 use gamepalate_core::{
     currency::Currency,
     filters::TagNameError,
     game_vector::{GameVector, game_vectors},
     ids::AppId,
-    search::{Recommendation, RecommendedGame, SearchError, SearchOptions, recommend},
+    search::{
+        Recommendation, RecommendedGame, SearchError, SearchInputs, SearchOptions, recommend,
+    },
+    taste::game_name,
     timestamp::Timestamp,
+    votes::{VoteKind, Votes, cast},
 };
 use gamepalate_steam::{
     images::{ImageDownloader, ImageError, header_url},
     transport::{SteamError, Transport},
 };
-use gamepalate_store::data_files::{DataFiles, DataFilesError, load_data_files};
+use gamepalate_store::{
+    data_files::{DataFiles, DataFilesError, load_data_files},
+    votes::{VotesError, save_votes},
+};
 
 use crate::{
     data_dir,
@@ -20,10 +31,11 @@ use crate::{
     images::{ImageCache, LoadImageError},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Gamepalate {
     data_dir: PathBuf,
     files: DataFiles,
+    votes: Mutex<Votes>,
     vectors: Vec<GameVector>,
     images: Arc<ImageCache>,
     store: Arc<StoreDetails>,
@@ -48,6 +60,7 @@ impl Gamepalate {
 
         Ok(Gamepalate {
             data_dir: dir,
+            votes: Mutex::new(files.votes.clone()),
             files,
             vectors,
             images: Arc::new(images),
@@ -56,8 +69,12 @@ impl Gamepalate {
     }
 
     pub fn recommend(&self, options: &SearchOptions) -> Result<Recommendation, RecommendError> {
+        let votes = self.lock_votes();
         recommend(
-            &self.files.search_inputs(&self.vectors),
+            &SearchInputs {
+                votes: &votes,
+                ..self.files.search_inputs(&self.vectors)
+            },
             options,
             Timestamp(jiff::Timestamp::now().as_millisecond()),
         )
@@ -78,6 +95,31 @@ impl Gamepalate {
         recommendation.games = unseen(recommendation.games, seen, count);
 
         Ok(recommendation)
+    }
+
+    pub fn vote(&self, id: AppId, kind: VoteKind, bet: bool) -> Result<(), VoteError> {
+        let mut votes = self.lock_votes();
+        let date = jiff::Zoned::now().date().to_string();
+        let name = |id| {
+            let name = game_name(id, &self.files.catalog, &self.files.off_catalog);
+            (name != format!("#{}", id.0)).then_some(name)
+        };
+        *votes = saved_vote(
+            &self.data_dir.join("votes.toml"),
+            &votes,
+            id,
+            kind,
+            date,
+            bet,
+            name,
+        )?;
+        Ok(())
+    }
+
+    fn lock_votes(&self) -> MutexGuard<'_, Votes> {
+        self.votes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub async fn image(&self, url: &str) -> Result<Vec<u8>, LoadImageError> {
@@ -128,6 +170,14 @@ pub enum OpenError {
     Steam(#[from] SteamError),
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("could not save the vote in {}", path.display())]
+pub struct VoteError {
+    path: PathBuf,
+    #[source]
+    source: VotesError,
+}
+
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("{}", search_error_text(.0))]
 pub struct RecommendError(pub SearchError);
@@ -147,6 +197,24 @@ fn search_error_text(error: &SearchError) -> String {
                 .to_string()
         }
     }
+}
+
+fn saved_vote(
+    path: &Path,
+    votes: &Votes,
+    id: AppId,
+    kind: VoteKind,
+    date: String,
+    bet: bool,
+    name: impl Fn(AppId) -> Option<String>,
+) -> Result<Votes, VoteError> {
+    let mut changed = votes.clone();
+    cast(&mut changed, id, kind, date, bet);
+    save_votes(path, &changed, name).map_err(|source| VoteError {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(changed)
 }
 
 fn unseen(games: Vec<RecommendedGame>, seen: &[AppId], count: usize) -> Vec<RecommendedGame> {
@@ -185,6 +253,45 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "more than one tag matches \"rogue\": write the full name"
+        );
+    }
+
+    fn vote_in(path: &Path, votes: &Votes) -> Result<Votes, VoteError> {
+        saved_vote(
+            path,
+            votes,
+            AppId(620),
+            VoteKind::WouldTry,
+            "2026-10-30".to_string(),
+            true,
+            |_| Some("Portal 2".to_string()),
+        )
+    }
+
+    #[test]
+    fn a_vote_is_saved_in_the_votes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        let votes = vote_in(&path, &Votes::new()).unwrap();
+
+        assert_eq!(votes.len(), 1);
+        assert_eq!(gamepalate_store::votes::load_votes(&path).unwrap(), votes);
+        assert!(std::fs::read_to_string(&path).unwrap().contains(
+            "620 = { vote = \"would_try\", date = \"2026-10-30\", bet = true } # Portal 2"
+        ));
+    }
+
+    #[test]
+    fn a_vote_that_cannot_be_saved_names_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").join("votes.toml");
+
+        let error = vote_in(&path, &Votes::new()).err().unwrap();
+
+        assert_eq!(
+            error.to_string(),
+            format!("could not save the vote in {}", path.display())
         );
     }
 

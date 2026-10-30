@@ -229,7 +229,7 @@ pub fn vote(kind: VoteKind) -> &'static str {
 }
 
 pub fn voted(name: &str, kind: VoteKind) -> String {
-    format!("{name}: voted {}. Not saved yet.", vote(kind))
+    format!("{name}: voted {}.", vote(kind))
 }
 
 pub fn eneba_url(name: &str) -> String {
@@ -508,10 +508,10 @@ mod tests {
     }
 
     #[test]
-    fn says_the_vote_is_not_saved_yet() {
+    fn says_what_was_voted() {
         assert_eq!(
             voted("INFRA", VoteKind::WouldTry),
-            "INFRA: voted Would try. Not saved yet."
+            "INFRA: voted Would try."
         );
     }
 
