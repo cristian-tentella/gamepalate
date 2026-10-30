@@ -13,7 +13,7 @@ use iced::{
 
 use crate::{
     font, format,
-    screen::{Discover, Screen, discover},
+    screen::{Discover, Screen, Votes, discover, votes},
     style,
 };
 
@@ -41,6 +41,7 @@ pub struct App {
 pub enum Message {
     Navigate(Page),
     Discover(discover::Message),
+    Votes(votes::Message),
     WindowFound(Option<window::Id>),
     Window(WindowAction),
     BarPressed,
@@ -98,6 +99,13 @@ impl App {
                     Task::none()
                 }
             }
+            Message::Votes(message) => {
+                if let Screen::Votes(screen) = &mut self.screen {
+                    screen.update(message).map(Message::Votes)
+                } else {
+                    Task::none()
+                }
+            }
             Message::WindowFound(id) => {
                 self.window = id;
                 Task::none()
@@ -127,7 +135,8 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         let screen = match &self.screen {
             Screen::Discover(_) => Discover::subscription().map(Message::Discover),
-            Screen::Votes | Screen::Profile => Subscription::none(),
+            Screen::Votes(_) => Votes::subscription().map(Message::Votes),
+            Screen::Profile => Subscription::none(),
         };
 
         Subscription::batch([window::resize_events().map(|_| Message::Resized), screen])
@@ -179,7 +188,8 @@ impl App {
 
         let content = match &self.screen {
             Screen::Discover(screen) => screen.view().map(Message::Discover),
-            Screen::Votes | Screen::Profile => column![].into(),
+            Screen::Votes(screen) => screen.view().map(Message::Votes),
+            Screen::Profile => column![].into(),
         };
 
         let app = column![
@@ -246,7 +256,7 @@ impl App {
     fn page(&self) -> Page {
         match &self.screen {
             Screen::Discover(_) => Page::Discover,
-            Screen::Votes => Page::Votes,
+            Screen::Votes(_) => Page::Votes,
             Screen::Profile => Page::Profile,
         }
     }
@@ -259,8 +269,9 @@ impl App {
                 task.map(Message::Discover)
             }
             Page::Votes => {
-                self.screen = Screen::Votes;
-                Task::none()
+                let (votes, task) = Votes::new(&self.gamepalate);
+                self.screen = Screen::Votes(Box::new(votes));
+                task.map(Message::Votes)
             }
             Page::Profile => {
                 self.screen = Screen::Profile;

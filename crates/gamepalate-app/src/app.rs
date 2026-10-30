@@ -1,20 +1,24 @@
 use std::{
+    cmp::Reverse,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
     time::Duration,
 };
 
 use gamepalate_core::{
+    catalog::Catalog,
     currency::Currency,
     filters::TagNameError,
+    game::{Price, Reviews},
     game_vector::{GameVector, game_vectors},
     ids::AppId,
+    off_catalog::OffCatalogGames,
     search::{
         Recommendation, RecommendedGame, SearchError, SearchInputs, SearchOptions, recommend,
     },
     taste::game_name,
     timestamp::Timestamp,
-    votes::{VoteKind, Votes, cast},
+    votes::{Vote, VoteKind, Votes, cast},
 };
 use gamepalate_steam::{
     images::{ImageDownloader, ImageError, header_url},
@@ -43,6 +47,16 @@ pub struct Gamepalate {
     vectors: Vec<GameVector>,
     images: Arc<ImageCache>,
     store: Arc<StoreDetails>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VotedGame {
+    pub id: AppId,
+    pub name: String,
+    pub vote: Vote,
+    pub price: Option<Price>,
+    pub reviews: Option<Reviews>,
+    pub store_url: String,
 }
 
 impl Gamepalate {
@@ -119,6 +133,15 @@ impl Gamepalate {
             name,
         )?;
         Ok(())
+    }
+
+    pub fn voted_games(&self) -> Vec<VotedGame> {
+        voted_games(
+            &self.lock_votes(),
+            &self.files.catalog,
+            &self.files.off_catalog,
+            Timestamp(jiff::Timestamp::now().as_millisecond()),
+        )
     }
 
     fn lock_votes(&self) -> MutexGuard<'_, Votes> {
@@ -262,6 +285,30 @@ fn saved_vote(
     Ok(changed)
 }
 
+fn voted_games(
+    votes: &Votes,
+    catalog: &Catalog,
+    off_catalog: &OffCatalogGames,
+    now: Timestamp,
+) -> Vec<VotedGame> {
+    let mut games: Vec<VotedGame> = votes
+        .iter()
+        .map(|(&id, vote)| {
+            let game = catalog.game(id);
+            VotedGame {
+                id,
+                name: game_name(id, catalog, off_catalog),
+                vote: vote.clone(),
+                price: game.map(|game| game.price.as_of(now)),
+                reviews: game.map(|game| game.reviews),
+                store_url: format!("https://store.steampowered.com/app/{}/", id.0),
+            }
+        })
+        .collect();
+    games.sort_by_cached_key(|game| (Reverse(game.vote.date.clone()), game.name.to_lowercase()));
+    games
+}
+
 fn unseen(games: Vec<RecommendedGame>, seen: &[AppId], count: usize) -> Vec<RecommendedGame> {
     games
         .into_iter()
@@ -272,7 +319,14 @@ fn unseen(games: Vec<RecommendedGame>, seen: &[AppId], count: usize) -> Vec<Reco
 
 #[cfg(test)]
 mod tests {
-    use gamepalate_core::game::{Price, Reviews};
+    use std::collections::BTreeMap;
+
+    use gamepalate_core::{
+        catalog::Freshness,
+        game::{Discount, Game},
+        off_catalog::OffCatalogGame,
+        region::Region,
+    };
 
     use super::*;
 
@@ -338,6 +392,96 @@ mod tests {
             error.to_string(),
             format!("could not save the vote in {}", path.display())
         );
+    }
+
+    #[test]
+    fn the_voted_games_come_newest_first_with_todays_price() {
+        let mut votes = Votes::new();
+        cast(
+            &mut votes,
+            AppId(1),
+            VoteKind::Maybe,
+            "2026-10-01".to_string(),
+            false,
+        );
+        cast(
+            &mut votes,
+            AppId(2),
+            VoteKind::WouldTry,
+            "2026-10-30".to_string(),
+            true,
+        );
+        let mut catalog_game = Game {
+            id: AppId(1),
+            name: "Subnautica".to_string(),
+            price: Price {
+                original_cents: 2999,
+                discount: Some(Discount {
+                    percent: 75,
+                    final_cents: 749,
+                    end: Some(Timestamp(10)),
+                }),
+            },
+            reviews: Reviews {
+                total: 100,
+                positive: 95,
+            },
+            is_early_access: false,
+            tags: Vec::new(),
+        };
+        let catalog = catalog(vec![catalog_game.clone()]);
+
+        let games = voted_games(&votes, &catalog, &OffCatalogGames::new(), Timestamp(20));
+
+        assert_eq!(games.len(), 2);
+        assert_eq!(games[0].id, AppId(2));
+        assert_eq!(games[0].name, "#2");
+        assert!(games[0].vote.bet);
+        assert_eq!(games[0].price, None);
+        assert_eq!(games[1].name, "Subnautica");
+        assert_eq!(games[1].vote.kind, VoteKind::Maybe);
+        catalog_game.price.discount = None;
+        assert_eq!(games[1].price, Some(catalog_game.price));
+        assert_eq!(games[1].reviews, Some(catalog_game.reviews));
+        assert_eq!(games[1].store_url, "https://store.steampowered.com/app/1/");
+    }
+
+    #[test]
+    fn a_voted_game_out_of_the_catalog_keeps_its_name() {
+        let mut votes = Votes::new();
+        cast(
+            &mut votes,
+            AppId(72850),
+            VoteKind::Known,
+            "2026-10-01".to_string(),
+            false,
+        );
+        let off_catalog = OffCatalogGames::from([(
+            AppId(72850),
+            OffCatalogGame {
+                tags: Vec::new(),
+                name: Some("Skyrim".to_string()),
+            },
+        )]);
+
+        let games = voted_games(&votes, &catalog(Vec::new()), &off_catalog, Timestamp(0));
+
+        assert_eq!(games[0].name, "Skyrim");
+        assert_eq!(games[0].price, None);
+    }
+
+    fn catalog(games: Vec<Game>) -> Catalog {
+        Catalog::new(
+            games,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            Freshness {
+                prices_updated_at: Timestamp(0),
+                tags_updated_at: Timestamp(0),
+                region: Region::ITALY,
+            },
+            Currency::italian(),
+        )
     }
 
     #[test]

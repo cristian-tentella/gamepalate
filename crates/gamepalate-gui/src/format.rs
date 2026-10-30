@@ -2,7 +2,7 @@ use gamepalate_app::{
     Blame, Controller, Currency, Italian, Price, Reviews, SearchOptions, SortBy, SteamDeck,
     Timestamp, VoteKind,
 };
-use jiff::tz::TimeZone;
+use jiff::{civil::Date, tz::TimeZone};
 
 pub fn when(at: Timestamp, now: Timestamp) -> String {
     when_in(at, now, &TimeZone::system())
@@ -245,6 +245,36 @@ pub fn voted(name: &str, kind: VoteKind) -> String {
     format!("{name}: voted {}.", vote(kind))
 }
 
+pub fn voted_day(date: &str, today: Date) -> String {
+    let Ok(day) = date.parse::<Date>() else {
+        return date.to_string();
+    };
+
+    if day == today {
+        "today".to_string()
+    } else if day.year() == today.year() {
+        day.strftime("%-d %b").to_string()
+    } else {
+        day.strftime("%-d %b %Y").to_string()
+    }
+}
+
+pub fn bets_summary(would_try: usize, bets: usize, others: Option<f64>) -> String {
+    let share = would_try as f64 / bets as f64;
+    let mut summary = format!("Bets: {would_try} of {bets} Would try ({})", percent(share));
+    if let Some(others) = others {
+        summary.push_str(&format!(
+            ", other votes since the first Bet: {}",
+            percent(others)
+        ));
+    }
+    summary
+}
+
+fn percent(share: f64) -> String {
+    format!("{:.0}%", share * 100.0)
+}
+
 pub fn eneba_url(name: &str) -> String {
     format!(
         "https://www.eneba.com/it/store/all?drms%5B%5D=steam&regions%5B%5D=global&regions%5B%5D=europe&sortBy=PRICE_ASC&text={}",
@@ -277,6 +307,25 @@ mod tests {
 
     const NOW: Timestamp = Timestamp(1_793_638_800_000);
     const HOUR: i64 = 3_600_000;
+
+    #[test]
+    fn the_vote_day_drops_the_year_of_today() {
+        let today = Date::constant(2026, 10, 30);
+
+        assert_eq!(voted_day("2026-10-30", today), "today");
+        assert_eq!(voted_day("2026-10-12", today), "12 Oct");
+        assert_eq!(voted_day("2025-03-01", today), "1 Mar 2025");
+        assert_eq!(voted_day("someday", today), "someday");
+    }
+
+    #[test]
+    fn the_bets_summary_compares_with_the_other_votes() {
+        assert_eq!(
+            bets_summary(9, 51, Some(0.31)),
+            "Bets: 9 of 51 Would try (18%), other votes since the first Bet: 31%"
+        );
+        assert_eq!(bets_summary(1, 2, None), "Bets: 1 of 2 Would try (50%)");
+    }
 
     fn when_utc(at: Timestamp) -> String {
         when_in(at, NOW, &TimeZone::UTC)

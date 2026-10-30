@@ -213,6 +213,45 @@ pub fn chip(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+pub fn choice(current: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let primary = theme.extended_palette().primary;
+
+        if current {
+            button::Style {
+                background: Some(primary.base.color.into()),
+                text_color: primary.base.text,
+                border: Border {
+                    radius: 10.0.into(),
+                    ..Border::default()
+                },
+                ..button::Style::default()
+            }
+        } else {
+            chip(theme, status)
+        }
+    }
+}
+
+pub fn list_row(current: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let background = theme.extended_palette().background;
+        let color = if current {
+            Some(background.strong.color)
+        } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+            Some(background.weak.color)
+        } else {
+            None
+        };
+
+        button::Style {
+            background: color.map(Into::into),
+            text_color: background.base.text,
+            ..button::Style::default()
+        }
+    }
+}
+
 pub fn veil(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(
