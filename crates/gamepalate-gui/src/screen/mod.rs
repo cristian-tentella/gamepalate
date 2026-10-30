@@ -1,7 +1,7 @@
-pub mod recommendations;
+pub mod discover;
 
-pub use recommendations::Recommendations;
+pub use discover::Discover;
 
 pub enum Screen {
-    Recommendations(Recommendations),
+    Discover(Discover),
 }

@@ -6,7 +6,7 @@ use iced::{
     widget::{button, column, row, text},
 };
 
-pub struct Recommendations {
+pub struct Discover {
     state: State,
 }
 
@@ -26,8 +26,8 @@ enum State {
     Failed(String),
 }
 
-impl Recommendations {
-    pub fn new(gamepalate: &Arc<Gamepalate>) -> (Recommendations, Task<Message>) {
+impl Discover {
+    pub fn new(gamepalate: &Arc<Gamepalate>) -> (Discover, Task<Message>) {
         let gamepalate = Arc::clone(gamepalate);
         let task = Task::perform(
             async move { gamepalate.recommend(&SearchOptions::default()) },
@@ -35,7 +35,7 @@ impl Recommendations {
         );
 
         (
-            Recommendations {
+            Discover {
                 state: State::Loading,
             },
             task,
