@@ -38,8 +38,8 @@ const VOTE_HEIGHT: f32 = 36.0;
 const TOAST_DURATION: Duration = Duration::from_secs(4);
 const FLASH_DURATION: Duration = Duration::from_millis(600);
 const CHECK: char = '\u{E73E}';
-const METER_LABEL_WIDTH: f32 = 90.0;
-const METER_VALUE_WIDTH: f32 = 90.0;
+const METER_LABEL_WIDTH: f32 = 64.0;
+const METER_VALUE_WIDTH: f32 = 72.0;
 const SIDE_WIDTH: f32 = 360.0;
 const HEADER_HEIGHT: f32 = SIDE_WIDTH * 215.0 / 460.0;
 const MIN_SHOT_WIDTH: f32 = 480.0;
@@ -644,7 +644,6 @@ impl Discover {
                             .max_width(DESCRIPTION_WIDTH)
                     }),
             )
-            .push(self.why(game))
             .spacing(14)
             .width(shot_width);
         let info = column![
@@ -654,6 +653,7 @@ impl Discover {
             reviews_line(game),
         ]
         .push(similar_lines(game))
+        .push(self.why(game))
         .push(details.map(facts))
         .push(text(progress).size(font::NOTE_SIZE).style(style::muted))
         .spacing(14)
@@ -702,7 +702,7 @@ impl Discover {
 
         let bet = game.bet.then(|| {
             text(format::bet(self.bet_every))
-                .size(font::INFO_SIZE)
+                .size(font::NOTE_SIZE)
                 .style(style::muted)
         });
 
@@ -723,9 +723,9 @@ impl Discover {
                 ),
             ]
             .push(bet)
-            .spacing(10),
+            .spacing(6),
         )
-        .padding([14, 18])
+        .padding([10, 14])
         .width(Fill)
         .style(style::card)
         .into()
@@ -879,15 +879,15 @@ fn next_index(index: usize, count: usize) -> usize {
 
 fn meter<'a>(label: &'a str, share: f32, value: String) -> Element<'a, Message> {
     row![
-        text(label).size(font::INFO_SIZE).width(METER_LABEL_WIDTH),
+        text(label).size(font::BAR_SIZE).width(METER_LABEL_WIDTH),
         progress_bar(0.0..=1.0, share)
-            .girth(6)
+            .girth(4)
             .length(Fill)
             .style(style::meter),
-        container(text(value).size(font::INFO_SIZE).font(font::SEMIBOLD))
+        container(text(value).size(font::BAR_SIZE).font(font::SEMIBOLD))
             .align_right(METER_VALUE_WIDTH),
     ]
-    .spacing(12)
+    .spacing(8)
     .align_y(Center)
     .into()
 }
