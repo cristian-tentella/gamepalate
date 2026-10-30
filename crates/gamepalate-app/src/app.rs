@@ -39,6 +39,7 @@ pub struct Gamepalate {
     data_dir: PathBuf,
     files: DataFiles,
     votes: Mutex<Votes>,
+    gui_saving: Mutex<()>,
     vectors: Vec<GameVector>,
     images: Arc<ImageCache>,
     store: Arc<StoreDetails>,
@@ -64,6 +65,7 @@ impl Gamepalate {
         Ok(Gamepalate {
             data_dir: dir,
             votes: Mutex::new(files.votes.clone()),
+            gui_saving: Mutex::new(()),
             files,
             vectors,
             images: Arc::new(images),
@@ -137,8 +139,40 @@ impl Gamepalate {
         load_gui_settings(&self.data_dir.join(GUI_FILE))
     }
 
-    pub fn save_gui_settings(&self, settings: &GuiSettings) -> std::io::Result<()> {
-        save_gui_settings(&self.data_dir.join(GUI_FILE), settings)
+    pub fn change_gui_settings(
+        &self,
+        change: impl FnOnce(&mut GuiSettings),
+    ) -> std::io::Result<()> {
+        let _saving = self
+            .gui_saving
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let path = self.data_dir.join(GUI_FILE);
+        let mut settings = load_gui_settings(&path);
+        change(&mut settings);
+        save_gui_settings(&path, &settings)
+    }
+
+    pub fn family_names(&self) -> Vec<String> {
+        self.files
+            .families
+            .families
+            .iter()
+            .map(|family| family.name.clone())
+            .collect()
+    }
+
+    pub fn tag_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .files
+            .catalog
+            .tags
+            .values()
+            .map(|tag| tag.english.clone())
+            .collect();
+        names.sort_by_key(|name| name.to_lowercase());
+        names.dedup();
+        names
     }
 
     pub fn prune_images(&self) {

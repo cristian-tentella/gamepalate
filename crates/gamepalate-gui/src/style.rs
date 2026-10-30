@@ -193,6 +193,41 @@ pub fn bet(theme: &Theme) -> container::Style {
     }
 }
 
+pub fn chip(theme: &Theme, status: button::Status) -> button::Style {
+    let background = theme.extended_palette().background;
+
+    button::Style {
+        background: Some(
+            match status {
+                button::Status::Hovered | button::Status::Pressed => background.strong.color,
+                button::Status::Active | button::Status::Disabled => background.weak.color,
+            }
+            .into(),
+        ),
+        text_color: background.base.text,
+        border: Border {
+            radius: 10.0.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
+    }
+}
+
+pub fn veil(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(
+            theme
+                .extended_palette()
+                .background
+                .base
+                .color
+                .scale_alpha(0.7)
+                .into(),
+        ),
+        ..container::Style::default()
+    }
+}
+
 pub fn card(theme: &Theme) -> container::Style {
     let background = theme.extended_palette().background;
 

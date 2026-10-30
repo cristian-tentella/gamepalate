@@ -5,7 +5,7 @@ use clap::{Args, ValueEnum};
 use comfy_table::{CellAlignment, ContentArrangement, Table, presets::UTF8_FULL_CONDENSED};
 use gamepalate_core::{
     catalog::Freshness,
-    currency::Currency,
+    currency::{Currency, parse_price},
     filters::FilterOptions,
     game::Reviews,
     game_vector::game_vectors,
@@ -16,7 +16,7 @@ use gamepalate_core::{
 use gamepalate_store::data_files::DataFiles;
 
 use crate::{
-    format::{date, date_time, decimal, integer, multiplier, parse_price},
+    format::{date, date_time, decimal, integer, multiplier},
     names::{check_families, tag_name_error_text},
 };
 

@@ -12,7 +12,12 @@ use crate::{
     votes::{VoteKind, Votes},
 };
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
 pub struct FilterOptions {
     pub min_reviews: Option<u32>,
     pub max_reviews: Option<u32>,

@@ -23,6 +23,11 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(rename_all = "snake_case")
+)]
 pub enum SortBy {
     #[default]
     Relevance,
@@ -30,9 +35,15 @@ pub enum SortBy {
     Price,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
 pub struct SearchOptions {
     pub family: Option<String>,
+    pub signals_only: bool,
     pub only_bets: bool,
     pub sort: SortBy,
     pub limit: Option<usize>,
@@ -242,7 +253,10 @@ pub fn recommend(
     now: Timestamp,
 ) -> Result<Recommendation, SearchError> {
     let filters = active_filters(&options.filters, inputs.config, inputs.catalog)?;
-    let tastes = search_tastes(inputs, options.family.as_deref())?;
+    let mut tastes = search_tastes(inputs, options.family.as_deref())?;
+    if options.signals_only && options.family.is_none() {
+        tastes.truncate(1);
+    }
     let filter_context = FilterContext::new(
         inputs.signals,
         inputs.families,
@@ -343,6 +357,7 @@ mod tests {
     use super::*;
     use crate::{
         currency::Currency,
+        families::Family,
         game::{Game, GameTag},
         game_vector::game_vectors,
         ids::TagId,
@@ -372,9 +387,9 @@ mod tests {
         }
     }
 
-    fn stale_prices(region: Region) -> bool {
+    fn recommendation(region: Region, options: &SearchOptions) -> Recommendation {
         let catalog = Catalog::new(
-            vec![game(1, 1), game(2, 1), game(3, 2)],
+            vec![game(1, 1), game(2, 1), game(3, 2), game(4, 2)],
             BTreeMap::new(),
             BTreeMap::from([(TagId(1), 1.0), (TagId(2), 1.0)]),
             Freshness {
@@ -405,14 +420,51 @@ mod tests {
             signals: &signals,
             votes: &Votes::new(),
             corrections: &Corrections::default(),
-            families: &Families::default(),
+            families: &Families {
+                families: vec![Family {
+                    name: "Puzzle".to_string(),
+                    games: vec![AppId(3)],
+                }],
+                held_out: Vec::new(),
+            },
             off_catalog: &OffCatalogGames::new(),
             config: &config,
         };
 
-        recommend(&inputs, &SearchOptions::default(), NOW)
-            .unwrap()
-            .stale_prices
+        recommend(&inputs, options, NOW).unwrap()
+    }
+
+    fn stale_prices(region: Region) -> bool {
+        recommendation(region, &SearchOptions::default()).stale_prices
+    }
+
+    fn families_of(options: &SearchOptions) -> Vec<Option<String>> {
+        recommendation(Region::ITALY, options)
+            .games
+            .into_iter()
+            .map(|game| game.from_family)
+            .collect()
+    }
+
+    #[test]
+    fn all_tastes_mix_the_signals_and_the_families() {
+        assert_eq!(
+            families_of(&SearchOptions::default()),
+            [None, Some("Puzzle".to_string())]
+        );
+    }
+
+    #[test]
+    fn signals_only_leaves_the_families_out() {
+        let options = SearchOptions {
+            signals_only: true,
+            ..SearchOptions::default()
+        };
+
+        let families = families_of(&options);
+
+        assert!(!families.is_empty());
+        assert!(families.iter().all(Option::is_none));
     }
 
     #[test]

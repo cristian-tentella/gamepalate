@@ -1,6 +1,6 @@
 use gamepalate_app::{
-    Controller, Currency, Italian, Price, Reviews, SearchOptions, SortBy, SteamDeck, Timestamp,
-    VoteKind,
+    Blame, Controller, Currency, Italian, Price, Reviews, SearchOptions, SortBy, SteamDeck,
+    Timestamp, VoteKind,
 };
 use jiff::tz::TimeZone;
 
@@ -29,9 +29,10 @@ fn when_in(at: Timestamp, now: Timestamp, zone: &TimeZone) -> String {
 
 pub fn filters(options: &SearchOptions, currency: &Currency) -> String {
     let filters = &options.filters;
-    let mut parts = vec![match &options.family {
-        Some(family) => format!("From: {family}"),
-        None => "From: All tastes".to_string(),
+    let mut parts = vec![match (&options.family, options.signals_only) {
+        (Some(family), _) => format!("From: {family}"),
+        (None, true) => "From: Signals only".to_string(),
+        (None, false) => "From: All tastes".to_string(),
     }];
 
     if options.only_bets {
@@ -65,9 +66,6 @@ pub fn filters(options: &SearchOptions, currency: &Currency) -> String {
         Some(false) => parts.push("Early access included".to_string()),
         None => {}
     }
-    if filters.without_voted {
-        parts.push("Not voted".to_string());
-    }
     if !filters.tags.is_empty() {
         parts.push(format!("Tags: {}", filters.tags.join(", ")));
     }
@@ -84,6 +82,21 @@ pub fn filters(options: &SearchOptions, currency: &Currency) -> String {
     }
 
     parts.join(" · ")
+}
+
+pub fn empty_because(blame: Option<&Blame>) -> String {
+    let Some(blame) = blame else {
+        return "No game passes your filters.".to_string();
+    };
+    let games = match blame.discarded {
+        1 => "1 game".to_string(),
+        discarded => format!("{} games", count(discarded as u32)),
+    };
+
+    format!(
+        "No game passes your filters. The strictest is {}: it removed {games}.",
+        blame.filter
+    )
 }
 
 pub fn votes_this_session(votes: usize) -> String {
@@ -299,6 +312,38 @@ mod tests {
             filters(&SearchOptions::default(), &Currency::italian()),
             "From: All tastes"
         );
+    }
+
+    #[test]
+    fn says_signals_only_and_leaves_the_voted_games_out() {
+        let mut options = SearchOptions {
+            signals_only: true,
+            ..SearchOptions::default()
+        };
+        options.filters.without_voted = true;
+
+        assert_eq!(
+            filters(&options, &Currency::italian()),
+            "From: Signals only"
+        );
+    }
+
+    #[test]
+    fn names_the_strictest_filter_when_nothing_passes() {
+        let blame = |discarded| Blame {
+            filter: "max price",
+            discarded,
+        };
+
+        assert_eq!(
+            empty_because(Some(&blame(1234))),
+            "No game passes your filters. The strictest is max price: it removed 1,234 games."
+        );
+        assert_eq!(
+            empty_because(Some(&blame(1))),
+            "No game passes your filters. The strictest is max price: it removed 1 game."
+        );
+        assert_eq!(empty_because(None), "No game passes your filters.");
     }
 
     #[test]

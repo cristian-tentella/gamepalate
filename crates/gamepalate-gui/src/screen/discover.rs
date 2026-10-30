@@ -1,3 +1,4 @@
+mod filters;
 mod images;
 mod pages;
 mod queue;
@@ -5,7 +6,7 @@ mod queue;
 use std::{process::Command, sync::Arc, time::Duration};
 
 use gamepalate_app::{
-    AppId, Currency, FilterOptions, GameDetails, Gamepalate, RecommendError, Recommendation,
+    AppId, Blame, Currency, FilterOptions, GameDetails, Gamepalate, RecommendError, Recommendation,
     RecommendedGame, SearchOptions, VoteKind,
 };
 use iced::{
@@ -19,6 +20,7 @@ use iced::{
 };
 
 use self::{
+    filters::Panel,
     images::{Images, Picture},
     pages::{Page, Pages},
     queue::Queue,
@@ -57,6 +59,12 @@ const KEEP_BEHIND: usize = 5;
 pub struct Discover {
     gamepalate: Arc<Gamepalate>,
     options: SearchOptions,
+    panel: Panel,
+    panel_open: bool,
+    undo: Option<SearchOptions>,
+    searches: u64,
+    updating: bool,
+    empty_because: Option<Blame>,
     votes_this_session: usize,
     bet_every: usize,
     why_open: bool,
@@ -83,8 +91,14 @@ struct Toast {
 
 #[derive(Clone, Debug)]
 pub enum Message {
-    Recommended(Result<Recommendation, RecommendError>),
-    MoreRecommended(Result<Recommendation, RecommendError>),
+    Recommended(u64, Result<Recommendation, RecommendError>),
+    MoreRecommended(u64, Result<Recommendation, RecommendError>),
+    Filters(filters::Message),
+    ToggleFilters,
+    CloseFilters,
+    ResetFilters,
+    UndoFilters,
+    FiltersSaved(Result<(), String>),
     Previous,
     Next,
     Vote(VoteKind),
@@ -117,39 +131,33 @@ enum State {
 
 impl Discover {
     pub fn new(gamepalate: &Arc<Gamepalate>) -> (Discover, Task<Message>) {
-        let options = SearchOptions {
-            filters: FilterOptions {
-                without_voted: true,
-                ..FilterOptions::default()
-            },
-            ..SearchOptions::default()
+        let options = discover_options(gamepalate.gui_settings().search);
+        let panel = Panel::new(gamepalate.family_names(), gamepalate.tag_names(), &options);
+        let mut discover = Discover {
+            gamepalate: Arc::clone(gamepalate),
+            options,
+            panel,
+            panel_open: false,
+            undo: None,
+            searches: 0,
+            updating: false,
+            empty_because: None,
+            votes_this_session: 0,
+            bet_every: gamepalate.bet_every(),
+            why_open: true,
+            toast: None,
+            flash: None,
+            timers_started: 0,
+            images: Images::default(),
+            pages: Pages::default(),
+            screenshot: 0,
+            last_screenshot: None,
+            shown: None,
+            state: State::Loading,
         };
-        let search = options.clone();
-        let recommender = Arc::clone(gamepalate);
-        let task = Task::perform(
-            async move { recommender.recommend(&search) },
-            Message::Recommended,
-        );
+        let task = discover.recommend();
 
-        (
-            Discover {
-                gamepalate: Arc::clone(gamepalate),
-                options,
-                votes_this_session: 0,
-                bet_every: gamepalate.bet_every(),
-                why_open: true,
-                toast: None,
-                flash: None,
-                timers_started: 0,
-                images: Images::default(),
-                pages: Pages::default(),
-                screenshot: 0,
-                last_screenshot: None,
-                shown: None,
-                state: State::Loading,
-            },
-            task,
-        )
+        (discover, task)
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -162,18 +170,43 @@ impl Discover {
 
     fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Recommended(Ok(recommendation)) => {
+            Message::Recommended(search, _) | Message::MoreRecommended(search, _)
+                if search != self.searches => {}
+            Message::Recommended(_, Ok(recommendation)) => {
+                let save = if std::mem::take(&mut self.updating) {
+                    self.save_filters()
+                } else {
+                    Task::none()
+                };
+                self.empty_because = recommendation.empty_because;
                 let mut queue = Queue::new(recommendation.games);
                 let load = queue.wants_next();
                 self.state = State::Ready(queue);
-                if load {
-                    return self.load_more();
-                }
+                return Task::batch([save, self.load_more_if(load)]);
             }
-            Message::Recommended(Err(error)) => {
-                self.state = State::Failed(error.to_string());
+            Message::Recommended(_, Err(error)) => {
+                let updating = std::mem::take(&mut self.updating);
+                let previous = self
+                    .undo
+                    .take()
+                    .filter(|_| updating && matches!(self.state, State::Ready(_)));
+                let Some(previous) = previous else {
+                    self.state = State::Failed(error.to_string());
+                    return Task::none();
+                };
+                self.options = previous;
+                self.panel.show(&self.options);
+                let load = match &mut self.state {
+                    State::Ready(queue) => {
+                        queue.failed();
+                        queue.wants_next()
+                    }
+                    State::Loading | State::Failed(_) => false,
+                };
+                return Task::batch([self.show_toast(error.to_string()), self.load_more_if(load)]);
             }
-            Message::MoreRecommended(result) => {
+            Message::MoreRecommended(..) if self.updating => {}
+            Message::MoreRecommended(_, result) => {
                 if let State::Ready(queue) = &mut self.state {
                     match result {
                         Ok(recommendation) => queue.receive(recommendation.games),
@@ -229,6 +262,28 @@ impl Discover {
                 }
             }
             Message::ToggleWhy => self.why_open = !self.why_open,
+            Message::Filters(message) => return self.change_filters(message),
+            Message::ToggleFilters if self.panel_open => return self.close_filters(),
+            Message::ToggleFilters => {
+                self.panel_open = true;
+                self.panel.show(&self.options);
+            }
+            Message::CloseFilters => return self.close_filters(),
+            Message::ResetFilters => {
+                let defaults = discover_options(SearchOptions::default());
+                if defaults != self.options {
+                    self.panel.show(&defaults);
+                    return self.search(defaults);
+                }
+            }
+            Message::UndoFilters => {
+                if let Some(previous) = self.undo.clone() {
+                    self.panel.show(&previous);
+                    return self.search(previous);
+                }
+            }
+            Message::FiltersSaved(Ok(())) => {}
+            Message::FiltersSaved(Err(error)) => return self.show_toast(error),
             Message::EndFlash(id) => {
                 if self.flash.as_ref().is_some_and(|flash| flash.id == id) {
                     self.flash = None;
@@ -266,27 +321,38 @@ impl Discover {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let filters = container(
-            row![
-                text!(
-                    "{} ·",
-                    format::filters(&self.options, self.gamepalate.currency())
-                )
+        let summary = if self.updating {
+            "Updating…".to_string()
+        } else {
+            format::filters(&self.options, self.gamepalate.currency())
+        };
+        let arrow = if self.panel_open { '▴' } else { '▾' };
+        let line = row![
+            button(
+                row![
+                    text!("{summary} ·")
+                        .size(font::NOTE_SIZE)
+                        .style(style::muted),
+                    text!("Filters (Ctrl+F) {arrow}").size(font::NOTE_SIZE),
+                ]
+                .spacing(4),
+            )
+            .padding(0)
+            .style(style::link)
+            .on_press(Message::ToggleFilters),
+            space().width(Fill),
+            text(format::votes_this_session(self.votes_this_session))
                 .size(font::NOTE_SIZE)
                 .style(style::muted),
-                button(text("Filters (Ctrl+F) ▾").size(font::NOTE_SIZE))
-                    .padding(0)
-                    .style(style::link),
-                space().width(Fill),
-                text(format::votes_this_session(self.votes_this_session))
-                    .size(font::NOTE_SIZE)
-                    .style(style::muted),
-            ]
-            .spacing(4)
-            .align_y(Center),
-        )
-        .padding([6, 20])
-        .width(Fill);
+        ]
+        .align_y(Center);
+        let panel = self.panel_open.then(|| {
+            container(self.panel.view(&self.options).map(Message::Filters))
+                .padding(padding::top(12))
+        });
+        let filters = container(column![line].push(panel))
+            .padding([6, 20])
+            .width(Fill);
         let toast = self.toast.as_ref().map(|toast| {
             container(
                 container(text(&toast.text))
@@ -302,7 +368,12 @@ impl Discover {
             .width(Fill)
             .height(Fill)
             .clip(true);
-        let main = stack![game].push(toast);
+        let veil = self.updating.then(|| {
+            container(text("Updating…").style(style::muted))
+                .center(Fill)
+                .style(style::veil)
+        });
+        let main = stack![game].push(veil).push(toast);
         let votes = container(
             container(responsive(|size| self.vote_row(size.width < COMPACT_WIDTH)))
                 .height(VOTE_HEIGHT),
@@ -351,7 +422,58 @@ impl Discover {
             State::Loading | State::Failed(_) => false,
         };
 
+        self.load_more_if(load)
+    }
+
+    fn load_more_if(&self, load: bool) -> Task<Message> {
         if load { self.load_more() } else { Task::none() }
+    }
+
+    fn recommend(&mut self) -> Task<Message> {
+        self.searches += 1;
+        let search = self.searches;
+        let gamepalate = Arc::clone(&self.gamepalate);
+        let options = self.options.clone();
+
+        Task::perform(
+            async move { gamepalate.recommend(&options) },
+            move |result| Message::Recommended(search, result),
+        )
+    }
+
+    fn search(&mut self, options: SearchOptions) -> Task<Message> {
+        self.undo = Some(std::mem::replace(&mut self.options, options));
+        self.updating = true;
+        self.recommend()
+    }
+
+    fn change_filters(&mut self, message: filters::Message) -> Task<Message> {
+        match self.panel.update(&self.options, message) {
+            Ok(Some(options)) => self.search(options),
+            Ok(None) => Task::none(),
+            Err(error) => self.show_toast(error),
+        }
+    }
+
+    fn close_filters(&mut self) -> Task<Message> {
+        if !std::mem::take(&mut self.panel_open) {
+            return Task::none();
+        }
+        self.change_filters(filters::Message::Submit)
+    }
+
+    fn save_filters(&self) -> Task<Message> {
+        let gamepalate = Arc::clone(&self.gamepalate);
+        let search = self.options.clone();
+
+        Task::perform(
+            async move {
+                gamepalate
+                    .change_gui_settings(|settings| settings.search = search)
+                    .map_err(|error| error.to_string())
+            },
+            Message::FiltersSaved,
+        )
     }
 
     fn load_more(&self) -> Task<Message> {
@@ -361,10 +483,11 @@ impl Discover {
         let gamepalate = Arc::clone(&self.gamepalate);
         let options = self.options.clone();
         let seen = queue.seen();
+        let search = self.searches;
 
         Task::perform(
             async move { gamepalate.recommend_after(&options, &seen) },
-            Message::MoreRecommended,
+            move |result| Message::MoreRecommended(search, result),
         )
     }
 
@@ -678,16 +801,38 @@ impl Discover {
     fn game(&self) -> Element<'_, Message> {
         let content: Element<'_, Message> = match &self.state {
             State::Loading => text("Loading…").style(style::muted).into(),
-            State::Failed(error) => text!("Error: {error}").into(),
+            State::Failed(error) => column![
+                text!("Error: {error}"),
+                small_button("Reset filters", Message::ResetFilters),
+            ]
+            .spacing(12)
+            .align_x(Center)
+            .into(),
             State::Ready(queue) => match queue.current() {
-                None => text("No games match these filters.")
-                    .style(style::muted)
-                    .into(),
+                None => self.empty(),
                 Some(game) => responsive(move |size| self.card(queue, game, size.width)).into(),
             },
         };
 
         container(content).center(Fill).into()
+    }
+
+    fn empty(&self) -> Element<'_, Message> {
+        let buttons = row![small_button("Reset filters", Message::ResetFilters)]
+            .push(
+                self.undo
+                    .is_some()
+                    .then(|| small_button("Undo last change", Message::UndoFilters)),
+            )
+            .spacing(8);
+
+        column![
+            text(format::empty_because(self.empty_because.as_ref())).style(style::muted),
+            buttons,
+        ]
+        .spacing(12)
+        .align_x(Center)
+        .into()
     }
 }
 
@@ -820,6 +965,24 @@ fn facts(details: &GameDetails) -> Element<'_, Message> {
     .into()
 }
 
+fn small_button(label: &str, message: Message) -> Element<'_, Message> {
+    button(text(label).size(font::NOTE_SIZE))
+        .padding([4, 12])
+        .on_press(message)
+        .into()
+}
+
+fn discover_options(saved: SearchOptions) -> SearchOptions {
+    SearchOptions {
+        limit: None,
+        filters: FilterOptions {
+            without_voted: true,
+            ..saved.filters
+        },
+        ..saved
+    }
+}
+
 fn note<'a>(label: &'static str) -> Element<'a, Message> {
     text(label)
         .size(font::NOTE_SIZE)
@@ -946,11 +1109,16 @@ fn link_button(label: &str, link: Link, enabled: bool) -> Element<'_, Message> {
 }
 
 fn key_message(event: keyboard::Event) -> Option<Message> {
-    let keyboard::Event::KeyPressed { key, .. } = event else {
+    let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
         return None;
     };
 
+    if modifiers.command() {
+        return matches!(key.as_ref(), Key::Character("f" | "F")).then_some(Message::ToggleFilters);
+    }
+
     match key {
+        Key::Named(Named::Escape) => Some(Message::CloseFilters),
         Key::Named(Named::Space) => Some(Message::Next),
         Key::Named(Named::Backspace) => Some(Message::Previous),
         Key::Named(Named::ArrowRight) => Some(Message::NextScreenshot),
@@ -1153,18 +1321,56 @@ mod tests {
     }
 
     #[test]
+    fn opens_the_filters_with_ctrl_f_and_closes_them_with_esc() {
+        assert!(matches!(
+            key_message(with_ctrl(Key::Character("f".into()))),
+            Some(Message::ToggleFilters)
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Named(Named::Escape))),
+            Some(Message::CloseFilters)
+        ));
+        assert!(key_message(with_ctrl(Key::Character("1".into()))).is_none());
+    }
+
+    #[test]
+    fn the_saved_filters_always_leave_out_the_voted_games() {
+        let mut saved = SearchOptions {
+            limit: Some(5),
+            family: Some("Puzzle".to_string()),
+            ..SearchOptions::default()
+        };
+        saved.filters.max_price_cents = Some(1500);
+
+        let options = discover_options(saved);
+
+        assert!(options.filters.without_voted);
+        assert_eq!(options.limit, None);
+        assert_eq!(options.family.as_deref(), Some("Puzzle"));
+        assert_eq!(options.filters.max_price_cents, Some(1500));
+    }
+
+    #[test]
     fn ignores_the_other_keys() {
         assert!(key_message(pressed(Key::Character("8".into()))).is_none());
         assert!(key_message(pressed(Key::Named(Named::Enter))).is_none());
     }
 
     fn pressed(key: Key) -> keyboard::Event {
+        pressed_with(key, Modifiers::empty())
+    }
+
+    fn with_ctrl(key: Key) -> keyboard::Event {
+        pressed_with(key, Modifiers::CTRL)
+    }
+
+    fn pressed_with(key: Key, modifiers: Modifiers) -> keyboard::Event {
         keyboard::Event::KeyPressed {
             key: key.clone(),
             modified_key: key,
             physical_key: key::Physical::Unidentified(key::NativeCode::Unidentified),
             location: Location::Standard,
-            modifiers: Modifiers::empty(),
+            modifiers,
             text: None,
             repeat: false,
         }

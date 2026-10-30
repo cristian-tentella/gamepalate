@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gamepalate_app::{Gamepalate, GuiSettings, ThemeChoice, Timestamp};
+use gamepalate_app::{Gamepalate, ThemeChoice, Timestamp};
 use iced::{
     Center, Element, Fill, Length, Shrink, Subscription, Task, Theme, mouse, padding,
     widget::{button, column, container, mouse_area, row, space, stack, text},
@@ -112,11 +112,12 @@ impl App {
             }
             Message::ToggleTheme => {
                 self.theme = toggled(&self.theme);
-                let settings = GuiSettings {
-                    theme: choice(&self.theme),
-                };
+                let choice = choice(&self.theme);
                 let gamepalate = Arc::clone(&self.gamepalate);
-                Task::future(async move { gamepalate.save_gui_settings(&settings) }).discard()
+                Task::future(async move {
+                    gamepalate.change_gui_settings(|settings| settings.theme = choice)
+                })
+                .discard()
             }
         }
     }
