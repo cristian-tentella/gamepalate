@@ -13,8 +13,8 @@ use serde_json::Value;
 use tokio::time::{Instant, timeout_at};
 
 const BASE_URL: &str = "https://api.steampowered.com/";
-const USER_AGENT: &str = "gamepalate/0.1 (personal tool)";
-const TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const USER_AGENT: &str = "gamepalate/0.1 (personal tool)";
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(10);
 const INTERVAL: Duration = Duration::from_millis(500);
 const MAX_INTERVAL: Duration = Duration::from_secs(2);
 const SLOW_DOWN_STEP: Duration = Duration::from_millis(250);
