@@ -1,16 +1,30 @@
-use std::sync::Arc;
+use std::{process::Command, sync::Arc};
 
-use gamepalate_app::{Gamepalate, RecommendError, Recommendation, RecommendedGame, SearchOptions};
+use gamepalate_app::{
+    Gamepalate, RecommendError, Recommendation, RecommendedGame, SearchOptions, VoteKind,
+};
 use iced::{
-    Center, Element, Fill, Task,
-    widget::{button, column, container, row, space, text},
+    Center, Element, Fill, Task, padding,
+    widget::{button, column, container, responsive, row, space, text},
 };
 
 use crate::{font, format, style};
 
+const VOTES: [(&str, VoteKind); 4] = [
+    ("1", VoteKind::WouldTry),
+    ("2", VoteKind::Maybe),
+    ("3", VoteKind::NotForMe),
+    ("4", VoteKind::Known),
+];
+const COMPACT_WIDTH: f32 = 1100.0;
+const COMPACT_VOTE_SIZE: f32 = 14.0;
+const VOTE_WIDTH: f32 = 172.0;
+const VOTE_HEIGHT: f32 = 36.0;
+
 pub struct Discover {
     options: SearchOptions,
     votes_this_session: usize,
+    feedback: Option<String>,
     state: State,
 }
 
@@ -19,6 +33,8 @@ pub enum Message {
     Recommended(Result<Recommendation, RecommendError>),
     Previous,
     Next,
+    Vote(VoteKind),
+    Open(String),
 }
 
 enum State {
@@ -44,6 +60,7 @@ impl Discover {
             Discover {
                 options,
                 votes_this_session: 0,
+                feedback: None,
                 state: State::Loading,
             },
             task,
@@ -73,6 +90,14 @@ impl Discover {
                     *index += 1;
                 }
             }
+            Message::Vote(kind) => {
+                if let Some(game) = self.current() {
+                    self.feedback = Some(format::voted(&game.name, kind));
+                }
+            }
+            Message::Open(url) => {
+                let _ = Command::new("explorer").arg(url).spawn();
+            }
         }
     }
 
@@ -100,9 +125,53 @@ impl Discover {
             .width(Fill)
             .height(Fill)
             .clip(true);
-        let votes = container(text("Votes")).padding([10, 12]).width(Fill);
+        let feedback = self
+            .feedback
+            .as_deref()
+            .map(|feedback| text(feedback).size(font::NOTE_SIZE).style(style::muted));
+        let buttons = container(responsive(|size| self.vote_row(size.width < COMPACT_WIDTH)))
+            .height(VOTE_HEIGHT);
+        let votes = container(column![].push(feedback).push(buttons).spacing(6))
+            .padding([10, 20])
+            .width(Fill);
 
         column![filters, style::separator(), main, style::separator(), votes].into()
+    }
+
+    fn vote_row(&self, compact: bool) -> Element<'_, Message> {
+        let game = self.current();
+        let hint = (!compact).then(|| {
+            container(
+                text("Space skip · ⌫ back")
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted),
+            )
+            .padding(padding::left(4))
+        });
+        let votes = row(VOTES.map(|(key, kind)| vote_button(key, kind, compact, game.is_some())))
+            .push(hint)
+            .spacing(8)
+            .width(Fill)
+            .align_y(Center);
+        let links = row![
+            link_button("5 Steam ↗", game.map(|game| game.store_url.clone())),
+            link_button("6 Eneba ↗", game.map(|game| format::eneba_url(&game.name))),
+            link_button("7 HLTB ↗", game.map(|game| format::hltb_url(&game.name))),
+        ]
+        .spacing(20);
+
+        row![votes, links]
+            .spacing(8)
+            .height(Fill)
+            .align_y(Center)
+            .into()
+    }
+
+    fn current(&self) -> Option<&RecommendedGame> {
+        match &self.state {
+            State::Ready { games, index } => games.get(*index),
+            State::Loading | State::Failed(_) => None,
+        }
     }
 
     fn game(&self) -> Element<'_, Message> {
@@ -126,4 +195,47 @@ impl Discover {
             }
         }
     }
+}
+
+fn vote_button<'a>(
+    key: &'a str,
+    kind: VoteKind,
+    compact: bool,
+    enabled: bool,
+) -> Element<'a, Message> {
+    let keycap = container(text(key).size(11).style(style::muted))
+        .center_x(18)
+        .center_y(18)
+        .style(style::keycap);
+    let label = text(format::vote(kind))
+        .size(if compact {
+            COMPACT_VOTE_SIZE
+        } else {
+            font::VOTE_SIZE
+        })
+        .font(font::SEMIBOLD);
+
+    container(
+        button(
+            container(row![keycap, label].spacing(10).align_y(Center))
+                .center_x(Fill)
+                .center_y(Fill),
+        )
+        .width(Fill)
+        .height(VOTE_HEIGHT)
+        .padding(0)
+        .style(style::vote)
+        .on_press_maybe(enabled.then_some(Message::Vote(kind))),
+    )
+    .width(Fill)
+    .max_width(VOTE_WIDTH)
+    .into()
+}
+
+fn link_button(label: &str, url: Option<String>) -> Element<'_, Message> {
+    button(text(label).size(font::BAR_SIZE))
+        .padding(0)
+        .style(style::link)
+        .on_press_maybe(url.map(Message::Open))
+        .into()
 }

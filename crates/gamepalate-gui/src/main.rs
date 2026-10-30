@@ -33,7 +33,11 @@ fn main() -> anyhow::Result<()> {
         ..window::Settings::default()
     })
     .settings(Settings {
-        fonts: vec![font::REGULAR_BYTES.into(), font::BOLD_BYTES.into()],
+        fonts: vec![
+            font::REGULAR_BYTES.into(),
+            font::SEMIBOLD_BYTES.into(),
+            font::BOLD_BYTES.into(),
+        ],
         default_font: font::REGULAR,
         default_text_size: Pixels(14.0),
         ..Settings::default()

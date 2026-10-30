@@ -1,4 +1,4 @@
-use gamepalate_app::{SearchOptions, SortBy, Timestamp};
+use gamepalate_app::{SearchOptions, SortBy, Timestamp, VoteKind};
 use jiff::tz::TimeZone;
 
 pub fn when(at: Timestamp, now: Timestamp) -> String {
@@ -107,6 +107,43 @@ pub fn count(number: u32) -> String {
     grouped
 }
 
+pub fn vote(kind: VoteKind) -> &'static str {
+    match kind {
+        VoteKind::WouldTry => "Would try",
+        VoteKind::Maybe => "Maybe",
+        VoteKind::NotForMe => "Not for me",
+        VoteKind::Known => "Already know it",
+    }
+}
+
+pub fn voted(name: &str, kind: VoteKind) -> String {
+    format!("{name}: voted {}. Not saved yet.", vote(kind))
+}
+
+pub fn eneba_url(name: &str) -> String {
+    format!(
+        "https://www.eneba.com/it/store/all?drms%5B%5D=steam&regions%5B%5D=global&regions%5B%5D=europe&sortBy=PRICE_ASC&text={}",
+        search_text(name)
+    )
+}
+
+pub fn hltb_url(name: &str) -> String {
+    format!("https://howlongtobeat.com/?q={}", search_text(name))
+}
+
+fn search_text(name: &str) -> String {
+    let name: String = name.chars().filter(|c| !"™®©".contains(*c)).collect();
+    let mut encoded = String::new();
+    for byte in name.trim().bytes() {
+        if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +213,22 @@ mod tests {
         assert_eq!(count(999), "999");
         assert_eq!(count(43_506), "43,506");
         assert_eq!(count(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn says_the_vote_is_not_saved_yet() {
+        assert_eq!(
+            voted("INFRA", VoteKind::WouldTry),
+            "INFRA: voted Would try. Not saved yet."
+        );
+    }
+
+    #[test]
+    fn searches_by_name_without_trademarks() {
+        assert_eq!(
+            hltb_url("Hades™ II: Café & Co. "),
+            "https://howlongtobeat.com/?q=Hades%20II%3A%20Caf%C3%A9%20%26%20Co."
+        );
+        assert!(eneba_url("Celeste").ends_with("&text=Celeste"));
     }
 }

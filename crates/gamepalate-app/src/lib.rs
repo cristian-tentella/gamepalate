@@ -6,4 +6,5 @@ pub use gamepalate_core::{
     game::Price,
     search::{Recommendation, RecommendedGame, SearchError, SearchOptions, SortBy},
     timestamp::Timestamp,
+    votes::VoteKind,
 };
