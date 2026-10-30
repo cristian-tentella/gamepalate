@@ -66,6 +66,7 @@ pub struct Discover {
     images: Images,
     pages: Pages,
     screenshot: usize,
+    last_screenshot: Option<String>,
     shown: Option<AppId>,
     state: State,
 }
@@ -92,6 +93,7 @@ pub enum Message {
     HideToast(u64),
     EndFlash(u64),
     ImageLoaded(String, Option<image::Handle>),
+    ImageAllocated(String, Option<image::Allocation>),
     DetailsLoaded(AppId, Result<Option<Arc<GameDetails>>, String>),
     PreviousScreenshot,
     NextScreenshot,
@@ -135,6 +137,7 @@ impl Discover {
                 images: Images::default(),
                 pages: Pages::default(),
                 screenshot: 0,
+                last_screenshot: None,
                 shown: None,
                 state: State::Loading,
             },
@@ -212,13 +215,18 @@ impl Discover {
                     self.toast = None;
                 }
             }
-            Message::ImageLoaded(url, handle) => self.images.loaded(url, handle),
-            Message::DetailsLoaded(id, result) => self.pages.loaded(id, result),
-            Message::PreviousScreenshot => self.screenshot = self.screenshot.saturating_sub(1),
-            Message::NextScreenshot => {
-                self.screenshot = next_index(self.screenshot, self.screenshot_count());
+            Message::ImageLoaded(url, None) => self.images.loaded(url, None),
+            Message::ImageLoaded(url, Some(handle)) => {
+                return image::allocate(handle)
+                    .map(move |allocation| Message::ImageAllocated(url.clone(), allocation.ok()));
             }
-            Message::ShowScreenshot(index) => self.screenshot = index,
+            Message::ImageAllocated(url, allocation) => self.images.loaded(url, allocation),
+            Message::DetailsLoaded(id, result) => self.pages.loaded(id, result),
+            Message::PreviousScreenshot => self.show_screenshot(self.screenshot.saturating_sub(1)),
+            Message::NextScreenshot => {
+                self.show_screenshot(next_index(self.screenshot, self.screenshot_count()));
+            }
+            Message::ShowScreenshot(index) => self.show_screenshot(index),
             Message::RetryDetails => {
                 if let Some(id) = self.current().map(|game| game.id) {
                     self.pages.retry(id);
@@ -360,7 +368,33 @@ impl Discover {
         if current != self.shown {
             self.shown = current;
             self.screenshot = 0;
+            self.last_screenshot = None;
         }
+    }
+
+    fn show_screenshot(&mut self, index: usize) {
+        if index == self.screenshot {
+            return;
+        }
+        let shown = self.current_screenshot();
+        if shown.is_some_and(|url| matches!(self.images.get(url), Some(Picture::Ready(_)))) {
+            self.last_screenshot = shown.cloned();
+        }
+        self.screenshot = index;
+    }
+
+    fn current_is_loaded(&self) -> bool {
+        let Some(game) = self.current() else {
+            return true;
+        };
+        let header = self.images.get(&self.header_url(game));
+        let screenshot = self.current_screenshot().map(|url| self.images.get(url));
+        is_loaded(self.pages.get(game.id), header, screenshot)
+    }
+
+    fn current_screenshot(&self) -> Option<&String> {
+        self.current()
+            .and_then(|game| self.screenshots(game.id).get(self.screenshot))
     }
 
     fn load_details(&mut self) -> Task<Message> {
@@ -370,7 +404,12 @@ impl Discover {
         let ids = |games: &[RecommendedGame]| -> Vec<AppId> {
             games.iter().map(|game| game.id).collect()
         };
-        let wanted = ids(queue.upcoming(DETAILS_AHEAD));
+        let ahead = if self.current_is_loaded() {
+            DETAILS_AHEAD
+        } else {
+            1
+        };
+        let wanted = ids(queue.upcoming(ahead));
         let nearby = ids(queue.around(KEEP_BEHIND, PRELOAD_AHEAD));
 
         self.pages.keep_only(&nearby);
@@ -397,18 +436,27 @@ impl Discover {
         };
         let first_screenshot = |game: &RecommendedGame| self.screenshots(game.id).first().cloned();
 
-        let mut wanted = Vec::new();
-        if let Some((current, next)) = queue.upcoming(PRELOAD_AHEAD).split_first() {
-            let (soon, later) = screenshot_order(self.screenshots(current.id), self.screenshot);
-            wanted.extend(soon.first().cloned());
-            wanted.push(self.header_url(current));
-            wanted.extend(soon.iter().skip(1).cloned());
-            for game in next {
-                wanted.push(self.header_url(game));
-                wanted.extend(first_screenshot(game));
+        let loaded = self.current_is_loaded();
+        let wanted = match queue.upcoming(PRELOAD_AHEAD).split_first() {
+            Some((current, _)) if !loaded => {
+                let (soon, _) = screenshot_order(self.screenshots(current.id), self.screenshot);
+                download_order(
+                    self.header_url(current),
+                    &soon[..soon.len().min(1)],
+                    Vec::new(),
+                    Vec::new(),
+                )
             }
-            wanted.extend(later);
-        }
+            Some((current, next)) => {
+                let (soon, later) = screenshot_order(self.screenshots(current.id), self.screenshot);
+                let next = next
+                    .iter()
+                    .map(|game| (self.header_url(game), first_screenshot(game)))
+                    .collect();
+                download_order(self.header_url(current), soon, next, later)
+            }
+            None => Vec::new(),
+        };
 
         let mut nearby = Vec::new();
         for game in queue.around(KEEP_BEHIND, PRELOAD_AHEAD) {
@@ -469,7 +517,7 @@ impl Discover {
 
     fn picture<'a>(&self, url: &str, width: f32, height: f32) -> Element<'a, Message> {
         let content: Element<'a, Message> = match self.images.get(url) {
-            Some(Picture::Ready(handle)) => image(handle.clone())
+            Some(Picture::Ready(allocation)) => image(allocation.handle().clone())
                 .width(width)
                 .height(height)
                 .content_fit(ContentFit::Cover)
@@ -495,7 +543,11 @@ impl Discover {
         let content: Element<'a, Message> = match self.pages.get(game.id) {
             Some(Page::Ready(details)) => {
                 match details.store.screenshot_urls.get(self.screenshot) {
-                    Some(url) => return self.picture(url, width, height),
+                    Some(url) => {
+                        let url =
+                            shown_screenshot(url, &self.images, self.last_screenshot.as_ref());
+                        return self.picture(url, width, height);
+                    }
                     None => note("No screenshots"),
                 }
             }
@@ -759,6 +811,32 @@ fn screenshot_size(width: f32) -> (f32, f32) {
     (shot_width, shot_width * 9.0 / 16.0)
 }
 
+fn is_loaded<T>(
+    page: Option<&Page>,
+    header: Option<&Picture<T>>,
+    screenshot: Option<Option<&Picture<T>>>,
+) -> bool {
+    let done =
+        |picture: Option<&Picture<T>>| matches!(picture, Some(Picture::Ready(_) | Picture::Failed));
+    !matches!(page, Some(Page::Loading) | None) && done(header) && screenshot.is_none_or(done)
+}
+
+fn download_order(
+    header: String,
+    soon: &[String],
+    next: Vec<(String, Option<String>)>,
+    later: Vec<String>,
+) -> Vec<String> {
+    let mut wanted = vec![header];
+    wanted.extend(soon.iter().cloned());
+    for (header, screenshot) in next {
+        wanted.push(header);
+        wanted.extend(screenshot);
+    }
+    wanted.extend(later);
+    wanted
+}
+
 fn screenshot_order(screenshots: &[String], index: usize) -> (&[String], Vec<String>) {
     let start = index.min(screenshots.len());
     let end = (index + 1 + SCREENSHOTS_AHEAD).min(screenshots.len());
@@ -867,6 +945,17 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
     }
 }
 
+fn shown_screenshot<'a, T>(
+    url: &'a String,
+    images: &Images<T>,
+    last: Option<&'a String>,
+) -> &'a String {
+    match (images.get(url), last) {
+        (Some(Picture::Loading) | None, Some(last)) => last,
+        _ => url,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use iced::keyboard::{Location, Modifiers, key};
@@ -940,6 +1029,56 @@ mod tests {
     }
 
     #[test]
+    fn the_game_is_loaded_with_its_details_header_and_screenshot() {
+        let ready = Some(&Picture::Ready(0));
+        let failed = Some(&Picture::<u8>::Failed);
+        let loading = Some(&Picture::<u8>::Loading);
+
+        assert!(is_loaded(Some(&Page::Missing), ready, None));
+        assert!(is_loaded(Some(&Page::Failed), failed, None));
+        assert!(is_loaded(Some(&Page::Missing), ready, Some(failed)));
+        assert!(!is_loaded(None, ready, None));
+        assert!(!is_loaded(Some(&Page::Loading), ready, None));
+        assert!(!is_loaded(Some(&Page::Missing), loading, None));
+        assert!(!is_loaded::<u8>(Some(&Page::Missing), None, None));
+        assert!(!is_loaded(Some(&Page::Missing), ready, Some(loading)));
+        assert!(!is_loaded(Some(&Page::Missing), ready, Some(None)));
+    }
+
+    #[test]
+    fn the_header_comes_first_then_the_screenshots() {
+        let urls = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>()
+        };
+
+        let order = download_order(
+            "header".to_string(),
+            &urls(&["shot 1", "shot 2"]),
+            vec![
+                ("next header".to_string(), Some("next shot".to_string())),
+                ("last header".to_string(), None),
+            ],
+            urls(&["shot 3"]),
+        );
+
+        assert_eq!(
+            order,
+            urls(&[
+                "header",
+                "shot 1",
+                "shot 2",
+                "next header",
+                "next shot",
+                "last header",
+                "shot 3"
+            ])
+        );
+    }
+
+    #[test]
     fn the_screenshot_order_stops_at_the_ends() {
         let shots: Vec<String> = (0..2).map(|index| format!("ss_{index}.jpg")).collect();
 
@@ -948,6 +1087,31 @@ mod tests {
             (&shots[1..], vec![shots[0].clone()])
         );
         assert_eq!(screenshot_order(&[], 0), (&[][..], Vec::new()));
+    }
+
+    #[test]
+    fn shows_the_last_screenshot_until_the_next_is_ready() {
+        let (last, next) = ("last".to_string(), "next".to_string());
+        let mut images = Images::<u8>::default();
+        images.want(vec![last.clone(), next.clone()]);
+        images.loaded(last.clone(), Some(0));
+
+        assert_eq!(shown_screenshot(&next, &images, Some(&last)), &last);
+        assert_eq!(shown_screenshot(&next, &images, None), &next);
+
+        images.loaded(next.clone(), Some(0));
+
+        assert_eq!(shown_screenshot(&next, &images, Some(&last)), &next);
+    }
+
+    #[test]
+    fn a_failed_screenshot_is_shown_as_failed() {
+        let (last, next) = ("last".to_string(), "next".to_string());
+        let mut images = Images::<u8>::default();
+        images.want(vec![next.clone()]);
+        images.loaded(next.clone(), None);
+
+        assert_eq!(shown_screenshot(&next, &images, Some(&last)), &next);
     }
 
     #[test]

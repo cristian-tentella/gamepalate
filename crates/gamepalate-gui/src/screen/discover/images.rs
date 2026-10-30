@@ -1,24 +1,32 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use iced::widget::image::Handle;
+use iced::widget::image::Allocation;
 
 const MAX_DOWNLOADS: usize = 4;
 const MAX_PICTURES: usize = 100;
 
-pub enum Picture {
+pub enum Picture<T = Allocation> {
     Loading,
-    Ready(Handle),
+    Ready(T),
     Failed,
 }
 
-#[derive(Default)]
-pub struct Images {
-    pictures: HashMap<String, Picture>,
+pub struct Images<T = Allocation> {
+    pictures: HashMap<String, Picture<T>>,
     waiting: VecDeque<String>,
 }
 
-impl Images {
-    pub fn get(&self, url: &str) -> Option<&Picture> {
+impl<T> Default for Images<T> {
+    fn default() -> Self {
+        Images {
+            pictures: HashMap::new(),
+            waiting: VecDeque::new(),
+        }
+    }
+}
+
+impl<T> Images<T> {
+    pub fn get(&self, url: &str) -> Option<&Picture<T>> {
         self.pictures.get(url)
     }
 
@@ -40,10 +48,10 @@ impl Images {
         started
     }
 
-    pub fn loaded(&mut self, url: String, handle: Option<Handle>) {
+    pub fn loaded(&mut self, url: String, image: Option<T>) {
         if let Some(picture) = self.pictures.get_mut(&url) {
-            *picture = match handle {
-                Some(handle) => Picture::Ready(handle),
+            *picture = match image {
+                Some(image) => Picture::Ready(image),
                 None => Picture::Failed,
             };
         }
@@ -79,13 +87,13 @@ mod tests {
         format!("https://example.com/{id}.jpg")
     }
 
-    fn handle() -> Option<Handle> {
-        Some(Handle::from_bytes(vec![0]))
+    fn handle() -> Option<u8> {
+        Some(0)
     }
 
     #[test]
     fn starts_at_most_four_downloads_at_once() {
-        let mut images = Images::default();
+        let mut images = Images::<u8>::default();
 
         assert_eq!(images.want(urls(1..=6)), urls(1..=4));
         assert!(images.want(urls(1..=6)).is_empty());
@@ -99,7 +107,7 @@ mod tests {
 
     #[test]
     fn asks_for_the_same_address_once() {
-        let mut images = Images::default();
+        let mut images = Images::<u8>::default();
 
         assert_eq!(images.want(vec![url(1), url(1)]), vec![url(1)]);
         images.loaded(url(1), None);
@@ -110,7 +118,7 @@ mod tests {
 
     #[test]
     fn puts_the_current_game_first() {
-        let mut images = Images::default();
+        let mut images = Images::<u8>::default();
         images.want(urls(1..=6));
 
         images.loaded(url(1), handle());
@@ -122,7 +130,7 @@ mod tests {
 
     #[test]
     fn forgets_the_games_far_away_over_the_limit() {
-        let mut images = Images::default();
+        let mut images = Images::<u8>::default();
         for id in 1..=MAX_PICTURES as u32 + 1 {
             images.want(vec![url(id)]);
             images.loaded(url(id), handle());
@@ -138,7 +146,7 @@ mod tests {
 
     #[test]
     fn keeps_everything_under_the_limit() {
-        let mut images = Images::default();
+        let mut images = Images::<u8>::default();
         images.want(vec![url(1)]);
         images.loaded(url(1), handle());
 
@@ -149,7 +157,7 @@ mod tests {
 
     #[test]
     fn ignores_an_image_that_was_forgotten() {
-        let mut images = Images::default();
+        let mut images = Images::<u8>::default();
 
         images.loaded(url(1), handle());
 
