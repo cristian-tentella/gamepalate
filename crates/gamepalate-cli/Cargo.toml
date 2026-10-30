@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+gamepalate-app = { version = "0.1.0", path = "../gamepalate-app" }
 gamepalate-core = { version = "0.1.0", path = "../gamepalate-core" }
 gamepalate-store = { version = "0.1.0", path = "../gamepalate-store" }
 gamepalate-steam = { version = "0.1.0", path = "../gamepalate-steam" }

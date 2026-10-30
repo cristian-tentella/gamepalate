@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, path::Path};
 
 use anyhow::Context;
+use gamepalate_app::update::{LANGUAGE, wall_clock};
 use gamepalate_core::{
     catalog::Catalog,
     config::Config,
@@ -24,10 +25,7 @@ use gamepalate_store::{
     signals::{load_reading, save_reading},
 };
 
-use crate::{
-    format::date_time,
-    update::{LANGUAGE, wall_clock},
-};
+use crate::format::date_time;
 
 pub fn load(data_dir: &Path, offline: bool) -> anyhow::Result<DataFiles> {
     Ok(load_for(data_dir, offline, |config| *config)?.0)
