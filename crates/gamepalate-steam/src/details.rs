@@ -15,6 +15,7 @@ const SUCCESS: u32 = 1;
 const ITALIAN: u32 = 3;
 const FULL_CONTROLLER: u32 = 28;
 const PARTIAL_CONTROLLER: u32 = 18;
+const SCREENSHOT_SIZE: &str = ".1920x1080";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ItemDetails {
@@ -242,7 +243,7 @@ fn to_details(item: SteamDetails) -> ItemDetails {
                 screenshots
                     .all_ages_screenshots
                     .into_iter()
-                    .map(|file| format!("{ASSETS_BASE_URL}{}", file.filename))
+                    .map(|file| screenshot_url(&file.filename))
                     .collect()
             })
             .unwrap_or_default(),
@@ -266,6 +267,21 @@ fn to_details(item: SteamDetails) -> ItemDetails {
             _ => None,
         },
     }
+}
+
+fn screenshot_url(filename: &str) -> String {
+    let (path, query) = filename
+        .split_once('?')
+        .map_or((filename, None), |(path, query)| (path, Some(query)));
+    let mut url = format!("{ASSETS_BASE_URL}{path}");
+    if let Some(name) = path.strip_suffix(".jpg") {
+        url = format!("{ASSETS_BASE_URL}{name}{SCREENSHOT_SIZE}.jpg");
+    }
+    if let Some(query) = query {
+        url.push('?');
+        url.push_str(query);
+    }
+    url
 }
 
 fn header_url(assets: Assets) -> Option<String> {
@@ -326,8 +342,8 @@ mod tests {
                     "{ASSETS_BASE_URL}steam/apps/1369630/abc123/header.jpg?t=1"
                 )),
                 screenshot_urls: vec![
-                    format!("{ASSETS_BASE_URL}steam/apps/1369630/ss_1.jpg"),
-                    format!("{ASSETS_BASE_URL}steam/apps/1369630/ss_2.jpg"),
+                    format!("{ASSETS_BASE_URL}steam/apps/1369630/ss_1.1920x1080.jpg"),
+                    format!("{ASSETS_BASE_URL}steam/apps/1369630/ss_2.1920x1080.jpg"),
                 ],
                 player_categories: vec![2],
                 controller: Some(Controller::Full),
@@ -421,5 +437,21 @@ mod tests {
         assert_eq!(names.len(), 2);
         assert_eq!(names[&2], "Single-player");
         assert_eq!(names[&38], "Online Co-op");
+    }
+
+    #[test]
+    fn a_screenshot_asks_for_at_most_full_hd_and_keeps_the_query() {
+        assert_eq!(
+            screenshot_url("steam/apps/692850/ss_63cc.jpg?t=1793353694"),
+            format!("{ASSETS_BASE_URL}steam/apps/692850/ss_63cc.1920x1080.jpg?t=1793353694")
+        );
+    }
+
+    #[test]
+    fn a_screenshot_that_is_not_a_jpeg_stays_as_it_is() {
+        assert_eq!(
+            screenshot_url("steam/apps/1/ss_1.png?t=1"),
+            format!("{ASSETS_BASE_URL}steam/apps/1/ss_1.png?t=1")
+        );
     }
 }
