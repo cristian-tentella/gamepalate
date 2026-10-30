@@ -2,6 +2,7 @@ pub mod app;
 mod data_dir;
 mod details;
 mod images;
+pub mod update;
 pub use app::{Gamepalate, OpenError, RecommendError, VoteError, VotedGame};
 pub use details::GameDetails;
 pub use gamepalate_core::{
