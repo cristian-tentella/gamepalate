@@ -2,13 +2,15 @@ use std::sync::Arc;
 
 use gamepalate_app::{Gamepalate, RecommendError, Recommendation, RecommendedGame, SearchOptions};
 use iced::{
-    Element, Fill, Task,
-    widget::{button, column, container, row, text},
+    Center, Element, Fill, Task,
+    widget::{button, column, container, row, space, text},
 };
 
-use crate::style;
+use crate::{font, format, style};
 
 pub struct Discover {
+    options: SearchOptions,
+    votes_this_session: usize,
     state: State,
 }
 
@@ -30,14 +32,18 @@ enum State {
 
 impl Discover {
     pub fn new(gamepalate: &Arc<Gamepalate>) -> (Discover, Task<Message>) {
+        let options = SearchOptions::default();
         let gamepalate = Arc::clone(gamepalate);
+        let search = options.clone();
         let task = Task::perform(
-            async move { gamepalate.recommend(&SearchOptions::default()) },
+            async move { gamepalate.recommend(&search) },
             Message::Recommended,
         );
 
         (
             Discover {
+                options,
+                votes_this_session: 0,
                 state: State::Loading,
             },
             task,
@@ -71,7 +77,24 @@ impl Discover {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let filters = container(text("Filters")).padding([6, 12]).width(Fill);
+        let filters = container(
+            row![
+                text!("{} ·", format::filters(&self.options))
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted),
+                button(text("Filters (Ctrl+F) ▾").size(font::NOTE_SIZE))
+                    .padding(0)
+                    .style(style::link),
+                space().width(Fill),
+                text(format::votes_this_session(self.votes_this_session))
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted),
+            ]
+            .spacing(4)
+            .align_y(Center),
+        )
+        .padding([6, 20])
+        .width(Fill);
         let main = container(self.game())
             .padding(16)
             .width(Fill)

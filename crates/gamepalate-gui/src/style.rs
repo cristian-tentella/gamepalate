@@ -53,3 +53,15 @@ pub fn tab_underline(theme: &Theme) -> container::Style {
         ..container::Style::default()
     }
 }
+
+pub fn link(theme: &Theme, status: button::Status) -> button::Style {
+    let primary = theme.extended_palette().primary;
+
+    button::Style {
+        text_color: match status {
+            button::Status::Hovered | button::Status::Pressed => primary.strong.color,
+            button::Status::Active | button::Status::Disabled => primary.base.color,
+        },
+        ..button::Style::default()
+    }
+}
