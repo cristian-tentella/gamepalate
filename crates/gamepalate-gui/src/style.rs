@@ -1,5 +1,5 @@
 use iced::{
-    Element, Theme,
+    Color, Element, Theme,
     theme::palette,
     widget::{button, container, rule, text},
 };
@@ -63,5 +63,37 @@ pub fn link(theme: &Theme, status: button::Status) -> button::Style {
             button::Status::Active | button::Status::Disabled => primary.base.color,
         },
         ..button::Style::default()
+    }
+}
+
+pub fn window_button(theme: &Theme, status: button::Status) -> button::Style {
+    let background = theme.extended_palette().background;
+
+    button::Style {
+        background: match status {
+            button::Status::Hovered => Some(background.weak.color.into()),
+            button::Status::Pressed => Some(background.strong.color.into()),
+            button::Status::Active | button::Status::Disabled => None,
+        },
+        text_color: background.base.text,
+        ..button::Style::default()
+    }
+}
+
+pub fn close_button(theme: &Theme, status: button::Status) -> button::Style {
+    let red = Color::from_rgb8(0xc4, 0x2b, 0x1c);
+
+    match status {
+        button::Status::Hovered => button::Style {
+            background: Some(red.into()),
+            text_color: Color::WHITE,
+            ..button::Style::default()
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(red.scale_alpha(0.8).into()),
+            text_color: Color::WHITE,
+            ..button::Style::default()
+        },
+        button::Status::Active | button::Status::Disabled => window_button(theme, status),
     }
 }

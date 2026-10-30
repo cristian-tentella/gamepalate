@@ -1,9 +1,13 @@
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use gamepalate_app::{Gamepalate, Timestamp};
 use iced::{
-    Center, Element, Fill, Shrink, Task, Theme,
-    widget::{button, column, container, row, space, text},
+    Center, Element, Fill, Length, Shrink, Subscription, Task, Theme, mouse, padding,
+    widget::{button, column, container, mouse_area, row, space, stack, text},
+    window::{self, Direction},
 };
 
 use crate::{
@@ -13,17 +17,39 @@ use crate::{
 };
 
 const UNDERLINE_HEIGHT: f32 = 2.0;
+const RESIZE_BORDER: f32 = 5.0;
+const DOUBLE_CLICK: Duration = Duration::from_millis(500);
+const MINIMIZE: char = '\u{E921}';
+const MAXIMIZE: char = '\u{E922}';
+const RESTORE: char = '\u{E923}';
+const CLOSE: char = '\u{E8BB}';
 
 pub struct App {
     gamepalate: Arc<Gamepalate>,
     screen: Screen,
     theme: Theme,
+    window: Option<window::Id>,
+    maximized: bool,
+    last_bar_press: Option<Instant>,
 }
 
 #[derive(Clone, Debug)]
 pub enum Message {
     Navigate(Page),
     Discover(discover::Message),
+    WindowFound(Option<window::Id>),
+    Window(WindowAction),
+    BarPressed,
+    Resized,
+    Maximized(bool),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum WindowAction {
+    Minimize,
+    ToggleMaximize,
+    Close,
+    Resize(Direction),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -42,8 +68,14 @@ impl App {
                 gamepalate,
                 screen: Screen::Discover(discover),
                 theme: Theme::Light,
+                window: None,
+                maximized: false,
+                last_bar_press: None,
             },
-            task.map(Message::Discover),
+            Task::batch([
+                task.map(Message::Discover),
+                window::latest().map(Message::WindowFound),
+            ]),
         )
     }
 
@@ -56,7 +88,25 @@ impl App {
                 }
                 Task::none()
             }
+            Message::WindowFound(id) => {
+                self.window = id;
+                Task::none()
+            }
+            Message::Window(action) => self.window_action(action),
+            Message::BarPressed => self.bar_pressed(),
+            Message::Resized => match self.window {
+                Some(id) => window::is_maximized(id).map(Message::Maximized),
+                None => Task::none(),
+            },
+            Message::Maximized(maximized) => {
+                self.maximized = maximized;
+                Task::none()
+            }
         }
+    }
+
+    pub fn subscription(&self) -> Subscription<Message> {
+        window::resize_events().map(|_| Message::Resized)
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -82,31 +132,79 @@ impl App {
                     space().height(UNDERLINE_HEIGHT),
                 ]
                 .height(Fill),
+                row![
+                    window_button(MINIMIZE, WindowAction::Minimize),
+                    window_button(
+                        if self.maximized { RESTORE } else { MAXIMIZE },
+                        WindowAction::ToggleMaximize
+                    ),
+                    window_button(CLOSE, WindowAction::Close),
+                ]
+                .height(Fill),
             ]
             .spacing(24)
             .height(Fill)
             .align_y(Center),
         )
-        .padding([0, 20])
+        .padding(padding::left(20))
         .width(Fill)
         .height(44)
         .style(style::top_bar);
+        let bar = mouse_area(bar).on_press(Message::BarPressed);
 
         let content = match &self.screen {
             Screen::Discover(screen) => screen.view().map(Message::Discover),
             Screen::Votes | Screen::Profile => column![].into(),
         };
 
-        column![
+        let app = column![
             bar,
             style::separator(),
             container(content).width(Fill).height(Fill),
-        ]
-        .into()
+        ];
+
+        if self.maximized {
+            app.into()
+        } else {
+            stack![app, resize_borders()].into()
+        }
     }
 
     pub fn theme(&self) -> Theme {
         self.theme.clone()
+    }
+
+    fn window_action(&self, action: WindowAction) -> Task<Message> {
+        if matches!(action, WindowAction::Close) {
+            return iced::exit();
+        }
+        let Some(id) = self.window else {
+            return Task::none();
+        };
+
+        match action {
+            WindowAction::Minimize => window::minimize(id, true),
+            WindowAction::ToggleMaximize => window::toggle_maximize(id),
+            WindowAction::Resize(direction) => window::drag_resize(id, direction),
+            WindowAction::Close => Task::none(),
+        }
+    }
+
+    fn bar_pressed(&mut self) -> Task<Message> {
+        let Some(id) = self.window else {
+            return Task::none();
+        };
+        let now = Instant::now();
+        let double = self
+            .last_bar_press
+            .is_some_and(|last| now.duration_since(last) < DOUBLE_CLICK);
+        self.last_bar_press = (!double).then_some(now);
+
+        if double {
+            window::toggle_maximize(id)
+        } else {
+            window::drag(id)
+        }
     }
 
     fn freshness(&self) -> Element<'_, Message> {
@@ -171,4 +269,80 @@ impl App {
         .on_press_maybe((!current).then_some(Message::Navigate(page)))
         .into()
     }
+}
+
+fn window_button<'a>(icon: char, action: WindowAction) -> Element<'a, Message> {
+    button(
+        container(
+            text(icon)
+                .font(font::ICONS)
+                .size(10)
+                .width(Fill)
+                .height(Fill)
+                .center(),
+        )
+        .padding(padding::bottom(UNDERLINE_HEIGHT)),
+    )
+    .width(46)
+    .height(Fill)
+    .padding(0)
+    .style(if matches!(action, WindowAction::Close) {
+        style::close_button
+    } else {
+        style::window_button
+    })
+    .on_press(Message::Window(action))
+    .into()
+}
+
+fn resize_borders<'a>() -> Element<'a, Message> {
+    column![
+        row![
+            resize_border(Direction::NorthWest),
+            resize_border(Direction::North),
+            resize_border(Direction::NorthEast),
+        ],
+        row![
+            resize_border(Direction::West),
+            space().width(Fill),
+            resize_border(Direction::East),
+        ]
+        .height(Fill),
+        row![
+            resize_border(Direction::SouthWest),
+            resize_border(Direction::South),
+            resize_border(Direction::SouthEast),
+        ],
+    ]
+    .into()
+}
+
+fn resize_border<'a>(direction: Direction) -> Element<'a, Message> {
+    let (width, height, interaction): (Length, Length, _) = match direction {
+        Direction::North | Direction::South => (
+            Fill,
+            RESIZE_BORDER.into(),
+            mouse::Interaction::ResizingVertically,
+        ),
+        Direction::East | Direction::West => (
+            RESIZE_BORDER.into(),
+            Fill,
+            mouse::Interaction::ResizingHorizontally,
+        ),
+        Direction::NorthWest | Direction::SouthEast => (
+            RESIZE_BORDER.into(),
+            RESIZE_BORDER.into(),
+            mouse::Interaction::ResizingDiagonallyDown,
+        ),
+        Direction::NorthEast | Direction::SouthWest => (
+            RESIZE_BORDER.into(),
+            RESIZE_BORDER.into(),
+            mouse::Interaction::ResizingDiagonallyUp,
+        ),
+    };
+
+    mouse_area(space().width(width).height(height))
+        .interaction(interaction)
+        .on_press(Message::Window(WindowAction::Resize(direction)))
+        .into()
 }

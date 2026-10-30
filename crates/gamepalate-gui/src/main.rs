@@ -20,9 +20,16 @@ fn main() -> anyhow::Result<()> {
         App::view,
     )
     .theme(App::theme)
+    .subscription(App::subscription)
     .window(window::Settings {
         size: Size::new(1280.0, 800.0),
         min_size: Some(Size::new(960.0, 600.0)),
+        decorations: false,
+        platform_specific: window::settings::PlatformSpecific {
+            undecorated_shadow: true,
+            corner_preference: window::settings::platform::CornerPreference::Round,
+            ..window::settings::PlatformSpecific::default()
+        },
         ..window::Settings::default()
     })
     .settings(Settings {
