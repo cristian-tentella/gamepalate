@@ -40,6 +40,14 @@ impl Gamepalate {
         )
         .map_err(RecommendError)
     }
+
+    pub fn signals_read_at(&self) -> Timestamp {
+        self.files.signals.read_at
+    }
+
+    pub fn prices_updated_at(&self) -> Timestamp {
+        self.files.catalog.freshness.prices_updated_at
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

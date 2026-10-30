@@ -71,19 +71,13 @@ impl Discover {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let filters = container(text("Filters"))
-            .padding([6, 12])
-            .width(Fill)
-            .style(style::bar);
+        let filters = container(text("Filters")).padding([6, 12]).width(Fill);
         let main = container(self.game())
             .padding(16)
             .width(Fill)
             .height(Fill)
             .clip(true);
-        let votes = container(text("Votes"))
-            .padding([10, 12])
-            .width(Fill)
-            .style(style::bar);
+        let votes = container(text("Votes")).padding([10, 12]).width(Fill);
 
         column![filters, style::separator(), main, style::separator(), votes].into()
     }

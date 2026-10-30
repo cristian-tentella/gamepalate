@@ -1,5 +1,6 @@
 mod app;
 mod font;
+mod format;
 mod screen;
 mod style;
 

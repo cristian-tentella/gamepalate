@@ -1,16 +1,18 @@
 use std::sync::Arc;
 
-use gamepalate_app::Gamepalate;
+use gamepalate_app::{Gamepalate, Timestamp};
 use iced::{
-    Element, Fill, Task, Theme,
-    widget::{button, column, container, rich_text, row, span, text, text::Rich},
+    Center, Element, Fill, Shrink, Task, Theme,
+    widget::{button, column, container, row, space, text},
 };
 
 use crate::{
-    font,
+    font, format,
     screen::{Discover, Screen, discover},
     style,
 };
+
+const UNDERLINE_HEIGHT: f32 = 2.0;
 
 pub struct App {
     gamepalate: Arc<Gamepalate>,
@@ -60,19 +62,35 @@ impl App {
     pub fn view(&self) -> Element<'_, Message> {
         let bar = container(
             row![
-                text("gamepalate").font(font::BOLD),
+                column![
+                    container(text("gamepalate").font(font::BOLD).size(font::BAR_SIZE))
+                        .height(Fill)
+                        .align_y(Center),
+                    space().height(UNDERLINE_HEIGHT),
+                ]
+                .height(Fill),
                 row![
                     self.tab("Discover", Page::Discover),
                     self.tab("Votes", Page::Votes),
                     self.tab("Profile", Page::Profile),
                 ]
-                .spacing(12),
+                .spacing(24)
+                .height(Fill),
+                space().width(Fill),
+                column![
+                    container(self.freshness()).height(Fill).align_y(Center),
+                    space().height(UNDERLINE_HEIGHT),
+                ]
+                .height(Fill),
             ]
-            .spacing(20),
+            .spacing(24)
+            .height(Fill)
+            .align_y(Center),
         )
-        .padding([8, 12])
+        .padding([0, 20])
         .width(Fill)
-        .style(style::bar);
+        .height(44)
+        .style(style::top_bar);
 
         let content = match &self.screen {
             Screen::Discover(screen) => screen.view().map(Message::Discover),
@@ -89,6 +107,17 @@ impl App {
 
     pub fn theme(&self) -> Theme {
         self.theme.clone()
+    }
+
+    fn freshness(&self) -> Element<'_, Message> {
+        let now = Timestamp(jiff::Timestamp::now().as_millisecond());
+        let signals = format::when(self.gamepalate.signals_read_at(), now);
+        let prices = format::when(self.gamepalate.prices_updated_at(), now);
+
+        text!("Signals {signals} · Prices {prices}")
+            .size(font::NOTE_SIZE)
+            .style(style::muted)
+            .into()
     }
 
     fn page(&self) -> Page {
@@ -119,18 +148,27 @@ impl App {
 
     fn tab(&self, label: &'static str, page: Page) -> Element<'_, Message> {
         let current = self.page() == page;
-        let content: Rich<'_, (), Message> = rich_text([span(label).underline(current)]);
+        let label = text(label)
+            .font(if current { font::BOLD } else { font::REGULAR })
+            .size(font::BAR_SIZE);
+        let underline = container(space())
+            .width(Fill)
+            .height(UNDERLINE_HEIGHT)
+            .style(if current {
+                style::tab_underline
+            } else {
+                container::transparent
+            });
 
-        button(content)
-            .padding(0)
-            .style(move |theme, status| {
-                if current {
-                    button::text(theme, button::Status::Active)
-                } else {
-                    button::text(theme, status)
-                }
-            })
-            .on_press_maybe((!current).then_some(Message::Navigate(page)))
-            .into()
+        button(
+            column![container(label).height(Fill).align_y(Center), underline]
+                .width(Shrink)
+                .height(Fill),
+        )
+        .padding(0)
+        .height(Fill)
+        .style(style::tab(current))
+        .on_press_maybe((!current).then_some(Message::Navigate(page)))
+        .into()
     }
 }
