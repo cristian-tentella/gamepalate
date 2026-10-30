@@ -3,12 +3,13 @@ use std::sync::Arc;
 use gamepalate_app::Gamepalate;
 use iced::{
     Element, Fill, Task, Theme,
-    widget::{button, column, container, rich_text, row, scrollable, span, text, text::Rich},
+    widget::{button, column, container, rich_text, row, span, text, text::Rich},
 };
 
 use crate::{
     font,
     screen::{Discover, Screen, discover},
+    style,
 };
 
 pub struct App {
@@ -71,14 +72,19 @@ impl App {
         )
         .padding([8, 12])
         .width(Fill)
-        .style(bar_style);
+        .style(style::bar);
 
         let content = match &self.screen {
             Screen::Discover(screen) => screen.view().map(Message::Discover),
             Screen::Votes | Screen::Profile => column![].into(),
         };
 
-        column![bar, scrollable(content).width(Fill).height(Fill)].into()
+        column![
+            bar,
+            style::separator(),
+            container(content).width(Fill).height(Fill),
+        ]
+        .into()
     }
 
     pub fn theme(&self) -> Theme {
@@ -126,14 +132,5 @@ impl App {
             })
             .on_press_maybe((!current).then_some(Message::Navigate(page)))
             .into()
-    }
-}
-
-fn bar_style(theme: &Theme) -> container::Style {
-    let style = container::bordered_box(theme);
-
-    container::Style {
-        border: style.border.rounded(0),
-        ..style
     }
 }

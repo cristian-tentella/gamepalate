@@ -2,9 +2,11 @@ use std::sync::Arc;
 
 use gamepalate_app::{Gamepalate, RecommendError, Recommendation, RecommendedGame, SearchOptions};
 use iced::{
-    Element, Task,
-    widget::{button, column, row, text},
+    Element, Fill, Task,
+    widget::{button, column, container, row, text},
 };
+
+use crate::style;
 
 pub struct Discover {
     state: State,
@@ -69,6 +71,24 @@ impl Discover {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        let filters = container(text("Filters"))
+            .padding([6, 12])
+            .width(Fill)
+            .style(style::bar);
+        let main = container(self.game())
+            .padding(16)
+            .width(Fill)
+            .height(Fill)
+            .clip(true);
+        let votes = container(text("Votes"))
+            .padding([10, 12])
+            .width(Fill)
+            .style(style::bar);
+
+        column![filters, style::separator(), main, style::separator(), votes].into()
+    }
+
+    fn game(&self) -> Element<'_, Message> {
         match &self.state {
             State::Loading => text("Loading…").into(),
             State::Failed(error) => text!("Error: {error}").into(),
