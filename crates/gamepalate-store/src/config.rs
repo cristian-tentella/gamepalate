@@ -6,6 +6,9 @@ use gamepalate_core::{
     region::Region,
 };
 use serde::Deserialize;
+use toml_edit::DocumentMut;
+
+use crate::atomic::write_atomically;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -17,6 +20,16 @@ pub enum ConfigError {
 
     #[error("the config file is not valid")]
     Toml(#[from] toml::de::Error),
+
+    #[error("the config file is not valid")]
+    Edit(#[from] toml_edit::TomlError),
+
+    #[error("could not save the config to {}", .path.display())]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("{0} is missing from the config")]
     Missing(&'static str),
@@ -91,6 +104,25 @@ pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
     let text = std::fs::read_to_string(path)?;
 
     parse_config(&text)
+}
+
+pub fn save_steam_id(path: &Path, steam_id: SteamId) -> Result<(), ConfigError> {
+    let text = if path.is_file() {
+        std::fs::read_to_string(path)?
+    } else {
+        String::new()
+    };
+    let mut document: DocumentMut = text.parse()?;
+    document["steam_id"] = toml_edit::value(steam_id.0.to_string());
+
+    let write_error = |source| ConfigError::Write {
+        path: path.to_path_buf(),
+        source,
+    };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(write_error)?;
+    }
+    write_atomically(path, &document.to_string()).map_err(write_error)
 }
 
 fn parse_config(text: &str) -> Result<Config, ConfigError> {
@@ -326,6 +358,56 @@ fn integer<T: TryFrom<i64>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const NEW_ID: SteamId = SteamId(76_561_198_111_111_111);
+
+    #[test]
+    fn saving_the_steam_id_keeps_comments_and_other_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "# my settings\nsteam_id = \"76561198000000000\"\nregion = \"US\"\n\n[signals]\n# hours\nmin_hours = 3.0\n",
+        )
+        .unwrap();
+
+        save_steam_id(&path, NEW_ID).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            text,
+            "# my settings\nsteam_id = \"76561198111111111\"\nregion = \"US\"\n\n[signals]\n# hours\nmin_hours = 3.0\n"
+        );
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.steam_id, Some(NEW_ID));
+        assert_eq!(config.signals.min_hours, 3.0);
+    }
+
+    #[test]
+    fn saving_the_steam_id_creates_the_config_and_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gamepalate").join("config.toml");
+
+        save_steam_id(&path, NEW_ID).unwrap();
+
+        assert_eq!(load_config(&path).unwrap().steam_id, Some(NEW_ID));
+    }
+
+    #[test]
+    fn a_steam_id_saved_before_the_tables_stays_at_the_top() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[signals]\nmin_hours = 3.0\n").unwrap();
+
+        save_steam_id(&path, NEW_ID).unwrap();
+
+        assert_eq!(load_config(&path).unwrap().steam_id, Some(NEW_ID));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .starts_with("steam_id = ")
+        );
+    }
 
     const STEAM_ID: &str = r#"steam_id = "76561198000000000""#;
 
