@@ -7,11 +7,15 @@ use gamepalate_core::{
     search::{Recommendation, RecommendedGame, SearchError, SearchOptions, recommend},
     timestamp::Timestamp,
 };
-use gamepalate_steam::images::{ImageDownloader, ImageError, header_url};
+use gamepalate_steam::{
+    images::{ImageDownloader, ImageError, header_url},
+    transport::{SteamError, Transport},
+};
 use gamepalate_store::data_files::{DataFiles, DataFilesError, load_data_files};
 
 use crate::{
     data_dir,
+    details::{GameDetails, StoreDetails},
     images::{ImageCache, LoadImageError},
 };
 
@@ -21,6 +25,7 @@ pub struct Gamepalate {
     files: DataFiles,
     vectors: Vec<GameVector>,
     images: Arc<ImageCache>,
+    store: Arc<StoreDetails>,
 }
 
 impl Gamepalate {
@@ -35,11 +40,14 @@ impl Gamepalate {
             ImageDownloader::new()?,
         );
 
+        let store = StoreDetails::new(Transport::new(None)?);
+
         Ok(Gamepalate {
             data_dir: dir,
             files,
             vectors,
             images: Arc::new(images),
+            store: Arc::new(store),
         })
     }
 
@@ -70,6 +78,10 @@ impl Gamepalate {
 
     pub async fn image(&self, url: &str) -> Result<Vec<u8>, LoadImageError> {
         self.images.image(url).await
+    }
+
+    pub async fn details(&self, id: AppId) -> Result<Option<GameDetails>, SteamError> {
+        self.store.details(id).await
     }
 
     pub fn prune_images(&self) {
@@ -103,6 +115,9 @@ pub enum OpenError {
 
     #[error(transparent)]
     Images(#[from] ImageError),
+
+    #[error(transparent)]
+    Steam(#[from] SteamError),
 }
 
 #[derive(Debug, Clone, thiserror::Error)]

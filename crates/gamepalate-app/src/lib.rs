@@ -1,7 +1,9 @@
 pub mod app;
 mod data_dir;
+mod details;
 mod images;
 pub use app::{Gamepalate, OpenError, RecommendError};
+pub use details::GameDetails;
 pub use gamepalate_core::{
     filters::FilterOptions,
     game::{Discount, Price, Reviews},
@@ -10,4 +12,5 @@ pub use gamepalate_core::{
     timestamp::Timestamp,
     votes::VoteKind,
 };
+pub use gamepalate_steam::details::{Controller, Italian, ItemDetails, SteamDeck};
 pub use images::LoadImageError;
