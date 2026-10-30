@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use gamepalate_core::{
     filters::TagNameError,
@@ -7,15 +7,20 @@ use gamepalate_core::{
     search::{Recommendation, RecommendedGame, SearchError, SearchOptions, recommend},
     timestamp::Timestamp,
 };
+use gamepalate_steam::images::{ImageDownloader, ImageError, header_url};
 use gamepalate_store::data_files::{DataFiles, DataFilesError, load_data_files};
 
-use crate::data_dir;
+use crate::{
+    data_dir,
+    images::{ImageCache, LoadImageError},
+};
 
 #[derive(Debug, Clone)]
 pub struct Gamepalate {
     data_dir: PathBuf,
     files: DataFiles,
     vectors: Vec<GameVector>,
+    images: Arc<ImageCache>,
 }
 
 impl Gamepalate {
@@ -25,11 +30,16 @@ impl Gamepalate {
             .ok_or(OpenError::DataDirNotFound)?;
         let files = load_data_files(&dir)?;
         let vectors = game_vectors(&files.catalog);
+        let images = ImageCache::new(
+            dirs::cache_dir().map(|dir| dir.join("gamepalate").join("cache").join("images")),
+            ImageDownloader::new()?,
+        );
 
         Ok(Gamepalate {
             data_dir: dir,
             files,
             vectors,
+            images: Arc::new(images),
         })
     }
 
@@ -58,6 +68,14 @@ impl Gamepalate {
         Ok(recommendation)
     }
 
+    pub async fn image(&self, url: &str) -> Result<Vec<u8>, LoadImageError> {
+        self.images.image(url).await
+    }
+
+    pub fn header_url(&self, id: AppId) -> String {
+        header_url(id)
+    }
+
     pub fn bet_every(&self) -> usize {
         self.files.config.results.bet_every
     }
@@ -78,6 +96,9 @@ pub enum OpenError {
 
     #[error(transparent)]
     DataFiles(#[from] DataFilesError),
+
+    #[error(transparent)]
+    Images(#[from] ImageError),
 }
 
 #[derive(Debug, Clone, thiserror::Error)]

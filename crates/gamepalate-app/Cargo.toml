@@ -6,6 +6,14 @@ edition = "2024"
 [dependencies]
 jiff = "0.2.38"
 gamepalate-core = { version = "0.1.0", path = "../gamepalate-core" }
+gamepalate-steam = { version = "0.1.0", path = "../gamepalate-steam" }
 gamepalate-store = { version = "0.1.0", path = "../gamepalate-store" }
 dirs = "7.0.0"
+reqwest = "0.13.5"
+sha2 = "0.11.1"
 thiserror = "2.0.21"
+
+[dev-dependencies]
+http = "1.5.0"
+tempfile = "3.27.0"
+tokio = { version = "1", features = ["macros", "rt"] }

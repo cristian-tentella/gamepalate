@@ -43,6 +43,7 @@ pub enum ImageError {
     Client(#[source] reqwest::Error),
 }
 
+#[derive(Debug)]
 pub struct ImageDownloader<F = Client> {
     fetch: F,
 }
