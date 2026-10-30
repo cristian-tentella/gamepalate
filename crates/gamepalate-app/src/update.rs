@@ -20,9 +20,14 @@ use gamepalate_steam::{
     archive::{Archive, ArchivedUpdate},
     items::{archived_batches, batch_count, item_batches},
     tags::get_tags,
-    transport::{Get, SteamError},
+    transport::{Get, SteamError, Transport},
 };
-use gamepalate_store::catalog::{CatalogError, write_catalog};
+use gamepalate_store::{
+    catalog::{CatalogError, write_catalog},
+    config::{ConfigError, load_config},
+};
+
+use crate::account::steam_api_key;
 
 const CONCURRENCY: usize = 4;
 const HOUR_MS: i64 = 3_600_000;
@@ -98,6 +103,9 @@ pub enum UpdateError {
 
     #[error(transparent)]
     Catalog(#[from] CatalogError),
+
+    #[error(transparent)]
+    Config(#[from] ConfigError),
 
     #[error("could not mark the update as completed in the archive")]
     Complete(#[source] io::Error),
@@ -184,6 +192,19 @@ pub async fn update_catalog<S: Get + Sync>(
         prices_at: now,
         rotate_error,
     })
+}
+
+pub async fn download_catalog(
+    data_dir: &Path,
+    progress: impl FnMut(Progress),
+) -> Result<Updated, UpdateError> {
+    let config = match load_config(&data_dir.join("config.toml")) {
+        Err(ConfigError::NotFound(_)) => Config::default(),
+        config => config?,
+    };
+    let transport = Transport::new(steam_api_key())?;
+
+    update_catalog(data_dir, &transport, &config, progress).await
 }
 
 pub async fn rebuild_catalog(data_dir: &Path) -> Result<Rebuilt, UpdateError> {

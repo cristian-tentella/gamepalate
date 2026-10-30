@@ -4,7 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use gamepalate_core::ids::SteamId;
+use gamepalate_core::{config::Config, ids::SteamId};
+use gamepalate_steam::archive::PendingUpdate;
 use gamepalate_store::{
     config::{ConfigError, load_config},
     gui::{GuiSettings, load_gui_settings},
@@ -15,6 +16,7 @@ use crate::{
     account::steam_api_key,
     app::{GUI_FILE, change_settings},
     data_dir,
+    update::{archive, wall_clock},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +33,8 @@ pub struct FirstRun {
     pub saved_steam_id: Option<SteamId>,
     pub api_key: bool,
     pub catalog: Part,
+    pub pending_update: Option<PendingUpdate>,
+    pub resume_within_hours: u32,
     pub signals: Part,
 }
 
@@ -84,11 +88,17 @@ fn first_run(data_dir: Option<PathBuf>, api_key: bool) -> FirstRun {
             saved_steam_id: None,
             api_key,
             catalog: Part::Missing,
+            pending_update: None,
+            resume_within_hours: Config::default().prices_max_age_hours,
             signals: Part::Missing,
         };
     };
 
-    let (steam_id, saved_steam_id) = steam_id(&dir);
+    let config = load_config(&dir.join("config.toml"));
+    let (steam_id, saved_steam_id) = steam_id(&config);
+    let settings = config
+        .as_ref()
+        .map_or_else(|_| Config::default(), |config| *config);
 
     FirstRun {
         steam_id,
@@ -99,13 +109,18 @@ fn first_run(data_dir: Option<PathBuf>, api_key: bool) -> FirstRun {
         } else {
             Part::Missing
         },
+        pending_update: archive(&dir)
+            .pending_update(wall_clock(), settings.prices_max_age_hours, settings.region)
+            .ok()
+            .flatten(),
+        resume_within_hours: settings.prices_max_age_hours,
         signals: signals(&dir),
         data_dir: Some(dir),
     }
 }
 
-fn steam_id(dir: &Path) -> (Part, Option<SteamId>) {
-    match load_config(&dir.join("config.toml")) {
+fn steam_id(config: &Result<Config, ConfigError>) -> (Part, Option<SteamId>) {
+    match config {
         Ok(config) => (Part::Present, config.steam_id),
         Err(ConfigError::NotFound(_) | ConfigError::Missing("steam_id")) => (Part::Missing, None),
         Err(error) => (Part::Invalid(error_chain(&error)), None),
@@ -197,6 +212,28 @@ mod tests {
             Some(SteamId(76_561_198_000_000_000))
         );
         assert!(first_run.ready());
+    }
+
+    #[test]
+    fn an_interrupted_update_is_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(check(dir.path()).pending_update, None);
+        archive(dir.path())
+            .start_update(
+                wall_clock(),
+                24,
+                0.0,
+                gamepalate_core::region::Region::ITALY,
+            )
+            .unwrap();
+
+        let first_run = check(dir.path());
+
+        assert_eq!(
+            first_run.pending_update.map(|pending| pending.responses),
+            Some(0)
+        );
+        assert_eq!(first_run.resume_within_hours, 24);
     }
 
     #[test]

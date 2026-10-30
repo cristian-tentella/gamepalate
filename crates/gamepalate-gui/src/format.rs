@@ -130,6 +130,28 @@ pub fn discount(percent: u8) -> String {
     format!("−{percent}%")
 }
 
+pub fn day_time(at: Timestamp) -> String {
+    day_time_in(at, &TimeZone::system())
+}
+
+fn day_time_in(at: Timestamp, zone: &TimeZone) -> String {
+    match jiff::Timestamp::from_millisecond(at.0) {
+        Ok(at) => at
+            .to_zoned(zone.clone())
+            .strftime("%-d %b %H:%M")
+            .to_string(),
+        Err(_) => "unknown".to_string(),
+    }
+}
+
+pub fn time_left(left: std::time::Duration) -> String {
+    match (left.as_secs() + 30) / 60 {
+        0 => "Less than a minute left".to_string(),
+        1 => "About 1 minute left".to_string(),
+        minutes => format!("About {minutes} minutes left"),
+    }
+}
+
 pub fn until(end: Timestamp) -> String {
     until_in(end, &TimeZone::system())
 }
@@ -304,6 +326,29 @@ mod tests {
     use gamepalate_app::Discount;
 
     use super::*;
+
+    #[test]
+    fn a_deadline_has_day_month_and_time() {
+        assert_eq!(
+            day_time_in(Timestamp(1_793_369_460_000), &TimeZone::UTC),
+            "30 Oct 14:11"
+        );
+    }
+
+    #[test]
+    fn the_time_left_is_rounded_to_the_minute() {
+        use std::time::Duration;
+
+        assert_eq!(
+            time_left(Duration::from_secs(20)),
+            "Less than a minute left"
+        );
+        assert_eq!(time_left(Duration::from_secs(80)), "About 1 minute left");
+        assert_eq!(
+            time_left(Duration::from_secs(12 * 60 + 10)),
+            "About 12 minutes left"
+        );
+    }
 
     const NOW: Timestamp = Timestamp(1_793_638_800_000);
     const HOUR: i64 = 3_600_000;

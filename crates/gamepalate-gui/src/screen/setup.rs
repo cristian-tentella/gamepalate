@@ -1,21 +1,35 @@
-use std::process::Command;
+use std::{
+    collections::VecDeque,
+    process::Command,
+    time::{Duration, Instant},
+};
 
 use gamepalate_app::{
     Gamepalate, SteamError,
     account::{ConnectError, SteamIdError, connect, parse_steam_id},
     setup::{FirstRun, Part, error_chain},
+    update::{Progress, UpdateError, download_catalog},
 };
 use iced::{
-    Center, Element, Fill, Task, padding,
-    widget::{button, column, container, row, text, text_input},
+    Center, Element, Fill, Task,
+    futures::{SinkExt, channel::mpsc},
+    padding, stream,
+    widget::{button, column, container, progress_bar, row, text, text_input},
 };
 
-use crate::{font, style};
+use crate::{font, format, style};
 
 const CHECK: char = '\u{E73E}';
 const CROSS: char = '\u{E711}';
 const WIDTH: f32 = 760.0;
 const KEY_PAGE: &str = "https://steamcommunity.com/dev/apikey";
+const RECENT_BATCHES: usize = 20;
+const MIN_BATCHES: usize = 10;
+const HOW_IT_WORKS: [&str; 3] = [
+    "Signals: the hours you played tell gamepalate what you like.",
+    "Families: groups of your games, to ask for more of the same kind.",
+    "Votes: every game you vote on teaches gamepalate a bit more.",
+];
 const FIND_STEAM_ID: &str =
     "Open Steam → your name at the top right → Account details: the Steam ID is under your name.";
 
@@ -23,6 +37,27 @@ pub struct Setup {
     first_run: FirstRun,
     error: Option<String>,
     account: Account,
+    download: Download,
+}
+
+#[derive(Debug, Default)]
+struct Download {
+    running: bool,
+    stage: Stage,
+    batches: VecDeque<Instant>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+enum Stage {
+    #[default]
+    Starting,
+    Reading,
+    StoreData {
+        done: usize,
+        total: usize,
+    },
+    Writing,
 }
 
 #[derive(Debug, Default)]
@@ -44,6 +79,9 @@ pub enum Message {
     Connect,
     Connected(Result<(), String>),
     Change,
+    Download,
+    Progress(Progress),
+    Downloaded(Result<(), String>),
 }
 
 pub enum Action {
@@ -82,6 +120,7 @@ impl Setup {
             first_run,
             error,
             account,
+            download: Download::default(),
         }
     }
 
@@ -91,7 +130,9 @@ impl Setup {
 
     pub fn update(&mut self, message: Message) -> Action {
         match message {
-            Message::CheckAgain | Message::Connected(Ok(())) => self.check_again(),
+            Message::CheckAgain | Message::Connected(Ok(())) | Message::Downloaded(Ok(())) => {
+                self.check_again()
+            }
             Message::OpenFolder => {
                 if let Some(dir) = &self.first_run.data_dir {
                     let _ = std::fs::create_dir_all(dir);
@@ -124,7 +165,45 @@ impl Setup {
                 self.account.key.clear();
                 Action::None
             }
+            Message::Download => self.download(),
+            Message::Progress(progress) => {
+                self.download.advance(progress, Instant::now());
+                Action::None
+            }
+            Message::Downloaded(Err(error)) => {
+                self.first_run = FirstRun::check(None);
+                self.download.running = false;
+                self.download.error = Some(error);
+                Action::None
+            }
         }
+    }
+
+    fn download(&mut self) -> Action {
+        let Some(dir) = self.first_run.data_dir.clone() else {
+            return Action::None;
+        };
+        if self.download.running || !account_done(&self.account, &self.first_run) {
+            return Action::None;
+        }
+        self.download = Download {
+            running: true,
+            ..Download::default()
+        };
+
+        Action::Run(Task::run(
+            stream::channel(64, async move |mut output: mpsc::Sender<Message>| {
+                let mut events = output.clone();
+                let result = download_catalog(&dir, move |progress| {
+                    let _ = events.try_send(Message::Progress(progress));
+                })
+                .await
+                .map(|_| ())
+                .map_err(|error| update_error_text(&error));
+                let _ = output.send(Message::Downloaded(result)).await;
+            }),
+            |message| message,
+        ))
     }
 
     fn check_again(&mut self) -> Action {
@@ -192,11 +271,17 @@ impl Setup {
             .on_press(Message::CheckAgain);
 
         container(
-            column![title, folder, self.account_view(), lines]
-                .push(error)
-                .push(check)
-                .spacing(28)
-                .max_width(WIDTH),
+            column![
+                title,
+                folder,
+                self.account_view(),
+                self.catalog_view(),
+                lines
+            ]
+            .push(error)
+            .push(check)
+            .spacing(28)
+            .max_width(WIDTH),
         )
         .padding(40)
         .center_x(Fill)
@@ -305,6 +390,172 @@ impl Setup {
     }
 }
 
+impl Setup {
+    fn catalog_view(&self) -> Element<'_, Message> {
+        let ready = self.first_run.catalog == Part::Present;
+        let header = row![
+            mark(ready),
+            text("Catalog of Steam games")
+                .size(font::INFO_SIZE)
+                .font(font::SEMIBOLD)
+        ]
+        .spacing(12)
+        .align_y(Center);
+        if ready {
+            return header.into();
+        }
+
+        let body: Element<'_, Message> = if !account_done(&self.account, &self.first_run) {
+            note("Connect your Steam account first.").into()
+        } else if self.download.running {
+            self.progress_view()
+        } else {
+            self.start_view()
+        };
+
+        column![header, container(body).padding(padding::left(24))]
+            .spacing(8)
+            .into()
+    }
+
+    fn start_view(&self) -> Element<'_, Message> {
+        let download = &self.download;
+        let pending = self.first_run.pending_update;
+        let label = if download.error.is_some() {
+            "Retry"
+        } else if pending.is_some() {
+            "Resume"
+        } else {
+            "Download catalog"
+        };
+        let about = match pending {
+            Some(pending) => format!(
+                "An update started on {} is waiting: {} responses saved.",
+                format::day_time(pending.started_at),
+                pending.responses
+            ),
+            None => "It takes 15-25 minutes the first time.".to_string(),
+        };
+
+        column![]
+            .push(
+                download
+                    .error
+                    .as_ref()
+                    .map(|error| text(error.clone()).size(font::BAR_SIZE).style(text::danger)),
+            )
+            .push(note(about))
+            .push(
+                button(text(label).size(font::BAR_SIZE))
+                    .padding([8, 20])
+                    .on_press(Message::Download),
+            )
+            .spacing(8)
+            .into()
+    }
+
+    fn progress_view(&self) -> Element<'_, Message> {
+        let download = &self.download;
+        let (done, total) = match download.stage {
+            Stage::StoreData { done, total } => (done, total),
+            Stage::Writing => (1, 1),
+            Stage::Starting | Stage::Reading => (0, 1),
+        };
+        let left = download
+            .time_left(done, total)
+            .map(|left| note(format::time_left(left)));
+
+        column![
+            text(stage_text(download.stage)).size(font::BAR_SIZE),
+            progress_bar(0.0..=total.max(1) as f32, done as f32)
+                .girth(6)
+                .length(Fill)
+                .style(style::meter),
+        ]
+        .push(left)
+        .push(note(format!(
+            "You can close gamepalate: the update resumes where it stopped, within {} hours.",
+            self.first_run.resume_within_hours
+        )))
+        .push(column(HOW_IT_WORKS.into_iter().map(|line| note(line).into())).spacing(2))
+        .spacing(8)
+        .into()
+    }
+}
+
+impl Download {
+    fn advance(&mut self, progress: Progress, now: Instant) {
+        match progress {
+            Progress::Resumed { .. } => {}
+            Progress::ReadingApps => self.stage = Stage::Reading,
+            Progress::StoreData { done, total } => {
+                self.stage = Stage::StoreData { done, total };
+                if done > 0 {
+                    self.batches.push_back(now);
+                    if self.batches.len() > RECENT_BATCHES {
+                        self.batches.pop_front();
+                    }
+                }
+            }
+            Progress::Writing => self.stage = Stage::Writing,
+        }
+    }
+
+    fn time_left(&self, done: usize, total: usize) -> Option<Duration> {
+        let first = *self.batches.front()?;
+        let batches: Vec<Duration> = self
+            .batches
+            .iter()
+            .map(|at| at.duration_since(first))
+            .collect();
+        time_left(&batches, done, total)
+    }
+}
+
+fn time_left(batches: &[Duration], done: usize, total: usize) -> Option<Duration> {
+    if done < MIN_BATCHES || batches.len() < 2 {
+        return None;
+    }
+    let span = *batches.last()? - batches[0];
+    let per_batch = span / (batches.len() as u32 - 1);
+
+    Some(per_batch * total.saturating_sub(done) as u32)
+}
+
+fn stage_text(stage: Stage) -> String {
+    match stage {
+        Stage::Starting | Stage::Reading => "Reading the list of Steam games…".to_string(),
+        Stage::StoreData { done, total } => format!("Store data: {done} of {total} requests"),
+        Stage::Writing => "Writing the catalog…".to_string(),
+    }
+}
+
+fn update_error_text(error: &UpdateError) -> String {
+    match error {
+        UpdateError::Stopped {
+            resume_before,
+            source,
+        } => {
+            let why = match source {
+                SteamError::SteamDown { .. } => "Steam is not responding".to_string(),
+                source => error_chain(source),
+            };
+            format!(
+                "Update stopped: {why}. Run it again before {} to resume.",
+                format::day_time(*resume_before)
+            )
+        }
+        UpdateError::StartOver { .. } => {
+            "Steam answered in an unexpected way: the next update starts over.".to_string()
+        }
+        error => error_chain(error),
+    }
+}
+
+fn note<'a>(line: impl text::IntoFragment<'a>) -> text::Text<'a> {
+    text(line).size(font::NOTE_SIZE).style(style::muted)
+}
+
 fn account_done(account: &Account, first_run: &FirstRun) -> bool {
     !account.editing && first_run.steam_id == Part::Present && first_run.api_key
 }
@@ -344,18 +595,11 @@ fn connect_error_text(error: &ConnectError) -> String {
 }
 
 fn lines(first_run: &FirstRun) -> Vec<Line> {
-    vec![
-        part_line(
-            "Catalog of Steam games",
-            &first_run.catalog,
-            "run: gamepalate update (15-25 minutes the first time)",
-        ),
-        part_line(
-            "Your Signals",
-            &first_run.signals,
-            "connect your Steam account, or run: gamepalate profile",
-        ),
-    ]
+    vec![part_line(
+        "Your Signals",
+        &first_run.signals,
+        "connect your Steam account, or run: gamepalate profile",
+    )]
 }
 
 fn part_line(label: &'static str, part: &Part, missing: &str) -> Line {
@@ -409,8 +653,17 @@ mod tests {
             saved_steam_id: Some(SteamId(76_561_198_000_000_000)),
             api_key: true,
             catalog: Part::Present,
+            pending_update: None,
+            resume_within_hours: 24,
             signals: Part::Present,
         }
+    }
+
+    fn seconds(values: &[u64]) -> Vec<Duration> {
+        values
+            .iter()
+            .map(|value| Duration::from_secs(*value))
+            .collect()
     }
 
     fn account(steam_id: &str, key: &str) -> Account {
@@ -462,19 +715,91 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_catalog_says_which_command_to_run() {
-        let first_run = FirstRun {
-            catalog: Part::Missing,
-            ..first_run()
+    fn there_is_no_estimate_before_ten_batches() {
+        assert_eq!(time_left(&seconds(&[0, 1, 2]), 9, 100), None);
+        assert_eq!(time_left(&seconds(&[0]), 10, 100), None);
+    }
+
+    #[test]
+    fn a_steady_pace_gives_the_time_left() {
+        let batches = seconds(&[0, 2, 4, 6, 8, 10, 12, 14, 16, 18]);
+
+        assert_eq!(time_left(&batches, 10, 100), Some(Duration::from_secs(180)));
+    }
+
+    #[test]
+    fn after_a_fast_start_the_estimate_follows_the_last_batches() {
+        let mut download = Download::default();
+        let start = Instant::now();
+        for done in 1..=30 {
+            let at = if done <= 10 {
+                start
+            } else {
+                start + Duration::from_secs(3 * (done - 10))
+            };
+            download.advance(
+                Progress::StoreData {
+                    done: done as usize,
+                    total: 130,
+                },
+                at,
+            );
+        }
+
+        assert_eq!(download.batches.len(), RECENT_BATCHES);
+        assert_eq!(download.time_left(30, 130), Some(Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn each_stage_has_its_sentence() {
+        assert_eq!(
+            stage_text(Stage::Reading),
+            "Reading the list of Steam games…"
+        );
+        assert_eq!(
+            stage_text(Stage::StoreData {
+                done: 312,
+                total: 757
+            }),
+            "Store data: 312 of 757 requests"
+        );
+        assert_eq!(stage_text(Stage::Writing), "Writing the catalog…");
+    }
+
+    #[test]
+    fn a_stopped_update_says_until_when_it_resumes() {
+        let resume_before = gamepalate_app::Timestamp(1_793_369_460_000);
+        let stopped = UpdateError::Stopped {
+            resume_before,
+            source: SteamError::SteamDown {
+                endpoint: "IStoreBrowseService/GetItems/v1".to_string(),
+                reason: "timed out".to_string(),
+                source: None,
+            },
         };
 
         assert_eq!(
-            lines(&first_run)[0],
-            Line {
-                label: "Catalog of Steam games",
-                present: false,
-                hint: Some("run: gamepalate update (15-25 minutes the first time)".to_string()),
-            }
+            update_error_text(&stopped),
+            format!(
+                "Update stopped: Steam is not responding. Run it again before {} to resume.",
+                format::day_time(resume_before)
+            )
+        );
+    }
+
+    #[test]
+    fn an_update_that_starts_over_says_so() {
+        let start_over = UpdateError::StartOver {
+            source: SteamError::Shape {
+                endpoint: "IStoreBrowseService/GetItems/v1".to_string(),
+                reason: "unexpected".to_string(),
+            },
+            not_marked: None,
+        };
+
+        assert_eq!(
+            update_error_text(&start_over),
+            "Steam answered in an unexpected way: the next update starts over."
         );
     }
 
@@ -485,7 +810,7 @@ mod tests {
             ..first_run()
         };
 
-        let line = &lines(&first_run)[1];
+        let line = &lines(&first_run)[0];
 
         assert!(!line.present);
         assert_eq!(line.hint.as_deref(), Some("the signals file is not valid"));
