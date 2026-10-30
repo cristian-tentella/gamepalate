@@ -13,6 +13,8 @@ use reqwest::Client;
 use sha2::{Digest, Sha256};
 
 const EXTENSIONS: [&str; 3] = ["jpg", "png", "webp"];
+const MAX_CACHE_BYTES: u64 = 300 * 1024 * 1024;
+const TEMPORARY: &str = ".tmp";
 
 static WRITES: AtomicU64 = AtomicU64::new(0);
 
@@ -65,6 +67,67 @@ impl<F: Fetch> ImageCache<F> {
     }
 }
 
+impl<F> ImageCache<F> {
+    pub fn prune(&self) {
+        if let Some(dir) = &self.dir {
+            prune(dir, MAX_CACHE_BYTES);
+        }
+    }
+}
+
+struct CachedFile {
+    path: PathBuf,
+    size: u64,
+    used_at: SystemTime,
+}
+
+fn prune(dir: &Path, limit: u64) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let files = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let metadata = entry
+                .metadata()
+                .ok()
+                .filter(|metadata| metadata.is_file())?;
+            Some(CachedFile {
+                path: entry.path(),
+                size: metadata.len(),
+                used_at: metadata.modified().ok()?,
+            })
+        })
+        .collect();
+
+    for path in to_delete(files, limit) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn to_delete(files: Vec<CachedFile>, limit: u64) -> Vec<PathBuf> {
+    let (temporary, mut images): (Vec<_>, Vec<_>) = files
+        .into_iter()
+        .partition(|file| file.path.to_string_lossy().ends_with(TEMPORARY));
+    images.sort_by_key(|file| std::cmp::Reverse(file.used_at));
+
+    let mut kept = 0;
+    let mut full = false;
+    let old = images.into_iter().filter(|file| {
+        full = full || kept + file.size > limit;
+        if !full {
+            kept += file.size;
+        }
+        full
+    });
+
+    temporary
+        .into_iter()
+        .chain(old)
+        .map(|file| file.path)
+        .collect()
+}
+
 fn file_name(url: &str) -> String {
     let hash: String = Sha256::digest(url.as_bytes())
         .iter()
@@ -94,7 +157,7 @@ fn touch(path: &Path) {
 fn write(dir: &Path, path: &Path, bytes: &[u8]) -> Result<(), LoadImageError> {
     fs::create_dir_all(dir).map_err(|error| disk(dir, error))?;
     let temporary = dir.join(format!(
-        "{}.{}-{}.tmp",
+        "{}.{}-{}{TEMPORARY}",
         path.file_name()
             .map(|name| name.to_string_lossy())
             .unwrap_or_default(),
@@ -118,9 +181,12 @@ fn disk(path: &Path, source: std::io::Error) -> LoadImageError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU32, Ordering},
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicU32, Ordering},
+        },
+        time::Duration,
     };
 
     use reqwest::{Request, Response};
@@ -219,6 +285,89 @@ mod tests {
             Err(LoadImageError::NoCacheDir)
         ));
         assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    fn cached(name: &str, size: u64, seconds_ago: u64) -> CachedFile {
+        CachedFile {
+            path: PathBuf::from(name),
+            size,
+            used_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_000 - seconds_ago),
+        }
+    }
+
+    fn deleted(files: Vec<CachedFile>, limit: u64) -> Vec<String> {
+        to_delete(files, limit)
+            .into_iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn keeps_everything_under_the_limit() {
+        let files = vec![cached("a.jpg", 40, 1), cached("b.jpg", 60, 2)];
+
+        assert!(deleted(files, 100).is_empty());
+    }
+
+    #[test]
+    fn deletes_the_least_recently_used_over_the_limit() {
+        let files = vec![
+            cached("old.jpg", 40, 30),
+            cached("new.jpg", 40, 10),
+            cached("middle.jpg", 40, 20),
+        ];
+
+        assert_eq!(deleted(files, 100), vec!["old.jpg"]);
+    }
+
+    #[test]
+    fn deletes_a_small_old_file_after_one_that_does_not_fit() {
+        let files = vec![
+            cached("new.jpg", 60, 1),
+            cached("big.jpg", 60, 2),
+            cached("small.jpg", 10, 3),
+        ];
+
+        assert_eq!(deleted(files, 100), vec!["big.jpg", "small.jpg"]);
+    }
+
+    #[test]
+    fn always_deletes_the_temporary_files() {
+        let files = vec![cached("a.jpg", 10, 1), cached("a.jpg.1-0.tmp", 10, 2)];
+
+        assert_eq!(deleted(files, 100), vec!["a.jpg.1-0.tmp"]);
+    }
+
+    #[test]
+    fn prunes_the_folder_down_to_the_most_recent_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        for (name, seconds_ago) in [("old.jpg", 30), ("middle.jpg", 20), ("new.jpg", 10)] {
+            let path = dir.path().join(name);
+            fs::write(&path, [0; 40]).unwrap();
+            File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(now - Duration::from_secs(seconds_ago))
+                .unwrap();
+        }
+
+        prune(dir.path(), 100);
+
+        let mut left: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["middle.jpg", "new.jpg"]);
+    }
+
+    #[test]
+    fn prunes_nothing_without_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+
+        prune(&dir.path().join("missing"), 100);
     }
 
     #[test]

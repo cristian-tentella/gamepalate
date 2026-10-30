@@ -72,6 +72,10 @@ impl Gamepalate {
         self.images.image(url).await
     }
 
+    pub fn prune_images(&self) {
+        self.images.prune();
+    }
+
     pub fn header_url(&self, id: AppId) -> String {
         header_url(id)
     }
