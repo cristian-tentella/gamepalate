@@ -36,7 +36,7 @@ use crate::{
     images::{ImageCache, LoadImageError},
 };
 
-const GUI_FILE: &str = "gui.toml";
+pub(crate) const GUI_FILE: &str = "gui.toml";
 
 #[derive(Debug)]
 pub struct Gamepalate {
@@ -170,10 +170,7 @@ impl Gamepalate {
             .gui_saving
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let path = self.data_dir.join(GUI_FILE);
-        let mut settings = load_gui_settings(&path);
-        change(&mut settings);
-        save_gui_settings(&path, &settings)
+        change_settings(&self.data_dir.join(GUI_FILE), change)
     }
 
     pub fn family_names(&self) -> Vec<String> {
@@ -265,6 +262,15 @@ fn search_error_text(error: &SearchError) -> String {
                 .to_string()
         }
     }
+}
+
+pub(crate) fn change_settings(
+    path: &Path,
+    change: impl FnOnce(&mut GuiSettings),
+) -> std::io::Result<()> {
+    let mut settings = load_gui_settings(path);
+    change(&mut settings);
+    save_gui_settings(path, &settings)
 }
 
 fn saved_vote(
