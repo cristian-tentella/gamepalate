@@ -4,14 +4,13 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use gamepalate_core::ids::AppId;
+use gamepalate_core::{ids::AppId, region::Region};
 use gamepalate_steam::{
     details::{ItemDetails, get_item_details, get_store_categories},
     transport::{Get, SteamError, Transport},
 };
 
 const LANGUAGE: &str = "english";
-const COUNTRY_CODE: &str = "IT";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameDetails {
@@ -21,6 +20,7 @@ pub struct GameDetails {
 
 pub struct StoreDetails<S = Transport> {
     transport: S,
+    region: Region,
     categories: Mutex<Option<Arc<HashMap<u32, String>>>>,
 }
 
@@ -33,16 +33,17 @@ impl<S> fmt::Debug for StoreDetails<S> {
 }
 
 impl<S: Get + Sync> StoreDetails<S> {
-    pub fn new(transport: S) -> StoreDetails<S> {
+    pub fn new(transport: S, region: Region) -> StoreDetails<S> {
         StoreDetails {
             transport,
+            region,
             categories: Mutex::new(None),
         }
     }
 
     pub async fn details(&self, id: AppId) -> Result<Option<GameDetails>, SteamError> {
         let names = self.categories().await;
-        let store = get_item_details(&self.transport, id, LANGUAGE, COUNTRY_CODE).await?;
+        let store = get_item_details(&self.transport, id, LANGUAGE, self.region.as_str()).await?;
 
         Ok(store.map(|store| game_details(store, &names)))
     }
@@ -94,16 +95,21 @@ mod tests {
     struct FakeSteam {
         replies: Mutex<VecDeque<Result<Value, SteamError>>>,
         asked: Mutex<Vec<String>>,
+        params: Mutex<Vec<String>>,
     }
 
     impl Get for FakeSteam {
         fn get(
             &self,
             endpoint: &str,
-            _params: &[(&str, &str)],
+            params: &[(&str, &str)],
             _needs_key: bool,
         ) -> impl Future<Output = Result<Value, SteamError>> + Send {
             self.asked.lock().unwrap().push(endpoint.to_string());
+            self.params
+                .lock()
+                .unwrap()
+                .extend(params.iter().map(|(_, value)| value.to_string()));
             let reply = self
                 .replies
                 .lock()
@@ -116,10 +122,21 @@ mod tests {
     }
 
     fn store(replies: Vec<Result<Value, SteamError>>) -> StoreDetails<FakeSteam> {
-        StoreDetails::new(FakeSteam {
-            replies: Mutex::new(replies.into()),
-            asked: Mutex::new(Vec::new()),
-        })
+        store_in(replies, Region::ITALY)
+    }
+
+    fn store_in(
+        replies: Vec<Result<Value, SteamError>>,
+        region: Region,
+    ) -> StoreDetails<FakeSteam> {
+        StoreDetails::new(
+            FakeSteam {
+                replies: Mutex::new(replies.into()),
+                asked: Mutex::new(Vec::new()),
+                params: Mutex::new(Vec::new()),
+            },
+            region,
+        )
     }
 
     fn categories() -> Result<Value, SteamError> {
@@ -176,6 +193,17 @@ mod tests {
         ]);
 
         assert_eq!(store.details(AppId(3)).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn asks_the_details_in_the_region_it_was_given() {
+        let store = store_in(vec![categories(), item()], Region::new("US").unwrap());
+
+        store.details(AppId(620)).await.unwrap();
+
+        let params = store.transport.params.lock().unwrap();
+        let input: Value = serde_json::from_str(params.last().unwrap()).unwrap();
+        assert_eq!(input["context"]["country_code"], "US");
     }
 
     #[tokio::test]

@@ -28,7 +28,6 @@ use crate::format::{date_time, integer};
 
 const CONCURRENCY: usize = 4;
 pub const LANGUAGE: &str = "english";
-pub const COUNTRY_CODE: &str = "IT";
 
 pub struct BuiltCatalog {
     pub catalog: Catalog,
@@ -58,7 +57,7 @@ fn update<S: Get + Sync>(data_dir: &Path, steam: &S, config: &Config) -> anyhow:
             wall_clock(),
             resume_within_hours,
             config.tags_max_age_days,
-            region(),
+            config.region,
         )
         .context("could not start a new update in the archive")?;
     let earlier = if update.full() {
@@ -77,7 +76,7 @@ fn update<S: Get + Sync>(data_dir: &Path, steam: &S, config: &Config) -> anyhow:
         );
     }
 
-    let result = build_catalog(&update.archiving(steam), now, &earlier);
+    let result = build_catalog(&update.archiving(steam), now, &earlier, config.region);
     let built = match result {
         Ok(built) => built,
         Err(error) => return Err(stopped(update, error, resume_within_hours)),
@@ -131,10 +130,6 @@ pub fn check_base(chain: &[ArchivedUpdate], update: &Path) -> anyhow::Result<()>
     }
 }
 
-fn region() -> Region {
-    Region::new(COUNTRY_CODE).expect("the country code is a region")
-}
-
 pub fn wall_clock() -> Timestamp {
     Timestamp(jiff::Timestamp::now().as_millisecond())
 }
@@ -143,6 +138,7 @@ pub fn build_catalog<S: Get>(
     steam: &S,
     now: Timestamp,
     earlier: &[ArchivedUpdate],
+    region: Region,
 ) -> anyhow::Result<BuiltCatalog> {
     let runtime = tokio::runtime::Runtime::new()?;
 
@@ -165,7 +161,7 @@ pub fn build_catalog<S: Get>(
     let total = batch_count(asked.len());
     let mut items: Vec<StoreItem> = Vec::new();
     runtime.block_on(async {
-        let mut stream = item_batches(steam, &asked, LANGUAGE, COUNTRY_CODE, CONCURRENCY);
+        let mut stream = item_batches(steam, &asked, LANGUAGE, region.as_str(), CONCURRENCY);
         let mut done = 0;
         while let Some(batch) = stream.next().await {
             items.extend(batch?);
@@ -195,7 +191,7 @@ pub fn build_catalog<S: Get>(
     let freshness = Freshness {
         prices_updated_at: now,
         tags_updated_at: earlier.last().map_or(now, ArchivedUpdate::started_at),
-        region: region(),
+        region,
     };
     Ok(BuiltCatalog {
         catalog: Catalog::new(games, tags, idf, freshness, currency),
@@ -248,6 +244,7 @@ mod tests {
         failure: Option<Failure>,
         formatted_price: Option<&'static str>,
         asked_items: Mutex<Vec<u32>>,
+        countries: Mutex<Vec<String>>,
     }
 
     impl FakeSteam {
@@ -257,6 +254,7 @@ mod tests {
                 failure: None,
                 formatted_price: None,
                 asked_items: Mutex::new(Vec::new()),
+                countries: Mutex::new(Vec::new()),
             }
         }
 
@@ -307,6 +305,12 @@ mod tests {
                         .iter()
                         .map(|id| id["appid"].as_u64().unwrap() as u32)
                         .collect();
+                    self.countries.lock().unwrap().push(
+                        input["context"]["country_code"]
+                            .as_str()
+                            .unwrap()
+                            .to_string(),
+                    );
                     let earlier_batches = {
                         let mut asked = self.asked_items.lock().unwrap();
                         let earlier = asked.len();
@@ -456,6 +460,24 @@ mod tests {
         let catalog = load_catalog(&data.path().join("catalog.sqlite")).unwrap();
 
         assert_eq!(catalog.currency.prefix, "$");
+    }
+
+    #[test]
+    fn the_update_asks_and_writes_the_region_of_the_config() {
+        let data = tempfile::tempdir().unwrap();
+        let steam = FakeSteam::new(&[(1, 10)]);
+        let us = Region::new("US").unwrap();
+        let config = Config {
+            region: us,
+            ..Config::default()
+        };
+
+        update(data.path(), &steam, &config).unwrap();
+
+        assert_eq!(*steam.countries.lock().unwrap(), ["US"]);
+        let catalog = load_catalog(&data.path().join("catalog.sqlite")).unwrap();
+        assert_eq!(catalog.freshness.region, us);
+        assert_eq!(manifests(data.path())[0]["region"], "US");
     }
 
     #[test]

@@ -16,7 +16,7 @@ pub fn run(data_dir: &Path) -> anyhow::Result<()> {
     };
     check_base(&chain, latest.dir())?;
 
-    let built = build_catalog(latest, latest.started_at(), earlier)?;
+    let built = build_catalog(latest, latest.started_at(), earlier, latest.region())?;
     built.write(data_dir)?;
 
     println!(

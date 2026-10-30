@@ -4,10 +4,12 @@ use anyhow::bail;
 use clap::{Args, ValueEnum};
 use comfy_table::{CellAlignment, ContentArrangement, Table, presets::UTF8_FULL_CONDENSED};
 use gamepalate_core::{
+    catalog::Freshness,
     currency::Currency,
     filters::FilterOptions,
     game::Reviews,
     game_vector::game_vectors,
+    region::Region,
     search::{RecommendedGame, SearchError, SearchOptions, SortBy, recommend},
     timestamp::Timestamp,
 };
@@ -158,8 +160,8 @@ pub fn run(args: &RecommendArgs, files: &DataFiles, data_dir: &Path) -> anyhow::
 
     if recommendation.stale_prices {
         eprintln!(
-            "Prices last updated on {}: they may be out of date.",
-            date_time(recommendation.freshness.prices_updated_at)
+            "{}",
+            stale_prices_text(&recommendation.freshness, files.config.region)
         );
     }
     let no_bets = "No bets: they need at least 10 would_try votes and 10 not_for_me votes.";
@@ -221,6 +223,19 @@ pub fn run(args: &RecommendArgs, files: &DataFiles, data_dir: &Path) -> anyhow::
     }
 
     Ok(())
+}
+
+fn stale_prices_text(freshness: &Freshness, region: Region) -> String {
+    if freshness.region != region {
+        return format!(
+            "The catalog has prices for {}, the config says {region}: run update.",
+            freshness.region
+        );
+    }
+    format!(
+        "Prices last updated on {}: they may be out of date.",
+        date_time(freshness.prices_updated_at)
+    )
 }
 
 fn row(game: &RecommendedGame, one_family: bool, currency: &Currency) -> Vec<String> {
@@ -295,5 +310,36 @@ fn search_error_text(error: &SearchError) -> String {
             "the signals give an empty profile: no game above the hours threshold has tags"
                 .to_string()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const UPDATED_AT: Timestamp = Timestamp(1_793_638_800_000);
+
+    fn italian_freshness() -> Freshness {
+        Freshness {
+            prices_updated_at: UPDATED_AT,
+            tags_updated_at: UPDATED_AT,
+            region: Region::ITALY,
+        }
+    }
+
+    #[test]
+    fn a_catalog_of_another_region_says_to_run_update() {
+        assert_eq!(
+            stale_prices_text(&italian_freshness(), Region::new("US").unwrap()),
+            "The catalog has prices for IT, the config says US: run update."
+        );
+    }
+
+    #[test]
+    fn old_prices_of_the_same_region_say_when_they_were_updated() {
+        assert!(
+            stale_prices_text(&italian_freshness(), Region::ITALY)
+                .starts_with("Prices last updated on ")
+        );
     }
 }

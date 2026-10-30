@@ -41,7 +41,7 @@ impl Gamepalate {
             ImageDownloader::new()?,
         );
 
-        let store = StoreDetails::new(Transport::new(None)?);
+        let store = StoreDetails::new(Transport::new(None)?, files.config.region);
 
         Ok(Gamepalate {
             data_dir: dir,

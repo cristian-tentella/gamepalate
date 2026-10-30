@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use gamepalate_core::{
     config::{Config, CorrectionsConfig, RelevanceConfig, ResultsConfig, SignalsConfig},
     ids::SteamId,
+    region::Region,
 };
 use serde::Deserialize;
 
@@ -97,12 +98,13 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
     let base = Config::default();
 
     let steam_id = parse_steam_id(file.steam_id.as_deref())?;
-    if file.region.as_deref().is_some_and(|region| region != "IT") {
-        return Err(ConfigError::Invalid {
+    let region = match file.region.as_deref() {
+        None => base.region,
+        Some(code) => Region::new(code).ok_or_else(|| ConfigError::Invalid {
             field: "region",
-            expected: "\"IT\"".to_string(),
-        });
-    }
+            expected: "two letters, such as \"IT\"".to_string(),
+        })?,
+    };
 
     let signals = SignalsConfig {
         min_hours: number(
@@ -238,7 +240,7 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
         prices_max_age_hours,
         tags_max_age_days,
         kept_updates,
-        ..base
+        region,
     })
 }
 
@@ -398,8 +400,25 @@ mod tests {
     }
 
     #[test]
-    fn parse_config_rejects_another_region() {
-        assert_eq!(invalid_field(parse_with(r#"region = "US""#)), "region");
+    fn parse_config_reads_the_region() {
+        assert_eq!(
+            parse_with(r#"region = "US""#).unwrap().region,
+            Region::new("US").unwrap()
+        );
+        assert_eq!(parse_with("").unwrap().region, Region::ITALY);
+    }
+
+    #[test]
+    fn parse_config_rejects_a_region_that_is_not_two_letters() {
+        let result = parse_with(r#"region = "USA""#);
+
+        match result {
+            Err(ConfigError::Invalid { field, expected }) => {
+                assert_eq!(field, "region");
+                assert_eq!(expected, "two letters, such as \"IT\"");
+            }
+            other => panic!("expected an invalid region, got {other:?}"),
+        }
     }
 
     #[test]

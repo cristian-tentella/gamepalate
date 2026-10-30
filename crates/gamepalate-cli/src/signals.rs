@@ -26,7 +26,7 @@ use gamepalate_store::{
 
 use crate::{
     format::date_time,
-    update::{COUNTRY_CODE, LANGUAGE, wall_clock},
+    update::{LANGUAGE, wall_clock},
 };
 
 pub fn load(data_dir: &Path, offline: bool) -> anyhow::Result<DataFiles> {
@@ -102,11 +102,12 @@ async fn off_catalog<S: Get>(
         .into_iter()
         .collect();
     let max_age_days = inputs.configs[0].tags_max_age_days;
+    let region = inputs.configs[0].region;
     let path = data_dir.join("off-catalog-tags.json");
     let mut cache = load_off_catalog_cache(&path);
     let stale = stale_off_catalog(&cache, &wanted, now, max_age_days);
 
-    let renewed = renew_off_catalog(steam, &mut cache, &stale, now, LANGUAGE, COUNTRY_CODE)
+    let renewed = renew_off_catalog(steam, &mut cache, &stale, now, LANGUAGE, region.as_str())
         .await
         .context("could not read the tags of the games outside the Catalog from Steam")?;
     if renewed {
