@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use gamepalate_app::update::{Progress, UpdateError, update_catalog};
+use gamepalate_app::{
+    account::steam_api_key,
+    update::{Progress, UpdateError, update_catalog},
+};
 use gamepalate_core::config::Config;
 use gamepalate_steam::transport::Transport;
 use gamepalate_store::config::{ConfigError, load_config};
@@ -12,7 +15,7 @@ pub fn run(data_dir: &Path) -> anyhow::Result<()> {
         Err(ConfigError::NotFound(_)) => Config::default(),
         config => config?,
     };
-    let transport = Transport::new(std::env::var("STEAM_API_KEY").ok())?;
+    let transport = Transport::new(steam_api_key())?;
     let runtime = tokio::runtime::Runtime::new()?;
 
     let updated = runtime

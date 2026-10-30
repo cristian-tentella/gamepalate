@@ -31,11 +31,13 @@ const TRANSIENT_WAITS: [Duration; 4] = [
 #[derive(Debug, thiserror::Error)]
 pub enum SteamError {
     #[error(
-        "{endpoint} needs a Steam Web API key: set STEAM_API_KEY, you can get one at https://steamcommunity.com/dev/apikey"
+        "{endpoint} needs a Steam Web API key: set STEAM_API_KEY or save the key from the gamepalate window, you can get one at https://steamcommunity.com/dev/apikey"
     )]
     MissingKey { endpoint: String },
 
-    #[error("Steam rejected the API key on {endpoint} (HTTP {status}): check STEAM_API_KEY")]
+    #[error(
+        "Steam rejected the API key on {endpoint} (HTTP {status}): check STEAM_API_KEY or the key saved from the gamepalate window"
+    )]
     KeyRejected {
         endpoint: String,
         status: StatusCode,

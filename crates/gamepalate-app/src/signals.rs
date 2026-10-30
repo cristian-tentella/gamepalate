@@ -40,7 +40,7 @@ pub enum SignalsWarning {
 pub struct ReadSignals {
     pub reading: SignalsReading,
     pub warnings: Vec<SignalsWarning>,
-    fresh: bool,
+    pub(crate) fresh: bool,
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use gamepalate_core::ids::SteamId;
 use gamepalate_store::{
     config::{ConfigError, load_config},
     gui::{GuiSettings, load_gui_settings},
@@ -11,11 +12,10 @@ use gamepalate_store::{
 };
 
 use crate::{
+    account::steam_api_key,
     app::{GUI_FILE, change_settings},
     data_dir,
 };
-
-const KEY_ENV_VAR: &str = "STEAM_API_KEY";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Part {
@@ -28,6 +28,7 @@ pub enum Part {
 pub struct FirstRun {
     pub data_dir: Option<PathBuf>,
     pub steam_id: Part,
+    pub saved_steam_id: Option<SteamId>,
     pub api_key: bool,
     pub catalog: Part,
     pub signals: Part,
@@ -35,8 +36,10 @@ pub struct FirstRun {
 
 impl FirstRun {
     pub fn check(data_dir: Option<PathBuf>) -> FirstRun {
-        let api_key = std::env::var(KEY_ENV_VAR).is_ok_and(|key| !key.trim().is_empty());
-        first_run(data_dir.or_else(data_dir::resolve), api_key)
+        first_run(
+            data_dir.or_else(data_dir::resolve),
+            steam_api_key().is_some(),
+        )
     }
 
     pub fn ready(&self) -> bool {
@@ -78,14 +81,18 @@ fn first_run(data_dir: Option<PathBuf>, api_key: bool) -> FirstRun {
         return FirstRun {
             data_dir: None,
             steam_id: Part::Missing,
+            saved_steam_id: None,
             api_key,
             catalog: Part::Missing,
             signals: Part::Missing,
         };
     };
 
+    let (steam_id, saved_steam_id) = steam_id(&dir);
+
     FirstRun {
-        steam_id: steam_id(&dir),
+        steam_id,
+        saved_steam_id,
         api_key,
         catalog: if dir.join("catalog.sqlite").is_file() {
             Part::Present
@@ -97,11 +104,11 @@ fn first_run(data_dir: Option<PathBuf>, api_key: bool) -> FirstRun {
     }
 }
 
-fn steam_id(dir: &Path) -> Part {
+fn steam_id(dir: &Path) -> (Part, Option<SteamId>) {
     match load_config(&dir.join("config.toml")) {
-        Ok(_) => Part::Present,
-        Err(ConfigError::NotFound(_) | ConfigError::Missing("steam_id")) => Part::Missing,
-        Err(error) => Part::Invalid(error_chain(&error)),
+        Ok(config) => (Part::Present, config.steam_id),
+        Err(ConfigError::NotFound(_) | ConfigError::Missing("steam_id")) => (Part::Missing, None),
+        Err(error) => (Part::Invalid(error_chain(&error)), None),
     }
 }
 
@@ -185,6 +192,10 @@ mod tests {
         let first_run = first_run(Some(dir.path().to_path_buf()), true);
 
         assert!(first_run.api_key);
+        assert_eq!(
+            first_run.saved_steam_id,
+            Some(SteamId(76_561_198_000_000_000))
+        );
         assert!(first_run.ready());
     }
 

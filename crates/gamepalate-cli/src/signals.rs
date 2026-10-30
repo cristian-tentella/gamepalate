@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use gamepalate_app::{
+    account::steam_api_key,
     signals::{OffCatalogInputs, SignalsWarning, off_catalog, read_signals, save_signals},
     update::wall_clock,
 };
@@ -37,7 +38,7 @@ pub fn load_for(
     let steam_id = config
         .steam_id
         .context("steam_id is missing from the config")?;
-    let transport = Transport::new(std::env::var("STEAM_API_KEY").ok())?;
+    let transport = Transport::new(steam_api_key())?;
     let runtime = tokio::runtime::Runtime::new()?;
     let now = wall_clock();
 
