@@ -327,10 +327,97 @@ pub fn recommend(
         family: options.family.clone(),
         saved_signals_from: inputs.signals.read_at,
         freshness: inputs.catalog.freshness,
-        stale_prices: inputs
-            .catalog
-            .freshness
-            .prices_are_stale(now, inputs.config.prices_max_age_hours),
+        stale_prices: inputs.catalog.freshness.prices_are_stale(
+            now,
+            inputs.config.prices_max_age_hours,
+            inputs.config.region,
+        ),
         without_vote_model: opinion_needed && opinion_by_id.is_none(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::{
+        currency::Currency,
+        game::{Game, GameTag},
+        game_vector::game_vectors,
+        ids::TagId,
+        region::Region,
+        signals::LibraryGame,
+    };
+
+    const NOW: Timestamp = Timestamp(1_793_638_800_000);
+
+    fn game(id: u32, tag: u32) -> Game {
+        Game {
+            id: AppId(id),
+            name: format!("game {id}"),
+            price: Price {
+                original_cents: 999,
+                discount: None,
+            },
+            reviews: Reviews {
+                total: 5000,
+                positive: 4500,
+            },
+            is_early_access: false,
+            tags: vec![GameTag {
+                id: TagId(tag),
+                weight: 1.0,
+            }],
+        }
+    }
+
+    fn stale_prices(region: Region) -> bool {
+        let catalog = Catalog::new(
+            vec![game(1, 1), game(2, 1), game(3, 2)],
+            BTreeMap::new(),
+            BTreeMap::from([(TagId(1), 1.0), (TagId(2), 1.0)]),
+            Freshness {
+                prices_updated_at: NOW,
+                tags_updated_at: NOW,
+                region: Region::ITALY,
+            },
+            Currency::italian(),
+        );
+        let vectors = game_vectors(&catalog);
+        let signals = Signals {
+            read_at: NOW,
+            library: vec![LibraryGame {
+                id: AppId(1),
+                total_hours: 20.0,
+            }],
+            recent: Vec::new(),
+            wishlist: Vec::new(),
+            followed: Vec::new(),
+        };
+        let config = Config {
+            region,
+            ..Config::default()
+        };
+        let inputs = SearchInputs {
+            catalog: &catalog,
+            game_vectors: &vectors,
+            signals: &signals,
+            votes: &Votes::new(),
+            corrections: &Corrections::default(),
+            families: &Families::default(),
+            off_catalog: &OffCatalogGames::new(),
+            config: &config,
+        };
+
+        recommend(&inputs, &SearchOptions::default(), NOW)
+            .unwrap()
+            .stale_prices
+    }
+
+    #[test]
+    fn prices_of_another_region_than_the_config_are_stale() {
+        assert!(stale_prices(Region::new("US").unwrap()));
+        assert!(!stale_prices(Region::ITALY));
+    }
 }

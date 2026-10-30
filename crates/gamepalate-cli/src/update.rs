@@ -54,7 +54,12 @@ fn update<S: Get + Sync>(data_dir: &Path, steam: &S, config: &Config) -> anyhow:
     let resume_within_hours = config.prices_max_age_hours;
     let archive = archive(data_dir);
     let update = archive
-        .start_update(wall_clock(), resume_within_hours, config.tags_max_age_days)
+        .start_update(
+            wall_clock(),
+            resume_within_hours,
+            config.tags_max_age_days,
+            region(),
+        )
         .context("could not start a new update in the archive")?;
     let earlier = if update.full() {
         Vec::new()
@@ -126,6 +131,10 @@ pub fn check_base(chain: &[ArchivedUpdate], update: &Path) -> anyhow::Result<()>
     }
 }
 
+fn region() -> Region {
+    Region::new(COUNTRY_CODE).expect("the country code is a region")
+}
+
 pub fn wall_clock() -> Timestamp {
     Timestamp(jiff::Timestamp::now().as_millisecond())
 }
@@ -186,7 +195,7 @@ pub fn build_catalog<S: Get>(
     let freshness = Freshness {
         prices_updated_at: now,
         tags_updated_at: earlier.last().map_or(now, ArchivedUpdate::started_at),
-        region: Region::new(COUNTRY_CODE).expect("the country code is a region"),
+        region: region(),
     };
     Ok(BuiltCatalog {
         catalog: Catalog::new(games, tags, idf, freshness, currency),

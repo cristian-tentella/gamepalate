@@ -238,6 +238,7 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
         prices_max_age_hours,
         tags_max_age_days,
         kept_updates,
+        ..base
     })
 }
 
