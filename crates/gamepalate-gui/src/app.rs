@@ -113,8 +113,9 @@ impl App {
                     return Task::none();
                 };
                 match screen.update(message) {
-                    Some(gamepalate) => self.opened(gamepalate),
-                    None => Task::none(),
+                    setup::Action::None => Task::none(),
+                    setup::Action::Run(task) => task.map(Message::Setup),
+                    setup::Action::Open(gamepalate) => self.opened(*gamepalate),
                 }
             }
             Message::WindowFound(id) => {
