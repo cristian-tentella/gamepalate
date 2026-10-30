@@ -9,8 +9,11 @@ use iced::{
     Center, Element, Fill, Subscription, Task,
     futures::channel::oneshot,
     keyboard::{self, Key, key::Named},
-    padding,
-    widget::{button, column, container, responsive, row, space, stack, text},
+    never, padding,
+    widget::{
+        button, column, container, progress_bar, responsive, rich_text, row, space, span, stack,
+        text,
+    },
 };
 
 use self::queue::Queue;
@@ -31,11 +34,16 @@ const FLASH_DURATION: Duration = Duration::from_millis(600);
 const PREVIOUS: char = '\u{E76B}';
 const NEXT: char = '\u{E76C}';
 const CHECK: char = '\u{E73E}';
+const INFO_WIDTH: f32 = 640.0;
+const METER_LABEL_WIDTH: f32 = 90.0;
+const METER_VALUE_WIDTH: f32 = 90.0;
 
 pub struct Discover {
     gamepalate: Arc<Gamepalate>,
     options: SearchOptions,
     votes_this_session: usize,
+    bet_every: usize,
+    why_open: bool,
     toast: Option<Toast>,
     flash: Option<Flash>,
     timers_started: u64,
@@ -60,6 +68,7 @@ pub enum Message {
     Next,
     Vote(VoteKind),
     Open(Link),
+    ToggleWhy,
     HideToast(u64),
     EndFlash(u64),
 }
@@ -92,6 +101,8 @@ impl Discover {
                 gamepalate: Arc::clone(gamepalate),
                 options,
                 votes_this_session: 0,
+                bet_every: gamepalate.bet_every(),
+                why_open: true,
                 toast: None,
                 flash: None,
                 timers_started: 0,
@@ -152,6 +163,7 @@ impl Discover {
                         .spawn();
                 }
             }
+            Message::ToggleWhy => self.why_open = !self.why_open,
             Message::EndFlash(id) => {
                 if self.flash.as_ref().is_some_and(|flash| flash.id == id) {
                     self.flash = None;
@@ -315,10 +327,14 @@ impl Discover {
 
                     let details = column![
                         text(&game.name).size(font::TITLE_SIZE).font(font::SEMIBOLD),
-                        text(progress).size(font::NOTE_SIZE).style(style::muted),
+                        price_row(game),
+                        reviews_line(game),
                     ]
-                    .spacing(8)
-                    .align_x(Center);
+                    .push(similar_lines(game))
+                    .push(self.why(game))
+                    .push(text(progress).size(font::NOTE_SIZE).style(style::muted))
+                    .spacing(14)
+                    .max_width(INFO_WIDTH);
 
                     row![
                         arrow_button(PREVIOUS, queue.has_previous().then_some(Message::Previous)),
@@ -333,6 +349,129 @@ impl Discover {
 
         container(content).center(Fill).into()
     }
+}
+
+impl Discover {
+    fn why<'a>(&self, game: &'a RecommendedGame) -> Element<'a, Message> {
+        if !self.why_open {
+            return text("Why this game (W) \u{25B8}")
+                .size(font::NOTE_SIZE)
+                .style(style::muted)
+                .into();
+        }
+
+        let bet = game.bet.then(|| {
+            text(format::bet(self.bet_every))
+                .size(font::INFO_SIZE)
+                .style(style::muted)
+        });
+
+        container(
+            column![
+                text("Why this game (W)")
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted),
+                meter(
+                    "Affinity",
+                    format::affinity_share(game.affinity),
+                    format::affinity(game.affinity),
+                ),
+                meter(
+                    "Quality",
+                    game.quality as f32,
+                    format::quality(game.quality).to_string(),
+                ),
+            ]
+            .push(bet)
+            .spacing(10),
+        )
+        .padding([14, 18])
+        .width(Fill)
+        .style(style::card)
+        .into()
+    }
+}
+
+fn price_row(game: &RecommendedGame) -> Element<'_, Message> {
+    let discount = game.price.discount;
+
+    row![
+        text(format::price(&game.price))
+            .size(font::PRICE_SIZE)
+            .font(font::SEMIBOLD)
+    ]
+    .push(discount.map(|discount| {
+        text(format::discount(discount.percent))
+            .size(font::INFO_SIZE)
+            .font(font::SEMIBOLD)
+            .style(style::discount)
+    }))
+    .push(discount.and_then(|discount| discount.end).map(|end| {
+        text(format::until(end))
+            .size(font::NOTE_SIZE)
+            .style(style::muted)
+    }))
+    .push(game.bet.then(|| {
+        container(text("Bet").size(font::NOTE_SIZE).font(font::SEMIBOLD))
+            .padding([2, 8])
+            .style(style::bet)
+    }))
+    .spacing(12)
+    .align_y(Center)
+    .into()
+}
+
+fn reviews_line(game: &RecommendedGame) -> Element<'_, Message> {
+    let (percent, rest) = format::reviews(&game.reviews);
+
+    rich_text![span(percent).font(font::SEMIBOLD), span(rest)]
+        .size(font::INFO_SIZE)
+        .on_link_click(never)
+        .into()
+}
+
+fn similar_lines(game: &RecommendedGame) -> Option<Element<'_, Message>> {
+    let similar = game.similar_to.as_deref().map(|name| {
+        rich_text![span("Similar to "), span(name).font(font::SEMIBOLD)]
+            .size(font::INFO_SIZE)
+            .on_link_click(never)
+    });
+
+    let mut spans = Vec::new();
+    if let Some(family) = &game.from_family {
+        spans.push(span("from your family "));
+        spans.push(span(family.as_str()).font(font::SEMIBOLD));
+    }
+    for tag in &game.top_tags {
+        if !spans.is_empty() {
+            spans.push(span(" \u{b7} "));
+        }
+        spans.push(span(tag.as_str()));
+    }
+    let tags = (!spans.is_empty()).then(|| {
+        rich_text(spans)
+            .size(font::BAR_SIZE)
+            .style(style::muted)
+            .on_link_click(never)
+    });
+
+    (similar.is_some() || tags.is_some())
+        .then(|| column![].push(similar).push(tags).spacing(4).into())
+}
+
+fn meter<'a>(label: &'a str, share: f32, value: String) -> Element<'a, Message> {
+    row![
+        text(label).size(font::INFO_SIZE).width(METER_LABEL_WIDTH),
+        progress_bar(0.0..=1.0, share)
+            .girth(6)
+            .length(Fill)
+            .style(style::meter),
+        container(text(value).size(font::INFO_SIZE).font(font::SEMIBOLD))
+            .align_right(METER_VALUE_WIDTH),
+    ]
+    .spacing(12)
+    .align_y(Center)
+    .into()
 }
 
 fn vote_button<'a>(
@@ -416,6 +555,7 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
             "5" => Some(Message::Open(Link::Steam)),
             "6" => Some(Message::Open(Link::Eneba)),
             "7" => Some(Message::Open(Link::Hltb)),
+            "w" | "W" => Some(Message::ToggleWhy),
             key => VOTES
                 .iter()
                 .find(|(vote_key, _)| *vote_key == key)
@@ -452,6 +592,14 @@ mod tests {
         assert!(matches!(
             key_message(pressed(Key::Character("7".into()))),
             Some(Message::Open(Link::Hltb))
+        ));
+    }
+
+    #[test]
+    fn toggles_the_reasons_with_w() {
+        assert!(matches!(
+            key_message(pressed(Key::Character("w".into()))),
+            Some(Message::ToggleWhy)
         ));
     }
 

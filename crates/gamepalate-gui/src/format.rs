@@ -1,4 +1,4 @@
-use gamepalate_app::{SearchOptions, SortBy, Timestamp, VoteKind};
+use gamepalate_app::{Price, Reviews, SearchOptions, SortBy, Timestamp, VoteKind};
 use jiff::tz::TimeZone;
 
 pub fn when(at: Timestamp, now: Timestamp) -> String {
@@ -107,6 +107,71 @@ pub fn count(number: u32) -> String {
     grouped
 }
 
+pub fn price(price: &Price) -> String {
+    match price.discount {
+        Some(discount) => euros(discount.final_cents),
+        None if price.original_cents == 0 => "Free".to_string(),
+        None => euros(price.original_cents),
+    }
+}
+
+pub fn discount(percent: u8) -> String {
+    format!("−{percent}%")
+}
+
+pub fn until(end: Timestamp) -> String {
+    until_in(end, &TimeZone::system())
+}
+
+fn until_in(end: Timestamp, zone: &TimeZone) -> String {
+    match jiff::Timestamp::from_millisecond(end.0) {
+        Ok(end) => end
+            .to_zoned(zone.clone())
+            .strftime("until %-d %b")
+            .to_string(),
+        Err(_) => String::new(),
+    }
+}
+
+pub fn reviews(reviews: &Reviews) -> (String, String) {
+    if reviews.total == 0 {
+        return (String::new(), "No reviews yet".to_string());
+    }
+    let percent = (f64::from(reviews.positive) * 100.0 / f64::from(reviews.total)).round();
+    let noun = if reviews.total == 1 {
+        "review"
+    } else {
+        "reviews"
+    };
+
+    (
+        format!("{percent}%"),
+        format!(" positive of {} {noun}", count(reviews.total)),
+    )
+}
+
+pub fn affinity(affinity: f64) -> String {
+    format!("{affinity:.1}×")
+}
+
+pub fn affinity_share(affinity: f64) -> f32 {
+    (affinity.max(1.0).log10() as f32).clamp(0.0, 1.0)
+}
+
+pub fn quality(quality: f64) -> &'static str {
+    match quality {
+        q if q >= 0.9 => "excellent",
+        q if q >= 0.8 => "very good",
+        q if q >= 0.7 => "good",
+        q if q >= 0.5 => "mixed",
+        _ => "poor",
+    }
+}
+
+pub fn bet(every: usize) -> String {
+    format!("It's a Bet: 1 game in {every} is one your votes would skip.")
+}
+
 pub fn vote(kind: VoteKind) -> &'static str {
     match kind {
         VoteKind::WouldTry => "Would try",
@@ -146,6 +211,8 @@ fn search_text(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use gamepalate_app::Discount;
+
     use super::*;
 
     const NOW: Timestamp = Timestamp(1_793_638_800_000);
@@ -213,6 +280,84 @@ mod tests {
         assert_eq!(count(999), "999");
         assert_eq!(count(43_506), "43,506");
         assert_eq!(count(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn shows_the_discounted_price() {
+        let price = Price {
+            original_cents: 2499,
+            discount: Some(Discount {
+                percent: 40,
+                final_cents: 1499,
+                end: None,
+            }),
+        };
+
+        assert_eq!(super::price(&price), "€14.99");
+        assert_eq!(discount(40), "−40%");
+    }
+
+    #[test]
+    fn says_free_without_a_price() {
+        let price = Price {
+            original_cents: 0,
+            discount: None,
+        };
+
+        assert_eq!(super::price(&price), "Free");
+    }
+
+    #[test]
+    fn shows_when_the_discount_ends() {
+        assert_eq!(until_in(NOW, &TimeZone::UTC), "until 2 Nov");
+    }
+
+    #[test]
+    fn rounds_the_positive_reviews() {
+        let reviews = Reviews {
+            total: 43_506,
+            positive: 40_461,
+        };
+
+        assert_eq!(
+            super::reviews(&reviews),
+            ("93%".to_string(), " positive of 43,506 reviews".to_string())
+        );
+    }
+
+    #[test]
+    fn says_when_there_are_no_reviews() {
+        let reviews = Reviews {
+            total: 0,
+            positive: 0,
+        };
+
+        assert_eq!(super::reviews(&reviews).1, "No reviews yet");
+    }
+
+    #[test]
+    fn fills_the_affinity_bar_on_a_log_scale() {
+        assert_eq!(affinity(6.5), "6.5×");
+        assert_eq!(affinity_share(0.5), 0.0);
+        assert!((affinity_share(6.5) - 0.81).abs() < 0.01);
+        assert_eq!(affinity_share(40.0), 1.0);
+    }
+
+    #[test]
+    fn names_the_quality() {
+        assert_eq!(quality(0.95), "excellent");
+        assert_eq!(quality(0.85), "very good");
+        assert_eq!(quality(0.75), "good");
+        assert_eq!(quality(0.6), "mixed");
+        assert_eq!(quality(0.3), "poor");
+    }
+
+    #[test]
+    fn says_how_often_a_bet_comes() {
+        assert_eq!(
+            bet(5),
+            "It's a Bet: 1 game in 5 is one your votes would skip."
+        );
     }
 
     #[test]

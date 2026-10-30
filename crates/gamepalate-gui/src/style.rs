@@ -1,7 +1,7 @@
 use iced::{
     Border, Color, Element, Shadow, Theme, Vector,
     theme::palette,
-    widget::{button, container, rule, text},
+    widget::{button, container, progress_bar, rule, text},
 };
 
 pub fn top_bar(theme: &Theme) -> container::Style {
@@ -193,5 +193,52 @@ pub fn arrow(theme: &Theme, status: button::Status) -> button::Style {
             ..Border::default()
         },
         ..button::Style::default()
+    }
+}
+
+pub fn discount(theme: &Theme) -> text::Style {
+    text::Style {
+        color: Some(theme.extended_palette().success.base.color),
+    }
+}
+
+pub fn bet(theme: &Theme) -> container::Style {
+    let warning = theme.extended_palette().warning;
+
+    container::Style {
+        background: Some(warning.weak.color.into()),
+        text_color: Some(warning.weak.text),
+        border: Border {
+            radius: 4.0.into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
+    }
+}
+
+pub fn card(theme: &Theme) -> container::Style {
+    let background = theme.extended_palette().background;
+
+    container::Style {
+        background: Some(palette::deviate(background.base.color, 0.015).into()),
+        border: Border {
+            color: background.strong.color,
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+pub fn meter(theme: &Theme) -> progress_bar::Style {
+    let palette = theme.extended_palette();
+
+    progress_bar::Style {
+        background: palette.background.weak.color.into(),
+        bar: palette.primary.base.color.into(),
+        border: Border {
+            radius: 3.0.into(),
+            ..Border::default()
+        },
     }
 }

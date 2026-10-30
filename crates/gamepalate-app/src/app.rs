@@ -58,6 +58,10 @@ impl Gamepalate {
         Ok(recommendation)
     }
 
+    pub fn bet_every(&self) -> usize {
+        self.files.config.results.bet_every
+    }
+
     pub fn signals_read_at(&self) -> Timestamp {
         self.files.signals.read_at
     }
