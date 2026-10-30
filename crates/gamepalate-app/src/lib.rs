@@ -5,6 +5,7 @@ mod images;
 pub use app::{Gamepalate, OpenError, RecommendError};
 pub use details::GameDetails;
 pub use gamepalate_core::{
+    currency::Currency,
     filters::FilterOptions,
     game::{Discount, Price, Reviews},
     ids::AppId,

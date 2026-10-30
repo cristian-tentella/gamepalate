@@ -1,5 +1,6 @@
 use gamepalate_app::{
-    Controller, Italian, Price, Reviews, SearchOptions, SortBy, SteamDeck, Timestamp, VoteKind,
+    Controller, Currency, Italian, Price, Reviews, SearchOptions, SortBy, SteamDeck, Timestamp,
+    VoteKind,
 };
 use jiff::tz::TimeZone;
 
@@ -26,7 +27,7 @@ fn when_in(at: Timestamp, now: Timestamp, zone: &TimeZone) -> String {
     }
 }
 
-pub fn filters(options: &SearchOptions) -> String {
+pub fn filters(options: &SearchOptions, currency: &Currency) -> String {
     let filters = &options.filters;
     let mut parts = vec![match &options.family {
         Some(family) => format!("From: {family}"),
@@ -43,9 +44,11 @@ pub fn filters(options: &SearchOptions) -> String {
         parts.push(format!("≥ {percent}% off"));
     }
     match (filters.min_price_cents, filters.max_price_cents) {
-        (Some(min), Some(max)) => parts.push(format!("{}–{}", euros(min), euros(max))),
-        (Some(min), None) => parts.push(format!("≥ {}", euros(min))),
-        (None, Some(max)) => parts.push(format!("≤ {}", euros(max))),
+        (Some(min), Some(max)) => {
+            parts.push(format!("{}–{}", currency.format(min), currency.format(max)))
+        }
+        (Some(min), None) => parts.push(format!("≥ {}", currency.format(min))),
+        (None, Some(max)) => parts.push(format!("≤ {}", currency.format(max))),
         (None, None) => {}
     }
     match (filters.min_reviews, filters.max_reviews) {
@@ -90,13 +93,6 @@ pub fn votes_this_session(votes: usize) -> String {
     }
 }
 
-pub fn euros(cents: u32) -> String {
-    match cents % 100 {
-        0 => format!("€{}", count(cents / 100)),
-        rest => format!("€{}.{rest:02}", count(cents / 100)),
-    }
-}
-
 pub fn count(number: u32) -> String {
     let digits = number.to_string();
     let mut grouped = String::new();
@@ -109,11 +105,11 @@ pub fn count(number: u32) -> String {
     grouped
 }
 
-pub fn price(price: &Price) -> String {
+pub fn price(price: &Price, currency: &Currency) -> String {
     match price.discount {
-        Some(discount) => euros(discount.final_cents),
+        Some(discount) => currency.format(discount.final_cents),
         None if price.original_cents == 0 => "Free".to_string(),
-        None => euros(price.original_cents),
+        None => currency.format(price.original_cents),
     }
 }
 
@@ -273,6 +269,15 @@ mod tests {
         when_in(at, NOW, &TimeZone::UTC)
     }
 
+    fn dollars() -> Currency {
+        Currency {
+            prefix: "$".to_string(),
+            suffix: String::new(),
+            decimal_separator: Some('.'),
+            group_separator: Some(','),
+        }
+    }
+
     #[test]
     fn shows_the_time_for_today() {
         assert_eq!(when_utc(Timestamp(NOW.0 - 3 * HOUR)), "today 14:00");
@@ -290,7 +295,10 @@ mod tests {
 
     #[test]
     fn says_all_tastes_without_filters() {
-        assert_eq!(filters(&SearchOptions::default()), "From: All tastes");
+        assert_eq!(
+            filters(&SearchOptions::default(), &Currency::italian()),
+            "From: All tastes"
+        );
     }
 
     #[test]
@@ -299,7 +307,14 @@ mod tests {
         options.filters.only_discounted = true;
         options.filters.max_price_cents = Some(1500);
 
-        assert_eq!(filters(&options), "From: All tastes · On sale · ≤ €15");
+        assert_eq!(
+            filters(&options, &Currency::italian()),
+            "From: All tastes · On sale · ≤ 15,00€"
+        );
+        assert_eq!(
+            filters(&options, &dollars()),
+            "From: All tastes · On sale · ≤ $15.00"
+        );
     }
 
     #[test]
@@ -315,8 +330,8 @@ mod tests {
         options.filters.tags = vec!["Metroidvania".to_string(), "Souls-like".to_string()];
 
         assert_eq!(
-            filters(&options),
-            "From: azione · €4.99–€20 · ≥ 1,000 reviews · Tags: Metroidvania, Souls-like · By price"
+            filters(&options, &Currency::italian()),
+            "From: azione · 4,99€–20,00€ · ≥ 1,000 reviews · Tags: Metroidvania, Souls-like · By price"
         );
     }
 
@@ -344,8 +359,25 @@ mod tests {
             }),
         };
 
-        assert_eq!(super::price(&price), "€14.99");
+        assert_eq!(super::price(&price, &Currency::italian()), "14,99€");
+        assert_eq!(super::price(&price, &dollars()), "$14.99");
         assert_eq!(discount(40), "−40%");
+    }
+
+    #[test]
+    fn a_currency_without_decimals_shows_none() {
+        let yen = Currency {
+            prefix: "¥".to_string(),
+            suffix: String::new(),
+            decimal_separator: None,
+            group_separator: Some(','),
+        };
+        let price = Price {
+            original_cents: 902_000,
+            discount: None,
+        };
+
+        assert_eq!(super::price(&price, &yen), "¥9,020");
     }
 
     #[test]
@@ -355,7 +387,7 @@ mod tests {
             discount: None,
         };
 
-        assert_eq!(super::price(&price), "Free");
+        assert_eq!(super::price(&price, &Currency::italian()), "Free");
     }
 
     #[test]

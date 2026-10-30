@@ -20,10 +20,6 @@ pub fn decimal(x: f64) -> String {
     format!("{sign}{}.{fraction}", integer(whole.parse().unwrap_or(0)))
 }
 
-pub fn euros(cents: u32) -> String {
-    format!("€{}.{:02}", integer(u64::from(cents / 100)), cents % 100)
-}
-
 pub fn parse_number(text: &str) -> Result<f64, String> {
     text.trim()
         .replace(',', ".")
@@ -33,8 +29,8 @@ pub fn parse_number(text: &str) -> Result<f64, String> {
         .ok_or_else(|| format!("\"{text}\" is not a number"))
 }
 
-pub fn parse_euros(text: &str) -> Result<u32, String> {
-    let error = || format!("\"{text}\" is not a price in euros, for example 9.99 or 9,99");
+pub fn parse_price(text: &str) -> Result<u32, String> {
+    let error = || format!("\"{text}\" is not a price, for example 9.99 or 9,99");
     let text = text.trim().replace(',', ".");
     let (whole, fraction) = text.split_once('.').unwrap_or((&text, ""));
     if whole.is_empty() && fraction.is_empty()
@@ -77,5 +73,27 @@ fn local(timestamp: Timestamp, pattern: &str) -> String {
             .strftime(pattern)
             .to_string(),
         Err(_) => format!("{} ms", timestamp.0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_price_takes_a_dot_or_a_comma() {
+        assert_eq!(parse_price("9.99"), Ok(999));
+        assert_eq!(parse_price("9,99"), Ok(999));
+        assert_eq!(parse_price("15"), Ok(1500));
+        assert_eq!(parse_price("0,5"), Ok(50));
+    }
+
+    #[test]
+    fn a_price_that_is_not_a_number_says_so_without_naming_a_currency() {
+        let error = parse_price("abc").unwrap_err();
+
+        assert_eq!(error, "\"abc\" is not a price, for example 9.99 or 9,99");
+        assert!(parse_price("9.999").is_err());
+        assert!(parse_price("").is_err());
     }
 }

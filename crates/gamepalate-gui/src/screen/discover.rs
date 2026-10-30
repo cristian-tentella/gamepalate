@@ -5,8 +5,8 @@ mod queue;
 use std::{process::Command, sync::Arc, time::Duration};
 
 use gamepalate_app::{
-    AppId, GameDetails, Gamepalate, RecommendError, Recommendation, RecommendedGame, SearchOptions,
-    VoteKind,
+    AppId, Currency, GameDetails, Gamepalate, RecommendError, Recommendation, RecommendedGame,
+    SearchOptions, VoteKind,
 };
 use iced::{
     Center, ContentFit, Element, Fill, Subscription, Task,
@@ -235,9 +235,12 @@ impl Discover {
     pub fn view(&self) -> Element<'_, Message> {
         let filters = container(
             row![
-                text!("{} ·", format::filters(&self.options))
-                    .size(font::NOTE_SIZE)
-                    .style(style::muted),
+                text!(
+                    "{} ·",
+                    format::filters(&self.options, self.gamepalate.currency())
+                )
+                .size(font::NOTE_SIZE)
+                .style(style::muted),
                 button(text("Filters (Ctrl+F) ▾").size(font::NOTE_SIZE))
                     .padding(0)
                     .style(style::link),
@@ -569,7 +572,7 @@ impl Discover {
         let info = column![
             self.picture(&self.header_url(game), SIDE_WIDTH, HEADER_HEIGHT),
             text(&game.name).size(font::TITLE_SIZE).font(font::SEMIBOLD),
-            price_row(game),
+            price_row(game, self.gamepalate.currency()),
             reviews_line(game),
         ]
         .push(similar_lines(game))
@@ -651,11 +654,11 @@ impl Discover {
     }
 }
 
-fn price_row(game: &RecommendedGame) -> Element<'_, Message> {
+fn price_row<'a>(game: &'a RecommendedGame, currency: &Currency) -> Element<'a, Message> {
     let discount = game.price.discount;
 
     row![
-        text(format::price(&game.price))
+        text(format::price(&game.price, currency))
             .size(font::PRICE_SIZE)
             .font(font::SEMIBOLD)
     ]

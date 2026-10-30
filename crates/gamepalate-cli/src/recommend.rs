@@ -4,6 +4,7 @@ use anyhow::bail;
 use clap::{Args, ValueEnum};
 use comfy_table::{CellAlignment, ContentArrangement, Table, presets::UTF8_FULL_CONDENSED};
 use gamepalate_core::{
+    currency::Currency,
     filters::FilterOptions,
     game::Reviews,
     game_vector::game_vectors,
@@ -13,7 +14,7 @@ use gamepalate_core::{
 use gamepalate_store::data_files::DataFiles;
 
 use crate::{
-    format::{date, date_time, decimal, euros, integer, multiplier, parse_euros},
+    format::{date, date_time, decimal, integer, multiplier, parse_price},
     names::{check_families, tag_name_error_text},
 };
 
@@ -37,12 +38,12 @@ pub struct RecommendArgs {
     #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
     min_positive: Option<u8>,
 
-    /// Minimum price in euros, such as 9.99 or 9,99
-    #[arg(long, value_parser = parse_euros)]
+    /// Minimum price in the store's currency, such as 9.99 or 9,99
+    #[arg(long, value_parser = parse_price)]
     min_price: Option<u32>,
 
-    /// Maximum price in euros, such as 9.99 or 9,99
-    #[arg(long, value_parser = parse_euros)]
+    /// Maximum price in the store's currency, such as 9.99 or 9,99
+    #[arg(long, value_parser = parse_price)]
     max_price: Option<u32>,
 
     /// Only discounted games
@@ -199,7 +200,7 @@ pub fn run(args: &RecommendArgs, files: &DataFiles, data_dir: &Path) -> anyhow::
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(header);
     for game in &recommendation.games {
-        table.add_row(row(game, one_family));
+        table.add_row(row(game, one_family, &files.catalog.currency));
     }
     for column in right_aligned {
         if let Some(column) = table.column_mut(column) {
@@ -222,12 +223,12 @@ pub fn run(args: &RecommendArgs, files: &DataFiles, data_dir: &Path) -> anyhow::
     Ok(())
 }
 
-fn row(game: &RecommendedGame, one_family: bool) -> Vec<String> {
+fn row(game: &RecommendedGame, one_family: bool, currency: &Currency) -> Vec<String> {
     let discount = game.price.discount;
     let mut cells = vec![
         game.position.to_string(),
         game_cell(game),
-        euros(game.price.final_cents()),
+        currency.format(game.price.final_cents()),
         discount.map_or("-".to_string(), |discount| {
             format!("-{}%", discount.percent)
         }),

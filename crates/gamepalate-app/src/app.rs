@@ -1,6 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use gamepalate_core::{
+    currency::Currency,
     filters::TagNameError,
     game_vector::{GameVector, game_vectors},
     ids::AppId,
@@ -102,6 +103,10 @@ impl Gamepalate {
 
     pub fn prices_updated_at(&self) -> Timestamp {
         self.files.catalog.freshness.prices_updated_at
+    }
+
+    pub fn currency(&self) -> &Currency {
+        &self.files.catalog.currency
     }
 }
 
