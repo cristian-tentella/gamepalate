@@ -7,7 +7,7 @@ use tokio::time::timeout;
 
 use crate::transport::{Fetch, TIMEOUT, USER_AGENT};
 
-const ASSETS_BASE_URL: &str = "https://shared.fastly.steamstatic.com/store_item_assets/";
+pub(crate) const ASSETS_BASE_URL: &str = "https://shared.fastly.steamstatic.com/store_item_assets/";
 const MAX_BYTES: usize = 10 * 1024 * 1024;
 
 pub fn header_url(id: AppId) -> String {
