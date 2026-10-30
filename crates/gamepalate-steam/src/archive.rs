@@ -36,6 +36,12 @@ pub struct ArchivedUpdate {
     region: Region,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PendingUpdate {
+    pub started_at: Timestamp,
+    pub responses: usize,
+}
+
 pub struct Archiving<'a, S> {
     steam: &'a S,
     dir: &'a Path,
@@ -80,19 +86,13 @@ impl Archive {
         tags_max_age_days: f64,
         region: Region,
     ) -> io::Result<UpdateFolder> {
-        if let Some((dir, manifest)) = self.updates_newest_first()?.into_iter().next() {
-            let started_at = parse_iso(&manifest.started_at)?;
-            let recent = now.ms_since(started_at) < i64::from(resume_within_hours) * 3_600_000;
-            let interrupted = manifest.completed_at.is_none() && manifest.failed_at.is_none();
-            if interrupted && recent && manifest.region()? == region {
-                let resumed_responses = count_responses(&dir)?;
-                return Ok(UpdateFolder {
-                    dir,
-                    manifest,
-                    started_at,
-                    resumed_responses,
-                });
-            }
+        if let Some((dir, manifest, pending)) = self.resumable(now, resume_within_hours, region)? {
+            return Ok(UpdateFolder {
+                dir,
+                manifest,
+                started_at: pending.started_at,
+                resumed_responses: pending.responses,
+            });
         }
 
         fs::create_dir_all(&self.root)?;
@@ -168,6 +168,44 @@ impl Archive {
             }
         }
         Ok(removed)
+    }
+
+    pub fn pending_update(
+        &self,
+        now: Timestamp,
+        resume_within_hours: u32,
+        region: Region,
+    ) -> io::Result<Option<PendingUpdate>> {
+        Ok(self
+            .resumable(now, resume_within_hours, region)?
+            .map(|(_, _, pending)| pending))
+    }
+
+    fn resumable(
+        &self,
+        now: Timestamp,
+        resume_within_hours: u32,
+        region: Region,
+    ) -> io::Result<Option<(PathBuf, Manifest, PendingUpdate)>> {
+        let Some((dir, manifest)) = self.updates_newest_first()?.into_iter().next() else {
+            return Ok(None);
+        };
+        let started_at = parse_iso(&manifest.started_at)?;
+        let recent = now.ms_since(started_at) < i64::from(resume_within_hours) * 3_600_000;
+        let interrupted = manifest.completed_at.is_none() && manifest.failed_at.is_none();
+        if !(interrupted && recent && manifest.region()? == region) {
+            return Ok(None);
+        }
+
+        let responses = count_responses(&dir)?;
+        Ok(Some((
+            dir,
+            manifest,
+            PendingUpdate {
+                started_at,
+                responses,
+            },
+        )))
     }
 
     fn updates_newest_first(&self) -> io::Result<Vec<(PathBuf, Manifest)>> {
@@ -673,6 +711,68 @@ mod tests {
 
         assert!(matches!(result, Err(SteamError::Archive { .. })));
         assert_eq!(steam.asked(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_update_is_pending_with_its_responses() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().join("archive"));
+        assert_eq!(
+            archive.pending_update(NOW, 24, Region::ITALY).unwrap(),
+            None
+        );
+        let update = archive.start_update(NOW, 24, 0.0, Region::ITALY).unwrap();
+        update
+            .archiving(&FakeSteam::new())
+            .get(TAG_LIST, &[("language", "english")], false)
+            .await
+            .unwrap();
+
+        let pending = archive.pending_update(NOW, 24, Region::ITALY).unwrap();
+
+        assert_eq!(
+            pending,
+            Some(PendingUpdate {
+                started_at: NOW,
+                responses: 1,
+            })
+        );
+        let resumed = archive.start_update(NOW, 24, 0.0, Region::ITALY).unwrap();
+        assert_eq!(resumed.dir(), update.dir());
+        assert_eq!(resumed.resumed_responses(), 1);
+    }
+
+    #[test]
+    fn a_finished_old_or_foreign_update_is_not_pending() {
+        let later = Timestamp(NOW.0 + 25 * 3_600_000);
+        let us = Region::new("US").unwrap();
+        type Finish = fn(UpdateFolder);
+        let cases: [(&str, Finish); 3] = [
+            ("completed", |update| update.complete(NOW).unwrap()),
+            ("failed", |update| update.fail(NOW).unwrap()),
+            ("interrupted", |_| {}),
+        ];
+
+        for (name, finish) in cases {
+            let root = tempfile::tempdir().unwrap();
+            let archive = Archive::new(root.path().join("archive"));
+            finish(archive.start_update(NOW, 24, 0.0, Region::ITALY).unwrap());
+
+            let pending_now = archive.pending_update(NOW, 24, Region::ITALY).unwrap();
+            assert_eq!(pending_now.is_some(), name == "interrupted", "{name}");
+            assert_eq!(
+                archive.pending_update(later, 24, Region::ITALY).unwrap(),
+                None
+            );
+            assert_eq!(archive.pending_update(NOW, 24, us).unwrap(), None);
+
+            let next = archive.start_update(NOW, 24, 0.0, Region::ITALY).unwrap();
+            assert_eq!(
+                next.dir().ends_with("000001"),
+                pending_now.is_some(),
+                "{name}"
+            );
+        }
     }
 
     #[test]
