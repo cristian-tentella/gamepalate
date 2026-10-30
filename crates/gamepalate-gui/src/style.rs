@@ -228,6 +228,26 @@ pub fn veil(theme: &Theme) -> container::Style {
     }
 }
 
+pub fn popup(theme: &Theme) -> container::Style {
+    let background = theme.extended_palette().background;
+
+    container::Style {
+        background: Some(background.base.color.into()),
+        text_color: Some(background.base.text),
+        border: Border {
+            color: background.strong.color,
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        shadow: Shadow {
+            color: Color::BLACK.scale_alpha(0.25),
+            offset: Vector::new(0.0, 4.0),
+            blur_radius: 16.0,
+        },
+        ..container::Style::default()
+    }
+}
+
 pub fn card(theme: &Theme) -> container::Style {
     let background = theme.extended_palette().background;
 

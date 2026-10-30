@@ -14,8 +14,8 @@ use iced::{
     keyboard::{self, Key, key::Named},
     never, padding,
     widget::{
-        button, column, container, image, progress_bar, responsive, rich_text, row, scrollable,
-        space, span, stack, text,
+        button, column, container, image, mouse_area, opaque, progress_bar, responsive, rich_text,
+        row, scrollable, space, span, stack, text,
     },
 };
 
@@ -346,13 +346,18 @@ impl Discover {
                 .style(style::muted),
         ]
         .align_y(Center);
-        let panel = self.panel_open.then(|| {
-            container(self.panel.view(&self.options).map(Message::Filters))
-                .padding(padding::top(12))
+        let filters = container(line).padding([6, 20]).width(Fill);
+        let popup = self.panel_open.then(|| {
+            let panel = container(self.panel.view(&self.options).map(Message::Filters))
+                .padding(20)
+                .style(style::popup);
+            stack![
+                opaque(
+                    mouse_area(space().width(Fill).height(Fill)).on_press(Message::CloseFilters)
+                ),
+                container(opaque(panel)).padding([8, 20]),
+            ]
         });
-        let filters = container(column![line].push(panel))
-            .padding([6, 20])
-            .width(Fill);
         let toast = self.toast.as_ref().map(|toast| {
             container(
                 container(text(&toast.text))
@@ -381,7 +386,9 @@ impl Discover {
         .padding([10, 20])
         .width(Fill);
 
-        column![filters, style::separator(), main, style::separator(), votes].into()
+        let below = stack![column![main, style::separator(), votes]].push(popup);
+
+        column![filters, style::separator(), below].into()
     }
 
     fn vote_row(&self, compact: bool) -> Element<'_, Message> {
