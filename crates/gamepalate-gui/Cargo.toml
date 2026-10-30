@@ -9,3 +9,6 @@ gamepalate-app = { version = "0.1.0", path = "../gamepalate-app" }
 iced = { version = "0.14.0", features = ["image", "tokio"] }
 jiff = "0.2.38"
 tokio = { version = "1", features = ["time"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

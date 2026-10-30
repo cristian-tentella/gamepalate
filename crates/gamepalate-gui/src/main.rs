@@ -4,45 +4,36 @@ mod format;
 mod screen;
 mod style;
 
-use std::sync::Arc;
-
-use gamepalate_app::Gamepalate;
 use iced::{Pixels, Settings, Size, window};
 
 use crate::app::App;
 
 fn main() -> anyhow::Result<()> {
-    let gamepalate = Arc::new(Gamepalate::open(None)?);
-
-    iced::application(
-        move || App::new(Arc::clone(&gamepalate)),
-        App::update,
-        App::view,
-    )
-    .theme(App::theme)
-    .subscription(App::subscription)
-    .window(window::Settings {
-        size: Size::new(1280.0, 800.0),
-        min_size: Some(Size::new(960.0, 600.0)),
-        decorations: false,
-        platform_specific: window::settings::PlatformSpecific {
-            undecorated_shadow: true,
-            corner_preference: window::settings::platform::CornerPreference::Round,
-            ..window::settings::PlatformSpecific::default()
-        },
-        ..window::Settings::default()
-    })
-    .settings(Settings {
-        fonts: vec![
-            font::REGULAR_BYTES.into(),
-            font::SEMIBOLD_BYTES.into(),
-            font::BOLD_BYTES.into(),
-        ],
-        default_font: font::REGULAR,
-        default_text_size: Pixels(14.0),
-        ..Settings::default()
-    })
-    .run()?;
+    iced::application(App::new, App::update, App::view)
+        .theme(App::theme)
+        .subscription(App::subscription)
+        .window(window::Settings {
+            size: Size::new(1280.0, 800.0),
+            min_size: Some(Size::new(960.0, 600.0)),
+            decorations: false,
+            platform_specific: window::settings::PlatformSpecific {
+                undecorated_shadow: true,
+                corner_preference: window::settings::platform::CornerPreference::Round,
+                ..window::settings::PlatformSpecific::default()
+            },
+            ..window::Settings::default()
+        })
+        .settings(Settings {
+            fonts: vec![
+                font::REGULAR_BYTES.into(),
+                font::SEMIBOLD_BYTES.into(),
+                font::BOLD_BYTES.into(),
+            ],
+            default_font: font::REGULAR,
+            default_text_size: Pixels(14.0),
+            ..Settings::default()
+        })
+        .run()?;
 
     Ok(())
 }

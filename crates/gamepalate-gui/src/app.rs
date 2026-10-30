@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gamepalate_app::{Gamepalate, ThemeChoice, Timestamp};
+use gamepalate_app::{Gamepalate, ThemeChoice, Timestamp, setup::FirstRun};
 use iced::{
     Center, Color, Element, Fill, Length, Shrink, Subscription, Task, Theme, mouse, padding,
     theme::Palette,
@@ -13,7 +13,7 @@ use iced::{
 
 use crate::{
     font, format,
-    screen::{Discover, Screen, Votes, discover, votes},
+    screen::{Discover, Screen, Votes, discover, setup, votes},
     style,
 };
 
@@ -29,7 +29,7 @@ const MOON: char = '\u{E708}';
 const DARK_BACKGROUND: Color = Color::from_rgb8(0x18, 0x19, 0x1c);
 
 pub struct App {
-    gamepalate: Arc<Gamepalate>,
+    gamepalate: Option<Arc<Gamepalate>>,
     screen: Screen,
     theme: Theme,
     window: Option<window::Id>,
@@ -42,6 +42,7 @@ pub enum Message {
     Navigate(Page),
     Discover(discover::Message),
     Votes(votes::Message),
+    Setup(setup::Message),
     WindowFound(Option<window::Id>),
     Window(WindowAction),
     BarPressed,
@@ -66,26 +67,27 @@ pub enum Page {
 }
 
 impl App {
-    pub fn new(gamepalate: Arc<Gamepalate>) -> (App, Task<Message>) {
-        let (discover, task) = Discover::new(&gamepalate);
-        let pruner = Arc::clone(&gamepalate);
-        let prune_images = Task::future(async move { pruner.prune_images() }).discard();
-        let theme = theme(gamepalate.gui_settings().theme);
+    pub fn new() -> (App, Task<Message>) {
+        let mut app = App {
+            gamepalate: None,
+            screen: Screen::Profile,
+            theme: Theme::Light,
+            window: None,
+            maximized: false,
+            last_bar_press: None,
+        };
+        let task = match setup::start(FirstRun::check(None)) {
+            Ok(gamepalate) => app.opened(gamepalate),
+            Err(setup) => {
+                app.theme = theme(setup.first_run().gui_settings().theme);
+                app.screen = Screen::Setup(setup);
+                Task::none()
+            }
+        };
 
         (
-            App {
-                gamepalate,
-                screen: Screen::Discover(Box::new(discover)),
-                theme,
-                window: None,
-                maximized: false,
-                last_bar_press: None,
-            },
-            Task::batch([
-                task.map(Message::Discover),
-                window::latest().map(Message::WindowFound),
-                prune_images,
-            ]),
+            app,
+            Task::batch([task, window::latest().map(Message::WindowFound)]),
         )
     }
 
@@ -106,6 +108,15 @@ impl App {
                     Task::none()
                 }
             }
+            Message::Setup(message) => {
+                let Screen::Setup(screen) = &mut self.screen else {
+                    return Task::none();
+                };
+                match screen.update(message) {
+                    Some(gamepalate) => self.opened(gamepalate),
+                    None => Task::none(),
+                }
+            }
             Message::WindowFound(id) => {
                 self.window = id;
                 Task::none()
@@ -123,11 +134,21 @@ impl App {
             Message::ToggleTheme => {
                 self.theme = toggled(&self.theme);
                 let choice = choice(&self.theme);
-                let gamepalate = Arc::clone(&self.gamepalate);
-                Task::future(async move {
-                    gamepalate.change_gui_settings(|settings| settings.theme = choice)
-                })
-                .discard()
+                if let Some(gamepalate) = &self.gamepalate {
+                    let gamepalate = Arc::clone(gamepalate);
+                    Task::future(async move {
+                        gamepalate.change_gui_settings(|settings| settings.theme = choice)
+                    })
+                    .discard()
+                } else if let Screen::Setup(setup) = &self.screen {
+                    let first_run = setup.first_run().clone();
+                    Task::future(async move {
+                        first_run.change_gui_settings(|settings| settings.theme = choice)
+                    })
+                    .discard()
+                } else {
+                    Task::none()
+                }
             }
         }
     }
@@ -136,7 +157,7 @@ impl App {
         let screen = match &self.screen {
             Screen::Discover(_) => Discover::subscription().map(Message::Discover),
             Screen::Votes(_) => Votes::subscription().map(Message::Votes),
-            Screen::Profile => Subscription::none(),
+            Screen::Setup(_) | Screen::Profile => Subscription::none(),
         };
 
         Subscription::batch([window::resize_events().map(|_| Message::Resized), screen])
@@ -152,19 +173,27 @@ impl App {
                     space().height(UNDERLINE_HEIGHT),
                 ]
                 .height(Fill),
+            ]
+            .push(self.gamepalate.is_some().then(|| {
                 row![
                     self.tab("Discover", Page::Discover),
                     self.tab("Votes", Page::Votes),
                     self.tab("Profile", Page::Profile),
                 ]
                 .spacing(24)
-                .height(Fill),
-                space().width(Fill),
+                .height(Fill)
+            }))
+            .push(space().width(Fill))
+            .push(self.gamepalate.as_deref().map(|gamepalate| {
                 column![
-                    container(self.freshness()).height(Fill).align_y(Center),
+                    container(freshness(gamepalate))
+                        .height(Fill)
+                        .align_y(Center),
                     space().height(UNDERLINE_HEIGHT),
                 ]
-                .height(Fill),
+                .height(Fill)
+            }))
+            .push(
                 row![
                     theme_button(&self.theme),
                     window_button(MINIMIZE, WindowAction::Minimize),
@@ -175,7 +204,7 @@ impl App {
                     window_button(CLOSE, WindowAction::Close),
                 ]
                 .height(Fill),
-            ]
+            )
             .spacing(24)
             .height(Fill)
             .align_y(Center),
@@ -189,6 +218,7 @@ impl App {
         let content = match &self.screen {
             Screen::Discover(screen) => screen.view().map(Message::Discover),
             Screen::Votes(screen) => screen.view().map(Message::Votes),
+            Screen::Setup(screen) => screen.view().map(Message::Setup),
             Screen::Profile => column![].into(),
         };
 
@@ -242,34 +272,38 @@ impl App {
         }
     }
 
-    fn freshness(&self) -> Element<'_, Message> {
-        let now = Timestamp(jiff::Timestamp::now().as_millisecond());
-        let signals = format::when(self.gamepalate.signals_read_at(), now);
-        let prices = format::when(self.gamepalate.prices_updated_at(), now);
+    fn opened(&mut self, gamepalate: Gamepalate) -> Task<Message> {
+        let gamepalate = Arc::new(gamepalate);
+        let pruner = Arc::clone(&gamepalate);
+        let prune_images = Task::future(async move { pruner.prune_images() }).discard();
+        self.theme = theme(gamepalate.gui_settings().theme);
+        self.gamepalate = Some(gamepalate);
 
-        text!("Signals {signals} · Prices {prices}")
-            .size(font::NOTE_SIZE)
-            .style(style::muted)
-            .into()
+        Task::batch([self.open(Page::Discover), prune_images])
     }
 
-    fn page(&self) -> Page {
+    fn page(&self) -> Option<Page> {
         match &self.screen {
-            Screen::Discover(_) => Page::Discover,
-            Screen::Votes(_) => Page::Votes,
-            Screen::Profile => Page::Profile,
+            Screen::Discover(_) => Some(Page::Discover),
+            Screen::Votes(_) => Some(Page::Votes),
+            Screen::Profile => Some(Page::Profile),
+            Screen::Setup(_) => None,
         }
     }
 
     fn open(&mut self, page: Page) -> Task<Message> {
+        let Some(gamepalate) = &self.gamepalate else {
+            return Task::none();
+        };
+
         match page {
             Page::Discover => {
-                let (discover, task) = Discover::new(&self.gamepalate);
+                let (discover, task) = Discover::new(gamepalate);
                 self.screen = Screen::Discover(Box::new(discover));
                 task.map(Message::Discover)
             }
             Page::Votes => {
-                let (votes, task) = Votes::new(&self.gamepalate);
+                let (votes, task) = Votes::new(gamepalate);
                 self.screen = Screen::Votes(Box::new(votes));
                 task.map(Message::Votes)
             }
@@ -281,7 +315,7 @@ impl App {
     }
 
     fn tab(&self, label: &'static str, page: Page) -> Element<'_, Message> {
-        let current = self.page() == page;
+        let current = self.page() == Some(page);
         let label = text(label)
             .font(if current { font::BOLD } else { font::REGULAR })
             .size(font::BAR_SIZE);
@@ -305,6 +339,17 @@ impl App {
         .on_press_maybe((!current).then_some(Message::Navigate(page)))
         .into()
     }
+}
+
+fn freshness<'a>(gamepalate: &Gamepalate) -> Element<'a, Message> {
+    let now = Timestamp(jiff::Timestamp::now().as_millisecond());
+    let signals = format::when(gamepalate.signals_read_at(), now);
+    let prices = format::when(gamepalate.prices_updated_at(), now);
+
+    text!("Signals {signals} · Prices {prices}")
+        .size(font::NOTE_SIZE)
+        .style(style::muted)
+        .into()
 }
 
 fn window_button<'a>(icon: char, action: WindowAction) -> Element<'a, Message> {
