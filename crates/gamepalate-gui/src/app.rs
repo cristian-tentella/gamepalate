@@ -5,7 +5,8 @@ use std::{
 
 use gamepalate_app::{Gamepalate, ThemeChoice, Timestamp};
 use iced::{
-    Center, Element, Fill, Length, Shrink, Subscription, Task, Theme, mouse, padding,
+    Center, Color, Element, Fill, Length, Shrink, Subscription, Task, Theme, mouse, padding,
+    theme::Palette,
     widget::{button, column, container, mouse_area, row, space, stack, text},
     window::{self, Direction},
 };
@@ -25,6 +26,7 @@ const RESTORE: char = '\u{E923}';
 const CLOSE: char = '\u{E8BB}';
 const SUN: char = '\u{E706}';
 const MOON: char = '\u{E708}';
+const DARK_BACKGROUND: Color = Color::from_rgb8(0x18, 0x19, 0x1c);
 
 pub struct App {
     gamepalate: Arc<Gamepalate>,
@@ -318,23 +320,33 @@ fn window_button<'a>(icon: char, action: WindowAction) -> Element<'a, Message> {
     .into()
 }
 
+fn dark() -> Theme {
+    Theme::custom(
+        "Dark",
+        Palette {
+            background: DARK_BACKGROUND,
+            ..Palette::DARK
+        },
+    )
+}
+
+fn is_dark(theme: &Theme) -> bool {
+    theme.extended_palette().is_dark
+}
+
 fn toggled(theme: &Theme) -> Theme {
-    if *theme == Theme::Dark {
-        Theme::Light
-    } else {
-        Theme::Dark
-    }
+    if is_dark(theme) { Theme::Light } else { dark() }
 }
 
 fn theme(choice: ThemeChoice) -> Theme {
     match choice {
         ThemeChoice::Light => Theme::Light,
-        ThemeChoice::Dark => Theme::Dark,
+        ThemeChoice::Dark => dark(),
     }
 }
 
 fn choice(theme: &Theme) -> ThemeChoice {
-    if *theme == Theme::Dark {
+    if is_dark(theme) {
         ThemeChoice::Dark
     } else {
         ThemeChoice::Light
@@ -342,7 +354,7 @@ fn choice(theme: &Theme) -> ThemeChoice {
 }
 
 fn theme_icon(theme: &Theme) -> char {
-    if *theme == Theme::Dark { SUN } else { MOON }
+    if is_dark(theme) { SUN } else { MOON }
 }
 
 fn theme_button<'a>(theme: &Theme) -> Element<'a, Message> {
@@ -423,8 +435,16 @@ mod tests {
 
     #[test]
     fn the_theme_goes_from_light_to_dark_and_back() {
-        assert_eq!(toggled(&Theme::Light), Theme::Dark);
-        assert_eq!(toggled(&Theme::Dark), Theme::Light);
+        assert_eq!(toggled(&Theme::Light), dark());
+        assert_eq!(toggled(&dark()), Theme::Light);
+    }
+
+    #[test]
+    fn the_dark_theme_has_a_darker_background_than_the_default() {
+        let background = dark().palette().background;
+
+        assert_eq!(background, DARK_BACKGROUND);
+        assert!(background.relative_luminance() < Palette::DARK.background.relative_luminance());
     }
 
     #[test]
@@ -437,6 +457,6 @@ mod tests {
     #[test]
     fn the_button_shows_the_theme_it_switches_to() {
         assert_eq!(theme_icon(&Theme::Light), MOON);
-        assert_eq!(theme_icon(&Theme::Dark), SUN);
+        assert_eq!(theme_icon(&dark()), SUN);
     }
 }
