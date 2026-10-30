@@ -2,6 +2,7 @@ pub mod affinity;
 pub mod catalog;
 pub mod config;
 pub mod corrections;
+pub mod currency;
 pub mod effective_hours;
 pub mod evaluation;
 pub mod explanation;
