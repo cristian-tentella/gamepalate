@@ -62,6 +62,8 @@ pub enum Page {
 impl App {
     pub fn new(gamepalate: Arc<Gamepalate>) -> (App, Task<Message>) {
         let (discover, task) = Discover::new(&gamepalate);
+        let pruner = Arc::clone(&gamepalate);
+        let prune_images = Task::future(async move { pruner.prune_images() }).discard();
 
         (
             App {
@@ -75,6 +77,7 @@ impl App {
             Task::batch([
                 task.map(Message::Discover),
                 window::latest().map(Message::WindowFound),
+                prune_images,
             ]),
         )
     }

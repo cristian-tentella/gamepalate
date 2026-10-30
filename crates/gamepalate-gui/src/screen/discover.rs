@@ -1,22 +1,25 @@
+mod images;
 mod queue;
 
-use std::{process::Command, sync::Arc, thread, time::Duration};
+use std::{process::Command, sync::Arc, time::Duration};
 
 use gamepalate_app::{
     Gamepalate, RecommendError, Recommendation, RecommendedGame, SearchOptions, VoteKind,
 };
 use iced::{
-    Center, Element, Fill, Subscription, Task,
-    futures::channel::oneshot,
+    Center, ContentFit, Element, Fill, Subscription, Task,
     keyboard::{self, Key, key::Named},
     never, padding,
     widget::{
-        button, column, container, progress_bar, responsive, rich_text, row, space, span, stack,
-        text,
+        button, column, container, image, progress_bar, responsive, rich_text, row, space, span,
+        stack, text,
     },
 };
 
-use self::queue::Queue;
+use self::{
+    images::{Images, Picture},
+    queue::Queue,
+};
 use crate::{font, format, style};
 
 const VOTES: [(&str, VoteKind); 4] = [
@@ -37,6 +40,11 @@ const CHECK: char = '\u{E73E}';
 const INFO_WIDTH: f32 = 640.0;
 const METER_LABEL_WIDTH: f32 = 90.0;
 const METER_VALUE_WIDTH: f32 = 90.0;
+const HEADER_WIDTH: f32 = 460.0;
+const HEADER_HEIGHT: f32 = 215.0;
+const IMAGE_RADIUS: f32 = 8.0;
+const PRELOAD_AHEAD: usize = 5;
+const KEEP_BEHIND: usize = 5;
 
 pub struct Discover {
     gamepalate: Arc<Gamepalate>,
@@ -47,6 +55,7 @@ pub struct Discover {
     toast: Option<Toast>,
     flash: Option<Flash>,
     timers_started: u64,
+    images: Images,
     state: State,
 }
 
@@ -71,6 +80,7 @@ pub enum Message {
     ToggleWhy,
     HideToast(u64),
     EndFlash(u64),
+    ImageLoaded(String, Option<image::Handle>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -106,6 +116,7 @@ impl Discover {
                 toast: None,
                 flash: None,
                 timers_started: 0,
+                images: Images::default(),
                 state: State::Loading,
             },
             task,
@@ -113,6 +124,12 @@ impl Discover {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.handle(message);
+
+        Task::batch([task, self.load_images()])
+    }
+
+    fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Recommended(Ok(recommendation)) => {
                 let mut queue = Queue::new(recommendation.games);
@@ -174,6 +191,7 @@ impl Discover {
                     self.toast = None;
                 }
             }
+            Message::ImageLoaded(url, handle) => self.images.loaded(url, handle),
         }
 
         Task::none()
@@ -302,6 +320,61 @@ impl Discover {
         self.timers_started
     }
 
+    fn load_images(&mut self) -> Task<Message> {
+        let State::Ready(queue) = &self.state else {
+            return Task::none();
+        };
+        let headers = |games: &[RecommendedGame]| -> Vec<String> {
+            games
+                .iter()
+                .map(|game| self.gamepalate.header_url(game.id))
+                .collect()
+        };
+        let wanted = headers(queue.upcoming(PRELOAD_AHEAD));
+        let nearby = headers(queue.around(KEEP_BEHIND, PRELOAD_AHEAD));
+
+        self.images.keep_only(&nearby);
+        let started = self.images.want(wanted);
+
+        Task::batch(started.into_iter().map(|url| {
+            let gamepalate = Arc::clone(&self.gamepalate);
+            Task::perform(
+                async move {
+                    let handle = gamepalate
+                        .image(&url)
+                        .await
+                        .ok()
+                        .map(image::Handle::from_bytes);
+                    (url, handle)
+                },
+                |(url, handle)| Message::ImageLoaded(url, handle),
+            )
+        }))
+    }
+
+    fn header(&self, game: &RecommendedGame) -> Element<'_, Message> {
+        let url = self.gamepalate.header_url(game.id);
+        let content: Element<'_, Message> = match self.images.get(&url) {
+            Some(Picture::Ready(handle)) => image(handle.clone())
+                .width(HEADER_WIDTH)
+                .height(HEADER_HEIGHT)
+                .content_fit(ContentFit::Cover)
+                .border_radius(IMAGE_RADIUS)
+                .into(),
+            Some(Picture::Failed) => text("Image unavailable")
+                .size(font::NOTE_SIZE)
+                .style(style::muted)
+                .into(),
+            Some(Picture::Loading) | None => space().into(),
+        };
+
+        container(content)
+            .center_x(HEADER_WIDTH)
+            .center_y(HEADER_HEIGHT)
+            .style(style::picture)
+            .into()
+    }
+
     fn current(&self) -> Option<&RecommendedGame> {
         match &self.state {
             State::Ready(queue) => queue.current(),
@@ -326,6 +399,7 @@ impl Discover {
                     };
 
                     let details = column![
+                        self.header(game),
                         text(&game.name).size(font::TITLE_SIZE).font(font::SEMIBOLD),
                         price_row(game),
                         reviews_line(game),
@@ -516,13 +590,7 @@ fn vote_button<'a>(
 }
 
 fn after(duration: Duration, message: Message) -> Task<Message> {
-    let (sender, receiver) = oneshot::channel();
-    thread::spawn(move || {
-        thread::sleep(duration);
-        let _ = sender.send(());
-    });
-
-    Task::perform(receiver, move |_| message)
+    Task::perform(tokio::time::sleep(duration), move |_| message)
 }
 
 fn arrow_button<'a>(icon: char, message: Option<Message>) -> Element<'a, Message> {

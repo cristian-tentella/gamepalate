@@ -230,6 +230,19 @@ pub fn card(theme: &Theme) -> container::Style {
     }
 }
 
+pub fn picture(theme: &Theme) -> container::Style {
+    let background = theme.extended_palette().background;
+
+    container::Style {
+        background: Some(palette::deviate(background.base.color, 0.04).into()),
+        border: Border {
+            radius: 8.0.into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
+    }
+}
+
 pub fn meter(theme: &Theme) -> progress_bar::Style {
     let palette = theme.extended_palette();
 

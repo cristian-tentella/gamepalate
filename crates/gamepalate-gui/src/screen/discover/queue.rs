@@ -29,6 +29,16 @@ impl Queue {
         self.games.get(self.index)
     }
 
+    pub fn upcoming(&self, ahead: usize) -> &[RecommendedGame] {
+        self.around(0, ahead)
+    }
+
+    pub fn around(&self, behind: usize, ahead: usize) -> &[RecommendedGame] {
+        let start = self.index.saturating_sub(behind).min(self.games.len());
+        let end = (self.index + ahead + 1).min(self.games.len());
+        &self.games[start..end]
+    }
+
     pub fn position(&self) -> (usize, usize) {
         let start = self
             .batch_starts
@@ -203,6 +213,20 @@ mod tests {
 
         queue.receive(Vec::new());
         assert!(!queue.has_next());
+    }
+
+    #[test]
+    fn lists_the_current_game_and_the_next_ones() {
+        let mut queue = Queue::new(games(1..=4));
+        queue.advance();
+
+        assert_eq!(ids(queue.upcoming(5)), vec![2, 3, 4]);
+        assert_eq!(ids(queue.around(1, 1)), vec![1, 2, 3]);
+        assert_eq!(ids(queue.around(9, 0)), vec![1, 2]);
+    }
+
+    fn ids(games: &[RecommendedGame]) -> Vec<u32> {
+        games.iter().map(|game| game.id.0).collect()
     }
 
     fn games(ids: std::ops::RangeInclusive<u32>) -> Vec<RecommendedGame> {
