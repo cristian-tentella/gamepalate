@@ -51,6 +51,7 @@ const DOT_SIZE: f32 = 8.0;
 const IMAGE_RADIUS: f32 = 8.0;
 const DETAILS_AHEAD: usize = 2;
 const PRELOAD_AHEAD: usize = 5;
+const SCREENSHOTS_AHEAD: usize = 2;
 const KEEP_BEHIND: usize = 5;
 
 pub struct Discover {
@@ -398,14 +399,15 @@ impl Discover {
 
         let mut wanted = Vec::new();
         if let Some((current, next)) = queue.upcoming(PRELOAD_AHEAD).split_first() {
-            let screenshots = self.screenshots(current.id);
-            wanted.extend(screenshots.get(self.screenshot).cloned());
+            let (soon, later) = screenshot_order(self.screenshots(current.id), self.screenshot);
+            wanted.extend(soon.first().cloned());
             wanted.push(self.header_url(current));
-            wanted.extend(screenshots.get(self.screenshot + 1).cloned());
+            wanted.extend(soon.iter().skip(1).cloned());
             for game in next {
                 wanted.push(self.header_url(game));
                 wanted.extend(first_screenshot(game));
             }
+            wanted.extend(later);
         }
 
         let mut nearby = Vec::new();
@@ -757,6 +759,18 @@ fn screenshot_size(width: f32) -> (f32, f32) {
     (shot_width, shot_width * 9.0 / 16.0)
 }
 
+fn screenshot_order(screenshots: &[String], index: usize) -> (&[String], Vec<String>) {
+    let start = index.min(screenshots.len());
+    let end = (index + 1 + SCREENSHOTS_AHEAD).min(screenshots.len());
+    let later = screenshots[end..]
+        .iter()
+        .chain(screenshots[..start].iter().rev())
+        .cloned()
+        .collect();
+
+    (&screenshots[start..end], later)
+}
+
 fn next_index(index: usize, count: usize) -> usize {
     if index + 1 < count { index + 1 } else { index }
 }
@@ -913,6 +927,27 @@ mod tests {
             key_message(pressed(Key::Named(Named::Backspace))),
             Some(Message::Previous)
         ));
+    }
+
+    #[test]
+    fn loads_the_next_screenshots_first_then_the_rest() {
+        let shots: Vec<String> = (0..6).map(|index| format!("ss_{index}.jpg")).collect();
+
+        let (soon, later) = screenshot_order(&shots, 2);
+
+        assert_eq!(soon, ["ss_2.jpg", "ss_3.jpg", "ss_4.jpg"]);
+        assert_eq!(later, ["ss_5.jpg", "ss_1.jpg", "ss_0.jpg"]);
+    }
+
+    #[test]
+    fn the_screenshot_order_stops_at_the_ends() {
+        let shots: Vec<String> = (0..2).map(|index| format!("ss_{index}.jpg")).collect();
+
+        assert_eq!(
+            screenshot_order(&shots, 1),
+            (&shots[1..], vec![shots[0].clone()])
+        );
+        assert_eq!(screenshot_order(&[], 0), (&[][..], Vec::new()));
     }
 
     #[test]
