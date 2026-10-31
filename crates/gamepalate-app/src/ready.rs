@@ -78,7 +78,7 @@ async fn check_ready_with<S: Get>(
             votes: &files.votes,
             families: &files.families,
             catalog: &files.catalog,
-            configs: &[&files.config],
+            config: &files.config,
         },
         now,
     )

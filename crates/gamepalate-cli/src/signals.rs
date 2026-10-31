@@ -58,7 +58,7 @@ pub fn load_for(
             votes: &files.votes,
             families: &files.families,
             catalog: &files.catalog,
-            configs: &[&files.config, &adjusted],
+            config: &files.config,
         },
         now,
     ))?;

@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeSet,
     io,
     path::{Path, PathBuf},
 };
@@ -9,7 +8,7 @@ use gamepalate_core::{
     config::Config,
     effective_hours::effective_hours,
     families::Families,
-    ids::{AppId, SteamId},
+    ids::SteamId,
     off_catalog::{OffCatalogGames, off_catalog_games, stale_off_catalog, wanted_off_catalog},
     signals::{Signals, SignalsReading},
     timestamp::Timestamp,
@@ -77,7 +76,7 @@ pub struct OffCatalogInputs<'a> {
     pub votes: &'a Votes,
     pub families: &'a Families,
     pub catalog: &'a Catalog,
-    pub configs: &'a [&'a Config],
+    pub config: &'a Config,
 }
 
 impl ReadSignals {
@@ -143,23 +142,10 @@ pub async fn off_catalog<S: Get>(
     inputs: OffCatalogInputs<'_>,
     now: Timestamp,
 ) -> Result<OffCatalogGames, OffCatalogError> {
-    let wanted: Vec<AppId> = inputs
-        .configs
-        .iter()
-        .flat_map(|config| {
-            let hours = effective_hours(inputs.signals, inputs.votes, &config.signals);
-            wanted_off_catalog(
-                &hours,
-                inputs.families,
-                inputs.catalog,
-                config.signals.min_hours,
-            )
-        })
-        .collect::<BTreeSet<AppId>>()
-        .into_iter()
-        .collect();
-    let max_age_days = inputs.configs[0].tags_max_age_days;
-    let region = inputs.configs[0].region;
+    let hours = effective_hours(inputs.signals, inputs.votes, &inputs.config.signals);
+    let wanted = wanted_off_catalog(&hours, inputs.families, inputs.catalog);
+    let max_age_days = inputs.config.tags_max_age_days;
+    let region = inputs.config.region;
     let path = data_dir.join(OFF_CATALOG_FILE);
     let mut cache = load_off_catalog_cache(&path);
     let stale = stale_off_catalog(&cache, &wanted, now, max_age_days);
@@ -180,7 +166,7 @@ mod tests {
     use std::{collections::BTreeMap, fs, sync::Mutex};
 
     use gamepalate_core::{
-        catalog::Freshness, currency::Currency, families::Family, region::Region,
+        catalog::Freshness, currency::Currency, families::Family, ids::AppId, region::Region,
     };
     use gamepalate_steam::signals::OptionalList;
     use serde_json::{Value, json};
@@ -277,7 +263,7 @@ mod tests {
             read_at: NOW,
             library: vec![gamepalate_core::signals::LibraryGame {
                 id: AppId(10),
-                total_hours: 2.0,
+                total_hours: 0.5,
             }],
             recent: Vec::new(),
             wishlist: Vec::new(),
@@ -295,51 +281,28 @@ mod tests {
         }
     }
 
-    async fn off_catalog_with(
-        dir: &Path,
-        steam: &FakeSteam,
-        configs: &[&Config],
-    ) -> OffCatalogGames {
-        let (signals, votes, families, catalog) =
-            (signals(), Votes::default(), families(), empty_catalog());
+    async fn off_catalog_now(dir: &Path, steam: &FakeSteam) -> OffCatalogGames {
+        let (signals, votes, families, catalog, config) = (
+            signals(),
+            Votes::default(),
+            families(),
+            empty_catalog(),
+            config(),
+        );
         let inputs = OffCatalogInputs {
             signals: &signals,
             votes: &votes,
             families: &families,
             catalog: &catalog,
-            configs,
+            config: &config,
         };
         off_catalog(dir, steam, inputs, NOW).await.unwrap()
-    }
-
-    async fn off_catalog_now(dir: &Path, steam: &FakeSteam) -> OffCatalogGames {
-        off_catalog_with(dir, steam, &[&config()]).await
     }
 
     async fn read_and_save(dir: &Path, steam: &FakeSteam) -> ReadSignals {
         let read = read_signals(dir, steam, STEAM_ID, NOW).await.unwrap();
         save_signals(dir, &read).unwrap();
         read
-    }
-
-    #[tokio::test]
-    async fn a_lower_threshold_asks_for_the_games_it_adds() {
-        let dir = tempfile::tempdir().unwrap();
-        let steam = steam();
-        let mut higher = config();
-        higher.signals.min_hours = 3.0;
-        let mut lower = config();
-        lower.signals.min_hours = 1.0;
-
-        let only_higher = off_catalog_with(dir.path(), &steam, &[&higher, &higher]).await;
-        let with_lower = off_catalog_with(dir.path(), &steam, &[&higher, &lower]).await;
-
-        assert!(!only_higher.contains_key(&AppId(10)));
-        assert!(with_lower.contains_key(&AppId(10)));
-        assert_eq!(
-            *steam.asked_items.lock().unwrap(),
-            [json!([{ "appid": 20 }]), json!([{ "appid": 10 }])]
-        );
     }
 
     #[tokio::test]

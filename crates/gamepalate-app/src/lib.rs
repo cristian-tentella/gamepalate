@@ -3,6 +3,7 @@ pub mod app;
 mod data_dir;
 mod details;
 mod images;
+pub mod library;
 pub mod names;
 pub mod profile;
 pub mod ready;
@@ -28,6 +29,7 @@ pub use gamepalate_steam::details::{Controller, Italian, ItemDetails, SteamDeck}
 pub use gamepalate_steam::{archive::PendingUpdate, transport::SteamError};
 pub use gamepalate_store::gui::{GuiSettings, ThemeChoice};
 pub use images::LoadImageError;
+pub use library::{GameCorrection, GameCorrectionError, LibraryGameView, LibraryView};
 pub use profile::{
     CorrectedGameView, CorrectionsView, FamilyView, HoursGame, ProfileView, TagView, TasteView,
     VotesView,

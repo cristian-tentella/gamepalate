@@ -7,6 +7,7 @@ use std::{
 
 use gamepalate_core::{
     catalog::Catalog,
+    corrections::Corrections,
     currency::Currency,
     filters::TagNameError,
     game::{Price, Reviews},
@@ -34,6 +35,10 @@ use crate::{
     data_dir,
     details::{GameDetails, StoreDetails},
     images::{ImageCache, LoadImageError},
+    library::{
+        GameCorrection, GameCorrectionError, LibraryView, corrected_game, game_correction,
+        library_view,
+    },
     profile::{ProfileView, profile_view},
 };
 
@@ -44,6 +49,7 @@ pub struct Gamepalate {
     data_dir: PathBuf,
     files: DataFiles,
     votes: Mutex<Votes>,
+    corrections: Mutex<Corrections>,
     gui_saving: Mutex<()>,
     vectors: Vec<GameVector>,
     images: Arc<ImageCache>,
@@ -80,6 +86,7 @@ impl Gamepalate {
         Ok(Gamepalate {
             data_dir: dir,
             votes: Mutex::new(files.votes.clone()),
+            corrections: Mutex::new(files.corrections.clone()),
             gui_saving: Mutex::new(()),
             files,
             vectors,
@@ -89,15 +96,13 @@ impl Gamepalate {
     }
 
     pub fn recommend(&self, options: &SearchOptions) -> Result<Recommendation, RecommendError> {
-        let votes = self.lock_votes();
-        recommend(
-            &SearchInputs {
-                votes: &votes,
-                ..self.files.search_inputs(&self.vectors)
-            },
-            options,
-            Timestamp(jiff::Timestamp::now().as_millisecond()),
-        )
+        self.with_inputs(|inputs| {
+            recommend(
+                inputs,
+                options,
+                Timestamp(jiff::Timestamp::now().as_millisecond()),
+            )
+        })
         .map_err(RecommendError)
     }
 
@@ -151,6 +156,22 @@ impl Gamepalate {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn lock_corrections(&self) -> MutexGuard<'_, Corrections> {
+        self.corrections
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn with_inputs<R>(&self, f: impl FnOnce(&SearchInputs) -> R) -> R {
+        let votes = self.lock_votes();
+        let corrections = self.lock_corrections();
+        f(&SearchInputs {
+            votes: &votes,
+            corrections: &corrections,
+            ..self.files.search_inputs(&self.vectors)
+        })
+    }
+
     pub async fn image(&self, url: &str) -> Result<Vec<u8>, LoadImageError> {
         self.images.image(url).await
     }
@@ -175,11 +196,32 @@ impl Gamepalate {
     }
 
     pub fn profile_view(&self) -> ProfileView {
+        self.with_inputs(profile_view)
+    }
+
+    pub fn library_view(&self) -> LibraryView {
+        self.with_inputs(library_view)
+    }
+
+    pub fn correct_game(
+        &self,
+        id: AppId,
+        correction: GameCorrection,
+    ) -> Result<GameCorrection, GameCorrectionError> {
         let votes = self.lock_votes();
-        profile_view(&SearchInputs {
-            votes: &votes,
-            ..self.files.search_inputs(&self.vectors)
-        })
+        let mut corrections = self.lock_corrections();
+        let before = game_correction(id, &corrections);
+        *corrections = corrected_game(
+            &self.data_dir.join("corrections.toml"),
+            id,
+            correction,
+            &SearchInputs {
+                votes: &votes,
+                corrections: &corrections,
+                ..self.files.search_inputs(&self.vectors)
+            },
+        )?;
+        Ok(before)
     }
 
     pub fn data_dir(&self) -> &Path {
