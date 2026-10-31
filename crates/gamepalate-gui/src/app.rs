@@ -15,7 +15,7 @@ use iced::{
 
 use crate::{
     font, format,
-    screen::{Discover, Profile, Screen, Votes, discover, profile, setup, votes},
+    screen::{Discover, Library, Profile, Screen, Votes, discover, library, profile, setup, votes},
     style,
 };
 
@@ -44,6 +44,7 @@ pub enum Message {
     Navigate(Page),
     Discover(discover::Message),
     Votes(votes::Message),
+    Library(library::Message),
     Profile(profile::Message),
     Setup(setup::Message),
     WindowFound(Option<window::Id>),
@@ -66,6 +67,7 @@ pub enum WindowAction {
 pub enum Page {
     Discover,
     Votes,
+    Library,
     Profile,
 }
 
@@ -108,6 +110,13 @@ impl App {
             Message::Votes(message) => {
                 if let Screen::Votes(screen) = &mut self.screen {
                     screen.update(message).map(Message::Votes)
+                } else {
+                    Task::none()
+                }
+            }
+            Message::Library(message) => {
+                if let Screen::Library(screen) = &mut self.screen {
+                    screen.update(message).map(Message::Library)
                 } else {
                     Task::none()
                 }
@@ -185,6 +194,7 @@ impl App {
         let screen = match &self.screen {
             Screen::Discover(_) => Discover::subscription().map(Message::Discover),
             Screen::Votes(_) => Votes::subscription().map(Message::Votes),
+            Screen::Library(_) => Library::subscription().map(Message::Library),
             Screen::Profile(_) => Profile::subscription().map(Message::Profile),
             Screen::Setup(_) | Screen::Starting => Subscription::none(),
         };
@@ -211,6 +221,7 @@ impl App {
                 row![
                     self.tab("Discover", Page::Discover),
                     self.tab("Votes", Page::Votes),
+                    self.tab("Library", Page::Library),
                     self.tab("Profile", Page::Profile),
                 ]
                 .spacing(24)
@@ -251,6 +262,7 @@ impl App {
         let content = match &self.screen {
             Screen::Discover(screen) => screen.view().map(Message::Discover),
             Screen::Votes(screen) => screen.view().map(Message::Votes),
+            Screen::Library(screen) => screen.view().map(Message::Library),
             Screen::Setup(screen) => screen.view().map(Message::Setup),
             Screen::Profile(screen) => screen.view().map(Message::Profile),
             Screen::Starting => column![].into(),
@@ -320,6 +332,7 @@ impl App {
         match &self.screen {
             Screen::Discover(_) => Some(Page::Discover),
             Screen::Votes(_) => Some(Page::Votes),
+            Screen::Library(_) => Some(Page::Library),
             Screen::Profile(_) => Some(Page::Profile),
             Screen::Setup(_) | Screen::Starting => None,
         }
@@ -340,6 +353,11 @@ impl App {
                 let (votes, task) = Votes::new(gamepalate);
                 self.screen = Screen::Votes(Box::new(votes));
                 task.map(Message::Votes)
+            }
+            Page::Library => {
+                let (library, task) = Library::new(gamepalate);
+                self.screen = Screen::Library(Box::new(library));
+                task.map(Message::Library)
             }
             Page::Profile => {
                 let (profile, task) = Profile::new(gamepalate);
@@ -387,7 +405,8 @@ fn page_key(event: keyboard::Event) -> Option<Message> {
     match key.as_ref() {
         Key::Character("1") => Some(Message::Navigate(Page::Discover)),
         Key::Character("2") => Some(Message::Navigate(Page::Votes)),
-        Key::Character("3") => Some(Message::Navigate(Page::Profile)),
+        Key::Character("3") => Some(Message::Navigate(Page::Library)),
+        Key::Character("4") => Some(Message::Navigate(Page::Profile)),
         _ => None,
     }
 }
@@ -564,9 +583,10 @@ mod tests {
 
         assert_eq!(page("1", keyboard::Modifiers::CTRL), Some(Page::Discover));
         assert_eq!(page("2", keyboard::Modifiers::CTRL), Some(Page::Votes));
-        assert_eq!(page("3", keyboard::Modifiers::CTRL), Some(Page::Profile));
+        assert_eq!(page("3", keyboard::Modifiers::CTRL), Some(Page::Library));
+        assert_eq!(page("4", keyboard::Modifiers::CTRL), Some(Page::Profile));
         assert_eq!(page("3", keyboard::Modifiers::empty()), None);
-        assert_eq!(page("4", keyboard::Modifiers::CTRL), None);
+        assert_eq!(page("5", keyboard::Modifiers::CTRL), None);
     }
 
     #[test]

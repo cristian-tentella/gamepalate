@@ -1,4 +1,4 @@
-mod images;
+pub(super) mod images;
 mod pages;
 
 use std::sync::Arc;

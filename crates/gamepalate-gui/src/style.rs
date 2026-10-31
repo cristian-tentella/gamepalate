@@ -348,3 +348,29 @@ pub fn meter(theme: &Theme) -> progress_bar::Style {
         },
     }
 }
+
+pub fn capsule_strip(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::BLACK.scale_alpha(0.7).into()),
+        text_color: Some(Color::WHITE),
+        border: Border {
+            radius: iced::border::Radius::default().bottom(6.0),
+            ..Border::default()
+        },
+        ..container::Style::default()
+    }
+}
+
+pub fn capsule_badge(theme: &Theme) -> container::Style {
+    let primary = theme.extended_palette().primary.base;
+
+    container::Style {
+        background: Some(primary.color.into()),
+        text_color: Some(primary.text),
+        border: Border {
+            radius: 4.0.into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
+    }
+}

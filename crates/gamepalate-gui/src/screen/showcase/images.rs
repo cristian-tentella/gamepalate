@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    hash::Hash,
+};
 
 use iced::widget::image::Allocation;
 
@@ -11,12 +14,12 @@ pub enum Picture<T = Allocation> {
     Failed,
 }
 
-pub struct Images<T = Allocation> {
-    pictures: HashMap<String, Picture<T>>,
-    waiting: VecDeque<String>,
+pub struct Images<T = Allocation, K = String> {
+    pictures: HashMap<K, Picture<T>>,
+    waiting: VecDeque<K>,
 }
 
-impl<T> Default for Images<T> {
+impl<T, K> Default for Images<T, K> {
     fn default() -> Self {
         Images {
             pictures: HashMap::new(),
@@ -25,12 +28,15 @@ impl<T> Default for Images<T> {
     }
 }
 
-impl<T> Images<T> {
-    pub fn get(&self, url: &str) -> Option<&Picture<T>> {
+impl<T, K: Hash + Eq + Clone> Images<T, K> {
+    pub fn get<Q: Hash + Eq + ?Sized>(&self, url: &Q) -> Option<&Picture<T>>
+    where
+        K: std::borrow::Borrow<Q>,
+    {
         self.pictures.get(url)
     }
 
-    pub fn want(&mut self, urls: Vec<String>) -> Vec<String> {
+    pub fn want(&mut self, urls: Vec<K>) -> Vec<K> {
         let mut seen = HashSet::new();
         self.waiting = urls
             .into_iter()
@@ -48,7 +54,7 @@ impl<T> Images<T> {
         started
     }
 
-    pub fn loaded(&mut self, url: String, image: Option<T>) {
+    pub fn loaded(&mut self, url: K, image: Option<T>) {
         if let Some(picture) = self.pictures.get_mut(&url) {
             *picture = match image {
                 Some(image) => Picture::Ready(image),
@@ -57,7 +63,7 @@ impl<T> Images<T> {
         }
     }
 
-    pub fn keep_only(&mut self, nearby: &[String]) {
+    pub fn keep_only(&mut self, nearby: &[K]) {
         if self.pictures.len() <= MAX_PICTURES {
             return;
         }
