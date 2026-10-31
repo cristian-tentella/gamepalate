@@ -96,6 +96,14 @@ impl Showcase {
         Task::batch([details, self.load_images(upcoming, nearby)])
     }
 
+    pub fn load_headers(&mut self, ids: &[AppId]) -> Task<Message> {
+        let urls: Vec<String> = ids.iter().map(|&id| self.header_url(id)).collect();
+        self.images.keep_only(&urls);
+        let started = self.images.want(urls);
+
+        self.download(started)
+    }
+
     pub fn header<'a>(&self, id: AppId, width: f32, height: f32) -> Element<'a, Message> {
         self.picture(&self.header_url(id), width, height)
     }
@@ -209,6 +217,10 @@ impl Showcase {
         self.images.keep_only(&kept);
         let started = self.images.want(wanted);
 
+        self.download(started)
+    }
+
+    fn download(&self, started: Vec<String>) -> Task<Message> {
         Task::batch(started.into_iter().map(|url| {
             let gamepalate = Arc::clone(&self.gamepalate);
             Task::perform(
