@@ -109,6 +109,14 @@ impl App {
                     Task::none()
                 }
             }
+            Message::Profile(profile::Message::DiscoverFamily(family)) => {
+                let Some(gamepalate) = &self.gamepalate else {
+                    return Task::none();
+                };
+                let (discover, task) = Discover::from_family(gamepalate, family);
+                self.screen = Screen::Discover(Box::new(discover));
+                task.map(Message::Discover)
+            }
             Message::Profile(message) => {
                 if let Screen::Profile(screen) = &mut self.screen {
                     screen.update(message).map(Message::Profile)

@@ -1,7 +1,8 @@
-use std::sync::Arc;
+use std::{path::PathBuf, process::Command, sync::Arc};
 
 use gamepalate_app::{
-    AppId, Ban, Gamepalate, HoursGame, HoursSource, ProfileView, SignalsConfig, TagView, TasteView,
+    AppId, Ban, FamilyView, Gamepalate, HoursGame, HoursSource, ProfileView, SignalsConfig,
+    TagView, TasteView,
 };
 use iced::{
     Center, Color, Element, Fill, Length, Task, Theme, padding,
@@ -18,9 +19,18 @@ const SOURCES: [HoursSource; 4] = [
     HoursSource::WouldTry,
 ];
 const FIRST_TAGS: usize = 12;
+const NO_FAMILIES: &str =
+    "No families yet. A family is a group of games that stands for one of your tastes.";
 const COLUMN_WIDTH: f32 = 760.0;
 const HEADER_WIDTH: f32 = 140.0;
 const HEADER_HEIGHT: f32 = HEADER_WIDTH * 215.0 / 460.0;
+const SIDE_WIDTH: f32 = 380.0;
+const FAMILY_HEADERS: usize = 4;
+const FAMILY_HEADER_WIDTH: f32 = 80.0;
+const FAMILY_HEADER_HEIGHT: f32 = FAMILY_HEADER_WIDTH * 215.0 / 460.0;
+const FAMILY_TAGS: usize = 3;
+const HELD_OUT_TIP: &str =
+    "Games you like but kept out of every family on purpose, to test gamepalate.";
 const TAG_NAME_WIDTH: f32 = 150.0;
 const NOTE_WIDTH: f32 = 110.0;
 const BAR_HEIGHT: f32 = 8.0;
@@ -30,6 +40,7 @@ const CLOSED: char = '\u{E76C}';
 const OPENED: char = '\u{E70D}';
 
 pub struct Profile {
+    data_dir: PathBuf,
     view: ProfileView,
     open_tag: Option<usize>,
     all_tags: bool,
@@ -40,12 +51,15 @@ pub struct Profile {
 pub enum Message {
     ToggleTag(usize),
     ToggleAllTags,
+    DiscoverFamily(String),
+    OpenDataFolder,
     Showcase(showcase::Message),
 }
 
 impl Profile {
     pub fn new(gamepalate: &Arc<Gamepalate>) -> (Profile, Task<Message>) {
         let mut profile = Profile {
+            data_dir: gamepalate.data_dir().to_path_buf(),
             view: gamepalate.profile_view(),
             open_tag: None,
             all_tags: false,
@@ -73,6 +87,10 @@ impl Profile {
                     self.open_tag = None;
                 }
             }
+            Message::DiscoverFamily(_) => {}
+            Message::OpenDataFolder => {
+                let _ = Command::new("explorer").arg(&self.data_dir).spawn();
+            }
             Message::Showcase(message) => {
                 return self.showcase.update(message).map(Message::Showcase);
             }
@@ -88,6 +106,12 @@ impl Profile {
             .iter()
             .flat_map(|taste| &taste.shaping_games)
             .map(|game| game.id)
+            .chain(
+                self.view
+                    .families
+                    .iter()
+                    .flat_map(|family| family.games.iter().take(FAMILY_HEADERS).copied()),
+            )
             .collect();
 
         self.showcase.load_headers(&ids).map(Message::Showcase)
@@ -101,11 +125,17 @@ impl Profile {
                 .into(),
         };
 
+        let taste = column![section_title("Your taste"), taste]
+            .spacing(14)
+            .max_width(COLUMN_WIDTH);
+
         scrollable(
             container(
-                column![section_title("Your taste"), taste]
-                    .spacing(14)
-                    .max_width(COLUMN_WIDTH),
+                row![
+                    container(taste).width(Fill),
+                    container(self.families()).width(SIDE_WIDTH),
+                ]
+                .spacing(32),
             )
             .padding(24)
             .width(Fill),
@@ -181,6 +211,128 @@ impl Profile {
         ]
         .spacing(8)
         .into()
+    }
+}
+
+impl Profile {
+    fn families(&self) -> Element<'_, Message> {
+        let view = &self.view;
+        let problems = (!view.family_problems.is_empty()).then(|| {
+            container(
+                column![text("Problems in families.toml").font(font::SEMIBOLD)]
+                    .extend(
+                        view.family_problems
+                            .iter()
+                            .map(|problem| text(problem).size(font::NOTE_SIZE).into()),
+                    )
+                    .spacing(4),
+            )
+            .padding([8, 12])
+            .width(Fill)
+            .style(style::bet)
+        });
+
+        let body: Element<'_, Message> = if view.families.is_empty() {
+            column![
+                text(NO_FAMILIES).size(font::BAR_SIZE),
+                button(text("Open families.toml").size(font::BAR_SIZE))
+                    .padding(0)
+                    .style(style::link)
+                    .on_press(Message::OpenDataFolder),
+            ]
+            .spacing(8)
+            .into()
+        } else {
+            column(view.families.iter().map(|family| self.family_card(family)))
+                .spacing(10)
+                .into()
+        };
+
+        let held_out = held_out_text(view.held_out).map(|held_out| {
+            tooltip(
+                text(held_out).size(font::BAR_SIZE).style(style::muted),
+                container(text(HELD_OUT_TIP).size(font::NOTE_SIZE))
+                    .padding([6, 10])
+                    .style(style::popup),
+                tooltip::Position::Bottom,
+            )
+        });
+
+        column![section_title("Families")]
+            .push(problems)
+            .push(body)
+            .push(held_out)
+            .spacing(14)
+            .into()
+    }
+
+    fn family_card<'a>(&'a self, family: &'a FamilyView) -> Element<'a, Message> {
+        let headers = row(family.games.iter().take(FAMILY_HEADERS).map(|&id| {
+            self.showcase
+                .header(id, FAMILY_HEADER_WIDTH, FAMILY_HEADER_HEIGHT)
+                .map(Message::Showcase)
+        }))
+        .push(
+            more_games(family.games.len())
+                .map(|more| text(more).size(font::NOTE_SIZE).style(style::muted)),
+        )
+        .spacing(6)
+        .align_y(Center);
+
+        let tags = family
+            .tags
+            .iter()
+            .take(FAMILY_TAGS)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(" · ");
+
+        container(
+            column![
+                headers,
+                row![
+                    text(&family.name).size(font::BAR_SIZE).font(font::SEMIBOLD),
+                    text(games_count(family.games.len()))
+                        .size(font::NOTE_SIZE)
+                        .style(style::muted),
+                ]
+                .spacing(8)
+                .align_y(Center),
+                text(tags).size(font::NOTE_SIZE).style(style::muted),
+                container(
+                    button(text("Discover from it ›").size(font::BAR_SIZE))
+                        .padding(0)
+                        .style(style::link)
+                        .on_press(Message::DiscoverFamily(family.name.clone())),
+                )
+                .align_right(Fill),
+            ]
+            .spacing(6),
+        )
+        .padding([10, 12])
+        .width(Fill)
+        .style(style::card)
+        .into()
+    }
+}
+
+fn more_games(games: usize) -> Option<String> {
+    (games > FAMILY_HEADERS).then(|| format!("+{}", games - FAMILY_HEADERS))
+}
+
+fn games_count(games: usize) -> String {
+    if games == 1 {
+        "1 game".to_string()
+    } else {
+        format!("{games} games")
+    }
+}
+
+fn held_out_text(held_out: usize) -> Option<String> {
+    match held_out {
+        0 => None,
+        1 => Some("1 held-out game".to_string()),
+        n => Some(format!("{n} held-out games")),
     }
 }
 
@@ -386,13 +538,7 @@ fn headline(taste: &TasteView) -> String {
         [only] => only.to_string(),
         [first @ .., last] => format!("{} and {last}", first.join(", ")),
     };
-    let games = if taste.game_count == 1 {
-        "1 game".to_string()
-    } else {
-        format!("{} games", taste.game_count)
-    };
-
-    format!("Mostly {tags}, from {games}.")
+    format!("Mostly {tags}, from {}.", games_count(taste.game_count))
 }
 
 fn source_label(source: HoursSource) -> &'static str {
@@ -688,6 +834,21 @@ mod tests {
     fn the_more_tags_button_counts_the_hidden_ones() {
         assert_eq!(more_tags_label(25, false), "Show 13 more tags");
         assert_eq!(more_tags_label(25, true), "Show fewer tags");
+    }
+
+    #[test]
+    fn a_family_card_counts_the_games_beyond_its_headers() {
+        assert_eq!(more_games(9).as_deref(), Some("+5"));
+        assert_eq!(more_games(4), None);
+        assert_eq!(games_count(1), "1 game");
+        assert_eq!(games_count(9), "9 games");
+    }
+
+    #[test]
+    fn the_held_out_games_show_only_when_there_are_some() {
+        assert_eq!(held_out_text(0), None);
+        assert_eq!(held_out_text(1).as_deref(), Some("1 held-out game"));
+        assert_eq!(held_out_text(12).as_deref(), Some("12 held-out games"));
     }
 
     #[test]

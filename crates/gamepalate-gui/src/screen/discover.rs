@@ -94,16 +94,29 @@ enum State {
 
 impl Discover {
     pub fn new(gamepalate: &Arc<Gamepalate>) -> (Discover, Task<Message>) {
-        let options = discover_options(gamepalate.gui_settings().search);
+        Discover::opened(gamepalate, None)
+    }
+
+    pub fn from_family(gamepalate: &Arc<Gamepalate>, family: String) -> (Discover, Task<Message>) {
+        Discover::opened(gamepalate, Some(family))
+    }
+
+    fn opened(gamepalate: &Arc<Gamepalate>, family: Option<String>) -> (Discover, Task<Message>) {
+        let saved = discover_options(gamepalate.gui_settings().search);
+        let options = match &family {
+            Some(family) => family_options(&saved, family),
+            None => saved.clone(),
+        };
         let panel = Panel::new(gamepalate.family_names(), gamepalate.tag_names(), &options);
+        let changed = options != saved;
         let mut discover = Discover {
             gamepalate: Arc::clone(gamepalate),
             options,
             panel,
             panel_open: false,
-            undo: None,
+            undo: changed.then_some(saved),
             searches: 0,
-            updating: false,
+            updating: changed,
             empty_because: None,
             votes_this_session: 0,
             bet_every: gamepalate.bet_every(),
@@ -649,6 +662,14 @@ fn discover_options(saved: SearchOptions) -> SearchOptions {
     }
 }
 
+fn family_options(saved: &SearchOptions, family: &str) -> SearchOptions {
+    SearchOptions {
+        family: Some(family.to_string()),
+        signals_only: false,
+        ..saved.clone()
+    }
+}
+
 fn screenshot_size(width: f32) -> (f32, f32) {
     let shot_width =
         (width - SIDE_WIDTH - CARD_SPACING - SCROLLBAR_GAP).clamp(MIN_SHOT_WIDTH, MAX_SHOT_WIDTH);
@@ -798,6 +819,24 @@ mod tests {
         assert!(options.filters.without_voted);
         assert_eq!(options.limit, None);
         assert_eq!(options.family.as_deref(), Some("Puzzle"));
+        assert_eq!(options.filters.max_price_cents, Some(1500));
+    }
+
+    #[test]
+    fn opening_from_a_family_keeps_the_other_filters() {
+        let saved = SearchOptions {
+            signals_only: true,
+            filters: FilterOptions {
+                max_price_cents: Some(1500),
+                ..FilterOptions::default()
+            },
+            ..SearchOptions::default()
+        };
+
+        let options = family_options(&saved, "misteri");
+
+        assert_eq!(options.family.as_deref(), Some("misteri"));
+        assert!(!options.signals_only);
         assert_eq!(options.filters.max_price_cents, Some(1500));
     }
 
