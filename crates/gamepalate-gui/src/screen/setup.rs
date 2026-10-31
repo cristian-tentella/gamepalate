@@ -1,15 +1,11 @@
-use std::{
-    collections::VecDeque,
-    process::Command,
-    time::{Duration, Instant},
-};
+use std::{process::Command, time::Instant};
 
 use gamepalate_app::{
     Gamepalate, SteamError,
     account::{ConnectError, SteamIdError, connect, parse_steam_id},
     ready::{ReadyCheck, check_ready},
     setup::{FirstRun, Part, error_chain},
-    update::{Progress, UpdateError, download_catalog},
+    update::download_catalog,
 };
 use iced::{
     Center, Element, Fill, Task,
@@ -18,14 +14,16 @@ use iced::{
     widget::{button, column, container, progress_bar, row, text, text_input},
 };
 
-use crate::{font, format, style};
+use crate::{
+    font, format,
+    progress::{Tracker, stage_text, update_error_text},
+    style,
+};
 
 const CHECK: char = '\u{E73E}';
 const CROSS: char = '\u{E711}';
 const WIDTH: f32 = 760.0;
 const KEY_PAGE: &str = "https://steamcommunity.com/dev/apikey";
-const RECENT_BATCHES: usize = 20;
-const MIN_BATCHES: usize = 10;
 const HOW_IT_WORKS: [&str; 3] = [
     "Signals: the hours you played tell gamepalate what you like.",
     "Families: groups of your games, to ask for more of the same kind.",
@@ -52,21 +50,8 @@ enum Ready {
 #[derive(Debug, Default)]
 struct Download {
     running: bool,
-    stage: Stage,
-    batches: VecDeque<Instant>,
+    tracker: Tracker,
     error: Option<String>,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
-enum Stage {
-    #[default]
-    Starting,
-    Reading,
-    StoreData {
-        done: usize,
-        total: usize,
-    },
-    Writing,
 }
 
 #[derive(Debug, Default)]
@@ -89,7 +74,7 @@ pub enum Message {
     Connected(Result<(), String>),
     Change,
     Download,
-    Progress(Progress),
+    Progress(gamepalate_app::update::Progress),
     Downloaded(Result<(), String>),
     Prepare(bool),
     Prepared(Result<ReadyCheck, String>),
@@ -180,7 +165,7 @@ impl Setup {
             }
             Message::Download => self.download(),
             Message::Progress(progress) => {
-                self.download.advance(progress, Instant::now());
+                self.download.tracker.advance(progress, Instant::now());
                 Action::None
             }
             Message::Downloaded(Ok(())) => {
@@ -540,18 +525,14 @@ impl Setup {
     }
 
     fn progress_view(&self) -> Element<'_, Message> {
-        let download = &self.download;
-        let (done, total) = match download.stage {
-            Stage::StoreData { done, total } => (done, total),
-            Stage::Writing => (1, 1),
-            Stage::Starting | Stage::Reading => (0, 1),
-        };
-        let left = download
-            .time_left(done, total)
+        let tracker = &self.download.tracker;
+        let (done, total) = tracker.done_of();
+        let left = tracker
+            .time_left()
             .map(|left| note(format::time_left(left)));
 
         column![
-            text(stage_text(download.stage)).size(font::BAR_SIZE),
+            text(stage_text(tracker.stage())).size(font::BAR_SIZE),
             progress_bar(0.0..=total.max(1) as f32, done as f32)
                 .girth(6)
                 .length(Fill)
@@ -565,75 +546,6 @@ impl Setup {
         .push(column(HOW_IT_WORKS.into_iter().map(|line| note(line).into())).spacing(2))
         .spacing(8)
         .into()
-    }
-}
-
-impl Download {
-    fn advance(&mut self, progress: Progress, now: Instant) {
-        match progress {
-            Progress::Resumed { .. } => {}
-            Progress::ReadingApps => self.stage = Stage::Reading,
-            Progress::StoreData { done, total } => {
-                self.stage = Stage::StoreData { done, total };
-                if done > 0 {
-                    self.batches.push_back(now);
-                    if self.batches.len() > RECENT_BATCHES {
-                        self.batches.pop_front();
-                    }
-                }
-            }
-            Progress::Writing => self.stage = Stage::Writing,
-        }
-    }
-
-    fn time_left(&self, done: usize, total: usize) -> Option<Duration> {
-        let first = *self.batches.front()?;
-        let batches: Vec<Duration> = self
-            .batches
-            .iter()
-            .map(|at| at.duration_since(first))
-            .collect();
-        time_left(&batches, done, total)
-    }
-}
-
-fn time_left(batches: &[Duration], done: usize, total: usize) -> Option<Duration> {
-    if done < MIN_BATCHES || batches.len() < 2 {
-        return None;
-    }
-    let span = *batches.last()? - batches[0];
-    let per_batch = span / (batches.len() as u32 - 1);
-
-    Some(per_batch * total.saturating_sub(done) as u32)
-}
-
-fn stage_text(stage: Stage) -> String {
-    match stage {
-        Stage::Starting | Stage::Reading => "Reading the list of Steam games…".to_string(),
-        Stage::StoreData { done, total } => format!("Store data: {done} of {total} requests"),
-        Stage::Writing => "Writing the catalog…".to_string(),
-    }
-}
-
-fn update_error_text(error: &UpdateError) -> String {
-    match error {
-        UpdateError::Stopped {
-            resume_before,
-            source,
-        } => {
-            let why = match source {
-                SteamError::SteamDown { .. } => "Steam is not responding".to_string(),
-                source => error_chain(source),
-            };
-            format!(
-                "Update stopped: {why}. Run it again before {} to resume.",
-                format::day_time(*resume_before)
-            )
-        }
-        UpdateError::StartOver { .. } => {
-            "Steam answered in an unexpected way: the next update starts over.".to_string()
-        }
-        error => error_chain(error),
     }
 }
 
@@ -770,13 +682,6 @@ mod tests {
         }
     }
 
-    fn seconds(values: &[u64]) -> Vec<Duration> {
-        values
-            .iter()
-            .map(|value| Duration::from_secs(*value))
-            .collect()
-    }
-
     fn account(steam_id: &str, key: &str) -> Account {
         Account {
             steam_id: steam_id.to_string(),
@@ -826,42 +731,6 @@ mod tests {
     }
 
     #[test]
-    fn there_is_no_estimate_before_ten_batches() {
-        assert_eq!(time_left(&seconds(&[0, 1, 2]), 9, 100), None);
-        assert_eq!(time_left(&seconds(&[0]), 10, 100), None);
-    }
-
-    #[test]
-    fn a_steady_pace_gives_the_time_left() {
-        let batches = seconds(&[0, 2, 4, 6, 8, 10, 12, 14, 16, 18]);
-
-        assert_eq!(time_left(&batches, 10, 100), Some(Duration::from_secs(180)));
-    }
-
-    #[test]
-    fn after_a_fast_start_the_estimate_follows_the_last_batches() {
-        let mut download = Download::default();
-        let start = Instant::now();
-        for done in 1..=30 {
-            let at = if done <= 10 {
-                start
-            } else {
-                start + Duration::from_secs(3 * (done - 10))
-            };
-            download.advance(
-                Progress::StoreData {
-                    done: done as usize,
-                    total: 130,
-                },
-                at,
-            );
-        }
-
-        assert_eq!(download.batches.len(), RECENT_BATCHES);
-        assert_eq!(download.time_left(30, 130), Some(Duration::from_secs(300)));
-    }
-
-    #[test]
     fn an_empty_profile_says_how_many_hours_are_needed() {
         assert!(empty_profile_text(2.0).starts_with("None of your games has 2 hours of play yet."));
         assert!(empty_profile_text(1.0).starts_with("None of your games has 1 hour of play yet."));
@@ -880,59 +749,6 @@ mod tests {
         assert_eq!(
             ready_text(&check),
             "Catalog: 84,312 games · Your library: 312 games"
-        );
-    }
-
-    #[test]
-    fn each_stage_has_its_sentence() {
-        assert_eq!(
-            stage_text(Stage::Reading),
-            "Reading the list of Steam games…"
-        );
-        assert_eq!(
-            stage_text(Stage::StoreData {
-                done: 312,
-                total: 757
-            }),
-            "Store data: 312 of 757 requests"
-        );
-        assert_eq!(stage_text(Stage::Writing), "Writing the catalog…");
-    }
-
-    #[test]
-    fn a_stopped_update_says_until_when_it_resumes() {
-        let resume_before = gamepalate_app::Timestamp(1_793_369_460_000);
-        let stopped = UpdateError::Stopped {
-            resume_before,
-            source: SteamError::SteamDown {
-                endpoint: "IStoreBrowseService/GetItems/v1".to_string(),
-                reason: "timed out".to_string(),
-                source: None,
-            },
-        };
-
-        assert_eq!(
-            update_error_text(&stopped),
-            format!(
-                "Update stopped: Steam is not responding. Run it again before {} to resume.",
-                format::day_time(resume_before)
-            )
-        );
-    }
-
-    #[test]
-    fn an_update_that_starts_over_says_so() {
-        let start_over = UpdateError::StartOver {
-            source: SteamError::Shape {
-                endpoint: "IStoreBrowseService/GetItems/v1".to_string(),
-                reason: "unexpected".to_string(),
-            },
-            not_marked: None,
-        };
-
-        assert_eq!(
-            update_error_text(&start_over),
-            "Steam answered in an unexpected way: the next update starts over."
         );
     }
 

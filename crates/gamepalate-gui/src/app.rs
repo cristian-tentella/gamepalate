@@ -3,18 +3,26 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gamepalate_app::{Gamepalate, ThemeChoice, Timestamp, setup::FirstRun};
+use gamepalate_app::{
+    Gamepalate, ThemeChoice, Timestamp,
+    refresh::{Step, refresh},
+    setup::FirstRun,
+};
 use iced::{
     Center, Color, Element, Fill, Length, Shrink, Subscription, Task, Theme,
+    futures::{SinkExt, channel::mpsc},
     keyboard::{self, Key},
-    mouse, padding,
+    mouse, padding, stream,
     theme::Palette,
-    widget::{button, column, container, mouse_area, row, space, stack, text},
+    widget::{
+        button, column, container, mouse_area, progress_bar, row, space, stack, text, tooltip,
+    },
     window::{self, Direction},
 };
 
 use crate::{
     font, format,
+    progress::{self, Stage, Tracker},
     screen::{Discover, Library, Profile, Screen, Votes, discover, library, profile, setup, votes},
     style,
 };
@@ -28,6 +36,7 @@ const RESTORE: char = '\u{E923}';
 const CLOSE: char = '\u{E8BB}';
 const SUN: char = '\u{E706}';
 const MOON: char = '\u{E708}';
+const REFRESH: char = '\u{E72C}';
 const DARK_BACKGROUND: Color = Color::from_rgb8(0x18, 0x19, 0x1c);
 
 pub struct App {
@@ -37,6 +46,21 @@ pub struct App {
     window: Option<window::Id>,
     maximized: bool,
     last_bar_press: Option<Instant>,
+    refresh: Refresh,
+}
+
+#[derive(Debug, Default)]
+enum Refresh {
+    #[default]
+    Idle,
+    Running(Refreshing),
+}
+
+#[derive(Debug)]
+enum Refreshing {
+    Catalog(Tracker),
+    Signals,
+    Opening,
 }
 
 #[derive(Clone, Debug)]
@@ -53,6 +77,9 @@ pub enum Message {
     Resized,
     Maximized(bool),
     ToggleTheme,
+    Refresh,
+    Refreshing(Step),
+    Refreshed(Result<Arc<Gamepalate>, String>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -80,6 +107,7 @@ impl App {
             window: None,
             maximized: false,
             last_bar_press: None,
+            refresh: Refresh::Idle,
         };
         let task = match setup::start(FirstRun::check(None)) {
             Ok(gamepalate) => app.opened(gamepalate),
@@ -176,6 +204,24 @@ impl App {
                 self.maximized = maximized;
                 Task::none()
             }
+            Message::Refresh => self.start_refresh(),
+            Message::Refreshing(step) => {
+                if let Refresh::Running(refreshing) = &mut self.refresh {
+                    refreshing.advance(step, Instant::now());
+                }
+                Task::none()
+            }
+            Message::Refreshed(result) => {
+                self.refresh = Refresh::Idle;
+                let Ok(gamepalate) = result else {
+                    return Task::none();
+                };
+                self.gamepalate = Some(gamepalate);
+                match self.page() {
+                    Some(page) => self.open(page),
+                    None => Task::none(),
+                }
+            }
             Message::ToggleTheme => {
                 self.theme = toggled(&self.theme);
                 let choice = choice(&self.theme);
@@ -238,7 +284,7 @@ impl App {
             .push(space().width(Fill))
             .push(self.gamepalate.as_deref().map(|gamepalate| {
                 column![
-                    container(freshness(gamepalate))
+                    container(self.status(gamepalate))
                         .height(Fill)
                         .align_y(Center),
                     space().height(UNDERLINE_HEIGHT),
@@ -246,16 +292,20 @@ impl App {
                 .height(Fill)
             }))
             .push(
-                row![
-                    theme_button(&self.theme),
-                    window_button(MINIMIZE, WindowAction::Minimize),
-                    window_button(
+                row![]
+                    .push(
+                        self.gamepalate
+                            .is_some()
+                            .then(|| refresh_button(matches!(self.refresh, Refresh::Idle))),
+                    )
+                    .push(theme_button(&self.theme))
+                    .push(window_button(MINIMIZE, WindowAction::Minimize))
+                    .push(window_button(
                         if self.maximized { RESTORE } else { MAXIMIZE },
-                        WindowAction::ToggleMaximize
-                    ),
-                    window_button(CLOSE, WindowAction::Close),
-                ]
-                .height(Fill),
+                        WindowAction::ToggleMaximize,
+                    ))
+                    .push(window_button(CLOSE, WindowAction::Close))
+                    .height(Fill),
             )
             .spacing(24)
             .height(Fill)
@@ -307,6 +357,61 @@ impl App {
             WindowAction::Resize(direction) => window::drag_resize(id, direction),
             WindowAction::Close => Task::none(),
         }
+    }
+
+    fn status<'a>(&'a self, gamepalate: &Gamepalate) -> Element<'a, Message> {
+        let Refresh::Running(refreshing) = &self.refresh else {
+            return freshness(gamepalate);
+        };
+        let bar = match refreshing {
+            Refreshing::Catalog(tracker)
+                if matches!(tracker.stage(), Stage::StoreData { .. } | Stage::Writing) =>
+            {
+                let (done, total) = tracker.done_of();
+                Some(
+                    progress_bar(0.0..=total.max(1) as f32, done as f32)
+                        .girth(4)
+                        .length(160)
+                        .style(style::meter),
+                )
+            }
+            _ => None,
+        };
+
+        row![text(refreshing_text(refreshing)).size(font::NOTE_SIZE)]
+            .push(bar)
+            .push(
+                refreshing_count(refreshing)
+                    .map(|count| text(count).size(font::NOTE_SIZE).style(style::muted)),
+            )
+            .spacing(10)
+            .align_y(Center)
+            .into()
+    }
+
+    fn start_refresh(&mut self) -> Task<Message> {
+        let Some(gamepalate) = &self.gamepalate else {
+            return Task::none();
+        };
+        if matches!(self.refresh, Refresh::Running(_)) {
+            return Task::none();
+        }
+        let dir = gamepalate.data_dir().to_path_buf();
+        self.refresh = Refresh::Running(Refreshing::Catalog(Tracker::default()));
+
+        Task::run(
+            stream::channel(64, async move |mut output: mpsc::Sender<Message>| {
+                let mut events = output.clone();
+                let result = refresh(&dir, move |step| {
+                    let _ = events.try_send(Message::Refreshing(step));
+                })
+                .await
+                .map(|refreshed| Arc::new(refreshed.gamepalate))
+                .map_err(|error| progress::refresh_error_text(&error));
+                let _ = output.send(Message::Refreshed(result)).await;
+            }),
+            |message| message,
+        )
     }
 
     fn bar_pressed(&mut self) -> Task<Message> {
@@ -491,6 +596,79 @@ fn theme_icon(theme: &Theme) -> char {
     if is_dark(theme) { SUN } else { MOON }
 }
 
+impl Refreshing {
+    fn advance(&mut self, step: Step, now: Instant) {
+        match step {
+            Step::Catalog(progress) => {
+                if let Refreshing::Catalog(tracker) = self {
+                    tracker.advance(progress, now);
+                }
+            }
+            Step::Signals => *self = Refreshing::Signals,
+            Step::Opening => *self = Refreshing::Opening,
+        }
+    }
+}
+
+fn refreshing_text(refreshing: &Refreshing) -> &'static str {
+    match refreshing {
+        Refreshing::Catalog(tracker) => match tracker.stage() {
+            Stage::Starting | Stage::Reading => "Reading the list of Steam games…",
+            Stage::StoreData { .. } => "Updating prices",
+            Stage::Writing => "Writing the catalog…",
+        },
+        Refreshing::Signals => "Reading your Signals…",
+        Refreshing::Opening => "Loading…",
+    }
+}
+
+fn refreshing_count(refreshing: &Refreshing) -> Option<String> {
+    let Refreshing::Catalog(tracker) = refreshing else {
+        return None;
+    };
+    let Stage::StoreData { done, total } = tracker.stage() else {
+        return None;
+    };
+    let count = format!(
+        "{} of {}",
+        format::count(done as u32),
+        format::count(total as u32)
+    );
+
+    Some(match tracker.time_left() {
+        Some(left) => format!("{count} · {}", format::time_left(left)),
+        None => count,
+    })
+}
+
+fn refresh_button<'a>(idle: bool) -> Element<'a, Message> {
+    let icon = button(
+        container(
+            text(REFRESH)
+                .font(font::ICONS)
+                .size(14)
+                .width(Fill)
+                .height(Fill)
+                .center(),
+        )
+        .padding(padding::bottom(UNDERLINE_HEIGHT)),
+    )
+    .width(46)
+    .height(Fill)
+    .padding(0)
+    .style(style::window_button)
+    .on_press_maybe(idle.then_some(Message::Refresh));
+
+    tooltip(
+        icon,
+        container(text("Update prices and Signals").size(font::NOTE_SIZE))
+            .padding([6, 10])
+            .style(style::popup),
+        tooltip::Position::Bottom,
+    )
+    .into()
+}
+
 fn theme_button<'a>(theme: &Theme) -> Element<'a, Message> {
     button(
         container(
@@ -580,6 +758,50 @@ mod tests {
             text: None,
             repeat: false,
         }
+    }
+
+    fn store_data(done: usize, total: usize) -> Step {
+        Step::Catalog(gamepalate_app::update::Progress::StoreData { done, total })
+    }
+
+    #[test]
+    fn the_bar_says_each_step_of_the_update() {
+        let mut refreshing = Refreshing::Catalog(Tracker::default());
+        let now = Instant::now();
+        assert_eq!(
+            refreshing_text(&refreshing),
+            "Reading the list of Steam games…"
+        );
+        assert_eq!(refreshing_count(&refreshing), None);
+
+        refreshing.advance(store_data(312, 757), now);
+        assert_eq!(refreshing_text(&refreshing), "Updating prices");
+        assert_eq!(refreshing_count(&refreshing).as_deref(), Some("312 of 757"));
+
+        refreshing.advance(Step::Signals, now);
+        assert_eq!(refreshing_text(&refreshing), "Reading your Signals…");
+        assert_eq!(refreshing_count(&refreshing), None);
+
+        refreshing.advance(store_data(1, 2), now);
+        refreshing.advance(Step::Opening, now);
+        assert_eq!(refreshing_text(&refreshing), "Loading…");
+    }
+
+    #[test]
+    fn after_ten_requests_the_bar_says_the_time_left() {
+        let mut refreshing = Refreshing::Catalog(Tracker::default());
+        let start = Instant::now();
+        for done in 1..=10 {
+            refreshing.advance(
+                store_data(done, 1_210),
+                start + Duration::from_secs(done as u64),
+            );
+        }
+
+        assert_eq!(
+            refreshing_count(&refreshing).as_deref(),
+            Some("10 of 1,210 · About 20 minutes left")
+        );
     }
 
     #[test]
