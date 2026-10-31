@@ -1,7 +1,13 @@
 mod filters;
 mod queue;
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use gamepalate_app::{
     AppId, Blame, FilterOptions, Gamepalate, RecommendError, Recommendation, RecommendedGame,
@@ -24,6 +30,7 @@ use super::{
 };
 use crate::{font, format, style};
 
+static SEARCHES: AtomicU64 = AtomicU64::new(0);
 const COMPACT_WIDTH: f32 = 1100.0;
 const TOAST_DURATION: Duration = Duration::from_secs(4);
 const FLASH_DURATION: Duration = Duration::from_millis(600);
@@ -388,7 +395,7 @@ impl Discover {
     }
 
     fn recommend(&mut self) -> Task<Message> {
-        self.searches += 1;
+        self.searches = SEARCHES.fetch_add(1, Ordering::Relaxed) + 1;
         let search = self.searches;
         let gamepalate = Arc::clone(&self.gamepalate);
         let options = self.options.clone();
