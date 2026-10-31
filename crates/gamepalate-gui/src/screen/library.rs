@@ -1,12 +1,15 @@
-use std::{fmt, ops::Range, sync::Arc};
+use std::{fmt, ops::Range, path::PathBuf, process::Command, sync::Arc, time::Duration};
 
 use gamepalate_app::{
     AppId, Capsule, GameCorrection, Gamepalate, HoursSource, LibraryGameView, LibraryView,
 };
 use iced::{
     Center, ContentFit, Element, Fill, Size, Subscription, Task,
+    keyboard::{self, Key},
+    mouse,
     widget::{
-        Id, button, column, container, image, operation, pick_list, responsive, row, scrollable,
+        Id, button, checkbox, column, container, image, mouse_area, opaque, operation, pick_list,
+        responsive, row, scrollable,
         scrollable::{AbsoluteOffset, Viewport},
         space, stack, text, text_input, tooltip,
     },
@@ -36,10 +39,19 @@ const SCREENS_KEPT: f32 = 2.0;
 const CHROME_HEIGHT: f32 = 110.0;
 const IMAGE_RADIUS: f32 = 6.0;
 const DEFAULT_AREA: Size = Size::new(1280.0, 700.0);
+const PANEL_WIDTH: f32 = 360.0;
+const PANEL_CAPSULE_WIDTH: f32 = 160.0;
+const PANEL_CAPSULE_HEIGHT: f32 = 240.0;
+const TOAST_DURATION: Duration = Duration::from_secs(5);
 
 pub struct Library {
     gamepalate: Arc<Gamepalate>,
+    data_dir: PathBuf,
     view: LibraryView,
+    open: Option<AppId>,
+    last_correction: Option<(AppId, GameCorrection)>,
+    toast: Option<Toast>,
+    toasts_shown: u64,
     filter: Filter,
     sort: Sort,
     search: String,
@@ -47,6 +59,20 @@ pub struct Library {
     offset: f32,
     area: Size,
     capsules: Images<image::Allocation, AppId>,
+}
+
+struct Toast {
+    id: u64,
+    text: String,
+    undo: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Choice {
+    Fully,
+    Half,
+    Not,
+    Custom(f64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -73,6 +99,14 @@ pub enum Message {
     WindowResized(Size),
     CapsuleLoaded(AppId, Option<image::Handle>),
     CapsuleAllocated(AppId, Option<image::Allocation>),
+    Open(AppId),
+    Close,
+    Correct(AppId, GameCorrection),
+    Corrected(AppId, GameCorrection, Result<GameCorrection, String>),
+    Undo,
+    Undone(Result<(), String>),
+    HideToast(u64),
+    OpenDataFolder,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -85,7 +119,12 @@ impl Library {
     pub fn new(gamepalate: &Arc<Gamepalate>) -> (Library, Task<Message>) {
         let mut library = Library {
             gamepalate: Arc::clone(gamepalate),
+            data_dir: gamepalate.data_dir().to_path_buf(),
             view: gamepalate.library_view(),
+            open: None,
+            last_correction: None,
+            toast: None,
+            toasts_shown: 0,
             filter: Filter::All,
             sort: Sort::TasteWeight,
             search: String::new(),
@@ -137,13 +176,112 @@ impl Library {
                     .map(move |allocation| Message::CapsuleAllocated(id, allocation.ok()));
             }
             Message::CapsuleAllocated(id, allocation) => self.capsules.loaded(id, allocation),
+            Message::Open(id) => self.open = Some(id),
+            Message::Close => self.open = None,
+            Message::Correct(id, correction) => {
+                let gamepalate = Arc::clone(&self.gamepalate);
+                return Task::perform(
+                    async move {
+                        gamepalate
+                            .correct_game(id, correction)
+                            .map_err(|error| error.to_string())
+                    },
+                    move |result| Message::Corrected(id, correction, result),
+                );
+            }
+            Message::Corrected(id, correction, Ok(before)) => {
+                if before != correction {
+                    self.last_correction = Some((id, before));
+                }
+                let reveal = self.reload();
+                let text = self.game(id).map_or_else(String::new, |game| {
+                    corrected_text(&game.name, before, correction, self.view.dampen)
+                });
+                return Task::batch([reveal, self.show_toast(text, before != correction)]);
+            }
+            Message::Corrected(_, _, Err(error)) | Message::Undone(Err(error)) => {
+                return self.show_toast(error, false);
+            }
+            Message::Undo => {
+                if let Some((id, before)) = self.last_correction.take() {
+                    let gamepalate = Arc::clone(&self.gamepalate);
+                    return Task::perform(
+                        async move {
+                            gamepalate
+                                .correct_game(id, before)
+                                .map(|_| ())
+                                .map_err(|error| error.to_string())
+                        },
+                        Message::Undone,
+                    );
+                }
+            }
+            Message::Undone(Ok(())) => {
+                let reveal = self.reload();
+                return Task::batch([reveal, self.show_toast("Undone.".to_string(), false)]);
+            }
+            Message::HideToast(id) => {
+                if self.toast.as_ref().is_some_and(|toast| toast.id == id) {
+                    self.toast = None;
+                }
+            }
+            Message::OpenDataFolder => {
+                let _ = Command::new("explorer").arg(&self.data_dir).spawn();
+            }
         }
 
         Task::none()
     }
 
     pub fn subscription() -> Subscription<Message> {
-        window::resize_events().map(|(_, size)| Message::WindowResized(size))
+        Subscription::batch([
+            window::resize_events().map(|(_, size)| Message::WindowResized(size)),
+            keyboard::listen().filter_map(key_message),
+        ])
+    }
+
+    fn game(&self, id: AppId) -> Option<&LibraryGameView> {
+        self.view.games.iter().find(|game| game.id == id)
+    }
+
+    fn reload(&mut self) -> Task<Message> {
+        self.view = self.gamepalate.library_view();
+        self.shown = shown(&self.view.games, self.filter, self.sort, &self.search);
+        self.reveal_open()
+    }
+
+    fn reveal_open(&mut self) -> Task<Message> {
+        let Some(position) = self.open.and_then(|id| {
+            self.shown
+                .iter()
+                .position(|&index| self.view.games[index].id == id)
+        }) else {
+            return Task::none();
+        };
+        let rows = self.rows(self.area.width);
+        match reveal_offset(&rows, position, self.offset, self.area.height) {
+            Some(y) => {
+                self.offset = y;
+                operation::scroll_to(
+                    GRID,
+                    AbsoluteOffset {
+                        x: None,
+                        y: Some(y),
+                    },
+                )
+            }
+            None => Task::none(),
+        }
+    }
+
+    fn show_toast(&mut self, text: String, undo: bool) -> Task<Message> {
+        self.toasts_shown += 1;
+        let id = self.toasts_shown;
+        self.toast = Some(Toast { id, text, undo });
+
+        Task::perform(tokio::time::sleep(TOAST_DURATION), move |_| {
+            Message::HideToast(id)
+        })
     }
 
     fn refresh(&mut self) -> Task<Message> {
@@ -189,16 +327,22 @@ impl Library {
                 .map(|index| self.view.games[self.shown[index]].id)
                 .collect()
         };
-        let wanted = ids(visible_rows(
-            &rows,
-            self.offset,
-            height * (1.0 + SCREENS_AHEAD),
-        ));
-        let kept = ids(visible_rows(
-            &rows,
-            self.offset - height * SCREENS_KEPT,
-            height * (1.0 + 2.0 * SCREENS_KEPT),
-        ));
+        let open = self.open.into_iter();
+        let wanted: Vec<AppId> = open
+            .clone()
+            .chain(ids(visible_rows(
+                &rows,
+                self.offset,
+                height * (1.0 + SCREENS_AHEAD),
+            )))
+            .collect();
+        let kept: Vec<AppId> = open
+            .chain(ids(visible_rows(
+                &rows,
+                self.offset - height * SCREENS_KEPT,
+                height * (1.0 + 2.0 * SCREENS_KEPT),
+            )))
+            .collect();
 
         self.capsules.keep_only(&kept);
         let started = self.capsules.want(wanted);
@@ -262,10 +406,45 @@ impl Library {
             responsive(move |size| self.grid(size.width)).into()
         };
 
+        let panel = self.open.and_then(|id| self.game(id)).map(|game| {
+            stack![
+                opaque(mouse_area(space().width(Fill).height(Fill)).on_press(Message::Close)),
+                container(opaque(
+                    container(scrollable(self.panel(game)).height(Fill))
+                        .width(PANEL_WIDTH)
+                        .height(Fill)
+                        .style(style::popup),
+                ))
+                .align_right(Fill)
+                .padding(8),
+            ]
+        });
+        let toast = self.toast.as_ref().map(|toast| {
+            let undo = toast.undo.then(|| {
+                button(text("Undo").size(font::NOTE_SIZE).font(font::SEMIBOLD))
+                    .padding(0)
+                    .style(style::toast_link)
+                    .on_press(Message::Undo)
+            });
+            container(
+                container(
+                    row![text(&toast.text)]
+                        .push(undo)
+                        .spacing(14)
+                        .align_y(Center),
+                )
+                .padding([8, 14])
+                .style(style::toast),
+            )
+            .center_x(Fill)
+            .align_bottom(Fill)
+            .padding(16)
+        });
+
         column![
             container(tools).padding([12, GRID_PADDING as u16]),
             style::separator(),
-            body,
+            stack![body].push(panel).push(toast),
         ]
         .into()
     }
@@ -359,9 +538,13 @@ impl Library {
         ];
 
         tooltip(
-            stack![picture, overlay]
-                .width(TILE_WIDTH)
-                .height(TILE_HEIGHT),
+            mouse_area(
+                stack![picture, overlay]
+                    .width(TILE_WIDTH)
+                    .height(TILE_HEIGHT),
+            )
+            .interaction(mouse::Interaction::Pointer)
+            .on_press(Message::Open(game.id)),
             container(text(&game.name).size(font::NOTE_SIZE))
                 .padding([6, 10])
                 .style(style::popup),
@@ -369,6 +552,109 @@ impl Library {
         )
         .into()
     }
+
+    fn panel<'a>(&'a self, game: &'a LibraryGameView) -> Element<'a, Message> {
+        let view = &self.view;
+        let capsule: Element<'a, Message> = match self.capsules.get(&game.id) {
+            Some(Picture::Ready(allocation)) => image(allocation.handle().clone())
+                .width(PANEL_CAPSULE_WIDTH)
+                .height(PANEL_CAPSULE_HEIGHT)
+                .content_fit(ContentFit::Cover)
+                .border_radius(IMAGE_RADIUS)
+                .into(),
+            _ => container(space())
+                .width(PANEL_CAPSULE_WIDTH)
+                .height(PANEL_CAPSULE_HEIGHT)
+                .style(style::picture)
+                .into(),
+        };
+        let tags = (!game.tags.is_empty()).then(|| {
+            text!("Brings {}", game.tags.join(", "))
+                .size(font::BAR_SIZE)
+                .style(style::muted)
+        });
+        let correctable = game.hours >= view.min_hours;
+        let selected = selected_choice(game.correction.multiplier, view.dampen);
+        let choices = row(choices(selected).into_iter().map(|choice| {
+            let correction = GameCorrection {
+                multiplier: choice_multiplier(choice, view.dampen),
+                ..game.correction
+            };
+            button(text(choice_label(choice, view.dampen)).size(font::NOTE_SIZE))
+                .padding([4, 12])
+                .style(style::choice(choice == selected))
+                .on_press_maybe(
+                    (correctable && choice != selected)
+                        .then_some(Message::Correct(game.id, correction)),
+                )
+                .into()
+        }))
+        .spacing(6)
+        .wrap()
+        .vertical_spacing(6);
+        let hide = game.owned_hours.is_none().then(|| {
+            let id = game.id;
+            let correction = game.correction;
+            checkbox(correction.hidden)
+                .label("Hide from Discover")
+                .text_size(font::BAR_SIZE)
+                .on_toggle(move |hidden| {
+                    Message::Correct(
+                        id,
+                        GameCorrection {
+                            hidden,
+                            ..correction
+                        },
+                    )
+                })
+        });
+
+        column![
+            capsule,
+            text(&game.name).size(font::INFO_SIZE).font(font::SEMIBOLD),
+            text(source_line(game, view)).size(font::BAR_SIZE),
+            text(weight_line(game, view)).size(font::BAR_SIZE),
+        ]
+        .push(tags)
+        .push(space().height(8))
+        .push(
+            text("Counts for your taste")
+                .size(font::BAR_SIZE)
+                .font(font::SEMIBOLD),
+        )
+        .push(choices)
+        .push((!correctable).then(|| {
+            text(no_effect_text(game.hours, view.min_hours))
+                .size(font::NOTE_SIZE)
+                .style(style::muted)
+        }))
+        .push(hide.map(|hide| column![space().height(8), hide]))
+        .push(space().height(8))
+        .push(
+            column![
+                text("To make a game count more, put it in a family.")
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted),
+                button(text("Open folder ›").size(font::NOTE_SIZE))
+                    .padding(0)
+                    .style(style::link)
+                    .on_press(Message::OpenDataFolder),
+            ]
+            .spacing(2),
+        )
+        .spacing(8)
+        .padding(20)
+        .into()
+    }
+}
+
+fn key_message(event: keyboard::Event) -> Option<Message> {
+    let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+        return None;
+    };
+
+    (modifiers.command() && matches!(key.as_ref(), Key::Character("z" | "Z")))
+        .then_some(Message::Undo)
 }
 
 fn handle(capsule: Capsule) -> image::Handle {
@@ -557,12 +843,160 @@ fn correction_badge(correction: GameCorrection) -> Option<String> {
 fn divider_note(min_hours: f64) -> String {
     format!(
         "Under {} of play, set to ×0, or without tags.",
-        if min_hours == 1.0 {
-            "1 hour".to_string()
-        } else {
-            format!("{min_hours} hours")
-        }
+        hours_text(min_hours)
     )
+}
+
+fn reveal_offset(rows: &[Row], position: usize, offset: f32, height: f32) -> Option<f32> {
+    let mut top = GRID_PADDING;
+    for row in rows {
+        if let Row::Games(games) = row
+            && games.contains(&position)
+        {
+            let bottom = top + TILE_HEIGHT;
+            return if top < offset {
+                Some(top - GRID_PADDING)
+            } else if bottom > offset + height {
+                Some((bottom + GRID_PADDING - height).max(0.0))
+            } else {
+                None
+            };
+        }
+        top += row_height(row);
+    }
+    None
+}
+
+fn selected_choice(multiplier: Option<f64>, dampen: f64) -> Choice {
+    match multiplier {
+        None => Choice::Fully,
+        Some(1.0) => Choice::Fully,
+        Some(factor) if factor == dampen => Choice::Half,
+        Some(0.0) => Choice::Not,
+        Some(factor) => Choice::Custom(factor),
+    }
+}
+
+fn choices(selected: Choice) -> Vec<Choice> {
+    let mut choices = vec![Choice::Fully, Choice::Half, Choice::Not];
+    if let Choice::Custom(_) = selected {
+        choices.push(selected);
+    }
+    choices
+}
+
+fn choice_multiplier(choice: Choice, dampen: f64) -> Option<f64> {
+    match choice {
+        Choice::Fully => None,
+        Choice::Half => Some(dampen),
+        Choice::Not => Some(0.0),
+        Choice::Custom(factor) => Some(factor),
+    }
+}
+
+fn choice_label(choice: Choice, dampen: f64) -> String {
+    match choice {
+        Choice::Fully => "Fully".to_string(),
+        Choice::Half if dampen == 0.5 => "Half".to_string(),
+        Choice::Half => format!("Half {}", multiplier(dampen)),
+        Choice::Not => "Not".to_string(),
+        Choice::Custom(factor) => multiplier(factor),
+    }
+}
+
+fn counts_as(hours: f64) -> String {
+    format!("counts as {}", hours_text(hours))
+}
+
+fn source_line(game: &LibraryGameView, view: &LibraryView) -> String {
+    let signals: Vec<&str> = [
+        (game.owned_hours.is_some(), "Owned"),
+        (game.wishlist, "Wishlist"),
+        (game.followed, "Followed"),
+    ]
+    .into_iter()
+    .filter(|&(is_in, _)| is_in)
+    .map(|(_, name)| name)
+    .collect();
+    let mut parts = vec![match signals.as_slice() {
+        [] => "Played".to_string(),
+        [one] => one.to_string(),
+        [first, rest @ ..] => format!("{first} and {}", rest.join(" and ").to_lowercase()),
+    }];
+
+    parts.push(match (game.source, game.owned_hours) {
+        (HoursSource::Played, Some(owned)) => hours(owned),
+        (HoursSource::Played, None) => hours(game.hours),
+        (HoursSource::Wishlist, _) => counts_as(view.wishlist_hours),
+        (HoursSource::Followed, _) => counts_as(view.followed_hours),
+        (HoursSource::WouldTry, _) => counts_as(game.hours),
+    });
+    if game.recent {
+        parts.push("played in the last two weeks".to_string());
+    }
+    parts.join(" · ")
+}
+
+fn share(share: f64) -> String {
+    let percent = share * 100.0;
+    if percent < 1.0 {
+        "less than 1%".to_string()
+    } else {
+        format!("{percent:.0}%")
+    }
+}
+
+fn weight_line(game: &LibraryGameView, view: &LibraryView) -> String {
+    if game.counts {
+        format!("Shapes {} of your taste", share(game.share))
+    } else if game.hours < view.min_hours {
+        format!(
+            "Doesn't shape your taste: {}, under the {} that count.",
+            hours(game.hours),
+            hours_text(view.min_hours)
+        )
+    } else if game.correction.multiplier == Some(0.0) {
+        "Doesn't shape your taste: set to ×0.".to_string()
+    } else {
+        "Doesn't shape your taste: it has no tags.".to_string()
+    }
+}
+
+fn hours_text(hours: f64) -> String {
+    if hours == 1.0 {
+        "1 hour".to_string()
+    } else {
+        format!("{hours} hours")
+    }
+}
+
+fn no_effect_text(game_hours: f64, min_hours: f64) -> String {
+    format!(
+        "Correcting it would have no effect: it has {}, under {}.",
+        hours(game_hours),
+        hours_text(min_hours)
+    )
+}
+
+fn corrected_text(
+    name: &str,
+    before: GameCorrection,
+    after: GameCorrection,
+    dampen: f64,
+) -> String {
+    if before.hidden != after.hidden {
+        return if after.hidden {
+            format!("{name} is hidden from Discover.")
+        } else {
+            format!("{name} shows in Discover again.")
+        };
+    }
+    match selected_choice(after.multiplier, dampen) {
+        Choice::Fully => format!("{name} counts fully."),
+        Choice::Half => format!("{name} counts half."),
+        Choice::Not => format!("{name} doesn't count."),
+        Choice::Custom(factor) => format!("{name} counts {}.", multiplier(factor)),
+    }
 }
 
 fn empty_text(no_games: bool, filter: Filter, search: &str) -> String {
@@ -738,6 +1172,188 @@ mod tests {
             ..game(7, "Drova")
         };
         assert_eq!(tile_label(&borrowed), "6.0 h");
+    }
+
+    fn view_of(games: Vec<LibraryGameView>) -> LibraryView {
+        LibraryView {
+            games,
+            min_hours: 2.0,
+            wishlist_hours: 5.0,
+            followed_hours: 3.0,
+            dampen: 0.5,
+        }
+    }
+
+    #[test]
+    fn the_selected_choice_follows_the_multiplier() {
+        assert_eq!(selected_choice(None, 0.5), Choice::Fully);
+        assert_eq!(selected_choice(Some(1.0), 0.5), Choice::Fully);
+        assert_eq!(selected_choice(Some(0.5), 0.5), Choice::Half);
+        assert_eq!(selected_choice(Some(0.0), 0.5), Choice::Not);
+        assert_eq!(selected_choice(Some(0.25), 0.5), Choice::Custom(0.25));
+        assert_eq!(selected_choice(Some(0.5), 0.6), Choice::Custom(0.5));
+    }
+
+    #[test]
+    fn a_factor_written_by_hand_is_a_fourth_choice() {
+        assert_eq!(
+            choices(Choice::Half),
+            [Choice::Fully, Choice::Half, Choice::Not]
+        );
+        assert_eq!(
+            choices(Choice::Custom(0.25)),
+            [
+                Choice::Fully,
+                Choice::Half,
+                Choice::Not,
+                Choice::Custom(0.25)
+            ]
+        );
+        assert_eq!(choice_label(Choice::Custom(0.25), 0.5), "×0.25");
+        assert_eq!(choice_label(Choice::Half, 0.5), "Half");
+        assert_eq!(choice_label(Choice::Half, 0.6), "Half ×0.6");
+    }
+
+    #[test]
+    fn fully_removes_the_multiplier() {
+        assert_eq!(choice_multiplier(Choice::Fully, 0.5), None);
+        assert_eq!(choice_multiplier(Choice::Half, 0.6), Some(0.6));
+        assert_eq!(choice_multiplier(Choice::Not, 0.5), Some(0.0));
+        assert_eq!(choice_multiplier(Choice::Custom(0.25), 0.5), Some(0.25));
+    }
+
+    #[test]
+    fn the_source_line_says_every_signal_and_the_winning_hours() {
+        let games = games();
+        let view = view_of(Vec::new());
+        let line = |game: &LibraryGameView| source_line(game, &view);
+
+        assert_eq!(line(&games[1]), "Owned · 120 h");
+        assert_eq!(line(&games[3]), "Wishlist · counts as 5 hours");
+        assert_eq!(line(&games[4]), "Followed · counts as 3 hours");
+        let both = LibraryGameView {
+            followed: true,
+            recent: true,
+            ..games[0].clone()
+        };
+        assert_eq!(
+            line(&both),
+            "Owned and followed · 40 h · played in the last two weeks"
+        );
+        let borrowed = LibraryGameView {
+            recent: true,
+            hours: 6.0,
+            ..game(7, "Drova")
+        };
+        assert_eq!(
+            line(&borrowed),
+            "Played · 6.0 h · played in the last two weeks"
+        );
+    }
+
+    #[test]
+    fn the_weight_line_says_how_much_or_why_not() {
+        let games = games();
+        let view = view_of(Vec::new());
+        let line = |game: &LibraryGameView| weight_line(game, &view);
+
+        assert_eq!(line(&games[1]), "Shapes 50% of your taste");
+        assert_eq!(
+            line(&LibraryGameView {
+                share: 0.004,
+                ..games[1].clone()
+            }),
+            "Shapes less than 1% of your taste"
+        );
+        assert_eq!(
+            line(&games[2]),
+            "Doesn't shape your taste: 1.0 h, under the 2 hours that count."
+        );
+        let zero = LibraryGameView {
+            counts: false,
+            correction: GameCorrection {
+                multiplier: Some(0.0),
+                hidden: false,
+            },
+            ..games[1].clone()
+        };
+        assert_eq!(line(&zero), "Doesn't shape your taste: set to ×0.");
+        assert_eq!(
+            no_effect_text(0.5, 2.0),
+            "Correcting it would have no effect: it has 0.5 h, under 2 hours."
+        );
+    }
+
+    #[test]
+    fn the_toast_says_what_changed() {
+        let none = GameCorrection::default();
+        let with = |multiplier, hidden| GameCorrection { multiplier, hidden };
+
+        assert_eq!(
+            corrected_text("Black Ops II", none, with(Some(0.5), false), 0.5),
+            "Black Ops II counts half."
+        );
+        assert_eq!(
+            corrected_text("Hades", with(Some(0.5), false), none, 0.5),
+            "Hades counts fully."
+        );
+        assert_eq!(
+            corrected_text("Hades", none, with(Some(0.0), false), 0.5),
+            "Hades doesn't count."
+        );
+        assert_eq!(
+            corrected_text(
+                "Hades",
+                with(Some(0.0), false),
+                with(Some(0.25), false),
+                0.5
+            ),
+            "Hades counts ×0.25."
+        );
+        assert_eq!(
+            corrected_text("Pentiment", none, with(None, true), 0.5),
+            "Pentiment is hidden from Discover."
+        );
+        assert_eq!(
+            corrected_text("Pentiment", with(None, true), none, 0.5),
+            "Pentiment shows in Discover again."
+        );
+    }
+
+    #[test]
+    fn the_open_game_is_scrolled_into_view() {
+        let rows = rows(20, 40, 4, true);
+        let row = TILE_HEIGHT + GAP;
+
+        assert_eq!(reveal_offset(&rows, 0, 0.0, 600.0), None);
+        assert_eq!(reveal_offset(&rows, 0, 100.0, 600.0), Some(0.0));
+        let below = reveal_offset(&rows, 24, 0.0, 600.0).unwrap();
+        assert_eq!(
+            below,
+            2.0 * GRID_PADDING + row * 6.0 + DIVIDER_HEIGHT + TILE_HEIGHT - 600.0
+        );
+        assert_eq!(reveal_offset(&rows, 99, 0.0, 600.0), None);
+    }
+
+    #[test]
+    fn ctrl_z_undoes_the_last_correction() {
+        let pressed = |character: &str, modifiers| keyboard::Event::KeyPressed {
+            key: Key::Character(character.into()),
+            modified_key: Key::Character(character.into()),
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            location: keyboard::Location::Standard,
+            modifiers,
+            text: None,
+            repeat: false,
+        };
+
+        assert!(matches!(
+            key_message(pressed("z", keyboard::Modifiers::CTRL)),
+            Some(Message::Undo)
+        ));
+        assert!(key_message(pressed("z", keyboard::Modifiers::empty())).is_none());
     }
 
     #[test]

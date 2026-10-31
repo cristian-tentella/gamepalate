@@ -374,3 +374,16 @@ pub fn capsule_badge(theme: &Theme) -> container::Style {
         ..container::Style::default()
     }
 }
+
+pub fn toast_link(theme: &Theme, status: button::Status) -> button::Style {
+    let background = theme.extended_palette().background.base;
+    let color = match status {
+        button::Status::Hovered | button::Status::Pressed => background.color,
+        _ => background.color.scale_alpha(0.85),
+    };
+
+    button::Style {
+        text_color: color,
+        ..button::Style::default()
+    }
+}
