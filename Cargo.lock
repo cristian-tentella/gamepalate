@@ -1674,6 +1674,7 @@ dependencies = [
  "gamepalate-steam",
  "gamepalate-store",
  "http",
+ "image",
  "jiff",
  "keyring-core",
  "reqwest",

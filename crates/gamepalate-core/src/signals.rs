@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::{ids::AppId, timestamp::Timestamp};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,6 +20,20 @@ pub struct SignalsReading {
     pub followed: Option<Vec<AppId>>,
     pub wishlist_read_at: Option<Timestamp>,
     pub followed_read_at: Option<Timestamp>,
+}
+
+impl Signals {
+    pub fn ids(&self) -> Vec<AppId> {
+        self.library
+            .iter()
+            .map(|game| game.id)
+            .chain(self.recent.iter().map(|game| game.id))
+            .chain(self.wishlist.iter().copied())
+            .chain(self.followed.iter().copied())
+            .collect::<BTreeSet<AppId>>()
+            .into_iter()
+            .collect()
+    }
 }
 
 impl SignalsReading {
@@ -43,4 +59,29 @@ pub struct RecentGame {
     pub id: AppId,
     pub total_hours: f64,
     pub recent_hours: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_ids_of_every_signal_come_once_in_order() {
+        let signals = Signals {
+            read_at: Timestamp(0),
+            library: vec![LibraryGame {
+                id: AppId(3),
+                total_hours: 1.0,
+            }],
+            recent: vec![RecentGame {
+                id: AppId(9),
+                total_hours: 2.0,
+                recent_hours: 1.0,
+            }],
+            wishlist: vec![AppId(5), AppId(1)],
+            followed: vec![AppId(3)],
+        };
+
+        assert_eq!(signals.ids(), [AppId(1), AppId(3), AppId(5), AppId(9)]);
+    }
 }

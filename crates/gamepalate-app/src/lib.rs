@@ -1,5 +1,6 @@
 pub mod account;
 pub mod app;
+mod capsules;
 mod data_dir;
 mod details;
 mod images;
@@ -11,6 +12,7 @@ pub mod setup;
 pub mod signals;
 pub mod update;
 pub use app::{Gamepalate, OpenError, RecommendError, VoteError, VotedGame};
+pub use capsules::{CAPSULE_HEIGHT, CAPSULE_WIDTH, Capsule};
 pub use details::GameDetails;
 pub use gamepalate_core::{
     config::SignalsConfig,

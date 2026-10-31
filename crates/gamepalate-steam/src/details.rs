@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 use crate::{
     images::ASSETS_BASE_URL,
+    items::BATCH_SIZE,
     transport::{Get, SteamError, parse},
 };
 
@@ -95,6 +96,25 @@ struct Release {
 struct Assets {
     asset_url_format: Option<String>,
     header: Option<String>,
+    library_capsule: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CapsulesEnvelope {
+    response: CapsulesResponse,
+}
+
+#[derive(Deserialize)]
+struct CapsulesResponse {
+    #[serde(default)]
+    store_items: Vec<CapsuleItem>,
+}
+
+#[derive(Deserialize)]
+struct CapsuleItem {
+    id: u32,
+    success: u32,
+    assets: Option<Assets>,
 }
 
 #[derive(Deserialize)]
@@ -179,6 +199,29 @@ pub async fn get_item_details<S: Get>(
     parse_details(value)
 }
 
+pub async fn get_capsule_urls<S: Get>(
+    transport: &S,
+    ids: &[AppId],
+    language: &str,
+    country_code: &str,
+) -> Result<HashMap<AppId, String>, SteamError> {
+    let mut urls = HashMap::new();
+    for batch in ids.chunks(BATCH_SIZE) {
+        let input = json!({
+            "ids": batch.iter().map(|id| json!({ "appid": id.0 })).collect::<Vec<_>>(),
+            "context": { "language": language, "country_code": country_code },
+            "data_request": { "include_assets": true },
+        })
+        .to_string();
+
+        let value = transport
+            .get(ITEMS_ENDPOINT, &[("input_json", &input)], false)
+            .await?;
+        urls.extend(parse_capsules(value)?);
+    }
+    Ok(urls)
+}
+
 pub async fn get_store_categories<S: Get>(
     transport: &S,
     language: &str,
@@ -199,6 +242,22 @@ fn parse_details(value: Value) -> Result<Option<ItemDetails>, SteamError> {
         .next()
         .filter(|item| item.success == SUCCESS)
         .map(to_details))
+}
+
+fn parse_capsules(value: Value) -> Result<Vec<(AppId, String)>, SteamError> {
+    let envelope: CapsulesEnvelope = parse(ITEMS_ENDPOINT, value)?;
+
+    Ok(envelope
+        .response
+        .store_items
+        .into_iter()
+        .filter(|item| item.success == SUCCESS)
+        .filter_map(|item| {
+            let assets = item.assets?;
+            let url = asset_url(assets.asset_url_format?, &assets.library_capsule?);
+            Some((AppId(item.id), url))
+        })
+        .collect())
 }
 
 fn parse_categories(value: Value) -> Result<HashMap<u32, String>, SteamError> {
@@ -291,13 +350,11 @@ fn screenshot_url(filename: &str) -> String {
 }
 
 fn header_url(assets: Assets) -> Option<String> {
-    let format = assets.asset_url_format?;
-    let header = assets.header?;
+    Some(asset_url(assets.asset_url_format?, &assets.header?))
+}
 
-    Some(format!(
-        "{ASSETS_BASE_URL}{}",
-        format.replace("${FILENAME}", &header)
-    ))
+fn asset_url(format: String, file: &str) -> String {
+    format!("{ASSETS_BASE_URL}{}", format.replace("${FILENAME}", file))
 }
 
 #[cfg(test)]
@@ -472,6 +529,81 @@ mod tests {
             screenshot_url("steam/apps/692850/ss_63cc.jpg?t=1793353694"),
             format!("{ASSETS_BASE_URL}steam/apps/692850/ss_63cc.1920x1080.jpg?t=1793353694")
         );
+    }
+
+    #[test]
+    fn reads_the_capsule_with_a_hash_or_the_old_portrait() {
+        let capsules = parse_capsules(json!({ "response": { "store_items": [
+            { "id": 2_379_780, "success": 1, "assets": {
+                "asset_url_format": "steam/apps/2379780/${FILENAME}?t=1",
+                "library_capsule": "7a0f/library_capsule.jpg",
+            } },
+            { "id": 72_850, "success": 1, "assets": {
+                "asset_url_format": "steam/apps/72850/${FILENAME}?t=2",
+                "library_capsule": "portrait.png",
+            } },
+            { "id": 3, "success": 1, "assets": { "asset_url_format": "steam/apps/3/${FILENAME}" } },
+            { "id": 4, "success": 1 },
+            { "id": 5, "success": 2 },
+        ] } }))
+        .unwrap();
+
+        assert_eq!(
+            capsules,
+            [
+                (
+                    AppId(2_379_780),
+                    format!("{ASSETS_BASE_URL}steam/apps/2379780/7a0f/library_capsule.jpg?t=1")
+                ),
+                (
+                    AppId(72_850),
+                    format!("{ASSETS_BASE_URL}steam/apps/72850/portrait.png?t=2")
+                ),
+            ]
+        );
+    }
+
+    struct FakeSteam {
+        asked: std::sync::Mutex<Vec<usize>>,
+    }
+
+    impl Get for FakeSteam {
+        fn get(
+            &self,
+            _endpoint: &str,
+            params: &[(&str, &str)],
+            _needs_key: bool,
+        ) -> impl Future<Output = Result<Value, SteamError>> + Send {
+            let input: Value = serde_json::from_str(params[0].1).unwrap();
+            let ids = input["ids"].as_array().unwrap();
+            self.asked.lock().unwrap().push(ids.len());
+            let items: Vec<Value> = ids
+                .iter()
+                .map(|id| {
+                    json!({ "id": id["appid"], "success": 1, "assets": {
+                    "asset_url_format": "${FILENAME}",
+                    "library_capsule": "portrait.png",
+                } })
+                })
+                .collect();
+            async move { Ok(json!({ "response": { "store_items": items } })) }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_capsules_are_asked_in_batches() {
+        let steam = FakeSteam {
+            asked: std::sync::Mutex::new(Vec::new()),
+        };
+        let ids: Vec<AppId> = (1..=300).map(AppId).collect();
+
+        let urls = get_capsule_urls(&steam, &ids, "english", "IT")
+            .await
+            .unwrap();
+
+        assert_eq!(*steam.asked.lock().unwrap(), [260, 40]);
+        assert_eq!(urls.len(), 300);
+        assert_eq!(urls[&AppId(1)], format!("{ASSETS_BASE_URL}portrait.png"));
     }
 
     #[test]

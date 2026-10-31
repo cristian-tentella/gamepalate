@@ -14,6 +14,10 @@ pub fn header_url(id: AppId) -> String {
     format!("{ASSETS_BASE_URL}steam/apps/{}/header.jpg", id.0)
 }
 
+pub fn capsule_url(id: AppId) -> String {
+    format!("{ASSETS_BASE_URL}steam/apps/{}/library_600x900.jpg", id.0)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ImageError {
     #[error("{url} is not a valid image address")]
@@ -196,6 +200,14 @@ mod tests {
             body,
             requests: Mutex::new(Vec::new()),
         })
+    }
+
+    #[test]
+    fn the_capsule_is_the_vertical_cover_of_the_library() {
+        assert_eq!(
+            capsule_url(AppId(620)),
+            "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/620/library_600x900.jpg"
+        );
     }
 
     #[tokio::test]

@@ -7,7 +7,7 @@ use std::{
 
 use gamepalate_steam::{
     images::{ImageDownloader, ImageError},
-    transport::Fetch,
+    transport::{Fetch, SteamError},
 };
 use reqwest::Client;
 use sha2::{Digest, Sha256};
@@ -25,6 +25,12 @@ pub enum LoadImageError {
 
     #[error(transparent)]
     Download(#[from] ImageError),
+
+    #[error(transparent)]
+    Steam(#[from] SteamError),
+
+    #[error("could not read the image")]
+    Decode(#[from] image::ImageError),
 
     #[error("could not use the cached image {}", path.display())]
     Disk {

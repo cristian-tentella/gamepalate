@@ -32,6 +32,7 @@ use gamepalate_store::{
 };
 
 use crate::{
+    capsules::{Capsule, CapsuleFinder, capsule},
     data_dir,
     details::{GameDetails, StoreDetails},
     images::{ImageCache, LoadImageError},
@@ -54,6 +55,7 @@ pub struct Gamepalate {
     vectors: Vec<GameVector>,
     images: Arc<ImageCache>,
     store: Arc<StoreDetails>,
+    capsules: Arc<CapsuleFinder>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +84,11 @@ impl Gamepalate {
             Transport::new(None)?.with_interval(Duration::ZERO),
             files.config.region,
         );
+        let capsules = CapsuleFinder::new(
+            Transport::new(None)?.with_interval(Duration::ZERO),
+            files.config.region,
+            files.signals.ids(),
+        );
 
         Ok(Gamepalate {
             data_dir: dir,
@@ -92,6 +99,7 @@ impl Gamepalate {
             vectors,
             images: Arc::new(images),
             store: Arc::new(store),
+            capsules: Arc::new(capsules),
         })
     }
 
@@ -174,6 +182,10 @@ impl Gamepalate {
 
     pub async fn image(&self, url: &str) -> Result<Vec<u8>, LoadImageError> {
         self.images.image(url).await
+    }
+
+    pub async fn capsule(&self, id: AppId) -> Result<Capsule, LoadImageError> {
+        capsule(id, &self.images, &self.capsules).await
     }
 
     pub async fn details(&self, id: AppId) -> Result<Option<GameDetails>, SteamError> {
