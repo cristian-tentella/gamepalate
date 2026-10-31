@@ -4,7 +4,7 @@ use std::{
 };
 
 use gamepalate_app::{
-    Gamepalate, ThemeChoice, Timestamp,
+    Gamepalate, PendingUpdate, ThemeChoice, Timestamp,
     refresh::{Step, refresh},
     setup::FirstRun,
 };
@@ -12,7 +12,7 @@ use iced::{
     Center, Color, Element, Fill, Length, Shrink, Subscription, Task, Theme,
     futures::{SinkExt, channel::mpsc},
     keyboard::{self, Key},
-    mouse, padding, stream,
+    mouse, padding, stream, task,
     theme::Palette,
     widget::{
         button, column, container, mouse_area, progress_bar, row, space, stack, text, tooltip,
@@ -37,6 +37,7 @@ const CLOSE: char = '\u{E8BB}';
 const SUN: char = '\u{E706}';
 const MOON: char = '\u{E708}';
 const REFRESH: char = '\u{E72C}';
+const CANCEL: char = '\u{E711}';
 const DARK_BACKGROUND: Color = Color::from_rgb8(0x18, 0x19, 0x1c);
 
 pub struct App {
@@ -47,13 +48,15 @@ pub struct App {
     maximized: bool,
     last_bar_press: Option<Instant>,
     refresh: Refresh,
+    pending: Option<PendingUpdate>,
 }
 
 #[derive(Debug, Default)]
 enum Refresh {
     #[default]
     Idle,
-    Running(Refreshing),
+    Running(Refreshing, task::Handle),
+    Failed(String),
 }
 
 #[derive(Debug)]
@@ -80,6 +83,8 @@ pub enum Message {
     Refresh,
     Refreshing(Step),
     Refreshed(Result<Arc<Gamepalate>, String>),
+    CancelRefresh,
+    DismissRefreshError,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -108,6 +113,7 @@ impl App {
             maximized: false,
             last_bar_press: None,
             refresh: Refresh::Idle,
+            pending: None,
         };
         let task = match setup::start(FirstRun::check(None)) {
             Ok(gamepalate) => app.opened(gamepalate),
@@ -206,21 +212,43 @@ impl App {
             }
             Message::Refresh => self.start_refresh(),
             Message::Refreshing(step) => {
-                if let Refresh::Running(refreshing) = &mut self.refresh {
+                if let Refresh::Running(refreshing, _) = &mut self.refresh {
                     refreshing.advance(step, Instant::now());
                 }
                 Task::none()
             }
             Message::Refreshed(result) => {
                 self.refresh = Refresh::Idle;
-                let Ok(gamepalate) = result else {
-                    return Task::none();
+                let gamepalate = match result {
+                    Ok(gamepalate) => gamepalate,
+                    Err(error) => {
+                        self.refresh = Refresh::Failed(error);
+                        self.find_pending();
+                        return Task::none();
+                    }
                 };
                 self.gamepalate = Some(gamepalate);
+                self.find_pending();
                 match self.page() {
                     Some(page) => self.open(page),
                     None => Task::none(),
                 }
+            }
+            Message::CancelRefresh => {
+                if let Refresh::Running(refreshing, handle) = &self.refresh
+                    && refreshing.can_cancel()
+                {
+                    handle.abort();
+                    self.refresh = Refresh::Idle;
+                    self.find_pending();
+                }
+                Task::none()
+            }
+            Message::DismissRefreshError => {
+                if matches!(self.refresh, Refresh::Failed(_)) {
+                    self.refresh = Refresh::Idle;
+                }
+                Task::none()
             }
             Message::ToggleTheme => {
                 self.theme = toggled(&self.theme);
@@ -296,7 +324,7 @@ impl App {
                     .push(
                         self.gamepalate
                             .is_some()
-                            .then(|| refresh_button(matches!(self.refresh, Refresh::Idle))),
+                            .then(|| refresh_button(&self.refresh, self.pending)),
                     )
                     .push(theme_button(&self.theme))
                     .push(window_button(MINIMIZE, WindowAction::Minimize))
@@ -360,8 +388,10 @@ impl App {
     }
 
     fn status<'a>(&'a self, gamepalate: &Gamepalate) -> Element<'a, Message> {
-        let Refresh::Running(refreshing) = &self.refresh else {
-            return freshness(gamepalate);
+        let refreshing = match &self.refresh {
+            Refresh::Idle => return freshness(gamepalate),
+            Refresh::Failed(error) => return refresh_failed(error),
+            Refresh::Running(refreshing, _) => refreshing,
         };
         let bar = match refreshing {
             Refreshing::Catalog(tracker)
@@ -393,13 +423,12 @@ impl App {
         let Some(gamepalate) = &self.gamepalate else {
             return Task::none();
         };
-        if matches!(self.refresh, Refresh::Running(_)) {
+        if matches!(self.refresh, Refresh::Running(..)) {
             return Task::none();
         }
         let dir = gamepalate.data_dir().to_path_buf();
-        self.refresh = Refresh::Running(Refreshing::Catalog(Tracker::default()));
 
-        Task::run(
+        let (task, handle) = Task::run(
             stream::channel(64, async move |mut output: mpsc::Sender<Message>| {
                 let mut events = output.clone();
                 let result = refresh(&dir, move |step| {
@@ -412,6 +441,17 @@ impl App {
             }),
             |message| message,
         )
+        .abortable();
+        self.refresh = Refresh::Running(Refreshing::Catalog(Tracker::default()), handle);
+
+        task
+    }
+
+    fn find_pending(&mut self) {
+        self.pending = self
+            .gamepalate
+            .as_ref()
+            .and_then(|gamepalate| gamepalate.pending_update());
     }
 
     fn bar_pressed(&mut self) -> Task<Message> {
@@ -437,6 +477,7 @@ impl App {
         let prune_images = Task::future(async move { pruner.prune_images() }).discard();
         self.theme = theme(gamepalate.gui_settings().theme);
         self.gamepalate = Some(gamepalate);
+        self.find_pending();
 
         Task::batch([self.open(Page::Discover), prune_images])
     }
@@ -608,6 +649,10 @@ impl Refreshing {
             Step::Opening => *self = Refreshing::Opening,
         }
     }
+
+    fn can_cancel(&self) -> bool {
+        matches!(self, Refreshing::Catalog(tracker) if tracker.stage() != Stage::Writing)
+    }
 }
 
 fn refreshing_text(refreshing: &Refreshing) -> &'static str {
@@ -641,10 +686,53 @@ fn refreshing_count(refreshing: &Refreshing) -> Option<String> {
     })
 }
 
-fn refresh_button<'a>(idle: bool) -> Element<'a, Message> {
+fn refresh_tooltip(pending: Option<PendingUpdate>) -> String {
+    match pending {
+        Some(pending) => format!(
+            "Resume the update started on {}",
+            format::day_time(pending.started_at)
+        ),
+        None => "Update prices and Signals".to_string(),
+    }
+}
+
+fn refresh_failed<'a>(error: &str) -> Element<'a, Message> {
+    row![
+        tooltip(
+            text("Update stopped")
+                .size(font::NOTE_SIZE)
+                .style(text::danger),
+            container(text(error.to_string()).size(font::NOTE_SIZE))
+                .padding([6, 10])
+                .max_width(420)
+                .style(style::popup),
+            tooltip::Position::Bottom,
+        ),
+        button(text(CLOSE).font(font::ICONS).size(9))
+            .padding(0)
+            .style(style::link)
+            .on_press(Message::DismissRefreshError),
+    ]
+    .spacing(8)
+    .align_y(Center)
+    .into()
+}
+
+fn refresh_button<'a>(refresh: &Refresh, pending: Option<PendingUpdate>) -> Element<'a, Message> {
+    let (icon, message, tip) = match refresh {
+        Refresh::Running(refreshing, _) if refreshing.can_cancel() => (
+            CANCEL,
+            Some(Message::CancelRefresh),
+            "Stop the update: it resumes next time".to_string(),
+        ),
+        Refresh::Running(..) => (REFRESH, None, refresh_tooltip(pending)),
+        Refresh::Idle | Refresh::Failed(_) => {
+            (REFRESH, Some(Message::Refresh), refresh_tooltip(pending))
+        }
+    };
     let icon = button(
         container(
-            text(REFRESH)
+            text(icon)
                 .font(font::ICONS)
                 .size(14)
                 .width(Fill)
@@ -657,11 +745,11 @@ fn refresh_button<'a>(idle: bool) -> Element<'a, Message> {
     .height(Fill)
     .padding(0)
     .style(style::window_button)
-    .on_press_maybe(idle.then_some(Message::Refresh));
+    .on_press_maybe(message);
 
     tooltip(
         icon,
-        container(text("Update prices and Signals").size(font::NOTE_SIZE))
+        container(text(tip).size(font::NOTE_SIZE))
             .padding([6, 10])
             .style(style::popup),
         tooltip::Position::Bottom,
@@ -801,6 +889,42 @@ mod tests {
         assert_eq!(
             refreshing_count(&refreshing).as_deref(),
             Some("10 of 1,210 · About 20 minutes left")
+        );
+    }
+
+    #[test]
+    fn the_update_can_be_stopped_until_it_writes() {
+        let mut refreshing = Refreshing::Catalog(Tracker::default());
+        let now = Instant::now();
+        assert!(refreshing.can_cancel());
+
+        refreshing.advance(store_data(312, 757), now);
+        assert!(refreshing.can_cancel());
+
+        refreshing.advance(
+            Step::Catalog(gamepalate_app::update::Progress::Writing),
+            now,
+        );
+        assert!(!refreshing.can_cancel());
+
+        refreshing.advance(Step::Signals, now);
+        assert!(!refreshing.can_cancel());
+    }
+
+    #[test]
+    fn the_tooltip_offers_to_resume_a_pending_update() {
+        let started_at = Timestamp(1_793_369_460_000);
+
+        assert_eq!(refresh_tooltip(None), "Update prices and Signals");
+        assert_eq!(
+            refresh_tooltip(Some(PendingUpdate {
+                started_at,
+                responses: 3,
+            })),
+            format!(
+                "Resume the update started on {}",
+                format::day_time(started_at)
+            )
         );
     }
 
