@@ -5,7 +5,9 @@ use std::{
 
 use gamepalate_app::{Gamepalate, ThemeChoice, Timestamp, setup::FirstRun};
 use iced::{
-    Center, Color, Element, Fill, Length, Shrink, Subscription, Task, Theme, mouse, padding,
+    Center, Color, Element, Fill, Length, Shrink, Subscription, Task, Theme,
+    keyboard::{self, Key},
+    mouse, padding,
     theme::Palette,
     widget::{button, column, container, mouse_area, row, space, stack, text},
     window::{self, Direction},
@@ -94,6 +96,7 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Navigate(page) if self.page() == Some(page) => Task::none(),
             Message::Navigate(page) => self.open(page),
             Message::Discover(message) => {
                 if let Screen::Discover(screen) = &mut self.screen {
@@ -182,10 +185,15 @@ impl App {
         let screen = match &self.screen {
             Screen::Discover(_) => Discover::subscription().map(Message::Discover),
             Screen::Votes(_) => Votes::subscription().map(Message::Votes),
-            Screen::Setup(_) | Screen::Profile(_) | Screen::Starting => Subscription::none(),
+            Screen::Profile(_) => Profile::subscription().map(Message::Profile),
+            Screen::Setup(_) | Screen::Starting => Subscription::none(),
         };
 
-        Subscription::batch([window::resize_events().map(|_| Message::Resized), screen])
+        Subscription::batch([
+            window::resize_events().map(|_| Message::Resized),
+            keyboard::listen().filter_map(page_key),
+            screen,
+        ])
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -368,6 +376,22 @@ impl App {
     }
 }
 
+fn page_key(event: keyboard::Event) -> Option<Message> {
+    let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+        return None;
+    };
+    if !modifiers.command() {
+        return None;
+    }
+
+    match key.as_ref() {
+        Key::Character("1") => Some(Message::Navigate(Page::Discover)),
+        Key::Character("2") => Some(Message::Navigate(Page::Votes)),
+        Key::Character("3") => Some(Message::Navigate(Page::Profile)),
+        _ => None,
+    }
+}
+
 fn freshness<'a>(gamepalate: &Gamepalate) -> Element<'a, Message> {
     let now = Timestamp(jiff::Timestamp::now().as_millisecond());
     let signals = format::when(gamepalate.signals_read_at(), now);
@@ -515,6 +539,35 @@ fn resize_border<'a>(direction: Direction) -> Element<'a, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pressed(character: &str, modifiers: keyboard::Modifiers) -> keyboard::Event {
+        let key = Key::Character(character.into());
+        keyboard::Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            location: keyboard::Location::Standard,
+            modifiers,
+            text: None,
+            repeat: false,
+        }
+    }
+
+    #[test]
+    fn ctrl_and_a_number_open_a_tab() {
+        let page = |character, modifiers| match page_key(pressed(character, modifiers)) {
+            Some(Message::Navigate(page)) => Some(page),
+            _ => None,
+        };
+
+        assert_eq!(page("1", keyboard::Modifiers::CTRL), Some(Page::Discover));
+        assert_eq!(page("2", keyboard::Modifiers::CTRL), Some(Page::Votes));
+        assert_eq!(page("3", keyboard::Modifiers::CTRL), Some(Page::Profile));
+        assert_eq!(page("3", keyboard::Modifiers::empty()), None);
+        assert_eq!(page("4", keyboard::Modifiers::CTRL), None);
+    }
 
     #[test]
     fn the_theme_goes_from_light_to_dark_and_back() {

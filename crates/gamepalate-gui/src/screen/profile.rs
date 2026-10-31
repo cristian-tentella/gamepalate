@@ -5,8 +5,12 @@ use gamepalate_app::{
     ProfileView, SignalsConfig, TagView, TasteView, Timestamp, VoteKind, VotedGame, VotesView,
 };
 use iced::{
-    Center, Color, Element, Fill, Length, Task, Theme, padding,
-    widget::{button, column, container, progress_bar, row, scrollable, space, text, tooltip},
+    Center, Color, Element, Fill, Length, Subscription, Task, Theme,
+    keyboard::{self, Key, key::Named},
+    padding,
+    widget::{
+        button, column, container, progress_bar, responsive, row, scrollable, space, text, tooltip,
+    },
 };
 
 use super::{
@@ -22,6 +26,7 @@ const SOURCES: [HoursSource; 4] = [
     HoursSource::WouldTry,
 ];
 const FIRST_TAGS: usize = 12;
+const STACK_WIDTH: f32 = 1100.0;
 const VOTE_KINDS: [VoteKind; 4] = [
     VoteKind::WouldTry,
     VoteKind::Maybe,
@@ -57,6 +62,7 @@ pub struct Profile {
     voted: BTreeMap<AppId, VotedGame>,
     open_correction: Option<Correction>,
     open_tag: Option<usize>,
+    selected_tag: Option<usize>,
     all_tags: bool,
     showcase: Showcase,
 }
@@ -65,6 +71,9 @@ pub struct Profile {
 pub enum Message {
     ToggleTag(usize),
     ToggleAllTags,
+    PreviousTag,
+    NextTag,
+    ToggleSelectedTag,
     DiscoverFamily(String),
     OpenVotes(Filter),
     ToggleCorrection(Correction),
@@ -86,6 +95,7 @@ impl Profile {
             voted: by_id(gamepalate.voted_games()),
             open_correction: None,
             open_tag: None,
+            selected_tag: None,
             all_tags: false,
             showcase: Showcase::new(gamepalate),
         };
@@ -103,12 +113,25 @@ impl Profile {
     fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::ToggleTag(index) => {
+                self.selected_tag = Some(index);
                 self.open_tag = (self.open_tag != Some(index)).then_some(index);
             }
             Message::ToggleAllTags => {
                 self.all_tags = !self.all_tags;
-                if self.open_tag.is_some_and(|index| index >= FIRST_TAGS) {
-                    self.open_tag = None;
+                let shown = self.shown_tags();
+                let visible = |tag: Option<usize>| tag.filter(|&index| index < shown);
+                self.open_tag = visible(self.open_tag);
+                self.selected_tag = visible(self.selected_tag);
+            }
+            Message::PreviousTag => {
+                self.selected_tag = moved(self.selected_tag, self.shown_tags(), false);
+            }
+            Message::NextTag => {
+                self.selected_tag = moved(self.selected_tag, self.shown_tags(), true);
+            }
+            Message::ToggleSelectedTag => {
+                if let Some(index) = self.selected_tag {
+                    self.open_tag = (self.open_tag != Some(index)).then_some(index);
                 }
             }
             Message::DiscoverFamily(_) | Message::OpenVotes(_) => {}
@@ -145,7 +168,24 @@ impl Profile {
         self.showcase.load_headers(&ids).map(Message::Showcase)
     }
 
+    pub fn subscription() -> Subscription<Message> {
+        keyboard::listen().filter_map(key_message)
+    }
+
+    fn shown_tags(&self) -> usize {
+        let tags = self.view.taste.as_ref().map_or(0, |taste| taste.tags.len());
+        if self.all_tags {
+            tags
+        } else {
+            tags.min(FIRST_TAGS)
+        }
+    }
+
     pub fn view(&self) -> Element<'_, Message> {
+        responsive(move |size| self.layout(size.width)).into()
+    }
+
+    fn layout(&self, width: f32) -> Element<'_, Message> {
         let taste = match &self.view.taste {
             Some(taste) => self.taste(taste),
             None => text(no_taste_text(self.view.hours.min_hours))
@@ -161,17 +201,20 @@ impl Profile {
             .push((!self.view.corrections.is_empty()).then(|| self.corrections()))
             .spacing(32);
 
+        let columns: Element<'_, Message> = if stacked(width) {
+            column![taste, side].spacing(32).into()
+        } else {
+            row![
+                container(taste).width(Fill),
+                container(side).width(SIDE_WIDTH),
+            ]
+            .spacing(32)
+            .into()
+        };
+
         scrollable(
             column![
-                container(
-                    row![
-                        container(taste).width(Fill),
-                        container(side).width(SIDE_WIDTH),
-                    ]
-                    .spacing(32),
-                )
-                .padding(24)
-                .width(Fill),
+                container(columns).padding(24).width(Fill),
                 style::separator(),
                 container(self.data()).padding([12, 24]).width(Fill),
             ]
@@ -182,18 +225,17 @@ impl Profile {
     }
 
     fn taste<'a>(&'a self, taste: &'a TasteView) -> Element<'a, Message> {
-        let shown = if self.all_tags {
-            taste.tags.len()
-        } else {
-            taste.tags.len().min(FIRST_TAGS)
-        };
+        let shown = self.shown_tags();
         let top = top_weight(&taste.tags);
-        let tags = column(
-            taste.tags[..shown]
-                .iter()
-                .enumerate()
-                .map(|(index, tag)| tag_row(index, tag, top, self.open_tag == Some(index))),
-        )
+        let tags = column(taste.tags[..shown].iter().enumerate().map(|(index, tag)| {
+            tag_row(
+                index,
+                tag,
+                top,
+                self.open_tag == Some(index),
+                self.selected_tag == Some(index),
+            )
+        }))
         .spacing(2);
         let more = (taste.tags.len() > FIRST_TAGS).then(|| {
             button(text(more_tags_label(taste.tags.len(), self.all_tags)).size(font::BAR_SIZE))
@@ -601,6 +643,37 @@ fn data_text(view: &ProfileView, now: Timestamp) -> String {
     )
 }
 
+fn key_message(event: keyboard::Event) -> Option<Message> {
+    let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+        return None;
+    };
+    if modifiers.command() {
+        return None;
+    }
+
+    match key {
+        Key::Named(Named::ArrowUp) => Some(Message::PreviousTag),
+        Key::Named(Named::ArrowDown) => Some(Message::NextTag),
+        Key::Named(Named::Enter) => Some(Message::ToggleSelectedTag),
+        _ => None,
+    }
+}
+
+fn moved(selected: Option<usize>, shown: usize, down: bool) -> Option<usize> {
+    if shown == 0 {
+        return None;
+    }
+    Some(match (selected, down) {
+        (None, _) => 0,
+        (Some(index), true) => (index + 1).min(shown - 1),
+        (Some(index), false) => index.saturating_sub(1).min(shown - 1),
+    })
+}
+
+fn stacked(width: f32) -> bool {
+    width < STACK_WIDTH
+}
+
 fn more_games(games: usize) -> Option<String> {
     (games > FAMILY_HEADERS).then(|| format!("+{}", games - FAMILY_HEADERS))
 }
@@ -678,7 +751,13 @@ fn sources<'a>(taste: &TasteView, hours: &SignalsConfig) -> Element<'a, Message>
     column![bar, legend].spacing(8).into()
 }
 
-fn tag_row(index: usize, tag: &TagView, top: f64, open: bool) -> Element<'_, Message> {
+fn tag_row(
+    index: usize,
+    tag: &TagView,
+    top: f64,
+    open: bool,
+    selected: bool,
+) -> Element<'_, Message> {
     let (solid, ghost, rest) = bar_portions(tag.weight, tag.weight_before, top);
     let bar = row![]
         .push((solid > 0).then(|| {
@@ -718,7 +797,7 @@ fn tag_row(index: usize, tag: &TagView, top: f64, open: bool) -> Element<'_, Mes
     let header = button(line)
         .width(Fill)
         .padding([6, 8])
-        .style(style::list_row(false))
+        .style(style::list_row(selected))
         .on_press(Message::ToggleTag(index));
 
     let below = padding::left(TAG_NAME_WIDTH + 18.0);
@@ -1220,6 +1299,58 @@ mod tests {
     fn the_hidden_games_are_counted() {
         assert_eq!(hidden_text(1), "1 hidden game");
         assert_eq!(hidden_text(94), "94 hidden games");
+    }
+
+    #[test]
+    fn the_arrows_move_through_the_shown_tags() {
+        assert_eq!(moved(None, 12, true), Some(0));
+        assert_eq!(moved(None, 12, false), Some(0));
+        assert_eq!(moved(Some(3), 12, true), Some(4));
+        assert_eq!(moved(Some(11), 12, true), Some(11));
+        assert_eq!(moved(Some(0), 12, false), Some(0));
+        assert_eq!(moved(Some(20), 12, false), Some(11));
+        assert_eq!(moved(None, 0, true), None);
+    }
+
+    fn pressed(key: Key, modifiers: keyboard::Modifiers) -> keyboard::Event {
+        keyboard::Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            location: keyboard::Location::Standard,
+            modifiers,
+            text: None,
+            repeat: false,
+        }
+    }
+
+    #[test]
+    fn the_keys_move_and_open_the_tags() {
+        let key = |named| key_message(pressed(Key::Named(named), keyboard::Modifiers::empty()));
+
+        assert!(matches!(key(Named::ArrowUp), Some(Message::PreviousTag)));
+        assert!(matches!(key(Named::ArrowDown), Some(Message::NextTag)));
+        assert!(matches!(
+            key(Named::Enter),
+            Some(Message::ToggleSelectedTag)
+        ));
+        assert!(key(Named::Escape).is_none());
+        assert!(
+            key_message(pressed(
+                Key::Named(Named::ArrowDown),
+                keyboard::Modifiers::CTRL
+            ))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_narrow_window_puts_the_columns_one_under_the_other() {
+        assert!(stacked(1000.0));
+        assert!(!stacked(1100.0));
+        assert!(!stacked(1280.0));
     }
 
     #[test]
