@@ -387,3 +387,16 @@ pub fn toast_link(theme: &Theme, status: button::Status) -> button::Style {
         ..button::Style::default()
     }
 }
+
+pub fn capsule_selected(theme: &Theme) -> container::Style {
+    let primary = theme.extended_palette().primary.base;
+
+    container::Style {
+        border: Border {
+            color: primary.color,
+            width: 3.0,
+            radius: 6.0.into(),
+        },
+        ..container::Style::default()
+    }
+}

@@ -129,6 +129,14 @@ impl App {
                 self.screen = Screen::Discover(Box::new(discover));
                 task.map(Message::Discover)
             }
+            Message::Profile(profile::Message::OpenInLibrary(id)) => {
+                let Some(gamepalate) = &self.gamepalate else {
+                    return Task::none();
+                };
+                let (library, task) = Library::showing(gamepalate, id);
+                self.screen = Screen::Library(Box::new(library));
+                task.map(Message::Library)
+            }
             Message::Profile(profile::Message::OpenVotes(filter)) => {
                 let Some(gamepalate) = &self.gamepalate else {
                     return Task::none();

@@ -5,7 +5,7 @@ use gamepalate_app::{
 };
 use iced::{
     Center, ContentFit, Element, Fill, Size, Subscription, Task,
-    keyboard::{self, Key},
+    keyboard::{self, Key, key::Named},
     mouse,
     widget::{
         Id, button, checkbox, column, container, image, mouse_area, opaque, operation, pick_list,
@@ -49,6 +49,8 @@ pub struct Library {
     data_dir: PathBuf,
     view: LibraryView,
     open: Option<AppId>,
+    selected: Option<AppId>,
+    reveal_pending: bool,
     last_correction: Option<(AppId, GameCorrection)>,
     toast: Option<Toast>,
     toasts_shown: u64,
@@ -73,6 +75,14 @@ enum Choice {
     Half,
     Not,
     Custom(f64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Move {
+    Left,
+    Right,
+    Up,
+    Down,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -101,6 +111,10 @@ pub enum Message {
     CapsuleAllocated(AppId, Option<image::Allocation>),
     Open(AppId),
     Close,
+    Move(Move),
+    OpenSelected,
+    Pick(usize),
+    FocusSearch,
     Correct(AppId, GameCorrection),
     Corrected(AppId, GameCorrection, Result<GameCorrection, String>),
     Undo,
@@ -122,6 +136,8 @@ impl Library {
             data_dir: gamepalate.data_dir().to_path_buf(),
             view: gamepalate.library_view(),
             open: None,
+            selected: None,
+            reveal_pending: false,
             last_correction: None,
             toast: None,
             toasts_shown: 0,
@@ -140,6 +156,17 @@ impl Library {
         let task = library.load();
 
         (library, Task::batch([window_size, task]))
+    }
+
+    pub fn showing(gamepalate: &Arc<Gamepalate>, id: AppId) -> (Library, Task<Message>) {
+        let (mut library, task) = Library::new(gamepalate);
+        if library.game(id).is_some() {
+            library.open = Some(id);
+            library.selected = Some(id);
+            library.reveal_pending = true;
+        }
+
+        (library, task)
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -169,6 +196,9 @@ impl Library {
             }
             Message::WindowResized(size) => {
                 self.area = Size::new(size.width, (size.height - CHROME_HEIGHT).max(0.0));
+                if std::mem::take(&mut self.reveal_pending) {
+                    return self.reveal_selected();
+                }
             }
             Message::CapsuleLoaded(id, None) => self.capsules.loaded(id, None),
             Message::CapsuleLoaded(id, Some(handle)) => {
@@ -176,8 +206,46 @@ impl Library {
                     .map(move |allocation| Message::CapsuleAllocated(id, allocation.ok()));
             }
             Message::CapsuleAllocated(id, allocation) => self.capsules.loaded(id, allocation),
-            Message::Open(id) => self.open = Some(id),
+            Message::Open(id) => {
+                self.open = Some(id);
+                self.selected = Some(id);
+            }
             Message::Close => self.open = None,
+            Message::Move(direction) => {
+                let rows = self.rows(self.area.width);
+                let position = self.selected_position();
+                let Some(next) = moved(&rows, position, direction) else {
+                    return Task::none();
+                };
+                let id = self.view.games[self.shown[next]].id;
+                self.selected = Some(id);
+                if self.open.is_some() {
+                    self.open = Some(id);
+                }
+                return self.reveal_selected();
+            }
+            Message::OpenSelected => {
+                if self.selected_position().is_some() {
+                    self.open = self.selected;
+                }
+            }
+            Message::Pick(index) => {
+                let view = &self.view;
+                let Some(game) = self.open.and_then(|id| self.game(id)) else {
+                    return Task::none();
+                };
+                let choice = [Choice::Fully, Choice::Half, Choice::Not][index.min(2)];
+                if game.hours >= view.min_hours
+                    && choice != selected_choice(game.correction.multiplier, view.dampen)
+                {
+                    let correction = GameCorrection {
+                        multiplier: choice_multiplier(choice, view.dampen),
+                        ..game.correction
+                    };
+                    return self.update(Message::Correct(game.id, correction));
+                }
+            }
+            Message::FocusSearch => return operation::focus(SEARCH),
             Message::Correct(id, correction) => {
                 let gamepalate = Arc::clone(&self.gamepalate);
                 return Task::perform(
@@ -247,15 +315,18 @@ impl Library {
     fn reload(&mut self) -> Task<Message> {
         self.view = self.gamepalate.library_view();
         self.shown = shown(&self.view.games, self.filter, self.sort, &self.search);
-        self.reveal_open()
+        self.reveal_selected()
     }
 
-    fn reveal_open(&mut self) -> Task<Message> {
-        let Some(position) = self.open.and_then(|id| {
-            self.shown
-                .iter()
-                .position(|&index| self.view.games[index].id == id)
-        }) else {
+    fn selected_position(&self) -> Option<usize> {
+        let id = self.selected?;
+        self.shown
+            .iter()
+            .position(|&index| self.view.games[index].id == id)
+    }
+
+    fn reveal_selected(&mut self) -> Task<Message> {
+        let Some(position) = self.selected_position() else {
             return Task::none();
         };
         let rows = self.rows(self.area.width);
@@ -380,7 +451,7 @@ impl Library {
             pick_list(SORTS, Some(self.sort), Message::Sort)
                 .text_size(font::NOTE_SIZE)
                 .padding([4, 8]),
-            text_input("Search by name", &self.search)
+            text_input("Search by name (Ctrl+F)", &self.search)
                 .id(SEARCH)
                 .on_input(Message::Search)
                 .size(font::NOTE_SIZE)
@@ -536,10 +607,17 @@ impl Library {
             space().height(Fill),
             strip,
         ];
+        let frame = (self.selected == Some(game.id)).then(|| {
+            container(space())
+                .width(TILE_WIDTH)
+                .height(TILE_HEIGHT)
+                .style(style::capsule_selected)
+        });
 
         tooltip(
             mouse_area(
                 stack![picture, overlay]
+                    .push(frame)
                     .width(TILE_WIDTH)
                     .height(TILE_HEIGHT),
             )
@@ -653,8 +731,54 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         return None;
     };
 
-    (modifiers.command() && matches!(key.as_ref(), Key::Character("z" | "Z")))
-        .then_some(Message::Undo)
+    if modifiers.command() {
+        return match key.as_ref() {
+            Key::Character("z" | "Z") => Some(Message::Undo),
+            Key::Character("f" | "F") => Some(Message::FocusSearch),
+            _ => None,
+        };
+    }
+
+    match key.as_ref() {
+        Key::Named(Named::ArrowLeft) => Some(Message::Move(Move::Left)),
+        Key::Named(Named::ArrowRight) => Some(Message::Move(Move::Right)),
+        Key::Named(Named::ArrowUp) => Some(Message::Move(Move::Up)),
+        Key::Named(Named::ArrowDown) => Some(Message::Move(Move::Down)),
+        Key::Named(Named::Enter) => Some(Message::OpenSelected),
+        Key::Named(Named::Escape) => Some(Message::Close),
+        Key::Character("1") => Some(Message::Pick(0)),
+        Key::Character("2") => Some(Message::Pick(1)),
+        Key::Character("3") => Some(Message::Pick(2)),
+        _ => None,
+    }
+}
+
+fn moved(rows: &[Row], position: Option<usize>, direction: Move) -> Option<usize> {
+    let games: Vec<&Range<usize>> = rows
+        .iter()
+        .filter_map(|row| match row {
+            Row::Games(games) => Some(games),
+            Row::Divider => None,
+        })
+        .collect();
+    let last = games.last()?.end.checked_sub(1)?;
+    let Some(position) = position else {
+        return Some(0);
+    };
+    let line = games.iter().position(|games| games.contains(&position))?;
+    let column = position - games[line].start;
+    let at = |line: usize| {
+        let games = games[line];
+        games.start + column.min(games.len() - 1)
+    };
+
+    Some(match direction {
+        Move::Left => position.saturating_sub(1),
+        Move::Right => (position + 1).min(last),
+        Move::Up if line > 0 => at(line - 1),
+        Move::Down if line + 1 < games.len() => at(line + 1),
+        Move::Up | Move::Down => position,
+    })
 }
 
 fn handle(capsule: Capsule) -> image::Handle {
@@ -1335,11 +1459,10 @@ mod tests {
         assert_eq!(reveal_offset(&rows, 99, 0.0, 600.0), None);
     }
 
-    #[test]
-    fn ctrl_z_undoes_the_last_correction() {
-        let pressed = |character: &str, modifiers| keyboard::Event::KeyPressed {
-            key: Key::Character(character.into()),
-            modified_key: Key::Character(character.into()),
+    fn pressed(key: Key, modifiers: keyboard::Modifiers) -> keyboard::Event {
+        keyboard::Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
             physical_key: keyboard::key::Physical::Unidentified(
                 keyboard::key::NativeCode::Unidentified,
             ),
@@ -1347,13 +1470,62 @@ mod tests {
             modifiers,
             text: None,
             repeat: false,
-        };
+        }
+    }
+
+    fn character(character: &str, modifiers: keyboard::Modifiers) -> Option<Message> {
+        key_message(pressed(Key::Character(character.into()), modifiers))
+    }
+
+    fn named(named: Named) -> Option<Message> {
+        key_message(pressed(Key::Named(named), keyboard::Modifiers::empty()))
+    }
+
+    #[test]
+    fn ctrl_z_undoes_and_ctrl_f_searches() {
+        let ctrl = keyboard::Modifiers::CTRL;
+
+        assert!(matches!(character("z", ctrl), Some(Message::Undo)));
+        assert!(matches!(character("f", ctrl), Some(Message::FocusSearch)));
+        assert!(character("z", keyboard::Modifiers::empty()).is_none());
+        assert!(character("1", ctrl).is_none());
+    }
+
+    #[test]
+    fn the_keys_move_open_close_and_choose() {
+        let none = keyboard::Modifiers::empty();
 
         assert!(matches!(
-            key_message(pressed("z", keyboard::Modifiers::CTRL)),
-            Some(Message::Undo)
+            named(Named::ArrowDown),
+            Some(Message::Move(Move::Down))
         ));
-        assert!(key_message(pressed("z", keyboard::Modifiers::empty())).is_none());
+        assert!(matches!(
+            named(Named::ArrowLeft),
+            Some(Message::Move(Move::Left))
+        ));
+        assert!(matches!(named(Named::Enter), Some(Message::OpenSelected)));
+        assert!(matches!(named(Named::Escape), Some(Message::Close)));
+        assert!(matches!(character("1", none), Some(Message::Pick(0))));
+        assert!(matches!(character("3", none), Some(Message::Pick(2))));
+        assert!(character("4", none).is_none());
+    }
+
+    #[test]
+    fn the_arrows_walk_the_grid_across_the_divider() {
+        let rows = rows(5, 9, 4, true);
+        let to = |position, direction| moved(&rows, position, direction);
+
+        assert_eq!(to(None, Move::Down), Some(0));
+        assert_eq!(to(Some(0), Move::Left), Some(0));
+        assert_eq!(to(Some(3), Move::Right), Some(4));
+        assert_eq!(to(Some(8), Move::Right), Some(8));
+        assert_eq!(to(Some(2), Move::Down), Some(4));
+        assert_eq!(to(Some(4), Move::Down), Some(5));
+        assert_eq!(to(Some(7), Move::Up), Some(4));
+        assert_eq!(to(Some(5), Move::Up), Some(4));
+        assert_eq!(to(Some(1), Move::Up), Some(1));
+        assert_eq!(to(Some(6), Move::Down), Some(6));
+        assert_eq!(moved(&[], None, Move::Down), None);
     }
 
     #[test]

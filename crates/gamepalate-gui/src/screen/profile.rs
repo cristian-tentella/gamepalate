@@ -7,9 +7,10 @@ use gamepalate_app::{
 use iced::{
     Center, Color, Element, Fill, Length, Subscription, Task, Theme,
     keyboard::{self, Key, key::Named},
-    padding,
+    mouse, padding,
     widget::{
-        button, column, container, progress_bar, responsive, row, scrollable, space, text, tooltip,
+        button, column, container, mouse_area, progress_bar, responsive, row, scrollable, space,
+        text, tooltip,
     },
 };
 
@@ -76,6 +77,7 @@ pub enum Message {
     ToggleSelectedTag,
     DiscoverFamily(String),
     OpenVotes(Filter),
+    OpenInLibrary(AppId),
     ToggleCorrection(Correction),
     OpenDataFolder,
     Showcase(showcase::Message),
@@ -134,7 +136,7 @@ impl Profile {
                     self.open_tag = (self.open_tag != Some(index)).then_some(index);
                 }
             }
-            Message::DiscoverFamily(_) | Message::OpenVotes(_) => {}
+            Message::DiscoverFamily(_) | Message::OpenVotes(_) | Message::OpenInLibrary(_) => {}
             Message::ToggleCorrection(correction) => {
                 self.open_correction =
                     (self.open_correction != Some(correction)).then_some(correction);
@@ -265,10 +267,20 @@ impl Profile {
 impl Profile {
     fn shaping<'a>(&'a self, taste: &'a TasteView) -> Element<'a, Message> {
         let games = row(taste.shaping_games.iter().map(|game| {
+            let header = self
+                .showcase
+                .header(game.id, HEADER_WIDTH, HEADER_HEIGHT)
+                .map(Message::Showcase);
+            let header: Element<'_, Message> = if in_library(game) {
+                mouse_area(header)
+                    .interaction(mouse::Interaction::Pointer)
+                    .on_press(Message::OpenInLibrary(game.id))
+                    .into()
+            } else {
+                header
+            };
             column![
-                self.showcase
-                    .header(game.id, HEADER_WIDTH, HEADER_HEIGHT)
-                    .map(Message::Showcase),
+                header,
                 text(&game.name).size(font::NOTE_SIZE),
                 text(game_hours(game))
                     .size(font::NOTE_SIZE)
@@ -479,7 +491,7 @@ impl Profile {
         column![
             row![
                 section_title("Corrections"),
-                text("edit with the gamepalate CLI")
+                text("games in Library, tags with the CLI")
                     .size(font::NOTE_SIZE)
                     .style(style::muted),
             ]
@@ -814,6 +826,15 @@ fn tag_row(
         .spacing(6)
         .align_y(Center);
 
+        let warning: Element<'_, Message> = if in_library(game) {
+            button(warning)
+                .padding(0)
+                .style(style::link)
+                .on_press(Message::OpenInLibrary(game.id))
+                .into()
+        } else {
+            warning.into()
+        };
         container(tooltip(
             warning,
             container(text(dampen_hint(game)).size(font::NOTE_SIZE))
@@ -1001,11 +1022,19 @@ fn games_line(tag: &TagView) -> String {
     parts.join(" · ")
 }
 
+fn in_library(game: &HoursGame) -> bool {
+    game.source != HoursSource::WouldTry
+}
+
 fn dampen_hint(game: &HoursGame) -> String {
-    format!(
-        "If this game shouldn't shape your taste: gamepalate dampen --game {}",
-        game.id.0
-    )
+    if in_library(game) {
+        "Open it in Library to make it count less.".to_string()
+    } else {
+        format!(
+            "{} is a game you would try: change its vote in Votes.",
+            game.name
+        )
+    }
 }
 
 fn no_taste_text(min_hours: f64) -> String {
@@ -1187,11 +1216,16 @@ mod tests {
     }
 
     #[test]
-    fn the_dominant_game_comes_with_the_command_to_dampen_it() {
+    fn the_dominant_game_opens_in_library() {
         assert_eq!(
             dampen_hint(&game("Call of Duty", 300.0, HoursSource::Played)),
-            "If this game shouldn't shape your taste: gamepalate dampen --game 202990"
+            "Open it in Library to make it count less."
         );
+        assert_eq!(
+            dampen_hint(&game("Hades", 1.0, HoursSource::WouldTry)),
+            "Hades is a game you would try: change its vote in Votes."
+        );
+        assert!(!in_library(&game("Hades", 1.0, HoursSource::WouldTry)));
     }
 
     #[test]
