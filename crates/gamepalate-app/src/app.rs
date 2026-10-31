@@ -34,6 +34,7 @@ use crate::{
     data_dir,
     details::{GameDetails, StoreDetails},
     images::{ImageCache, LoadImageError},
+    profile::{ProfileView, profile_view},
 };
 
 pub(crate) const GUI_FILE: &str = "gui.toml";
@@ -171,6 +172,18 @@ impl Gamepalate {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         change_settings(&self.data_dir.join(GUI_FILE), change)
+    }
+
+    pub fn profile_view(&self) -> ProfileView {
+        let votes = self.lock_votes();
+        profile_view(&SearchInputs {
+            votes: &votes,
+            ..self.files.search_inputs(&self.vectors)
+        })
+    }
+
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
     }
 
     pub fn family_names(&self) -> Vec<String> {
