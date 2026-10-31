@@ -8,6 +8,7 @@ pub mod library;
 pub mod names;
 pub mod profile;
 pub mod ready;
+pub mod refresh;
 pub mod setup;
 pub mod signals;
 pub mod update;

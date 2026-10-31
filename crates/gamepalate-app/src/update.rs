@@ -17,7 +17,7 @@ use gamepalate_core::{
 };
 use gamepalate_steam::{
     apps::get_app_list,
-    archive::{Archive, ArchivedUpdate},
+    archive::{Archive, ArchivedUpdate, PendingUpdate},
     items::{archived_batches, batch_count, item_batches},
     tags::get_tags,
     transport::{Get, SteamError, Transport},
@@ -198,13 +198,24 @@ pub async fn download_catalog(
     data_dir: &Path,
     progress: impl FnMut(Progress),
 ) -> Result<Updated, UpdateError> {
-    let config = match load_config(&data_dir.join("config.toml")) {
-        Err(ConfigError::NotFound(_)) => Config::default(),
-        config => config?,
-    };
+    let config = update_config(data_dir)?;
     let transport = Transport::new(steam_api_key())?;
 
     update_catalog(data_dir, &transport, &config, progress).await
+}
+
+pub(crate) fn update_config(data_dir: &Path) -> Result<Config, UpdateError> {
+    match load_config(&data_dir.join("config.toml")) {
+        Err(ConfigError::NotFound(_)) => Ok(Config::default()),
+        config => Ok(config?),
+    }
+}
+
+pub fn pending_update(data_dir: &Path, config: &Config) -> Option<PendingUpdate> {
+    archive(data_dir)
+        .pending_update(wall_clock(), config.prices_max_age_hours, config.region)
+        .ok()
+        .flatten()
 }
 
 pub async fn rebuild_catalog(data_dir: &Path) -> Result<Rebuilt, UpdateError> {
@@ -758,6 +769,23 @@ mod tests {
         assert_eq!(steam.asked_items(), [1]);
         assert_eq!(manifests(data.path()).len(), 1);
         assert_eq!(manifests(data.path())[0]["full"], true);
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_update_is_pending_until_it_completes() {
+        let data = tempfile::tempdir().unwrap();
+        let config = Config::default();
+        assert_eq!(pending_update(data.path(), &config), None);
+
+        let interrupted = FakeSteam::failing(&apps(600), Failure::DownAfterOneBatch);
+        run_update(data.path(), &interrupted).await.unwrap_err();
+        let pending = pending_update(data.path(), &config).unwrap();
+        run_update(data.path(), &FakeSteam::new(&apps(600)))
+            .await
+            .unwrap();
+
+        assert!(pending.responses > 0);
+        assert_eq!(pending_update(data.path(), &config), None);
     }
 
     #[tokio::test]

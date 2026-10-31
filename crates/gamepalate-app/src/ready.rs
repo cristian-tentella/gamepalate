@@ -54,7 +54,7 @@ pub async fn check_ready(
     check_ready_with(data_dir, &transport, read_signals_again, wall_clock()).await
 }
 
-async fn check_ready_with<S: Get>(
+pub(crate) async fn check_ready_with<S: Get>(
     data_dir: &Path,
     steam: &S,
     read_signals_again: bool,

@@ -22,6 +22,7 @@ use gamepalate_core::{
     votes::{Vote, VoteKind, Votes, cast},
 };
 use gamepalate_steam::{
+    archive::PendingUpdate,
     images::{ImageDownloader, ImageError, header_url},
     transport::{SteamError, Transport},
 };
@@ -41,6 +42,7 @@ use crate::{
         library_view,
     },
     profile::{ProfileView, profile_view},
+    update,
 };
 
 pub(crate) const GUI_FILE: &str = "gui.toml";
@@ -280,6 +282,10 @@ impl Gamepalate {
 
     pub fn prices_updated_at(&self) -> Timestamp {
         self.files.catalog.freshness.prices_updated_at
+    }
+
+    pub fn pending_update(&self) -> Option<PendingUpdate> {
+        update::pending_update(&self.data_dir, &self.files.config)
     }
 
     pub fn currency(&self) -> &Currency {

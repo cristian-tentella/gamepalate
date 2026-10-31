@@ -16,7 +16,7 @@ use crate::{
     account::steam_api_key,
     app::{GUI_FILE, change_settings},
     data_dir,
-    update::{archive, wall_clock},
+    update::pending_update,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,10 +109,7 @@ fn first_run(data_dir: Option<PathBuf>, api_key: bool) -> FirstRun {
         } else {
             Part::Missing
         },
-        pending_update: archive(&dir)
-            .pending_update(wall_clock(), settings.prices_max_age_hours, settings.region)
-            .ok()
-            .flatten(),
+        pending_update: pending_update(&dir, &settings),
         resume_within_hours: settings.prices_max_age_hours,
         signals: signals(&dir),
         data_dir: Some(dir),
@@ -142,6 +139,7 @@ mod tests {
     use gamepalate_store::gui::ThemeChoice;
 
     use super::*;
+    use crate::update::{archive, wall_clock};
 
     const STEAM_ID: &str = "steam_id = \"76561198000000000\"\n";
     const SIGNALS: &str = r#"{"readAt":1793000000000,"library":[{"appid":1,"totalHours":3.0}],"recent":[],"wishlist":[],"followed":null}"#;
