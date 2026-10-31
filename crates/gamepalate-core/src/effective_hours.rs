@@ -7,45 +7,91 @@ use crate::{
     votes::{VoteKind, Votes},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HoursSource {
+    Played,
+    Followed,
+    Wishlist,
+    WouldTry,
+}
+
 pub fn effective_hours(
     signals: &Signals,
     votes: &Votes,
     signals_config: &SignalsConfig,
 ) -> BTreeMap<AppId, f64> {
-    let mut hours: BTreeMap<AppId, f64> = signals
+    hours_by_source(signals, votes, signals_config)
+        .into_iter()
+        .map(|(id, (hours, _))| (id, hours))
+        .collect()
+}
+
+pub fn hours_by_source(
+    signals: &Signals,
+    votes: &Votes,
+    signals_config: &SignalsConfig,
+) -> BTreeMap<AppId, (f64, HoursSource)> {
+    let mut hours: BTreeMap<AppId, (f64, HoursSource)> = signals
         .library
         .iter()
-        .map(|g| (g.id, g.total_hours))
+        .map(|g| (g.id, (g.total_hours, HoursSource::Played)))
         .collect();
 
-    fn keep_max_hours(hours: &mut BTreeMap<AppId, f64>, game_id: AppId, new_hours: f64) {
+    fn keep_max_hours(
+        hours: &mut BTreeMap<AppId, (f64, HoursSource)>,
+        game_id: AppId,
+        new_hours: f64,
+        source: HoursSource,
+    ) {
         hours
             .entry(game_id)
-            .and_modify(|h| *h = h.max(new_hours))
-            .or_insert(new_hours);
+            .and_modify(|h| {
+                if new_hours > h.0 {
+                    *h = (new_hours, source);
+                }
+            })
+            .or_insert((new_hours, source));
     }
 
     for g in &signals.recent {
         hours.insert(
             g.id,
-            g.total_hours - g.recent_hours
-                + g.recent_hours * signals_config.recent_hours_multiplier,
+            (
+                g.total_hours - g.recent_hours
+                    + g.recent_hours * signals_config.recent_hours_multiplier,
+                HoursSource::Played,
+            ),
         );
     }
 
     for &id in &signals.followed {
-        keep_max_hours(&mut hours, id, signals_config.followed_hours);
+        keep_max_hours(
+            &mut hours,
+            id,
+            signals_config.followed_hours,
+            HoursSource::Followed,
+        );
     }
 
     for &id in &signals.wishlist {
-        keep_max_hours(&mut hours, id, signals_config.wishlist_hours);
+        keep_max_hours(
+            &mut hours,
+            id,
+            signals_config.wishlist_hours,
+            HoursSource::Wishlist,
+        );
     }
 
     for (&id, _) in votes
         .iter()
         .filter(|(_, vote)| vote.kind == VoteKind::WouldTry)
     {
-        keep_max_hours(&mut hours, id, signals_config.would_try_hours);
+        keep_max_hours(
+            &mut hours,
+            id,
+            signals_config.would_try_hours,
+            HoursSource::WouldTry,
+        );
     }
 
     hours
@@ -118,5 +164,29 @@ mod tests {
         let hours = effective_hours(&signals(), &votes, &SignalsConfig::default());
         assert_eq!(hours[&AppId(10)], 5.0);
         assert!(!hours.contains_key(&AppId(20)));
+    }
+
+    #[test]
+    fn every_game_keeps_the_source_of_its_hours() {
+        let votes = Votes::from([(AppId(2), vote(VoteKind::WouldTry))]);
+        let hours = hours_by_source(&signals(), &votes, &SignalsConfig::default());
+        assert_eq!(hours[&AppId(1)], (110.0, HoursSource::Played));
+        assert_eq!(hours[&AppId(2)], (5.0, HoursSource::WouldTry));
+        assert_eq!(hours[&AppId(3)], (50.0, HoursSource::Played));
+        assert_eq!(hours[&AppId(4)], (5.0, HoursSource::Wishlist));
+    }
+
+    #[test]
+    fn a_tie_keeps_the_first_source() {
+        let signals = Signals {
+            followed: vec![AppId(4)],
+            ..signals()
+        };
+        let config = SignalsConfig {
+            followed_hours: 5.0,
+            ..SignalsConfig::default()
+        };
+        let hours = hours_by_source(&signals, &Votes::new(), &config);
+        assert_eq!(hours[&AppId(4)], (5.0, HoursSource::Followed));
     }
 }

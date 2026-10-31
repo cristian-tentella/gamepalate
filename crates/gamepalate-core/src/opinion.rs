@@ -10,7 +10,7 @@ use crate::{
 };
 
 const MIN_TAG_GAMES: usize = 8;
-const MIN_LABELS: usize = 10;
+pub const MIN_LABELS: usize = 10;
 const STEPS: usize = 400;
 const LEARNING_RATE: f64 = 0.5;
 const L2: f64 = 0.1;
@@ -164,6 +164,28 @@ fn train(rows: &[Vec<f64>], labels: &[f64]) -> Vec<f64> {
     w
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Labels {
+    pub would_try: usize,
+    pub not_for_me: usize,
+}
+
+impl Labels {
+    pub fn enough(&self) -> bool {
+        self.would_try >= MIN_LABELS && self.not_for_me >= MIN_LABELS
+    }
+}
+
+pub fn labels(votes: &Votes, catalog: &Catalog) -> Labels {
+    let training_rows = training_rows(votes, catalog);
+    let would_try = training_rows.iter().filter(|row| row.label == 1.0).count();
+
+    Labels {
+        would_try,
+        not_for_me: training_rows.len() - would_try,
+    }
+}
+
 pub fn opinion_model(votes: &Votes, catalog: &Catalog) -> Option<OpinionModel> {
     let training_rows = training_rows(votes, catalog);
 
@@ -203,4 +225,92 @@ pub fn opinions(opinion_model: &OpinionModel, catalog: &Catalog) -> Vec<f64> {
         .par_iter()
         .map(|game| opinion_model.opinion(game))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::{
+        catalog::Freshness,
+        currency::Currency,
+        game::{Price, Reviews},
+        ids::AppId,
+        region::Region,
+        timestamp::Timestamp,
+        votes::Vote,
+    };
+
+    fn game(id: u32) -> Game {
+        Game {
+            id: AppId(id),
+            name: format!("game {id}"),
+            price: Price {
+                original_cents: 999,
+                discount: None,
+            },
+            reviews: Reviews {
+                total: 100,
+                positive: 90,
+            },
+            is_early_access: false,
+            tags: Vec::new(),
+        }
+    }
+
+    fn vote(kind: VoteKind) -> Vote {
+        Vote {
+            kind,
+            date: "2026-10-01".to_string(),
+            bet: false,
+        }
+    }
+
+    #[test]
+    fn the_labels_count_only_the_voted_games_of_the_catalog() {
+        let catalog = Catalog::new(
+            vec![game(1), game(2), game(3)],
+            BTreeMap::new(),
+            BTreeMap::new(),
+            Freshness {
+                prices_updated_at: Timestamp(0),
+                tags_updated_at: Timestamp(0),
+                region: Region::ITALY,
+            },
+            Currency::italian(),
+        );
+        let votes = Votes::from([
+            (AppId(1), vote(VoteKind::WouldTry)),
+            (AppId(2), vote(VoteKind::NotForMe)),
+            (AppId(3), vote(VoteKind::Maybe)),
+            (AppId(4), vote(VoteKind::WouldTry)),
+        ]);
+
+        let labels = labels(&votes, &catalog);
+
+        assert_eq!(
+            labels,
+            Labels {
+                would_try: 1,
+                not_for_me: 1
+            }
+        );
+        assert!(!labels.enough());
+    }
+
+    #[test]
+    fn ten_labels_of_each_kind_are_enough() {
+        let enough = |would_try, not_for_me| {
+            Labels {
+                would_try,
+                not_for_me,
+            }
+            .enough()
+        };
+
+        assert!(enough(10, 10));
+        assert!(!enough(10, 9));
+        assert!(!enough(9, 30));
+    }
 }
