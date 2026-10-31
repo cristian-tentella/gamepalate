@@ -117,6 +117,14 @@ impl App {
                 self.screen = Screen::Discover(Box::new(discover));
                 task.map(Message::Discover)
             }
+            Message::Profile(profile::Message::OpenVotes(filter)) => {
+                let Some(gamepalate) = &self.gamepalate else {
+                    return Task::none();
+                };
+                let (votes, task) = Votes::filtered(gamepalate, filter);
+                self.screen = Screen::Votes(Box::new(votes));
+                task.map(Message::Votes)
+            }
             Message::Profile(message) => {
                 if let Screen::Profile(screen) = &mut self.screen {
                     screen.update(message).map(Message::Profile)

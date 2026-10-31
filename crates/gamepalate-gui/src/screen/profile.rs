@@ -1,16 +1,19 @@
-use std::{path::PathBuf, process::Command, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, process::Command, sync::Arc};
 
 use gamepalate_app::{
-    AppId, Ban, FamilyView, Gamepalate, HoursGame, HoursSource, ProfileView, SignalsConfig,
-    TagView, TasteView,
+    AppId, Ban, CorrectedGameView, CorrectionsView, FamilyView, Gamepalate, HoursGame, HoursSource,
+    ProfileView, SignalsConfig, TagView, TasteView, Timestamp, VoteKind, VotedGame, VotesView,
 };
 use iced::{
     Center, Color, Element, Fill, Length, Task, Theme, padding,
-    widget::{button, column, container, row, scrollable, space, text, tooltip},
+    widget::{button, column, container, progress_bar, row, scrollable, space, text, tooltip},
 };
 
-use super::showcase::{self, Showcase};
-use crate::{font, style};
+use super::{
+    showcase::{self, Showcase},
+    votes::{Filter, bets_summary, by_id},
+};
+use crate::{font, format, style};
 
 const SOURCES: [HoursSource; 4] = [
     HoursSource::Played,
@@ -19,6 +22,15 @@ const SOURCES: [HoursSource; 4] = [
     HoursSource::WouldTry,
 ];
 const FIRST_TAGS: usize = 12;
+const VOTE_KINDS: [VoteKind; 4] = [
+    VoteKind::WouldTry,
+    VoteKind::Maybe,
+    VoteKind::NotForMe,
+    VoteKind::Known,
+];
+const NO_VOTES: &str = "No votes yet. Vote in Discover with 1-4.";
+const OPINION_ON: &str = "Your votes shape the list ✓";
+const LABEL_BAR_WIDTH: f32 = 120.0;
 const NO_FAMILIES: &str =
     "No families yet. A family is a group of games that stands for one of your tastes.";
 const COLUMN_WIDTH: f32 = 760.0;
@@ -42,6 +54,8 @@ const OPENED: char = '\u{E70D}';
 pub struct Profile {
     data_dir: PathBuf,
     view: ProfileView,
+    voted: BTreeMap<AppId, VotedGame>,
+    open_correction: Option<Correction>,
     open_tag: Option<usize>,
     all_tags: bool,
     showcase: Showcase,
@@ -52,8 +66,16 @@ pub enum Message {
     ToggleTag(usize),
     ToggleAllTags,
     DiscoverFamily(String),
+    OpenVotes(Filter),
+    ToggleCorrection(Correction),
     OpenDataFolder,
     Showcase(showcase::Message),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Correction {
+    Games,
+    Hidden,
 }
 
 impl Profile {
@@ -61,6 +83,8 @@ impl Profile {
         let mut profile = Profile {
             data_dir: gamepalate.data_dir().to_path_buf(),
             view: gamepalate.profile_view(),
+            voted: by_id(gamepalate.voted_games()),
+            open_correction: None,
             open_tag: None,
             all_tags: false,
             showcase: Showcase::new(gamepalate),
@@ -87,7 +111,11 @@ impl Profile {
                     self.open_tag = None;
                 }
             }
-            Message::DiscoverFamily(_) => {}
+            Message::DiscoverFamily(_) | Message::OpenVotes(_) => {}
+            Message::ToggleCorrection(correction) => {
+                self.open_correction =
+                    (self.open_correction != Some(correction)).then_some(correction);
+            }
             Message::OpenDataFolder => {
                 let _ = Command::new("explorer").arg(&self.data_dir).spawn();
             }
@@ -129,15 +157,24 @@ impl Profile {
             .spacing(14)
             .max_width(COLUMN_WIDTH);
 
+        let side = column![self.families(), self.votes()]
+            .push((!self.view.corrections.is_empty()).then(|| self.corrections()))
+            .spacing(32);
+
         scrollable(
-            container(
-                row![
-                    container(taste).width(Fill),
-                    container(self.families()).width(SIDE_WIDTH),
-                ]
-                .spacing(32),
-            )
-            .padding(24)
+            column![
+                container(
+                    row![
+                        container(taste).width(Fill),
+                        container(side).width(SIDE_WIDTH),
+                    ]
+                    .spacing(32),
+                )
+                .padding(24)
+                .width(Fill),
+                style::separator(),
+                container(self.data()).padding([12, 24]).width(Fill),
+            ]
             .width(Fill),
         )
         .height(Fill)
@@ -314,6 +351,254 @@ impl Profile {
         .style(style::card)
         .into()
     }
+}
+
+impl Profile {
+    fn votes(&self) -> Element<'_, Message> {
+        let votes = &self.view.votes;
+        let total = votes.would_try + votes.maybe + votes.not_for_me + votes.known;
+        let title = section_title("Votes");
+        if total == 0 {
+            return column![title, text(NO_VOTES).size(font::BAR_SIZE)]
+                .spacing(14)
+                .into();
+        }
+
+        let counts = row(VOTE_KINDS.map(|kind| {
+            button(text!("{} {}", vote_count(votes, kind), format::vote(kind)).size(font::BAR_SIZE))
+                .padding(0)
+                .style(style::link)
+                .on_press(Message::OpenVotes(Filter::Kind(kind)))
+                .into()
+        }))
+        .spacing(14)
+        .wrap()
+        .vertical_spacing(6);
+
+        let opinion: Element<'_, Message> = if votes.labels.enough() {
+            text(OPINION_ON).size(font::BAR_SIZE).into()
+        } else {
+            let needed = votes.min_labels;
+            column![
+                text(opinion_progress(votes))
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted),
+                label_bar("Would try", votes.labels.would_try, needed),
+                label_bar("Not for me", votes.labels.not_for_me, needed),
+            ]
+            .spacing(6)
+            .into()
+        };
+
+        let bets = bets_summary(&self.voted).map(|(would_try, bets, others)| {
+            button(text(format::bets_summary(would_try, bets, others)).size(font::NOTE_SIZE))
+                .padding(0)
+                .style(style::link)
+                .on_press(Message::OpenVotes(Filter::Bets))
+        });
+
+        column![title, counts, opinion]
+            .push(bets)
+            .spacing(14)
+            .into()
+    }
+
+    fn corrections(&self) -> Element<'_, Message> {
+        let corrections = &self.view.corrections;
+        let line = |line: String| text(line).size(font::BAR_SIZE).into();
+        let mut lines: Vec<Element<'_, Message>> = corrections
+            .tag_multipliers
+            .iter()
+            .map(|(name, multiplier)| line(tag_multiplier_text(name, *multiplier)))
+            .chain(banned_texts(corrections).into_iter().map(line))
+            .collect();
+
+        if let Some(summary) = games_multiplier_text(&corrections.game_multipliers) {
+            lines.push(
+                self.expandable(
+                    summary,
+                    Correction::Games,
+                    corrections
+                        .game_multipliers
+                        .iter()
+                        .map(corrected_game_text)
+                        .collect(),
+                ),
+            );
+        }
+        if !corrections.hidden_games.is_empty() {
+            lines.push(self.expandable(
+                hidden_text(corrections.hidden_games.len()),
+                Correction::Hidden,
+                corrections.hidden_games.clone(),
+            ));
+        }
+
+        column![
+            row![
+                section_title("Corrections"),
+                text("edit with the gamepalate CLI")
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted),
+            ]
+            .spacing(10)
+            .align_y(Center),
+            column(lines).spacing(8),
+        ]
+        .spacing(14)
+        .into()
+    }
+
+    fn expandable(
+        &self,
+        summary: String,
+        correction: Correction,
+        items: Vec<String>,
+    ) -> Element<'_, Message> {
+        let open = self.open_correction == Some(correction);
+        let header = button(
+            row![
+                text(summary).size(font::BAR_SIZE),
+                text(if open { OPENED } else { CLOSED })
+                    .font(font::ICONS)
+                    .size(10),
+            ]
+            .spacing(8)
+            .align_y(Center),
+        )
+        .padding(0)
+        .style(style::list_row(false))
+        .on_press(Message::ToggleCorrection(correction));
+
+        column![header]
+            .push(open.then(|| {
+                container(
+                    column(
+                        items.into_iter().map(|item| {
+                            text(item).size(font::NOTE_SIZE).style(style::muted).into()
+                        }),
+                    )
+                    .spacing(2),
+                )
+                .padding(padding::left(12))
+            }))
+            .spacing(6)
+            .into()
+    }
+
+    fn data(&self) -> Element<'_, Message> {
+        let now = Timestamp(jiff::Timestamp::now().as_millisecond());
+
+        row![
+            text(data_text(&self.view, now))
+                .size(font::NOTE_SIZE)
+                .style(style::muted),
+            button(text("Open data folder").size(font::NOTE_SIZE))
+                .padding(0)
+                .style(style::link)
+                .on_press(Message::OpenDataFolder),
+        ]
+        .spacing(12)
+        .align_y(Center)
+        .into()
+    }
+}
+
+fn label_bar<'a>(label: &'a str, count: usize, needed: usize) -> Element<'a, Message> {
+    row![
+        text(label).size(font::NOTE_SIZE).width(80),
+        progress_bar(0.0..=needed as f32, count.min(needed) as f32)
+            .girth(4)
+            .length(LABEL_BAR_WIDTH)
+            .style(style::meter),
+        text!("{count} of {needed}").size(font::NOTE_SIZE),
+    ]
+    .spacing(8)
+    .align_y(Center)
+    .into()
+}
+
+fn vote_count(votes: &VotesView, kind: VoteKind) -> usize {
+    match kind {
+        VoteKind::WouldTry => votes.would_try,
+        VoteKind::Maybe => votes.maybe,
+        VoteKind::NotForMe => votes.not_for_me,
+        VoteKind::Known => votes.known,
+    }
+}
+
+fn opinion_progress(votes: &VotesView) -> String {
+    format!(
+        "Your votes start shaping the list at {n} Would try and {n} Not for me: {} and {} so far.",
+        votes.labels.would_try,
+        votes.labels.not_for_me,
+        n = votes.min_labels
+    )
+}
+
+fn tag_multiplier_text(name: &str, multiplier: f64) -> String {
+    match multiplier {
+        0.5 => format!("{name} counts half"),
+        2.0 => format!("{name} counts double"),
+        m => format!("{name} counts ×{m}"),
+    }
+}
+
+fn banned_texts(corrections: &CorrectionsView) -> Vec<String> {
+    let mut groups: BTreeMap<Option<u32>, Vec<&str>> = BTreeMap::new();
+    for (name, ban) in &corrections.banned_tags {
+        let limit = match ban {
+            Ban::Everywhere => None,
+            Ban::TopTags(n) => Some(*n),
+        };
+        groups.entry(limit).or_default().push(name);
+    }
+
+    groups
+        .into_iter()
+        .map(|(limit, names)| match limit {
+            None => format!("{} banned", names.join(", ")),
+            Some(n) => format!("{} banned in the top {n} tags", names.join(", ")),
+        })
+        .collect()
+}
+
+fn games_multiplier_text(games: &[CorrectedGameView]) -> Option<String> {
+    let less = games.iter().filter(|game| game.multiplier < 1.0).count();
+    let more = games.len() - less;
+    let part = |count: usize, how: &str| match count {
+        0 => None,
+        1 => Some(format!("1 game counts {how}")),
+        n => Some(format!("{n} games count {how}")),
+    };
+    let parts: Vec<String> = [part(less, "less"), part(more, "more")]
+        .into_iter()
+        .flatten()
+        .collect();
+
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
+fn corrected_game_text(game: &CorrectedGameView) -> String {
+    let effect = if game.in_effect { "" } else { " · no effect" };
+    format!("{} ×{}{effect}", game.name, game.multiplier)
+}
+
+fn hidden_text(hidden: usize) -> String {
+    if hidden == 1 {
+        "1 hidden game".to_string()
+    } else {
+        format!("{hidden} hidden games")
+    }
+}
+
+fn data_text(view: &ProfileView, now: Timestamp) -> String {
+    format!(
+        "Data · Catalog {} games · prices {} · tags {}",
+        format::count(view.catalog_games as u32),
+        format::when(view.prices_updated_at, now),
+        format::when(view.tags_updated_at, now)
+    )
 }
 
 fn more_games(games: usize) -> Option<String> {
@@ -849,6 +1134,92 @@ mod tests {
         assert_eq!(held_out_text(0), None);
         assert_eq!(held_out_text(1).as_deref(), Some("1 held-out game"));
         assert_eq!(held_out_text(12).as_deref(), Some("12 held-out games"));
+    }
+
+    fn labels(would_try: usize, not_for_me: usize) -> VotesView {
+        VotesView {
+            would_try: 0,
+            maybe: 0,
+            not_for_me: 0,
+            known: 0,
+            labels: gamepalate_app::Labels {
+                would_try,
+                not_for_me,
+            },
+            min_labels: 10,
+        }
+    }
+
+    #[test]
+    fn the_opinion_says_how_many_votes_are_missing() {
+        assert_eq!(
+            opinion_progress(&labels(4, 7)),
+            "Your votes start shaping the list at 10 Would try and 10 Not for me: 4 and 7 so far."
+        );
+    }
+
+    #[test]
+    fn a_tag_multiplier_reads_as_a_sentence() {
+        assert_eq!(
+            tag_multiplier_text("Souls-like", 0.5),
+            "Souls-like counts half"
+        );
+        assert_eq!(
+            tag_multiplier_text("Roguelike", 2.0),
+            "Roguelike counts double"
+        );
+        assert_eq!(
+            tag_multiplier_text("Open World", 0.7),
+            "Open World counts ×0.7"
+        );
+    }
+
+    #[test]
+    fn the_banned_tags_come_together_by_kind_of_ban() {
+        let corrections = CorrectionsView {
+            banned_tags: vec![
+                ("Anime".to_string(), Ban::TopTags(8)),
+                ("Horror".to_string(), Ban::Everywhere),
+                ("JRPG".to_string(), Ban::TopTags(8)),
+            ],
+            ..CorrectionsView::default()
+        };
+
+        assert_eq!(
+            banned_texts(&corrections),
+            ["Horror banned", "Anime, JRPG banned in the top 8 tags"]
+        );
+    }
+
+    fn corrected(name: &str, multiplier: f64, in_effect: bool) -> CorrectedGameView {
+        CorrectedGameView {
+            name: name.to_string(),
+            multiplier,
+            in_effect,
+        }
+    }
+
+    #[test]
+    fn the_game_multipliers_count_the_games_that_count_less_or_more() {
+        let games = [
+            corrected("Aseprite", 0.5, true),
+            corrected("Call of Duty", 0.3, true),
+            corrected("Outer Wilds", 2.0, false),
+        ];
+
+        assert_eq!(
+            games_multiplier_text(&games).as_deref(),
+            Some("2 games count less, 1 game counts more")
+        );
+        assert_eq!(games_multiplier_text(&[]), None);
+        assert_eq!(corrected_game_text(&games[0]), "Aseprite ×0.5");
+        assert_eq!(corrected_game_text(&games[2]), "Outer Wilds ×2 · no effect");
+    }
+
+    #[test]
+    fn the_hidden_games_are_counted() {
+        assert_eq!(hidden_text(1), "1 hidden game");
+        assert_eq!(hidden_text(94), "94 hidden games");
     }
 
     #[test]

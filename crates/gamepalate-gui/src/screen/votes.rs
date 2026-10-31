@@ -93,10 +93,14 @@ pub enum Message {
 
 impl Votes {
     pub fn new(gamepalate: &Arc<Gamepalate>) -> (Votes, Task<Message>) {
+        Votes::filtered(gamepalate, Filter::Kind(VoteKind::WouldTry))
+    }
+
+    pub fn filtered(gamepalate: &Arc<Gamepalate>, filter: Filter) -> (Votes, Task<Message>) {
         let mut votes = Votes {
             gamepalate: Arc::clone(gamepalate),
             games: by_id(gamepalate.voted_games()),
-            filter: Filter::Kind(VoteKind::WouldTry),
+            filter,
             order: Order::Newest,
             search: String::new(),
             rows: Vec::new(),
@@ -496,7 +500,7 @@ impl fmt::Display for Order {
     }
 }
 
-fn by_id(games: Vec<VotedGame>) -> BTreeMap<AppId, VotedGame> {
+pub(super) fn by_id(games: Vec<VotedGame>) -> BTreeMap<AppId, VotedGame> {
     games.into_iter().map(|game| (game.id, game)).collect()
 }
 
@@ -556,7 +560,9 @@ fn rows(
     rows.into_iter().map(|game| game.id).collect()
 }
 
-fn bets_summary(games: &BTreeMap<AppId, VotedGame>) -> Option<(usize, usize, Option<f64>)> {
+pub(super) fn bets_summary(
+    games: &BTreeMap<AppId, VotedGame>,
+) -> Option<(usize, usize, Option<f64>)> {
     let first = games
         .values()
         .filter(|game| game.vote.bet)
