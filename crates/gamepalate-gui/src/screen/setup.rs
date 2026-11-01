@@ -1,19 +1,23 @@
-use std::{cmp::Ordering, process::Command, time::Instant};
+use std::{cmp::Ordering, process::Command, sync::Arc, time::Instant};
 
 use gamepalate_app::{
-    Gamepalate, SteamError,
+    AppId, Gamepalate, SteamError,
     account::{ConnectError, SteamIdError, connect, parse_steam_id},
     ready::{ReadyCheck, check_ready},
-    setup::{FirstRun, Part, error_chain},
+    setup::{Covers, FirstRun, Part, error_chain, most_played},
     update::download_catalog,
 };
 use iced::{
-    Center, Element, Fill, Task,
+    Center, ContentFit, Element, Fill, Task,
     futures::{SinkExt, channel::mpsc},
     padding, stream,
-    widget::{button, column, container, progress_bar, row, scrollable, text, text_input},
+    widget::{
+        button, column, container, image, progress_bar, row, scrollable, space, stack, text,
+        text_input,
+    },
 };
 
+use super::library::hours;
 use crate::{
     font, format,
     progress::{Stage, Tracker, stage_text, update_error_text},
@@ -24,6 +28,11 @@ const CHECK: char = '\u{E73E}';
 const WIDTH: f32 = 760.0;
 const LABEL_WIDTH: f32 = 96.0;
 const STEP_MARK: f32 = 28.0;
+const PLAYED_ASKED: usize = 12;
+const PLAYED_SHOWN: usize = 6;
+const TILE_WIDTH: f32 = 112.0;
+const TILE_HEIGHT: f32 = 168.0;
+const IMAGE_RADIUS: f32 = 6.0;
 const KEY_PAGE: &str = "https://steamcommunity.com/dev/apikey";
 const HOW_IT_WORKS: [(char, &str, &str); 3] = [
     (
@@ -55,6 +64,22 @@ pub struct Setup {
     account: Account,
     download: Download,
     ready: Option<Ready>,
+    covers: Option<Arc<Covers>>,
+    played: Vec<Played>,
+}
+
+#[derive(Debug)]
+struct Played {
+    id: AppId,
+    hours: f64,
+    cover: Cover,
+}
+
+#[derive(Debug)]
+enum Cover {
+    Loading,
+    Ready(image::Handle),
+    Missing,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -122,6 +147,7 @@ pub enum Message {
     Prepare(bool),
     Prepared(Result<ReadyCheck, String>),
     StartVoting,
+    Cover(AppId, Option<image::Handle>),
 }
 
 pub enum Action {
@@ -149,13 +175,47 @@ impl Setup {
             ..Account::default()
         };
 
+        let played = first_run
+            .data_dir
+            .as_deref()
+            .map(|dir| most_played(dir, PLAYED_ASKED))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, hours)| Played {
+                id,
+                hours,
+                cover: Cover::Loading,
+            })
+            .collect();
+
         Setup {
             first_run,
             error,
             account,
             download: Download::default(),
             ready: None,
+            covers: Covers::new().ok().map(Arc::new),
+            played,
         }
+    }
+
+    pub fn load_covers(&self) -> Task<Message> {
+        let Some(covers) = &self.covers else {
+            return Task::none();
+        };
+
+        Task::batch(self.played.iter().map(|game| {
+            let covers = Arc::clone(covers);
+            let id = game.id;
+            Task::perform(
+                async move {
+                    covers.capsule(id).await.ok().map(|capsule| {
+                        image::Handle::from_rgba(capsule.width, capsule.height, capsule.rgba)
+                    })
+                },
+                move |cover| Message::Cover(id, cover),
+            )
+        }))
     }
 
     pub fn first_run(&self) -> &FirstRun {
@@ -217,6 +277,12 @@ impl Setup {
                 });
                 Action::None
             }
+            Message::Cover(id, cover) => {
+                if let Some(game) = self.played.iter_mut().find(|game| game.id == id) {
+                    game.cover = cover.map_or(Cover::Missing, Cover::Ready);
+                }
+                Action::None
+            }
             Message::Downloaded(Err(error)) => {
                 self.first_run = FirstRun::check(None);
                 self.download.running = false;
@@ -274,7 +340,7 @@ impl Setup {
             Ok(gamepalate) => Action::Open(Box::new(gamepalate)),
             Err(setup) => {
                 *self = *setup;
-                Action::None
+                Action::Run(self.load_covers())
             }
         }
     }
@@ -327,6 +393,7 @@ impl Setup {
                     .push(steps_view(step))
                     .push(self.done_view(step))
                     .push(card)
+                    .push(self.most_played_view(step))
                     .push((step == Step::Catalog).then(how_it_works))
                     .push(self.folder_view())
                     .spacing(28)
@@ -428,6 +495,31 @@ impl Setup {
         ]
         .spacing(20)
         .into()
+    }
+
+    fn most_played_view(&self, step: Step) -> Option<Element<'_, Message>> {
+        if step != Step::Catalog {
+            return None;
+        }
+        let tiles: Vec<Element<'_, Message>> = shown(&self.played).map(cover_tile).collect();
+        if tiles.is_empty() {
+            return None;
+        }
+
+        Some(
+            column![
+                column![
+                    text("Your most played")
+                        .size(font::INFO_SIZE)
+                        .font(font::SEMIBOLD),
+                    note("These shape your first recommendations."),
+                ]
+                .spacing(4),
+                row(tiles).spacing(12),
+            ]
+            .spacing(12)
+            .into(),
+        )
     }
 
     fn folder_view(&self) -> Option<Element<'_, Message>> {
@@ -725,6 +817,38 @@ fn percent(stage: Stage) -> Option<String> {
     }
 }
 
+fn shown(played: &[Played]) -> impl Iterator<Item = &Played> {
+    played
+        .iter()
+        .filter(|game| !matches!(game.cover, Cover::Missing))
+        .take(PLAYED_SHOWN)
+}
+
+fn cover_tile(game: &Played) -> Element<'_, Message> {
+    let picture: Element<'_, Message> = match &game.cover {
+        Cover::Ready(handle) => image(handle.clone())
+            .width(TILE_WIDTH)
+            .height(TILE_HEIGHT)
+            .content_fit(ContentFit::Cover)
+            .border_radius(IMAGE_RADIUS)
+            .into(),
+        Cover::Loading | Cover::Missing => container(space())
+            .width(TILE_WIDTH)
+            .height(TILE_HEIGHT)
+            .style(style::picture)
+            .into(),
+    };
+    let strip = container(text(hours(game.hours)).size(font::NOTE_SIZE))
+        .padding([3, 8])
+        .width(Fill)
+        .style(style::capsule_strip);
+
+    stack![picture, column![space().height(Fill), strip]]
+        .width(TILE_WIDTH)
+        .height(TILE_HEIGHT)
+        .into()
+}
+
 fn how_it_works<'a>() -> Element<'a, Message> {
     row(HOW_IT_WORKS.into_iter().map(|(icon, title, line)| {
         container(
@@ -935,6 +1059,25 @@ mod tests {
         assert_eq!(step_state(Step::Catalog, Step::Catalog), StepState::Current);
         assert_eq!(step_state(Step::Ready, Step::Catalog), StepState::Next);
         assert_eq!(step_state(Step::Account, Step::Account), StepState::Current);
+    }
+
+    #[test]
+    fn games_without_a_cover_leave_room_to_the_next() {
+        let played: Vec<Played> = (1..=8)
+            .map(|id| Played {
+                id: AppId(id),
+                hours: 10.0,
+                cover: if id == 2 || id == 5 {
+                    Cover::Missing
+                } else {
+                    Cover::Loading
+                },
+            })
+            .collect();
+
+        let ids: Vec<u32> = shown(&played).map(|game| game.id.0).collect();
+
+        assert_eq!(ids, [1, 3, 4, 6, 7, 8]);
     }
 
     #[test]

@@ -931,7 +931,7 @@ fn visible_rows(rows: &[Row], offset: f32, height: f32) -> Range<usize> {
     start.min(end)..end
 }
 
-fn hours(hours: f64) -> String {
+pub(crate) fn hours(hours: f64) -> String {
     if hours == 0.0 || hours >= 10.0 {
         format!("{hours:.0} h")
     } else {

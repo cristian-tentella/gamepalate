@@ -4,8 +4,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use gamepalate_core::{config::Config, ids::SteamId};
-use gamepalate_steam::archive::PendingUpdate;
+use gamepalate_core::{
+    config::Config,
+    ids::{AppId, SteamId},
+};
+use gamepalate_steam::{archive::PendingUpdate, images::ImageDownloader};
 use gamepalate_store::{
     config::{ConfigError, load_config},
     gui::{GuiSettings, load_gui_settings},
@@ -13,9 +16,12 @@ use gamepalate_store::{
 };
 
 use crate::{
+    Capsule,
     account::steam_api_key,
     app::{GUI_FILE, change_settings},
+    capsules::classic_capsule,
     data_dir,
+    images::{self, ImageCache, LoadImageError},
     update::pending_update,
 };
 
@@ -67,6 +73,38 @@ impl FirstRun {
         std::fs::create_dir_all(dir)?;
         change_settings(&dir.join(GUI_FILE), change)
     }
+}
+
+#[derive(Debug)]
+pub struct Covers {
+    images: ImageCache,
+}
+
+impl Covers {
+    pub fn new() -> Result<Covers, LoadImageError> {
+        Ok(Covers {
+            images: ImageCache::new(images::cache_dir(), ImageDownloader::new()?),
+        })
+    }
+
+    pub async fn capsule(&self, id: AppId) -> Result<Capsule, LoadImageError> {
+        classic_capsule(id, &self.images).await
+    }
+}
+
+pub fn most_played(data_dir: &Path, count: usize) -> Vec<(AppId, f64)> {
+    let Ok(signals) = load_signals(&data_dir.join("signals.json")) else {
+        return Vec::new();
+    };
+    let mut games: Vec<(AppId, f64)> = signals
+        .library
+        .iter()
+        .filter(|game| game.total_hours > 0.0)
+        .map(|game| (game.id, game.total_hours))
+        .collect();
+    games.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    games.truncate(count);
+    games
 }
 
 pub fn error_chain(error: &dyn Error) -> String {
@@ -146,6 +184,32 @@ mod tests {
 
     fn check(dir: &Path) -> FirstRun {
         first_run(Some(dir.to_path_buf()), false)
+    }
+
+    #[test]
+    fn the_most_played_come_first_and_need_hours() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("signals.json"),
+            r#"{"readAt":1793000000000,"library":[{"appid":30,"totalHours":5.0},{"appid":20,"totalHours":12.0},{"appid":40,"totalHours":0.0},{"appid":10,"totalHours":12.0}],"recent":[],"wishlist":[],"followed":null}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            most_played(dir.path(), 2),
+            [(AppId(10), 12.0), (AppId(20), 12.0)]
+        );
+        assert_eq!(
+            most_played(dir.path(), 10),
+            [(AppId(10), 12.0), (AppId(20), 12.0), (AppId(30), 5.0)]
+        );
+    }
+
+    #[test]
+    fn without_signals_nobody_is_most_played() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(most_played(dir.path(), 6).is_empty());
     }
 
     #[test]

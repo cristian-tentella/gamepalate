@@ -126,8 +126,9 @@ impl App {
             Ok(gamepalate) => app.opened(gamepalate),
             Err(setup) => {
                 app.theme = theme(setup.first_run().gui_settings().theme);
+                let covers = setup.load_covers().map(Message::Setup);
                 app.screen = Screen::Setup(setup);
-                Task::none()
+                covers
             }
         };
 

@@ -91,6 +91,13 @@ pub(crate) async fn capsule<F: Fetch, S: Get + Sync>(
     Ok(downscale(&bytes)?)
 }
 
+pub(crate) async fn classic_capsule<F: Fetch>(
+    id: AppId,
+    images: &ImageCache<F>,
+) -> Result<Capsule, LoadImageError> {
+    Ok(downscale(&images.image(&capsule_url(id)).await?)?)
+}
+
 fn is_not_found(error: &LoadImageError) -> bool {
     matches!(
         error,
@@ -279,6 +286,26 @@ mod tests {
 
         assert!(is_not_found(&error));
         assert_eq!(setup.steam_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_classic_capsule_never_asks_steam() {
+        let setup = setup(
+            vec![(asset("steam/apps/1/library_600x900.jpg"), png(600, 900))],
+            vec![(2, "7a0f/library_capsule.jpg")],
+        );
+
+        assert_eq!(
+            classic_capsule(AppId(1), &setup.images)
+                .await
+                .unwrap()
+                .width,
+            300
+        );
+        assert!(is_not_found(
+            &classic_capsule(AppId(2), &setup.images).await.unwrap_err()
+        ));
+        assert_eq!(setup.steam_calls(), 0);
     }
 
     #[tokio::test]

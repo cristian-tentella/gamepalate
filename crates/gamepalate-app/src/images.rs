@@ -46,6 +46,10 @@ pub struct ImageCache<F = Client> {
     downloader: ImageDownloader<F>,
 }
 
+pub(crate) fn cache_dir() -> Option<PathBuf> {
+    dirs::cache_dir().map(|dir| dir.join("gamepalate").join("cache").join("images"))
+}
+
 impl<F: Fetch> ImageCache<F> {
     pub fn new(dir: Option<PathBuf>, downloader: ImageDownloader<F>) -> ImageCache<F> {
         ImageCache { dir, downloader }

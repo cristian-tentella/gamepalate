@@ -37,7 +37,7 @@ use crate::{
     capsules::{Capsule, CapsuleFinder, capsule},
     data_dir,
     details::{GameDetails, StoreDetails},
-    images::{ImageCache, LoadImageError, MAX_CACHE_BYTES},
+    images::{ImageCache, LoadImageError, MAX_CACHE_BYTES, cache_dir},
     library::{
         GameCorrection, GameCorrectionError, LibraryView, corrected_game, game_correction,
         library_view,
@@ -79,10 +79,7 @@ impl Gamepalate {
             .ok_or(OpenError::DataDirNotFound)?;
         let files = load_data_files(&dir)?;
         let vectors = game_vectors(&files.catalog);
-        let images = ImageCache::new(
-            dirs::cache_dir().map(|dir| dir.join("gamepalate").join("cache").join("images")),
-            ImageDownloader::new()?,
-        );
+        let images = ImageCache::new(cache_dir(), ImageDownloader::new()?);
 
         let store = StoreDetails::new(
             Transport::new(None)?.with_interval(Duration::ZERO),
