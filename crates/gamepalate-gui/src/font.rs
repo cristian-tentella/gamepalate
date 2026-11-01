@@ -5,7 +5,7 @@ pub const SEMIBOLD_BYTES: &[u8] = include_bytes!("../fonts/Inter-SemiBold.ttf");
 pub const BOLD_BYTES: &[u8] = include_bytes!("../fonts/Inter-Bold.ttf");
 
 pub const BAR_SIZE: f32 = 14.0;
-pub const NOTE_SIZE: f32 = 12.0;
+pub const NOTE_SIZE: f32 = 13.0;
 pub const VOTE_SIZE: f32 = 15.0;
 pub const TITLE_SIZE: f32 = 28.0;
 pub const INFO_SIZE: f32 = 16.0;

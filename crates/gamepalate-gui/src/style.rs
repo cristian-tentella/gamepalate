@@ -42,7 +42,7 @@ pub fn muted(theme: &Theme) -> text::Style {
                 .background
                 .base
                 .text
-                .scale_alpha(0.6),
+                .scale_alpha(0.7),
         ),
     }
 }

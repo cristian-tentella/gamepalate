@@ -108,7 +108,7 @@ pub fn vote_button<'a, Message: Clone + 'a>(
     let mark = if flashed {
         text(CHECK).font(font::ICONS).size(10)
     } else {
-        text(key).size(11).style(style::muted)
+        text(key).size(font::NOTE_SIZE).style(style::muted)
     };
     let keycap = container(mark)
         .center_x(18)
