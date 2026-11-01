@@ -35,8 +35,8 @@ const LABEL_WIDTH: f32 = 96.0;
 const STEP_MARK: f32 = 28.0;
 const PLAYED_ASKED: usize = 12;
 const PLAYED_SHOWN: usize = 6;
-const TILE_WIDTH: f32 = 112.0;
-const TILE_HEIGHT: f32 = 168.0;
+const TILE_WIDTH: f32 = 116.0;
+const TILE_HEIGHT: f32 = 174.0;
 const IMAGE_RADIUS: f32 = 6.0;
 const KEY_PAGE: &str = "https://steamcommunity.com/dev/apikey";
 const ACCOUNT_ABOUT: &str = "gamepalate only reads your library, hours played and wishlist";
@@ -485,10 +485,10 @@ impl Setup {
         if step != Step::Catalog {
             return None;
         }
-        let tiles: Vec<Element<'_, Message>> = shown(&self.played).map(cover_tile).collect();
-        if tiles.is_empty() {
-            return None;
-        }
+        let tiles: Vec<Element<'_, Message>> = ready_covers(&self.played)?
+            .into_iter()
+            .map(|(handle, hours)| cover_tile(handle, hours))
+            .collect();
 
         Some(
             column![
@@ -496,7 +496,7 @@ impl Setup {
                     text("Your most played")
                         .size(font::INFO_SIZE)
                         .font(font::SEMIBOLD),
-                    note("Recommendations start from these games"),
+                    note("From your Steam library"),
                 ]
                 .spacing(4),
                 row(tiles).spacing(12),
@@ -828,21 +828,23 @@ fn shown(played: &[Played]) -> impl Iterator<Item = &Played> {
         .take(PLAYED_SHOWN)
 }
 
-fn cover_tile(game: &Played) -> Element<'_, Message> {
-    let picture: Element<'_, Message> = match &game.cover {
-        Cover::Ready(handle) => image(handle.clone())
-            .width(TILE_WIDTH)
-            .height(TILE_HEIGHT)
-            .content_fit(ContentFit::Cover)
-            .border_radius(IMAGE_RADIUS)
-            .into(),
-        Cover::Loading | Cover::Missing => container(space())
-            .width(TILE_WIDTH)
-            .height(TILE_HEIGHT)
-            .style(style::picture)
-            .into(),
-    };
-    let strip = container(text(hours(game.hours)).size(font::NOTE_SIZE))
+fn ready_covers(played: &[Played]) -> Option<Vec<(&image::Handle, f64)>> {
+    shown(played)
+        .map(|game| match &game.cover {
+            Cover::Ready(handle) => Some((handle, game.hours)),
+            Cover::Loading | Cover::Missing => None,
+        })
+        .collect::<Option<Vec<_>>>()
+        .filter(|covers| !covers.is_empty())
+}
+
+fn cover_tile<'a>(handle: &image::Handle, played: f64) -> Element<'a, Message> {
+    let picture = image(handle.clone())
+        .width(TILE_WIDTH)
+        .height(TILE_HEIGHT)
+        .content_fit(ContentFit::Cover)
+        .border_radius(IMAGE_RADIUS);
+    let strip = container(text(hours(played)).size(font::NOTE_SIZE))
         .padding([3, 8])
         .width(Fill)
         .style(style::capsule_strip);
@@ -1059,6 +1061,32 @@ mod tests {
         let ids: Vec<u32> = shown(&played).map(|game| game.id.0).collect();
 
         assert_eq!(ids, [1, 3, 4, 6, 7, 8]);
+    }
+
+    #[test]
+    fn the_covers_show_up_together_once_all_are_ready() {
+        let handle = image::Handle::from_rgba(1, 1, vec![0; 4]);
+        let mut played: Vec<Played> = (1..=8)
+            .map(|id| Played {
+                id: AppId(id),
+                hours: 10.0,
+                cover: match id {
+                    2 => Cover::Missing,
+                    4 => Cover::Loading,
+                    _ => Cover::Ready(handle.clone()),
+                },
+            })
+            .collect();
+
+        assert!(ready_covers(&played).is_none());
+
+        played[3].cover = Cover::Ready(handle.clone());
+        assert_eq!(ready_covers(&played).map(|covers| covers.len()), Some(6));
+
+        for game in &mut played {
+            game.cover = Cover::Missing;
+        }
+        assert!(ready_covers(&played).is_none());
     }
 
     #[test]
