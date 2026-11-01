@@ -55,6 +55,8 @@ const ACCOUNT_ABOUT: &str =
     "gamepalate reads the hours you played and your wishlist. It never changes anything on Steam.";
 const CATALOG_ABOUT: &str =
     "Tags, reviews and prices of every game on Steam: 15-25 minutes the first time.";
+const VOTE_ABOUT: &str = "Vote on a few games: each vote teaches gamepalate what you like.";
+const LIBRARY_PAGE: &str = "steam://open/games";
 const FIND_STEAM_ID: &str =
     "Open Steam → your name at the top right → Account details: the Steam ID is under your name.";
 
@@ -147,6 +149,7 @@ pub enum Message {
     Prepare(bool),
     Prepared(Result<ReadyCheck, String>),
     StartVoting,
+    OpenLibrary,
     Cover(AppId, Option<image::Handle>),
 }
 
@@ -242,12 +245,8 @@ impl Setup {
                 self.account.key = key;
                 Action::None
             }
-            Message::GetKey => {
-                let _ = Command::new("rundll32")
-                    .args(["url.dll,FileProtocolHandler", KEY_PAGE])
-                    .spawn();
-                Action::None
-            }
+            Message::GetKey => open_link(KEY_PAGE),
+            Message::OpenLibrary => open_link(LIBRARY_PAGE),
             Message::Connect => self.connect(),
             Message::Connected(Err(error)) => {
                 self.account.connecting = false;
@@ -484,7 +483,7 @@ impl Setup {
                 Some(CATALOG_ABOUT),
                 self.catalog_view(),
             ),
-            Step::Ready => ("Ready", None, self.ready_view()),
+            Step::Ready => (ready_title(self.ready.as_ref()), None, self.ready_view()),
         };
 
         column![
@@ -636,15 +635,38 @@ impl Setup {
             .into(),
             Ready::Checked(check) if check.empty_profile => column![
                 text(empty_profile_text(check.min_hours)).size(font::BAR_SIZE),
-                small_button("Check again", Message::Prepare(true)),
+                row![
+                    button(text("Open Steam library").size(font::BAR_SIZE))
+                        .padding([8, 20])
+                        .style(button::secondary)
+                        .on_press(Message::OpenLibrary),
+                    small_button("Check again", Message::Prepare(true)),
+                ]
+                .spacing(12),
             ]
-            .spacing(8)
+            .spacing(16)
             .into(),
             Ready::Checked(check) => column![
-                text(ready_text(check)).size(font::BAR_SIZE),
-                small_button("Start voting", Message::StartVoting),
+                row(ready_numbers(check).into_iter().map(|(number, label)| {
+                    column![
+                        text(number).size(font::TITLE_SIZE).font(font::BOLD),
+                        note(label),
+                    ]
+                    .spacing(2)
+                    .align_x(Center)
+                    .width(Fill)
+                    .into()
+                }))
+                .spacing(16),
+                text(VOTE_ABOUT).size(font::BAR_SIZE),
+                container(
+                    button(text("Start voting").size(font::INFO_SIZE))
+                        .padding([12, 36])
+                        .on_press(Message::StartVoting)
+                )
+                .center_x(Fill),
             ]
-            .spacing(8)
+            .spacing(24)
             .into(),
         }
     }
@@ -733,12 +755,28 @@ fn empty_profile_text(min_hours: f64) -> String {
     )
 }
 
-fn ready_text(check: &ReadyCheck) -> String {
-    format!(
-        "Catalog: {} games · Your library: {} games",
-        format::count(check.games as u32),
-        format::count(check.library as u32)
-    )
+fn ready_title(ready: Option<&Ready>) -> &'static str {
+    match ready {
+        Some(Ready::Checked(check)) if check.empty_profile => {
+            "Your profile needs a bit of play first"
+        }
+        Some(Ready::Checked(_)) => "You're all set",
+        Some(Ready::Preparing | Ready::Failed(_)) | None => "Almost ready",
+    }
+}
+
+fn ready_numbers(check: &ReadyCheck) -> [(String, &'static str); 2] {
+    [
+        (format::count(check.games as u32), "games in the catalog"),
+        (format::count(check.library as u32), "games in your library"),
+    ]
+}
+
+fn open_link(url: &str) -> Action {
+    let _ = Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn();
+    Action::None
 }
 
 fn small_button(label: &str, message: Message) -> Element<'_, Message> {
@@ -1155,9 +1193,30 @@ mod tests {
         };
 
         assert_eq!(
-            ready_text(&check),
-            "Catalog: 84,312 games · Your library: 312 games"
+            ready_numbers(&check),
+            [
+                ("84,312".to_string(), "games in the catalog"),
+                ("312".to_string(), "games in your library"),
+            ]
         );
+        assert_eq!(ready_title(Some(&Ready::Checked(check))), "You're all set");
+    }
+
+    #[test]
+    fn an_empty_profile_is_not_an_error() {
+        let check = ReadyCheck {
+            games: 84_312,
+            library: 3,
+            min_hours: 2.0,
+            empty_profile: true,
+        };
+
+        assert_eq!(
+            ready_title(Some(&Ready::Checked(check))),
+            "Your profile needs a bit of play first"
+        );
+        assert_eq!(ready_title(Some(&Ready::Preparing)), "Almost ready");
+        assert_eq!(ready_title(None), "Almost ready");
     }
 
     #[test]
