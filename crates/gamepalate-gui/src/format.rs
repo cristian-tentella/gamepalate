@@ -36,7 +36,7 @@ pub fn filters(options: &SearchOptions, currency: &Currency) -> String {
     }];
 
     if options.only_bets {
-        parts.push("Only bets".to_string());
+        parts.push("Bets only".to_string());
     }
     if filters.only_discounted {
         parts.push("On sale".to_string());
@@ -94,7 +94,7 @@ pub fn empty_because(blame: Option<&Blame>) -> String {
     };
 
     format!(
-        "No game passes your filters. The strictest is {}: it removed {games}.",
+        "No game passes your filters. Try loosening {}, which removed {games}.",
         blame.filter
     )
 }
@@ -202,7 +202,7 @@ pub fn quality(quality: f64) -> &'static str {
 }
 
 pub fn bet(every: usize) -> String {
-    format!("It's a Bet: 1 game in {every} is one your votes would skip")
+    format!("A game your votes would skip. 1 in {every} is a Bet.")
 }
 
 pub fn screenshot_position(index: usize, count: usize) -> String {
@@ -431,11 +431,11 @@ mod tests {
 
         assert_eq!(
             empty_because(Some(&blame(1234))),
-            "No game passes your filters. The strictest is max price: it removed 1,234 games."
+            "No game passes your filters. Try loosening max price, which removed 1,234 games."
         );
         assert_eq!(
             empty_because(Some(&blame(1))),
-            "No game passes your filters. The strictest is max price: it removed 1 game."
+            "No game passes your filters. Try loosening max price, which removed 1 game."
         );
         assert_eq!(empty_because(None), "No game passes your filters");
     }
@@ -576,10 +576,7 @@ mod tests {
 
     #[test]
     fn says_how_often_a_bet_comes() {
-        assert_eq!(
-            bet(5),
-            "It's a Bet: 1 game in 5 is one your votes would skip"
-        );
+        assert_eq!(bet(5), "A game your votes would skip. 1 in 5 is a Bet.");
     }
 
     #[test]

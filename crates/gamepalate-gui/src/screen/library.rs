@@ -1,4 +1,4 @@
-use std::{fmt, ops::Range, path::PathBuf, process::Command, sync::Arc, time::Duration};
+use std::{fmt, ops::Range, path::PathBuf, sync::Arc, time::Duration};
 
 use gamepalate_app::{
     AppId, Capsule, GameCorrection, Gamepalate, HoursSource, LibraryGameView, LibraryView,
@@ -120,7 +120,7 @@ pub enum Message {
     Undo,
     Undone(Result<(), String>),
     HideToast(u64),
-    OpenDataFolder,
+    OpenFamilies,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -293,9 +293,7 @@ impl Library {
                     self.toast = None;
                 }
             }
-            Message::OpenDataFolder => {
-                let _ = Command::new("explorer").arg(&self.data_dir).spawn();
-            }
+            Message::OpenFamilies => super::open_families(&self.data_dir),
         }
 
         Task::none()
@@ -549,7 +547,7 @@ impl Library {
             .into(),
             Row::Divider => container(
                 column![
-                    text("Not shaping your taste")
+                    text("Doesn't count")
                         .size(font::BAR_SIZE)
                         .font(font::SEMIBOLD),
                     text(divider_note(self.view.min_hours))
@@ -714,10 +712,10 @@ impl Library {
                 text("To make a game count more, put it in a family")
                     .size(font::NOTE_SIZE)
                     .style(style::muted),
-                button(text("Open folder ›").size(font::NOTE_SIZE))
+                button(text("Open families.toml ›").size(font::NOTE_SIZE))
                     .padding(0)
                     .style(style::link)
-                    .on_press(Message::OpenDataFolder),
+                    .on_press(Message::OpenFamilies),
             ]
             .spacing(2),
         )
@@ -1073,17 +1071,17 @@ fn share(share: f64) -> String {
 
 fn weight_line(game: &LibraryGameView, view: &LibraryView) -> String {
     if game.counts {
-        format!("Shapes {} of your taste", share(game.share))
+        format!("{} of your taste", share(game.share))
     } else if game.hours < view.min_hours {
         format!(
-            "Doesn't shape your taste: {}, under the {} that count",
+            "{}, under the {} that count",
             hours(game.hours),
             hours_text(view.min_hours)
         )
     } else if game.correction.multiplier == Some(0.0) {
-        "Doesn't shape your taste: set to ×0".to_string()
+        "Set to ×0, so it doesn't count".to_string()
     } else {
-        "Doesn't shape your taste: it has no tags".to_string()
+        "No tags, so it doesn't count".to_string()
     }
 }
 
@@ -1097,7 +1095,7 @@ fn hours_text(hours: f64) -> String {
 
 fn no_effect_text(game_hours: f64, min_hours: f64) -> String {
     format!(
-        "Correcting it would have no effect: it has {}, under {}",
+        "It has {}, under {}, so a correction changes nothing",
         hours(game_hours),
         hours_text(min_hours)
     )
@@ -1127,7 +1125,7 @@ fn corrected_text(
 fn empty_text(no_games: bool, filter: Filter, search: &str) -> String {
     let search = search.trim();
     if no_games {
-        "No games in your signals yet".to_string()
+        "No games in your Signals yet".to_string()
     } else if !search.is_empty() {
         format!("No game matches \"{search}\"")
     } else {
@@ -1382,18 +1380,15 @@ mod tests {
         let view = view_of(Vec::new());
         let line = |game: &LibraryGameView| weight_line(game, &view);
 
-        assert_eq!(line(&games[1]), "Shapes 50% of your taste");
+        assert_eq!(line(&games[1]), "50% of your taste");
         assert_eq!(
             line(&LibraryGameView {
                 share: 0.004,
                 ..games[1].clone()
             }),
-            "Shapes less than 1% of your taste"
+            "less than 1% of your taste"
         );
-        assert_eq!(
-            line(&games[2]),
-            "Doesn't shape your taste: 1.0 h, under the 2 hours that count"
-        );
+        assert_eq!(line(&games[2]), "1.0 h, under the 2 hours that count");
         let zero = LibraryGameView {
             counts: false,
             correction: GameCorrection {
@@ -1402,10 +1397,10 @@ mod tests {
             },
             ..games[1].clone()
         };
-        assert_eq!(line(&zero), "Doesn't shape your taste: set to ×0");
+        assert_eq!(line(&zero), "Set to ×0, so it doesn't count");
         assert_eq!(
             no_effect_text(0.5, 2.0),
-            "Correcting it would have no effect: it has 0.5 h, under 2 hours"
+            "It has 0.5 h, under 2 hours, so a correction changes nothing"
         );
     }
 
@@ -1560,7 +1555,7 @@ mod tests {
     fn an_empty_grid_says_why() {
         assert_eq!(
             empty_text(true, Filter::All, ""),
-            "No games in your signals yet"
+            "No games in your Signals yet"
         );
         assert_eq!(
             empty_text(false, Filter::All, " xyz "),

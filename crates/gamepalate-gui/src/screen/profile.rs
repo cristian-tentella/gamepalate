@@ -34,11 +34,10 @@ const VOTE_KINDS: [VoteKind; 4] = [
     VoteKind::NotForMe,
     VoteKind::Known,
 ];
-const NO_VOTES: &str = "No votes yet. Vote in Discover with 1-4.";
-const OPINION_ON: &str = "Your votes shape the list ✓";
+const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–4.";
+const OPINION_ON: &str = "Your votes count";
 const LABEL_BAR_WIDTH: f32 = 120.0;
-const NO_FAMILIES: &str =
-    "No families yet. A family is a group of games that stands for one of your tastes.";
+const NO_FAMILIES: &str = "No families yet. Group the games of one taste in families.toml.";
 const COLUMN_WIDTH: f32 = 760.0;
 const HEADER_WIDTH: f32 = 140.0;
 const HEADER_HEIGHT: f32 = HEADER_WIDTH * 215.0 / 460.0;
@@ -48,7 +47,7 @@ const FAMILY_HEADER_WIDTH: f32 = 80.0;
 const FAMILY_HEADER_HEIGHT: f32 = FAMILY_HEADER_WIDTH * 215.0 / 460.0;
 const FAMILY_TAGS: usize = 3;
 const HELD_OUT_TIP: &str =
-    "Games you like but kept out of every family on purpose, to test gamepalate";
+    "Games you like, kept out of families on purpose to see if Discover finds them";
 const TAG_NAME_WIDTH: f32 = 150.0;
 const NOTE_WIDTH: f32 = 110.0;
 const BAR_HEIGHT: f32 = 8.0;
@@ -79,6 +78,7 @@ pub enum Message {
     OpenVotes(Filter),
     OpenInLibrary(AppId),
     ToggleCorrection(Correction),
+    OpenFamilies,
     OpenDataFolder,
     Showcase(showcase::Message),
 }
@@ -141,6 +141,7 @@ impl Profile {
                 self.open_correction =
                     (self.open_correction != Some(correction)).then_some(correction);
             }
+            Message::OpenFamilies => super::open_families(&self.data_dir),
             Message::OpenDataFolder => {
                 let _ = Command::new("explorer").arg(&self.data_dir).spawn();
             }
@@ -295,7 +296,7 @@ impl Profile {
         .vertical_spacing(12);
 
         column![
-            text("Shaped most by")
+            text("Counts most")
                 .size(font::BAR_SIZE)
                 .font(font::SEMIBOLD),
             games,
@@ -329,7 +330,7 @@ impl Profile {
                 button(text("Open families.toml").size(font::BAR_SIZE))
                     .padding(0)
                     .style(style::link)
-                    .on_press(Message::OpenDataFolder),
+                    .on_press(Message::OpenFamilies),
             ]
             .spacing(8)
             .into()
@@ -491,7 +492,7 @@ impl Profile {
         column![
             row![
                 section_title("Corrections"),
-                text("games in Library, tags with the CLI")
+                text("Correct games in Library and tags with the CLI")
                     .size(font::NOTE_SIZE)
                     .style(style::muted),
             ]
@@ -583,7 +584,7 @@ fn vote_count(votes: &VotesView, kind: VoteKind) -> usize {
 
 fn opinion_progress(votes: &VotesView) -> String {
     format!(
-        "Your votes start shaping the list at {n} Would try and {n} Not for me: {} and {} so far",
+        "Votes count from {n} Would try and {n} Not for me. You have {} and {}.",
         votes.labels.would_try,
         votes.labels.not_for_me,
         n = votes.min_labels
@@ -1030,16 +1031,13 @@ fn dampen_hint(game: &HoursGame) -> String {
     if in_library(game) {
         "Open it in Library to make it count less".to_string()
     } else {
-        format!(
-            "{} is a game you would try: change its vote in Votes",
-            game.name
-        )
+        format!("To make {} count less, change its vote in Votes", game.name)
     }
 }
 
 fn no_taste_text(min_hours: f64) -> String {
     format!(
-        "No taste yet: none of your games has {} of play. Play one for a while, or add some to your wishlist.",
+        "None of your games has {} of play yet. Play one for a while or add some to your wishlist.",
         hours_text(min_hours)
     )
 }
@@ -1223,7 +1221,7 @@ mod tests {
         );
         assert_eq!(
             dampen_hint(&game("Hades", 1.0, HoursSource::WouldTry)),
-            "Hades is a game you would try: change its vote in Votes"
+            "To make Hades count less, change its vote in Votes"
         );
         assert!(!in_library(&game("Hades", 1.0, HoursSource::WouldTry)));
     }
@@ -1267,7 +1265,7 @@ mod tests {
     fn the_opinion_says_how_many_votes_are_missing() {
         assert_eq!(
             opinion_progress(&labels(4, 7)),
-            "Your votes start shaping the list at 10 Would try and 10 Not for me: 4 and 7 so far"
+            "Votes count from 10 Would try and 10 Not for me. You have 4 and 7."
         );
     }
 
@@ -1389,6 +1387,6 @@ mod tests {
 
     #[test]
     fn without_a_taste_the_screen_says_how_to_get_one() {
-        assert!(no_taste_text(2.0).starts_with("No taste yet: none of your games has 2 hours"));
+        assert!(no_taste_text(2.0).starts_with("None of your games has 2 hours"));
     }
 }

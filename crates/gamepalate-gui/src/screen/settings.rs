@@ -25,7 +25,7 @@ use crate::{
 const COLUMN_WIDTH: f32 = 760.0;
 const LABEL_WIDTH: f32 = 120.0;
 const MEGABYTE: u64 = 1024 * 1024;
-const CONFIG_NOTE: &str = "Changes to the file count from the next update or the next start";
+const CONFIG_NOTE: &str = "Changes to config.toml apply after the next update or restart";
 
 pub struct Settings {
     gamepalate: Arc<Gamepalate>,
@@ -476,7 +476,7 @@ fn region_note(text: &str) -> Option<&'static str> {
 
 fn region_confirmation(region: Region) -> String {
     format!(
-        "Prices in {region} need a full update, like the first one: about 20 minutes. You can keep using gamepalate meanwhile."
+        "Prices in {region} need a full update, about 20 minutes like the first one. You can keep using gamepalate meanwhile."
     )
 }
 

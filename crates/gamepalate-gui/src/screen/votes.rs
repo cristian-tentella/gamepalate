@@ -39,7 +39,7 @@ const HEADER_HEIGHT: f32 = HEADER_WIDTH * 215.0 / 460.0;
 const MAX_SHOT_WIDTH: f32 = 820.0;
 const SCROLLBAR_GAP: f32 = 12.0;
 const TOAST_DURATION: Duration = Duration::from_secs(4);
-const NO_VOTES: &str = "No votes yet. Vote games in Discover with keys 1-4.";
+const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–4.";
 
 pub struct Votes {
     gamepalate: Arc<Gamepalate>,

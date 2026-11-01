@@ -116,16 +116,18 @@ pub fn update_error_text(error: &UpdateError) -> String {
             source,
         } => {
             let why = match source {
-                SteamError::SteamDown { .. } => "Steam is not responding".to_string(),
-                source => error_chain(source),
+                SteamError::SteamDown { .. } => {
+                    "Steam is not responding, so the update stopped".to_string()
+                }
+                source => format!("Update stopped: {}", error_chain(source)),
             };
             format!(
-                "Update stopped: {why}. Run it again before {} to resume.",
+                "{why}. Update again before {} to resume.",
                 format::day_time(*resume_before)
             )
         }
         UpdateError::StartOver { .. } => {
-            "Steam answered in an unexpected way: the next update starts over".to_string()
+            "Steam sent an unexpected answer. The next update starts over.".to_string()
         }
         error => error_chain(error),
     }
@@ -258,7 +260,7 @@ mod tests {
         assert_eq!(
             update_error_text(&stopped),
             format!(
-                "Update stopped: Steam is not responding. Run it again before {} to resume.",
+                "Steam is not responding, so the update stopped. Update again before {} to resume.",
                 format::day_time(resume_before)
             )
         );
@@ -276,7 +278,7 @@ mod tests {
 
         assert_eq!(
             update_error_text(&start_over),
-            "Steam answered in an unexpected way: the next update starts over"
+            "Steam sent an unexpected answer. The next update starts over."
         );
     }
 }

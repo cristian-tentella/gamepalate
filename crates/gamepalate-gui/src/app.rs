@@ -805,7 +805,7 @@ fn refresh_button<'a>(refresh: &Refresh, pending: Option<PendingUpdate>) -> Elem
         Refresh::Running(refreshing, _) if refreshing.can_cancel() => (
             CANCEL,
             Some(Message::CancelRefresh),
-            "Stop the update: it resumes next time".to_string(),
+            "Pause the update".to_string(),
         ),
         Refresh::Running(..) => (REFRESH, None, refresh_tooltip(pending)),
         Refresh::Idle | Refresh::Failed(_) => {

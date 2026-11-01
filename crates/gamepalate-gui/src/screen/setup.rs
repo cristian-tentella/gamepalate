@@ -406,7 +406,7 @@ impl Setup {
                 self.first_run
                     .data_dir
                     .is_some()
-                    .then(|| link("Open folder", Message::OpenFolder)),
+                    .then(|| link("Open data folder", Message::OpenFolder)),
             )
             .spacing(16)
             .align_y(Center);
@@ -558,12 +558,7 @@ impl Setup {
 
     fn ready_view(&self) -> Element<'_, Message> {
         let Some(ready) = &self.ready else {
-            return column![
-                text("Read your library from Steam to finish").size(font::BAR_SIZE),
-                small_button("Read my library", Message::Prepare(true)),
-            ]
-            .spacing(8)
-            .into();
+            return small_button("Read my library", Message::Prepare(true));
         };
 
         match ready {
@@ -723,13 +718,13 @@ pub(crate) fn note_link<'a, M: Clone + 'a>(label: &'static str, message: M) -> E
 }
 
 pub(crate) fn connect_error_text(error: &ConnectError) -> String {
-    let down = "Steam is not responding: try again in a minute";
+    let down = "Steam is not responding. Try again in a minute.";
     match error.steam_error() {
         Some(SteamError::KeyRejected { .. }) => {
-            "Steam rejected the key: check that you copied all of it".to_string()
+            "Steam rejected the key. Check that you copied all of it.".to_string()
         }
         Some(SteamError::LibraryHidden { .. }) => PRIVATE_LIBRARY.to_string(),
-        Some(SteamError::MissingKey { .. }) => "Write the Steam Web API key".to_string(),
+        Some(SteamError::MissingKey { .. }) => "Paste the Steam Web API key".to_string(),
         Some(SteamError::SteamDown { .. }) => down.to_string(),
         _ if matches!(error, ConnectError::SteamDown) => down.to_string(),
         _ if matches!(error, ConnectError::NoProfile(_)) => {
@@ -816,7 +811,7 @@ fn can_change(download: &Download) -> bool {
 fn file_problems(first_run: &FirstRun, error: Option<&str>) -> Vec<String> {
     let mut problems = Vec::new();
     if first_run.data_dir.is_none() {
-        problems.push("Could not find the user data folder: set GAMEPALATE_DATA_DIR".to_string());
+        problems.push("Could not find the user data folder. Set GAMEPALATE_DATA_DIR.".to_string());
     }
     if let Part::Invalid(message) = &first_run.signals {
         problems.push(message.clone());
@@ -1264,6 +1259,6 @@ mod tests {
         assert!(
             connect_error_text(&ConnectError::SteamDown).starts_with("Steam is not responding")
         );
-        assert_eq!(connect_error_text(&missing), "Write the Steam Web API key");
+        assert_eq!(connect_error_text(&missing), "Paste the Steam Web API key");
     }
 }
