@@ -16,7 +16,7 @@ use iced::{
 
 use crate::{
     font, format,
-    progress::{Tracker, stage_text, update_error_text},
+    progress::{Stage, Tracker, stage_text, update_error_text},
     style,
 };
 
@@ -25,10 +25,22 @@ const WIDTH: f32 = 760.0;
 const LABEL_WIDTH: f32 = 96.0;
 const STEP_MARK: f32 = 28.0;
 const KEY_PAGE: &str = "https://steamcommunity.com/dev/apikey";
-const HOW_IT_WORKS: [&str; 3] = [
-    "Signals: the hours you played tell gamepalate what you like.",
-    "Families: groups of your games, to ask for more of the same kind.",
-    "Votes: every game you vote on teaches gamepalate a bit more.",
+const HOW_IT_WORKS: [(char, &str, &str); 3] = [
+    (
+        '\u{E823}',
+        "Signals",
+        "The hours you played tell gamepalate what you like.",
+    ),
+    (
+        '\u{E8F1}',
+        "Families",
+        "Groups of your games, to ask for more of the same kind.",
+    ),
+    (
+        '\u{E8E1}',
+        "Votes",
+        "Every game you vote on teaches gamepalate a bit more.",
+    ),
 ];
 const ACCOUNT_ABOUT: &str =
     "gamepalate reads the hours you played and your wishlist. It never changes anything on Steam.";
@@ -315,6 +327,7 @@ impl Setup {
                     .push(steps_view(step))
                     .push(self.done_view(step))
                     .push(card)
+                    .push((step == Step::Catalog).then(how_it_works))
                     .push(self.folder_view())
                     .spacing(28)
                     .max_width(WIDTH),
@@ -581,25 +594,38 @@ impl Setup {
 
     fn progress_view(&self) -> Element<'_, Message> {
         let tracker = &self.download.tracker;
+        let stage = tracker.stage();
         let (done, total) = tracker.done_of();
-        let left = tracker
-            .time_left()
-            .map(|left| note(format::time_left(left)));
+        let resume = format!(
+            "You can close gamepalate: it resumes where it stopped, within {} hours.",
+            self.first_run.resume_within_hours
+        );
+        let about = match tracker.time_left() {
+            Some(left) => format!("{} · {resume}", format::time_left(left)),
+            None => resume,
+        };
 
         column![
-            text(stage_text(tracker.stage())).size(font::BAR_SIZE),
+            row![
+                container(
+                    text(stage_text(stage))
+                        .size(font::INFO_SIZE)
+                        .font(font::SEMIBOLD)
+                )
+                .width(Fill)
+            ]
+            .push(
+                percent(stage)
+                    .map(|percent| { text(percent).size(font::INFO_SIZE).font(font::SEMIBOLD) })
+            )
+            .align_y(Center),
             progress_bar(0.0..=total.max(1) as f32, done as f32)
-                .girth(6)
+                .girth(10)
                 .length(Fill)
                 .style(style::meter),
+            note(about),
         ]
-        .push(left)
-        .push(note(format!(
-            "You can close gamepalate: the update resumes where it stopped, within {} hours.",
-            self.first_run.resume_within_hours
-        )))
-        .push(column(HOW_IT_WORKS.into_iter().map(|line| note(line).into())).spacing(2))
-        .spacing(8)
+        .spacing(10)
         .into()
     }
 }
@@ -688,6 +714,38 @@ fn step_state(step: Step, current: Step) -> StepState {
         Ordering::Equal => StepState::Current,
         Ordering::Greater => StepState::Next,
     }
+}
+
+fn percent(stage: Stage) -> Option<String> {
+    match stage {
+        Stage::StoreData { done, total } if total > 0 => {
+            Some(format!("{}%", (done as f64 / total as f64 * 100.0).round()))
+        }
+        _ => None,
+    }
+}
+
+fn how_it_works<'a>() -> Element<'a, Message> {
+    row(HOW_IT_WORKS.into_iter().map(|(icon, title, line)| {
+        container(
+            column![
+                row![
+                    text(icon).font(font::ICONS).size(16).style(text::primary),
+                    text(title).size(font::BAR_SIZE).font(font::SEMIBOLD),
+                ]
+                .spacing(8)
+                .align_y(Center),
+                text(line).size(font::BAR_SIZE).style(style::muted),
+            ]
+            .spacing(8),
+        )
+        .padding(16)
+        .width(Fill)
+        .style(style::card)
+        .into()
+    }))
+    .spacing(16)
+    .into()
 }
 
 fn can_change(download: &Download) -> bool {
@@ -877,6 +935,27 @@ mod tests {
         assert_eq!(step_state(Step::Catalog, Step::Catalog), StepState::Current);
         assert_eq!(step_state(Step::Ready, Step::Catalog), StepState::Next);
         assert_eq!(step_state(Step::Account, Step::Account), StepState::Current);
+    }
+
+    #[test]
+    fn the_percent_needs_a_total() {
+        assert_eq!(
+            percent(Stage::StoreData {
+                done: 312,
+                total: 757
+            }),
+            Some("41%".to_string())
+        );
+        assert_eq!(
+            percent(Stage::StoreData {
+                done: 757,
+                total: 757
+            }),
+            Some("100%".to_string())
+        );
+        assert_eq!(percent(Stage::StoreData { done: 0, total: 0 }), None);
+        assert_eq!(percent(Stage::Reading), None);
+        assert_eq!(percent(Stage::Writing), None);
     }
 
     #[test]
