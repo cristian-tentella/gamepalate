@@ -14,6 +14,12 @@ pub enum FamiliesError {
     #[error("the families file is not valid")]
     Toml(#[from] toml::de::Error),
 
+    #[error("the families file is not valid")]
+    Edit(#[from] toml_edit::TomlError),
+
+    #[error("could not save the families")]
+    Write(#[source] std::io::Error),
+
     #[error("family {name:?} is not valid")]
     Family {
         name: String,
@@ -44,7 +50,7 @@ pub fn load_families(path: &Path) -> Result<Families, FamiliesError> {
     }
 }
 
-fn parse_families(text: &str) -> Result<Families, FamiliesError> {
+pub(crate) fn parse_families(text: &str) -> Result<Families, FamiliesError> {
     let file: FamiliesFile = toml::from_str(text)?;
 
     let families = file

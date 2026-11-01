@@ -1,4 +1,11 @@
-use std::{fs::OpenOptions, io, path::Path, process::Command};
+use std::{
+    fs::OpenOptions,
+    io::{self, ErrorKind, Write},
+    path::Path,
+    process::Command,
+};
+
+use gamepalate_app::NEW_FAMILIES_FILE;
 
 pub mod discover;
 mod game;
@@ -37,11 +44,11 @@ pub(crate) fn open_families(data_dir: &Path) {
 }
 
 fn create_missing(path: &Path) -> io::Result<()> {
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map(|_| ())
+    match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(mut file) => file.write_all(NEW_FAMILIES_FILE.as_bytes()),
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -49,12 +56,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_missing_file_is_created_empty_and_an_existing_one_is_kept() {
+    fn a_missing_file_is_created_with_the_comments_and_an_existing_one_is_kept() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("families.toml");
 
         create_missing(&path).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), NEW_FAMILIES_FILE);
 
         std::fs::write(&path, "[families.cozy]\n").unwrap();
         create_missing(&path).unwrap();
