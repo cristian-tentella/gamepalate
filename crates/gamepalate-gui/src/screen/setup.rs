@@ -668,8 +668,6 @@ impl Setup {
 
     fn progress_view(&self) -> Element<'_, Message> {
         let tracker = &self.download.tracker;
-        let stage = tracker.stage();
-        let (done, total) = tracker.done_of();
 
         column![
             row![
@@ -681,17 +679,19 @@ impl Setup {
                 .width(Fill)
             ]
             .push(
-                percent(stage)
+                tracker
+                    .percent()
                     .map(|percent| { text(percent).size(font::PRICE_SIZE).font(font::SEMIBOLD) })
             )
             .align_y(Center),
-            progress_bar(0.0..=total.max(1) as f32, done as f32)
+            progress_bar(0.0..=1.0, tracker.fraction())
                 .girth(10)
                 .length(Fill)
                 .style(style::meter),
             note(download_status(
-                stage,
+                tracker.stage(),
                 tracker.time_left(),
+                tracker.resuming(),
                 self.first_run.resume_within_hours
             )),
         ]
@@ -803,8 +803,14 @@ fn step_state(step: Step, current: Step) -> StepState {
     }
 }
 
-fn download_status(stage: Stage, left: Option<Duration>, resume_within_hours: u32) -> String {
+fn download_status(
+    stage: Stage,
+    left: Option<Duration>,
+    resuming: bool,
+    resume_within_hours: u32,
+) -> String {
     let status = match (stage, left) {
+        _ if resuming => "Picking up where it left off".to_string(),
         (Stage::Starting | Stage::Reading, _) => "Reading the list of Steam games".to_string(),
         (Stage::StoreData { .. }, Some(left)) => format::time_left(left),
         (Stage::StoreData { .. }, None) => "Working out the time left".to_string(),
@@ -813,15 +819,6 @@ fn download_status(stage: Stage, left: Option<Duration>, resume_within_hours: u3
     format!(
         "{status}. If you close gamepalate now, the download picks up from here when you open it again within {resume_within_hours} hours."
     )
-}
-
-fn percent(stage: Stage) -> Option<String> {
-    match stage {
-        Stage::StoreData { done, total } if total > 0 => {
-            Some(format!("{}%", (done as f64 / total as f64 * 100.0).round()))
-        }
-        _ => None,
-    }
 }
 
 fn shown(played: &[Played]) -> impl Iterator<Item = &Played> {
@@ -1072,33 +1069,17 @@ mod tests {
         };
 
         assert_eq!(
-            download_status(store_data, Some(Duration::from_secs(720)), 24),
+            download_status(store_data, Some(Duration::from_secs(720)), false, 24),
             "About 12 minutes left. If you close gamepalate now, the download picks up from here when you open it again within 24 hours."
         );
-        assert!(download_status(store_data, None, 24).starts_with("Working out the time left"));
-        assert!(download_status(Stage::Reading, None, 24).starts_with("Reading the list"));
-        assert!(download_status(Stage::Writing, None, 24).starts_with("Saving the catalog"));
-    }
-
-    #[test]
-    fn the_percent_needs_a_total() {
-        assert_eq!(
-            percent(Stage::StoreData {
-                done: 312,
-                total: 757
-            }),
-            Some("41%".to_string())
+        assert!(
+            download_status(store_data, None, false, 24).starts_with("Working out the time left")
         );
-        assert_eq!(
-            percent(Stage::StoreData {
-                done: 757,
-                total: 757
-            }),
-            Some("100%".to_string())
+        assert!(download_status(Stage::Reading, None, false, 24).starts_with("Reading the list"));
+        assert!(download_status(Stage::Writing, None, false, 24).starts_with("Saving the catalog"));
+        assert!(
+            download_status(store_data, None, true, 24).starts_with("Picking up where it left off")
         );
-        assert_eq!(percent(Stage::StoreData { done: 0, total: 0 }), None);
-        assert_eq!(percent(Stage::Reading), None);
-        assert_eq!(percent(Stage::Writing), None);
     }
 
     #[test]

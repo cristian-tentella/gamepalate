@@ -14,6 +14,7 @@ use crate::format;
 
 const RECENT_BATCHES: usize = 20;
 const MIN_BATCHES: usize = 10;
+const READING_SHARE: f32 = 0.02;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub enum Stage {
@@ -31,6 +32,7 @@ pub enum Stage {
 pub struct Tracker {
     stage: Stage,
     batches: VecDeque<Instant>,
+    archived: usize,
 }
 
 impl Tracker {
@@ -40,11 +42,11 @@ impl Tracker {
 
     pub fn advance(&mut self, progress: Progress, now: Instant) {
         match progress {
-            Progress::Resumed { .. } => {}
+            Progress::Resumed { responses, .. } => self.archived = responses,
             Progress::ReadingApps => self.stage = Stage::Reading,
             Progress::StoreData { done, total } => {
                 self.stage = Stage::StoreData { done, total };
-                if done > 0 {
+                if done > self.archived {
                     self.batches.push_back(now);
                     if self.batches.len() > RECENT_BATCHES {
                         self.batches.pop_front();
@@ -55,12 +57,32 @@ impl Tracker {
         }
     }
 
-    pub fn done_of(&self) -> (usize, usize) {
+    pub fn fraction(&self) -> f32 {
         match self.stage {
-            Stage::StoreData { done, total } => (done, total),
-            Stage::Writing => (1, 1),
-            Stage::Starting | Stage::Reading => (0, 1),
+            Stage::Starting | Stage::Reading => 0.0,
+            Stage::StoreData { done, total } => {
+                READING_SHARE + (1.0 - READING_SHARE) * done as f32 / total.max(1) as f32
+            }
+            Stage::Writing => 1.0,
         }
+    }
+
+    pub fn percent(&self) -> Option<String> {
+        match self.stage {
+            Stage::Starting | Stage::Reading => None,
+            Stage::StoreData { .. } | Stage::Writing => {
+                Some(format!("{}%", (self.fraction() * 100.0).round()))
+            }
+        }
+    }
+
+    pub fn resuming(&self) -> bool {
+        self.archived > 0
+            && match self.stage {
+                Stage::Starting | Stage::Reading => true,
+                Stage::StoreData { done, .. } => done <= self.archived,
+                Stage::Writing => false,
+            }
     }
 
     pub fn time_left(&self) -> Option<Duration> {
@@ -164,6 +186,61 @@ mod tests {
 
         assert_eq!(tracker.batches.len(), RECENT_BATCHES);
         assert_eq!(tracker.time_left(), Some(Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn the_archived_batches_do_not_count_for_the_time_left() {
+        let mut tracker = Tracker::default();
+        let start = Instant::now();
+        tracker.advance(
+            Progress::Resumed {
+                started_at: gamepalate_app::Timestamp(0),
+                responses: 30,
+            },
+            start,
+        );
+        assert!(tracker.resuming());
+        for done in 1..=45_usize {
+            let at = start + Duration::from_secs(2 * done.saturating_sub(30) as u64);
+            tracker.advance(Progress::StoreData { done, total: 100 }, at);
+            assert_eq!(tracker.resuming(), done <= 30);
+        }
+
+        assert_eq!(tracker.time_left(), Some(Duration::from_secs(110)));
+    }
+
+    #[test]
+    fn the_bar_gives_the_list_of_games_its_share() {
+        let mut tracker = Tracker::default();
+        let now = Instant::now();
+        assert_eq!(tracker.percent(), None);
+
+        tracker.advance(Progress::ReadingApps, now);
+        assert_eq!(tracker.fraction(), 0.0);
+        assert_eq!(tracker.percent(), None);
+
+        tracker.advance(
+            Progress::StoreData {
+                done: 0,
+                total: 757,
+            },
+            now,
+        );
+        assert_eq!(tracker.percent().as_deref(), Some("2%"));
+
+        tracker.advance(
+            Progress::StoreData {
+                done: 312,
+                total: 757,
+            },
+            now,
+        );
+        assert_eq!(tracker.percent().as_deref(), Some("42%"));
+
+        tracker.advance(Progress::Writing, now);
+        assert_eq!(tracker.fraction(), 1.0);
+        assert_eq!(tracker.percent().as_deref(), Some("100%"));
+        assert!(!tracker.resuming());
     }
 
     #[test]

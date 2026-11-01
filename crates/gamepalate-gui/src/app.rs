@@ -457,9 +457,8 @@ impl App {
             Refreshing::Catalog(tracker)
                 if matches!(tracker.stage(), Stage::StoreData { .. } | Stage::Writing) =>
             {
-                let (done, total) = tracker.done_of();
                 Some(
-                    progress_bar(0.0..=total.max(1) as f32, done as f32)
+                    progress_bar(0.0..=1.0, tracker.fraction())
                         .girth(4)
                         .length(160)
                         .style(style::meter),
