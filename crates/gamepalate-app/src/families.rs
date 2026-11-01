@@ -26,6 +26,12 @@ pub struct FamiliesUndo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FamiliesChanged {
+    pub undo: FamiliesUndo,
+    pub gone: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FamilyGame {
     pub id: AppId,
     pub name: String,

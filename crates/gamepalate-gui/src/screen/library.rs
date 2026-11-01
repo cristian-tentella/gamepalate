@@ -1,7 +1,8 @@
 use std::{fmt, ops::Range, path::PathBuf, sync::Arc, time::Duration};
 
 use gamepalate_app::{
-    AppId, Capsule, GameCorrection, Gamepalate, HoursSource, LibraryGameView, LibraryView,
+    AppId, Capsule, FamiliesChanged, FamiliesUndo, FamilyChange, GameCorrection, Gamepalate,
+    HoursSource, LibraryGameView, LibraryView,
 };
 use iced::{
     Center, ContentFit, Element, Fill, Size, Subscription, Task,
@@ -16,7 +17,11 @@ use iced::{
     window,
 };
 
-use super::showcase::images::{Images, Picture};
+use super::{
+    profile::HELD_OUT_TIP,
+    sentence,
+    showcase::images::{Images, Picture},
+};
 use crate::{font, style};
 
 const FILTERS: [Filter; 4] = [
@@ -28,6 +33,7 @@ const FILTERS: [Filter; 4] = [
 const SORTS: [Sort; 3] = [Sort::TasteWeight, Sort::Hours, Sort::Name];
 const GRID: Id = Id::new("library-grid");
 const SEARCH: Id = Id::new("library-search");
+const NEW_FAMILY: Id = Id::new("library-new-family");
 const TILE_WIDTH: f32 = 150.0;
 const TILE_HEIGHT: f32 = 225.0;
 const GAP: f32 = 12.0;
@@ -51,7 +57,8 @@ pub struct Library {
     open: Option<AppId>,
     selected: Option<AppId>,
     reveal_pending: bool,
-    last_correction: Option<(AppId, GameCorrection)>,
+    undo: Option<Undo>,
+    new_family: Option<String>,
     toast: Option<Toast>,
     toasts_shown: u64,
     filter: Filter,
@@ -67,6 +74,11 @@ struct Toast {
     id: u64,
     text: String,
     undo: bool,
+}
+
+enum Undo {
+    Correction(AppId, GameCorrection),
+    Families(FamiliesUndo),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -120,6 +132,11 @@ pub enum Message {
     Undo,
     Undone(Result<(), String>),
     HideToast(u64),
+    ChangeFamilies(FamilyChange),
+    FamiliesSaved(FamilyChange, Result<FamiliesChanged, String>),
+    NewFamily,
+    NewFamilyName(String),
+    CreateFamily,
     OpenFamilies,
 }
 
@@ -138,7 +155,8 @@ impl Library {
             open: None,
             selected: None,
             reveal_pending: false,
-            last_correction: None,
+            undo: None,
+            new_family: None,
             toast: None,
             toasts_shown: 0,
             filter: Filter::All,
@@ -209,8 +227,12 @@ impl Library {
             Message::Open(id) => {
                 self.open = Some(id);
                 self.selected = Some(id);
+                self.new_family = None;
             }
-            Message::Close => self.open = None,
+            Message::Close => {
+                self.open = None;
+                self.new_family = None;
+            }
             Message::Move(direction) => {
                 let rows = self.rows(self.area.width);
                 let position = self.selected_position();
@@ -221,6 +243,7 @@ impl Library {
                 self.selected = Some(id);
                 if self.open.is_some() {
                     self.open = Some(id);
+                    self.new_family = None;
                 }
                 return self.reveal_selected();
             }
@@ -252,14 +275,14 @@ impl Library {
                     async move {
                         gamepalate
                             .correct_game(id, correction)
-                            .map_err(|error| error.to_string())
+                            .map_err(|error| sentence(&error.to_string()))
                     },
                     move |result| Message::Corrected(id, correction, result),
                 );
             }
             Message::Corrected(id, correction, Ok(before)) => {
                 if before != correction {
-                    self.last_correction = Some((id, before));
+                    self.undo = Some(Undo::Correction(id, before));
                 }
                 let reveal = self.reload();
                 let text = self.game(id).map_or_else(String::new, |game| {
@@ -267,22 +290,33 @@ impl Library {
                 });
                 return Task::batch([reveal, self.show_toast(text, before != correction)]);
             }
-            Message::Corrected(_, _, Err(error)) | Message::Undone(Err(error)) => {
+            Message::Corrected(_, _, Err(error))
+            | Message::Undone(Err(error))
+            | Message::FamiliesSaved(_, Err(error)) => {
                 return self.show_toast(error, false);
             }
             Message::Undo => {
-                if let Some((id, before)) = self.last_correction.take() {
-                    let gamepalate = Arc::clone(&self.gamepalate);
-                    return Task::perform(
+                let gamepalate = Arc::clone(&self.gamepalate);
+                return match self.undo.take() {
+                    Some(Undo::Correction(id, before)) => Task::perform(
                         async move {
                             gamepalate
                                 .correct_game(id, before)
                                 .map(|_| ())
-                                .map_err(|error| error.to_string())
+                                .map_err(|error| sentence(&error.to_string()))
                         },
                         Message::Undone,
-                    );
-                }
+                    ),
+                    Some(Undo::Families(undo)) => Task::perform(
+                        async move {
+                            gamepalate
+                                .undo_families(&undo)
+                                .map_err(|error| sentence(&error.to_string()))
+                        },
+                        Message::Undone,
+                    ),
+                    None => Task::none(),
+                };
             }
             Message::Undone(Ok(())) => {
                 let reveal = self.reload();
@@ -291,6 +325,47 @@ impl Library {
             Message::HideToast(id) => {
                 if self.toast.as_ref().is_some_and(|toast| toast.id == id) {
                     self.toast = None;
+                }
+            }
+            Message::ChangeFamilies(change) => {
+                let gamepalate = Arc::clone(&self.gamepalate);
+                return Task::perform(
+                    async move {
+                        let result = gamepalate
+                            .change_families(&change)
+                            .map_err(|error| sentence(&error.to_string()));
+                        (change, result)
+                    },
+                    |(change, result)| Message::FamiliesSaved(change, result),
+                );
+            }
+            Message::FamiliesSaved(change, Ok(changed)) => {
+                let text = changed_game(&change)
+                    .and_then(|id| self.game(id))
+                    .map_or_else(String::new, |game| {
+                        families_text(&change, game, &changed.gone)
+                    });
+                if matches!(change, FamilyChange::AddGame { .. }) {
+                    self.new_family = None;
+                }
+                self.undo = Some(Undo::Families(changed.undo));
+                let reveal = self.reload();
+                return Task::batch([reveal, self.show_toast(text, true)]);
+            }
+            Message::NewFamily => {
+                self.new_family = Some(String::new());
+                return operation::focus(NEW_FAMILY);
+            }
+            Message::NewFamilyName(name) => self.new_family = Some(name),
+            Message::CreateFamily => {
+                if let (Some(game), Some(family)) = (self.open, &self.new_family)
+                    && !family.trim().is_empty()
+                {
+                    let family = family.clone();
+                    return self.update(Message::ChangeFamilies(FamilyChange::AddGame {
+                        family,
+                        game,
+                    }));
                 }
             }
             Message::OpenFamilies => super::open_families(&self.data_dir),
@@ -707,21 +782,113 @@ impl Library {
         }))
         .push(hide.map(|hide| column![space().height(8), hide]))
         .push(space().height(8))
+        .push(text("Families").size(font::BAR_SIZE).font(font::SEMIBOLD))
+        .push(self.family_chips(game))
+        .push(held_out(game))
         .push(
-            column![
-                text("To make a game count more, put it in a family")
-                    .size(font::NOTE_SIZE)
-                    .style(style::muted),
-                button(text("Open families.toml ›").size(font::NOTE_SIZE))
-                    .padding(0)
-                    .style(style::link)
-                    .on_press(Message::OpenFamilies),
-            ]
-            .spacing(2),
+            button(text("Open families.toml ›").size(font::NOTE_SIZE))
+                .padding(0)
+                .style(style::link)
+                .on_press(Message::OpenFamilies),
         )
         .spacing(8)
         .padding(20)
         .into()
+    }
+
+    fn family_chips<'a>(&'a self, game: &'a LibraryGameView) -> Element<'a, Message> {
+        let chips = self.view.families.iter().map(|family| {
+            let inside = game.families.contains(family);
+            button(text(family).size(font::NOTE_SIZE))
+                .padding([4, 12])
+                .style(style::choice(inside))
+                .on_press(Message::ChangeFamilies(chip_change(
+                    family, game.id, inside,
+                )))
+                .into()
+        });
+        let new: Element<'a, Message> = match &self.new_family {
+            Some(name) => text_input("Family name", name)
+                .id(NEW_FAMILY)
+                .style(style::field)
+                .on_input(Message::NewFamilyName)
+                .on_submit(Message::CreateFamily)
+                .size(font::NOTE_SIZE)
+                .padding([4, 10])
+                .width(160)
+                .into(),
+            None => button(text("+ New family").size(font::NOTE_SIZE))
+                .padding([4, 12])
+                .style(style::chip)
+                .on_press(Message::NewFamily)
+                .into(),
+        };
+
+        row(chips)
+            .push(new)
+            .spacing(6)
+            .wrap()
+            .vertical_spacing(6)
+            .into()
+    }
+}
+
+fn held_out(game: &LibraryGameView) -> Element<'_, Message> {
+    let id = game.id;
+    tooltip(
+        checkbox(game.held_out)
+            .label("Held out")
+            .text_size(font::BAR_SIZE)
+            .on_toggle(move |held_out| {
+                Message::ChangeFamilies(if held_out {
+                    FamilyChange::HoldOut { game: id }
+                } else {
+                    FamilyChange::Release { game: id }
+                })
+            }),
+        container(text(HELD_OUT_TIP).size(font::NOTE_SIZE))
+            .padding([6, 10])
+            .style(style::popup),
+        tooltip::Position::Bottom,
+    )
+    .into()
+}
+
+fn chip_change(family: &str, game: AppId, inside: bool) -> FamilyChange {
+    let family = family.to_string();
+    if inside {
+        FamilyChange::RemoveGame { family, game }
+    } else {
+        FamilyChange::AddGame { family, game }
+    }
+}
+
+fn changed_game(change: &FamilyChange) -> Option<AppId> {
+    match change {
+        FamilyChange::AddGame { game, .. }
+        | FamilyChange::RemoveGame { game, .. }
+        | FamilyChange::HoldOut { game }
+        | FamilyChange::Release { game } => Some(*game),
+        FamilyChange::Rename { .. } | FamilyChange::Delete { .. } => None,
+    }
+}
+
+fn families_text(change: &FamilyChange, game: &LibraryGameView, gone: &[String]) -> String {
+    match change {
+        FamilyChange::AddGame { family, .. } if game.held_out => {
+            format!("Added to {}, no longer held out", family.trim())
+        }
+        FamilyChange::AddGame { family, .. } => format!("Added to {}", family.trim()),
+        FamilyChange::RemoveGame { family, .. } if gone.contains(family) => {
+            format!("Removed from {family}, which is now gone")
+        }
+        FamilyChange::RemoveGame { family, .. } => format!("Removed from {family}"),
+        FamilyChange::HoldOut { .. } if game.families.is_empty() => "Held out".to_string(),
+        FamilyChange::HoldOut { .. } => {
+            format!("Held out, removed from {}", game.families.join(", "))
+        }
+        FamilyChange::Release { .. } => "No longer held out".to_string(),
+        FamilyChange::Rename { .. } | FamilyChange::Delete { .. } => String::new(),
     }
 }
 
@@ -1551,6 +1718,61 @@ mod tests {
         assert_eq!(
             divider_note(0.5),
             "Under 0.5 hours of play, set to ×0, or without tags"
+        );
+    }
+
+    #[test]
+    fn a_chip_puts_the_game_in_or_takes_it_out() {
+        assert_eq!(
+            chip_change("cozy", AppId(1), false),
+            FamilyChange::AddGame {
+                family: "cozy".to_string(),
+                game: AppId(1),
+            }
+        );
+        assert_eq!(
+            chip_change("cozy", AppId(1), true),
+            FamilyChange::RemoveGame {
+                family: "cozy".to_string(),
+                game: AppId(1),
+            }
+        );
+    }
+
+    #[test]
+    fn the_toast_says_what_changed_in_the_families() {
+        let mut celeste = game(1, "Celeste");
+        let add = FamilyChange::AddGame {
+            family: " slow puzzles ".to_string(),
+            game: AppId(1),
+        };
+        let remove = FamilyChange::RemoveGame {
+            family: "cozy".to_string(),
+            game: AppId(1),
+        };
+        let hold_out = FamilyChange::HoldOut { game: AppId(1) };
+
+        assert_eq!(families_text(&add, &celeste, &[]), "Added to slow puzzles");
+        assert_eq!(families_text(&hold_out, &celeste, &[]), "Held out");
+        assert_eq!(
+            families_text(&FamilyChange::Release { game: AppId(1) }, &celeste, &[]),
+            "No longer held out"
+        );
+        assert_eq!(families_text(&remove, &celeste, &[]), "Removed from cozy");
+        assert_eq!(
+            families_text(&remove, &celeste, &["cozy".to_string()]),
+            "Removed from cozy, which is now gone"
+        );
+
+        celeste.families = vec!["cozy".to_string(), "platformers".to_string()];
+        assert_eq!(
+            families_text(&hold_out, &celeste, &[]),
+            "Held out, removed from cozy, platformers"
+        );
+        celeste.held_out = true;
+        assert_eq!(
+            families_text(&add, &celeste, &[]),
+            "Added to slow puzzles, no longer held out"
         );
     }
 

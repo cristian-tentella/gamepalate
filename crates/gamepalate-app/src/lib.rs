@@ -17,7 +17,7 @@ pub mod update;
 pub use app::{Gamepalate, OpenError, RecommendError, VoteError, VotedGame};
 pub use capsules::{CAPSULE_HEIGHT, CAPSULE_WIDTH, Capsule};
 pub use details::GameDetails;
-pub use families::{FamiliesUndo, FamilyChange, FamilyChangeError, FamilyGame};
+pub use families::{FamiliesChanged, FamiliesUndo, FamilyChange, FamilyChangeError, FamilyGame};
 pub use gamepalate_core::{
     config::SignalsConfig,
     corrections::Ban,

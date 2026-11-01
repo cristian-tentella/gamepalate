@@ -40,8 +40,8 @@ use crate::{
     data_dir,
     details::{GameDetails, StoreDetails},
     families::{
-        FamiliesUndo, FamilyChange, FamilyChangeError, FamilyGame, changed_families, family_games,
-        renamed_choice,
+        FamiliesChanged, FamiliesUndo, FamilyChange, FamilyChangeError, FamilyGame,
+        changed_families, family_games, renamed_choice,
     },
     images::{ImageCache, LoadImageError, MAX_CACHE_BYTES, cache_dir},
     library::{
@@ -259,7 +259,7 @@ impl Gamepalate {
     pub fn change_families(
         &self,
         change: &FamilyChange,
-    ) -> Result<FamiliesUndo, FamilyChangeError> {
+    ) -> Result<FamiliesChanged, FamilyChangeError> {
         let mut families = self.lock_families();
         let changed = changed_families(
             &self.data_dir.join(FAMILIES_FILE),
@@ -282,9 +282,17 @@ impl Gamepalate {
             });
         }
 
-        Ok(FamiliesUndo {
-            snapshot: changed.snapshot,
-            discover_family,
+        Ok(FamiliesChanged {
+            undo: FamiliesUndo {
+                snapshot: changed.snapshot,
+                discover_family,
+            },
+            gone: changed
+                .renamed
+                .into_iter()
+                .filter(|(_, to)| to.is_none())
+                .map(|(from, _)| from)
+                .collect(),
         })
     }
 

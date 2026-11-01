@@ -46,7 +46,7 @@ const FAMILY_HEADERS: usize = 4;
 const FAMILY_HEADER_WIDTH: f32 = 80.0;
 const FAMILY_HEADER_HEIGHT: f32 = FAMILY_HEADER_WIDTH * 215.0 / 460.0;
 const FAMILY_TAGS: usize = 3;
-const HELD_OUT_TIP: &str =
+pub(crate) const HELD_OUT_TIP: &str =
     "Games you like, kept out of families on purpose to see if Discover finds them";
 const TAG_NAME_WIDTH: f32 = 150.0;
 const NOTE_WIDTH: f32 = 110.0;

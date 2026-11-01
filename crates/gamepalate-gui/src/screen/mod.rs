@@ -43,6 +43,13 @@ pub(crate) fn open_families(data_dir: &Path) {
     }
 }
 
+pub(crate) fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
 fn create_missing(path: &Path) -> io::Result<()> {
     match OpenOptions::new().write(true).create_new(true).open(path) {
         Ok(mut file) => file.write_all(NEW_FAMILIES_FILE.as_bytes()),
@@ -54,6 +61,15 @@ fn create_missing(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_error_starts_with_a_capital() {
+        assert_eq!(
+            sentence("there is already a family named \"cozy\""),
+            "There is already a family named \"cozy\""
+        );
+        assert_eq!(sentence(""), "");
+    }
 
     #[test]
     fn a_missing_file_is_created_with_the_comments_and_an_existing_one_is_kept() {
