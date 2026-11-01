@@ -653,6 +653,7 @@ fn similar_lines(game: &RecommendedGame) -> Option<Element<'_, Message>> {
 
 fn small_button(label: &str, message: Message) -> Element<'_, Message> {
     button(text(label).size(font::NOTE_SIZE))
+        .style(style::primary)
         .padding([4, 12])
         .on_press(message)
         .into()

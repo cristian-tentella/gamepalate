@@ -394,6 +394,7 @@ impl Settings {
                 })
                 .size(font::BAR_SIZE)
             )
+            .style(style::primary)
             .padding([8, 20])
             .on_press_maybe(can_save.then_some(Message::Save)),
         ]
@@ -444,6 +445,7 @@ impl Settings {
                 })
                 .size(font::BAR_SIZE)
             )
+            .style(style::primary)
             .padding([8, 20])
             .on_press_maybe((!editing.saving).then_some(Message::ConfirmRegion)),
         ]

@@ -400,6 +400,24 @@ pub fn field(theme: &Theme, status: text_input::Status) -> text_input::Style {
     }
 }
 
+pub fn primary(theme: &Theme, status: button::Status) -> button::Style {
+    rounded(button::primary(theme, status))
+}
+
+pub fn secondary(theme: &Theme, status: button::Status) -> button::Style {
+    rounded(button::secondary(theme, status))
+}
+
+fn rounded(style: button::Style) -> button::Style {
+    button::Style {
+        border: Border {
+            radius: 6.0.into(),
+            ..style.border
+        },
+        ..style
+    }
+}
+
 pub fn meter(theme: &Theme) -> progress_bar::Style {
     let palette = theme.extended_palette();
 

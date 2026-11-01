@@ -250,6 +250,7 @@ impl Panel {
             ),
             container(
                 button(text("Reset").size(font::BAR_SIZE))
+                    .style(style::primary)
                     .padding([5, 16])
                     .on_press(Message::Reset),
             )

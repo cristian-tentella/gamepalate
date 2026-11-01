@@ -530,6 +530,7 @@ impl Setup {
                 })
                 .size(font::BAR_SIZE)
             )
+            .style(style::primary)
             .padding([8, 20])
             .on_press_maybe(can_connect(account, &self.first_run).then_some(Message::Connect)),
         ]
@@ -579,7 +580,7 @@ impl Setup {
                 row![
                     button(text("Open Steam library").size(font::BAR_SIZE))
                         .padding([8, 20])
-                        .style(button::secondary)
+                        .style(style::secondary)
                         .on_press(Message::OpenLibrary),
                     small_button("Check again", Message::Prepare(true)),
                 ]
@@ -610,6 +611,7 @@ impl Setup {
         .push(error)
         .push(
             button(text(label).size(font::BAR_SIZE))
+                .style(style::primary)
                 .padding([8, 20])
                 .on_press(Message::Download),
         )
@@ -678,6 +680,7 @@ fn open_link(url: &str) -> Action {
 
 fn small_button(label: &str, message: Message) -> Element<'_, Message> {
     button(text(label).size(font::BAR_SIZE))
+        .style(style::primary)
         .padding([8, 20])
         .on_press(message)
         .into()
