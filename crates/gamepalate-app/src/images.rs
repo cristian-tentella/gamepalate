@@ -13,7 +13,7 @@ use reqwest::Client;
 use sha2::{Digest, Sha256};
 
 const EXTENSIONS: [&str; 3] = ["jpg", "png", "webp"];
-const MAX_CACHE_BYTES: u64 = 300 * 1024 * 1024;
+pub(crate) const MAX_CACHE_BYTES: u64 = 300 * 1024 * 1024;
 const TEMPORARY: &str = ".tmp";
 
 static WRITES: AtomicU64 = AtomicU64::new(0);
@@ -79,6 +79,28 @@ impl<F> ImageCache<F> {
             prune(dir, MAX_CACHE_BYTES);
         }
     }
+
+    pub fn bytes(&self) -> u64 {
+        self.dir.as_deref().map(folder_bytes).unwrap_or(0)
+    }
+
+    pub fn clear(&self) {
+        if let Some(dir) = &self.dir {
+            prune(dir, 0);
+        }
+    }
+}
+
+fn folder_bytes(dir: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len())
+        .sum()
 }
 
 struct CachedFile {
@@ -367,6 +389,29 @@ mod tests {
             .collect();
         left.sort();
         assert_eq!(left, vec!["middle.jpg", "new.jpg"]);
+    }
+
+    #[tokio::test]
+    async fn counts_the_bytes_of_the_cache_and_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cache, _) = cache(Some(dir.path()), 200);
+        assert_eq!(cache.bytes(), 0);
+
+        cache.image(URL).await.unwrap();
+        cache.image("https://example.com/other.jpg").await.unwrap();
+        assert_eq!(cache.bytes(), 6);
+
+        cache.clear();
+        assert_eq!(cache.bytes(), 0);
+        assert!(files(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn a_cache_without_a_folder_is_empty() {
+        let (cache, _) = cache(None, 200);
+
+        assert_eq!(cache.bytes(), 0);
+        cache.clear();
     }
 
     #[test]

@@ -36,12 +36,13 @@ use crate::{
     capsules::{Capsule, CapsuleFinder, capsule},
     data_dir,
     details::{GameDetails, StoreDetails},
-    images::{ImageCache, LoadImageError},
+    images::{ImageCache, LoadImageError, MAX_CACHE_BYTES},
     library::{
         GameCorrection, GameCorrectionError, LibraryView, corrected_game, game_correction,
         library_view,
     },
     profile::{ProfileView, profile_view},
+    settings::{self, Settings},
     update,
 };
 
@@ -266,6 +267,24 @@ impl Gamepalate {
 
     pub fn prune_images(&self) {
         self.images.prune();
+    }
+
+    pub fn image_cache_bytes(&self) -> u64 {
+        self.images.bytes()
+    }
+
+    pub fn clear_image_cache(&self) {
+        self.images.clear();
+    }
+
+    pub fn settings(&self) -> Settings {
+        Settings {
+            steam_id: self.files.config.steam_id,
+            key: settings::key_source(),
+            region: self.files.config.region,
+            data_dir: self.data_dir.clone(),
+            image_cache_max_bytes: MAX_CACHE_BYTES,
+        }
     }
 
     pub fn header_url(&self, id: AppId) -> String {

@@ -9,6 +9,7 @@ pub mod names;
 pub mod profile;
 pub mod ready;
 pub mod refresh;
+pub mod settings;
 pub mod setup;
 pub mod signals;
 pub mod update;
@@ -24,6 +25,7 @@ pub use gamepalate_core::{
     game::{Discount, Price, Reviews},
     ids::{AppId, SteamId},
     opinion::Labels,
+    region::Region,
     search::{Recommendation, RecommendedGame, SearchError, SearchOptions, SortBy},
     timestamp::Timestamp,
     votes::{Vote, VoteKind},

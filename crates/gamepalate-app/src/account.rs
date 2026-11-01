@@ -12,7 +12,7 @@ use crate::{
     update::wall_clock,
 };
 
-const KEY_ENV_VAR: &str = "STEAM_API_KEY";
+pub(crate) const KEY_ENV_VAR: &str = "STEAM_API_KEY";
 const KEY_SERVICE: &str = "gamepalate";
 const KEY_USER: &str = "steam-api-key";
 const PROFILES: &str = "steamcommunity.com/profiles/";

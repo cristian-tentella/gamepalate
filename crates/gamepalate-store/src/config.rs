@@ -107,13 +107,21 @@ pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
 }
 
 pub fn save_steam_id(path: &Path, steam_id: SteamId) -> Result<(), ConfigError> {
+    save_value(path, "steam_id", steam_id.0.to_string())
+}
+
+pub fn save_region(path: &Path, region: Region) -> Result<(), ConfigError> {
+    save_value(path, "region", region.as_str().to_string())
+}
+
+fn save_value(path: &Path, key: &str, value: String) -> Result<(), ConfigError> {
     let text = if path.is_file() {
         std::fs::read_to_string(path)?
     } else {
         String::new()
     };
     let mut document: DocumentMut = text.parse()?;
-    document["steam_id"] = toml_edit::value(steam_id.0.to_string());
+    document[key] = toml_edit::value(value);
 
     let write_error = |source| ConfigError::Write {
         path: path.to_path_buf(),
@@ -407,6 +415,41 @@ mod tests {
                 .unwrap()
                 .starts_with("steam_id = ")
         );
+    }
+
+    #[test]
+    fn saving_the_region_keeps_comments_and_other_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "# my settings\nsteam_id = \"76561198000000000\"\nregion = \"IT\"\n\n[signals]\nmin_hours = 3.0\n",
+        )
+        .unwrap();
+
+        save_region(&path, Region::new("US").unwrap()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# my settings\nsteam_id = \"76561198000000000\"\nregion = \"US\"\n\n[signals]\nmin_hours = 3.0\n"
+        );
+    }
+
+    #[test]
+    fn a_region_saved_for_the_first_time_is_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "steam_id = \"76561198000000000\"\n[signals]\nmin_hours = 3.0\n",
+        )
+        .unwrap();
+
+        save_region(&path, Region::new("US").unwrap()).unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.region, Region::new("US").unwrap());
+        assert_eq!(config.signals.min_hours, 3.0);
     }
 
     const STEAM_ID: &str = r#"steam_id = "76561198000000000""#;
