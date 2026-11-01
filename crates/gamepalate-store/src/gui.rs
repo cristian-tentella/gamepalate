@@ -17,11 +17,19 @@ pub enum ThemeChoice {
     Dark,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedWindow {
+    pub width: u32,
+    pub height: u32,
+    pub maximized: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GuiSettings {
     pub theme: ThemeChoice,
     pub search: SearchOptions,
+    pub window: Option<SavedWindow>,
 }
 
 pub fn load_gui_settings(path: &Path) -> GuiSettings {
@@ -47,6 +55,11 @@ mod tests {
         let mut settings = GuiSettings {
             theme: ThemeChoice::Dark,
             search: SearchOptions::default(),
+            window: Some(SavedWindow {
+                width: 1440,
+                height: 900,
+                maximized: true,
+            }),
         };
         settings.search.family = Some("Puzzle".to_string());
         settings.search.filters.max_price_cents = Some(1500);
@@ -58,6 +71,7 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with(HEADER));
         assert!(text.contains("theme = \"dark\"\n"));
+        assert!(text.contains("[window]\nwidth = 1440\nheight = 900\nmaximized = true\n"));
     }
 
     #[test]
@@ -89,5 +103,6 @@ mod tests {
 
         assert_eq!(settings.theme, ThemeChoice::Dark);
         assert_eq!(settings.search, SearchOptions::default());
+        assert_eq!(settings.window, None);
     }
 }

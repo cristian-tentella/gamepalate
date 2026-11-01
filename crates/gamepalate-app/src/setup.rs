@@ -75,6 +75,12 @@ impl FirstRun {
     }
 }
 
+pub fn saved_gui_settings() -> GuiSettings {
+    data_dir::resolve()
+        .map(|dir| load_gui_settings(&dir.join(GUI_FILE)))
+        .unwrap_or_default()
+}
+
 #[derive(Debug)]
 pub struct Covers {
     images: ImageCache,

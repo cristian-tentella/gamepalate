@@ -5,25 +5,18 @@ mod progress;
 mod screen;
 mod style;
 
-use iced::{Pixels, Settings, Size, window};
+use gamepalate_app::setup::saved_gui_settings;
+use iced::{Pixels, Settings};
 
-use crate::app::App;
+use crate::app::{App, window_settings};
 
 fn main() -> anyhow::Result<()> {
-    iced::application(App::new, App::update, App::view)
+    let saved = saved_gui_settings().window;
+
+    iced::application(move || App::new(saved), App::update, App::view)
         .theme(App::theme)
         .subscription(App::subscription)
-        .window(window::Settings {
-            size: Size::new(1280.0, 800.0),
-            min_size: Some(Size::new(960.0, 600.0)),
-            decorations: false,
-            platform_specific: window::settings::PlatformSpecific {
-                undecorated_shadow: true,
-                corner_preference: window::settings::platform::CornerPreference::Round,
-                ..window::settings::PlatformSpecific::default()
-            },
-            ..window::Settings::default()
-        })
+        .window(window_settings(saved))
         .settings(Settings {
             fonts: vec![
                 font::REGULAR_BYTES.into(),

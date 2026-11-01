@@ -4,12 +4,12 @@ use std::{
 };
 
 use gamepalate_app::{
-    Gamepalate, PendingUpdate, Region, ThemeChoice, Timestamp,
+    Gamepalate, GuiSettings, PendingUpdate, Region, SavedWindow, ThemeChoice, Timestamp,
     refresh::{Step, refresh},
     setup::{FirstRun, error_chain},
 };
 use iced::{
-    Center, Color, Element, Fill, Length, Shrink, Subscription, Task, Theme,
+    Center, Color, Element, Fill, Length, Shrink, Size, Subscription, Task, Theme,
     futures::{SinkExt, channel::mpsc},
     keyboard::{self, Key},
     mouse, padding, stream, task,
@@ -42,6 +42,8 @@ const MOON: char = '\u{E708}';
 const REFRESH: char = '\u{E72C}';
 const CANCEL: char = '\u{E711}';
 const GEAR: char = '\u{E713}';
+const DEFAULT_SIZE: Size = Size::new(1280.0, 800.0);
+const MIN_SIZE: Size = Size::new(960.0, 600.0);
 const DARK_BACKGROUND: Color = Color::from_rgb8(0x18, 0x19, 0x1c);
 const DARK_TEXT: Color = Color::from_rgb8(0xf5, 0xf5, 0xf5);
 const DARK_SUCCESS: Color = Color::from_rgb8(0x78, 0xe3, 0xb3);
@@ -53,6 +55,8 @@ pub struct App {
     theme: Theme,
     window: Option<window::Id>,
     maximized: bool,
+    size: Size,
+    resized: Size,
     last_bar_press: Option<Instant>,
     refresh: Refresh,
     pending: Option<PendingUpdate>,
@@ -85,7 +89,7 @@ pub enum Message {
     WindowFound(Option<window::Id>),
     Window(WindowAction),
     BarPressed,
-    Resized,
+    Resized(Size),
     Maximized(bool),
     ToggleTheme,
     Refresh,
@@ -114,13 +118,15 @@ pub enum Page {
 }
 
 impl App {
-    pub fn new() -> (App, Task<Message>) {
+    pub fn new(saved: Option<SavedWindow>) -> (App, Task<Message>) {
         let mut app = App {
             gamepalate: None,
             screen: Screen::Starting,
             theme: Theme::Light,
             window: None,
-            maximized: false,
+            maximized: saved.is_some_and(|saved| saved.maximized),
+            size: saved_size(saved),
+            resized: saved_size(saved),
             last_bar_press: None,
             refresh: Refresh::Idle,
             pending: None,
@@ -243,12 +249,18 @@ impl App {
             }
             Message::Window(action) => self.window_action(action),
             Message::BarPressed => self.bar_pressed(),
-            Message::Resized => match self.window {
-                Some(id) => window::is_maximized(id).map(Message::Maximized),
-                None => Task::none(),
-            },
+            Message::Resized(size) => {
+                self.resized = size;
+                match self.window {
+                    Some(id) => window::is_maximized(id).map(Message::Maximized),
+                    None => Task::none(),
+                }
+            }
             Message::Maximized(maximized) => {
                 self.maximized = maximized;
+                if let Some(size) = restored(self.resized, maximized) {
+                    self.size = size;
+                }
                 Task::none()
             }
             Message::Refresh => self.start_refresh(),
@@ -297,18 +309,19 @@ impl App {
 
     fn set_theme(&mut self, choice: ThemeChoice) -> Task<Message> {
         self.theme = theme(choice);
+        self.change_gui_settings(move |settings| settings.theme = choice)
+    }
+
+    fn change_gui_settings(
+        &self,
+        change: impl FnOnce(&mut GuiSettings) + Send + 'static,
+    ) -> Task<Message> {
         if let Some(gamepalate) = &self.gamepalate {
             let gamepalate = Arc::clone(gamepalate);
-            Task::future(async move {
-                gamepalate.change_gui_settings(|settings| settings.theme = choice)
-            })
-            .discard()
+            Task::future(async move { gamepalate.change_gui_settings(change) }).discard()
         } else if let Screen::Setup(setup) = &self.screen {
             let first_run = setup.first_run().clone();
-            Task::future(async move {
-                first_run.change_gui_settings(|settings| settings.theme = choice)
-            })
-            .discard()
+            Task::future(async move { first_run.change_gui_settings(change) }).discard()
         } else {
             Task::none()
         }
@@ -344,7 +357,8 @@ impl App {
         };
 
         Subscription::batch([
-            window::resize_events().map(|_| Message::Resized),
+            window::resize_events().map(|(_, size)| Message::Resized(size)),
+            window::close_requests().map(|_| Message::Window(WindowAction::Close)),
             keyboard::listen().filter_map(page_key),
             screen,
         ])
@@ -437,7 +451,14 @@ impl App {
 
     fn window_action(&self, action: WindowAction) -> Task<Message> {
         if matches!(action, WindowAction::Close) {
-            return iced::exit();
+            let window = SavedWindow {
+                width: self.size.width.round() as u32,
+                height: self.size.height.round() as u32,
+                maximized: self.maximized,
+            };
+            return self
+                .change_gui_settings(move |settings| settings.window = Some(window))
+                .chain(iced::exit());
         }
         let Some(id) = self.window else {
             return Task::none();
@@ -684,6 +705,36 @@ fn window_button<'a>(icon: char, action: WindowAction) -> Element<'a, Message> {
     })
     .on_press(Message::Window(action))
     .into()
+}
+
+pub fn window_settings(saved: Option<SavedWindow>) -> window::Settings {
+    window::Settings {
+        size: saved_size(saved),
+        maximized: saved.is_some_and(|saved| saved.maximized),
+        position: window::Position::Centered,
+        min_size: Some(MIN_SIZE),
+        decorations: false,
+        exit_on_close_request: false,
+        platform_specific: window::settings::PlatformSpecific {
+            undecorated_shadow: true,
+            corner_preference: window::settings::platform::CornerPreference::Round,
+            ..window::settings::PlatformSpecific::default()
+        },
+        ..window::Settings::default()
+    }
+}
+
+fn saved_size(saved: Option<SavedWindow>) -> Size {
+    saved.map_or(DEFAULT_SIZE, |saved| {
+        Size::new(
+            (saved.width as f32).max(MIN_SIZE.width),
+            (saved.height as f32).max(MIN_SIZE.height),
+        )
+    })
+}
+
+fn restored(size: Size, maximized: bool) -> Option<Size> {
+    (!maximized && size.width >= MIN_SIZE.width && size.height >= MIN_SIZE.height).then_some(size)
 }
 
 fn dark() -> Theme {
@@ -1037,6 +1088,38 @@ mod tests {
         assert_eq!(page("4", keyboard::Modifiers::CTRL), Some(Page::Profile));
         assert_eq!(page("3", keyboard::Modifiers::empty()), None);
         assert_eq!(page("5", keyboard::Modifiers::CTRL), None);
+    }
+
+    #[test]
+    fn the_window_opens_as_it_was_saved() {
+        let saved = |width, height, maximized| {
+            Some(SavedWindow {
+                width,
+                height,
+                maximized,
+            })
+        };
+
+        let first = window_settings(None);
+        assert_eq!(first.size, DEFAULT_SIZE);
+        assert!(!first.maximized);
+        assert!(matches!(first.position, window::Position::Centered));
+        assert!(!first.exit_on_close_request);
+
+        let large = window_settings(saved(1440, 900, true));
+        assert_eq!(large.size, Size::new(1440.0, 900.0));
+        assert!(large.maximized);
+
+        assert_eq!(window_settings(saved(400, 300, false)).size, MIN_SIZE);
+    }
+
+    #[test]
+    fn keeps_the_size_of_the_window_when_it_is_not_maximized_or_minimized() {
+        let size = Size::new(1440.0, 900.0);
+
+        assert_eq!(restored(size, false), Some(size));
+        assert_eq!(restored(Size::new(2560.0, 1392.0), true), None);
+        assert_eq!(restored(Size::ZERO, false), None);
     }
 
     #[test]
