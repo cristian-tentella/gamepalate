@@ -15,10 +15,10 @@ use gamepalate_app::{
 use iced::{
     Center, ContentFit, Element, Fill, Task,
     futures::{SinkExt, channel::mpsc},
-    padding, stream,
+    mouse, padding, stream,
     widget::{
-        button, column, container, image, progress_bar, row, scrollable, space, stack, text,
-        text_input,
+        button, column, container, image, mouse_area, progress_bar, row, scrollable, space, stack,
+        text, text_input, tooltip,
     },
 };
 
@@ -383,8 +383,7 @@ impl Setup {
             container(
                 column![]
                     .push(self.problems_view())
-                    .push(steps_view(step))
-                    .push(self.done_view(step))
+                    .push(steps_view(step, &self.download))
                     .push(card)
                     .push(self.most_played_view(step))
                     .spacing(28)
@@ -428,39 +427,6 @@ impl Setup {
             .style(style::card)
             .into(),
         )
-    }
-
-    fn done_view(&self, current: Step) -> Option<Element<'_, Message>> {
-        if current == Step::Account {
-            return None;
-        }
-        let steam_id = self
-            .first_run
-            .saved_steam_id
-            .map(|id| id.0.to_string())
-            .unwrap_or_default();
-        let account = row![
-            check_mark(),
-            text("Steam account")
-                .size(font::BAR_SIZE)
-                .font(font::SEMIBOLD),
-            text(steam_id).size(font::BAR_SIZE).style(style::muted),
-        ]
-        .push(can_change(&self.download).then(|| link("Change", Message::Change)))
-        .spacing(12)
-        .align_y(Center);
-        let catalog = (current == Step::Profile).then(|| {
-            row![
-                check_mark(),
-                text("Steam catalog")
-                    .size(font::BAR_SIZE)
-                    .font(font::SEMIBOLD),
-            ]
-            .spacing(12)
-            .align_y(Center)
-        });
-
-        Some(column![account].push(catalog).spacing(8).into())
     }
 
     fn step_view(&self, step: Step) -> Element<'_, Message> {
@@ -609,6 +575,7 @@ impl Setup {
             .into(),
             Ready::Empty { min_hours } => column![
                 text(empty_profile_text(*min_hours)).size(font::BAR_SIZE),
+                note_link("Wrong account? Change it", Message::Change),
                 row![
                     button(text("Open Steam library").size(font::BAR_SIZE))
                         .padding([8, 20])
@@ -857,7 +824,7 @@ fn file_problems(first_run: &FirstRun, error: Option<&str>) -> Vec<String> {
     problems
 }
 
-fn steps_view<'a>(current: Step) -> Element<'a, Message> {
+fn steps_view<'a>(current: Step, download: &Download) -> Element<'a, Message> {
     let mut steps = row![].spacing(12).align_y(Center);
     for (index, step) in Step::ALL.into_iter().enumerate() {
         if index > 0 {
@@ -868,9 +835,32 @@ fn steps_view<'a>(current: Step) -> Element<'a, Message> {
                     .style(style::step_line(step <= current)),
             );
         }
-        steps = steps.push(step_label(index + 1, step, step_state(step, current)));
+        let state = step_state(step, current);
+        let label = step_label(index + 1, step, state);
+        steps = steps.push(if changes_account(step, state, download) {
+            change_account(label)
+        } else {
+            label
+        });
     }
     steps.into()
+}
+
+fn changes_account(step: Step, state: StepState, download: &Download) -> bool {
+    step == Step::Account && state == StepState::Done && can_change(download)
+}
+
+fn change_account(label: Element<'_, Message>) -> Element<'_, Message> {
+    tooltip(
+        mouse_area(label)
+            .interaction(mouse::Interaction::Pointer)
+            .on_press(Message::Change),
+        container(text("Change account").size(font::NOTE_SIZE))
+            .padding([6, 10])
+            .style(style::popup),
+        tooltip::Position::Bottom,
+    )
+    .into()
 }
 
 fn step_label<'a>(number: usize, step: Step, state: StepState) -> Element<'a, Message> {
@@ -926,14 +916,6 @@ fn link(label: &str, message: Message) -> Element<'_, Message> {
         .padding(0)
         .style(style::link)
         .on_press(message)
-        .into()
-}
-
-fn check_mark<'a>() -> Element<'a, Message> {
-    text(CHECK)
-        .font(font::ICONS)
-        .size(12)
-        .style(text::success)
         .into()
 }
 
@@ -1092,6 +1074,31 @@ mod tests {
         assert!(
             download_status(store_data, None, true, 24).starts_with("Picking up where it left off")
         );
+    }
+
+    #[test]
+    fn only_the_done_account_step_changes_the_account() {
+        let running = Download {
+            running: true,
+            ..Download::default()
+        };
+
+        assert!(changes_account(
+            Step::Account,
+            StepState::Done,
+            &Download::default()
+        ));
+        assert!(!changes_account(Step::Account, StepState::Done, &running));
+        assert!(!changes_account(
+            Step::Account,
+            StepState::Current,
+            &Download::default()
+        ));
+        assert!(!changes_account(
+            Step::Catalog,
+            StepState::Done,
+            &Download::default()
+        ));
     }
 
     #[test]
