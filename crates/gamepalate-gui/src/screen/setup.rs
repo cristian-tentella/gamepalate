@@ -48,7 +48,7 @@ pub(crate) const PRIVATE_LIBRARY: &str =
 pub(crate) const KEY_DOMAIN_NOTE: &str =
     "Steam asks for a domain name. Any will do, like localhost.";
 pub(crate) const PROFILE_PLACEHOLDER: &str = "Steam profile address or Steam ID";
-const FIND_STEAM_ID: &str = "Open your profile on steamcommunity.com and copy the address.";
+const FIND_STEAM_ID: &str = "Open your profile on steamcommunity.com and copy the address";
 
 pub struct Setup {
     first_run: FirstRun,
@@ -496,7 +496,7 @@ impl Setup {
                     text("Your most played")
                         .size(font::INFO_SIZE)
                         .font(font::SEMIBOLD),
-                    note("Recommendations start from these games."),
+                    note("Recommendations start from these games"),
                 ]
                 .spacing(4),
                 row(tiles).spacing(12),
@@ -753,7 +753,7 @@ pub(crate) fn steam_id_note(text: &str) -> Option<&'static str> {
     }
     parse_profile(text)
         .is_err()
-        .then_some("Paste the address of your profile, or the 17-digit Steam ID.")
+        .then_some("Paste the address of your profile, or the 17-digit Steam ID")
 }
 
 pub(crate) fn needs_privacy(error: &str) -> bool {
@@ -769,13 +769,13 @@ pub(crate) fn note_link<'a, M: Clone + 'a>(label: &'static str, message: M) -> E
 }
 
 pub(crate) fn connect_error_text(error: &ConnectError) -> String {
-    let down = "Steam is not responding: try again in a minute.";
+    let down = "Steam is not responding: try again in a minute";
     match error.steam_error() {
         Some(SteamError::KeyRejected { .. }) => {
-            "Steam rejected the key: check that you copied all of it.".to_string()
+            "Steam rejected the key: check that you copied all of it".to_string()
         }
         Some(SteamError::LibraryHidden { .. }) => PRIVATE_LIBRARY.to_string(),
-        Some(SteamError::MissingKey { .. }) => "Write the Steam Web API key.".to_string(),
+        Some(SteamError::MissingKey { .. }) => "Write the Steam Web API key".to_string(),
         Some(SteamError::SteamDown { .. }) => down.to_string(),
         _ if matches!(error, ConnectError::SteamDown) => down.to_string(),
         _ if matches!(error, ConnectError::NoProfile(_)) => {
@@ -863,7 +863,7 @@ fn can_change(download: &Download) -> bool {
 fn file_problems(first_run: &FirstRun, error: Option<&str>) -> Vec<String> {
     let mut problems = Vec::new();
     if first_run.data_dir.is_none() {
-        problems.push("Could not find the user data folder: set GAMEPALATE_DATA_DIR.".to_string());
+        problems.push("Could not find the user data folder: set GAMEPALATE_DATA_DIR".to_string());
     }
     if let Part::Invalid(message) = &first_run.signals {
         problems.push(message.clone());
@@ -1075,9 +1075,9 @@ mod tests {
             download_status(store_data, Some(Duration::from_secs(720)), 24),
             "About 12 minutes left. If you close gamepalate now, the download picks up from here when you open it again within 24 hours."
         );
-        assert!(download_status(store_data, None, 24).starts_with("Working out the time left."));
+        assert!(download_status(store_data, None, 24).starts_with("Working out the time left"));
         assert!(download_status(Stage::Reading, None, 24).starts_with("Reading the list"));
-        assert!(download_status(Stage::Writing, None, 24).starts_with("Saving the catalog."));
+        assert!(download_status(Stage::Writing, None, 24).starts_with("Saving the catalog"));
     }
 
     #[test]
@@ -1140,10 +1140,8 @@ mod tests {
 
     #[test]
     fn an_empty_profile_says_how_many_hours_are_needed() {
-        assert!(
-            empty_profile_text(2.0).starts_with("No game in your library has 2 hours of play.")
-        );
-        assert!(empty_profile_text(1.0).starts_with("No game in your library has 1 hour of play."));
+        assert!(empty_profile_text(2.0).starts_with("No game in your library has 2 hours of play"));
+        assert!(empty_profile_text(1.0).starts_with("No game in your library has 1 hour of play"));
         assert!(empty_profile_text(1.5).contains("1.5 hours"));
     }
 
@@ -1263,6 +1261,6 @@ mod tests {
         assert!(
             connect_error_text(&ConnectError::SteamDown).starts_with("Steam is not responding")
         );
-        assert_eq!(connect_error_text(&missing), "Write the Steam Web API key.");
+        assert_eq!(connect_error_text(&missing), "Write the Steam Web API key");
     }
 }

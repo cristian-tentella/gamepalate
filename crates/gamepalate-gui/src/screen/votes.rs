@@ -590,11 +590,11 @@ fn empty_text(no_votes: bool, filter: Filter, search: &str) -> String {
     if no_votes {
         NO_VOTES.to_string()
     } else if !search.is_empty() {
-        format!("No votes match \"{search}\".")
+        format!("No votes match \"{search}\"")
     } else if filter == Filter::Bets {
-        "No votes on Bets.".to_string()
+        "No votes on Bets".to_string()
     } else {
-        format!("No {} votes.", filter_label(filter))
+        format!("No {} votes", filter_label(filter))
     }
 }
 
@@ -760,15 +760,15 @@ mod tests {
         let maybe = Filter::Kind(VoteKind::Maybe);
 
         assert_eq!(empty_text(true, maybe, ""), NO_VOTES);
-        assert_eq!(empty_text(false, maybe, ""), "No Maybe votes.");
+        assert_eq!(empty_text(false, maybe, ""), "No Maybe votes");
         assert_eq!(
             empty_text(false, Filter::Kind(VoteKind::Known), ""),
-            "No Known votes."
+            "No Known votes"
         );
-        assert_eq!(empty_text(false, Filter::Bets, ""), "No votes on Bets.");
+        assert_eq!(empty_text(false, Filter::Bets, ""), "No votes on Bets");
         assert_eq!(
             empty_text(false, maybe, " hades "),
-            "No votes match \"hades\"."
+            "No votes match \"hades\""
         );
     }
 

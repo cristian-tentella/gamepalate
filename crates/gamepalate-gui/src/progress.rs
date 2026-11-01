@@ -103,7 +103,7 @@ pub fn update_error_text(error: &UpdateError) -> String {
             )
         }
         UpdateError::StartOver { .. } => {
-            "Steam answered in an unexpected way: the next update starts over.".to_string()
+            "Steam answered in an unexpected way: the next update starts over".to_string()
         }
         error => error_chain(error),
     }
@@ -199,7 +199,7 @@ mod tests {
 
         assert_eq!(
             update_error_text(&start_over),
-            "Steam answered in an unexpected way: the next update starts over."
+            "Steam answered in an unexpected way: the next update starts over"
         );
     }
 }

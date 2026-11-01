@@ -48,7 +48,7 @@ const FAMILY_HEADER_WIDTH: f32 = 80.0;
 const FAMILY_HEADER_HEIGHT: f32 = FAMILY_HEADER_WIDTH * 215.0 / 460.0;
 const FAMILY_TAGS: usize = 3;
 const HELD_OUT_TIP: &str =
-    "Games you like but kept out of every family on purpose, to test gamepalate.";
+    "Games you like but kept out of every family on purpose, to test gamepalate";
 const TAG_NAME_WIDTH: f32 = 150.0;
 const NOTE_WIDTH: f32 = 110.0;
 const BAR_HEIGHT: f32 = 8.0;
@@ -583,7 +583,7 @@ fn vote_count(votes: &VotesView, kind: VoteKind) -> usize {
 
 fn opinion_progress(votes: &VotesView) -> String {
     format!(
-        "Your votes start shaping the list at {n} Would try and {n} Not for me: {} and {} so far.",
+        "Your votes start shaping the list at {n} Would try and {n} Not for me: {} and {} so far",
         votes.labels.would_try,
         votes.labels.not_for_me,
         n = votes.min_labels
@@ -923,7 +923,7 @@ fn headline(taste: &TasteView) -> String {
         [only] => only.to_string(),
         [first @ .., last] => format!("{} and {last}", first.join(", ")),
     };
-    format!("Mostly {tags}, from {}.", games_count(taste.game_count))
+    format!("Mostly {tags}, from {}", games_count(taste.game_count))
 }
 
 fn source_label(source: HoursSource) -> &'static str {
@@ -938,19 +938,19 @@ fn source_label(source: HoursSource) -> &'static str {
 fn source_tooltip(source: HoursSource, hours: &SignalsConfig) -> String {
     match source {
         HoursSource::Played => format!(
-            "Games you played for at least {}, by the hours you played.",
+            "Games you played for at least {}, by the hours you played",
             hours_text(hours.min_hours)
         ),
         HoursSource::Wishlist => format!(
-            "A game in your wishlist counts as {} of play.",
+            "A game in your wishlist counts as {} of play",
             hours_text(hours.wishlist_hours)
         ),
         HoursSource::Followed => format!(
-            "A game you follow counts as {} of play.",
+            "A game you follow counts as {} of play",
             hours_text(hours.followed_hours)
         ),
         HoursSource::WouldTry => format!(
-            "A game you voted Would try counts as {} of play.",
+            "A game you voted Would try counts as {} of play",
             hours_text(hours.would_try_hours)
         ),
     }
@@ -975,9 +975,9 @@ fn recent_note(games: usize, multiplier: f64) -> Option<String> {
     };
 
     Some(if games == 1 {
-        format!("1 game played in the last two weeks counts {times}.")
+        format!("1 game played in the last two weeks counts {times}")
     } else {
-        format!("{games} games played in the last two weeks count {times}.")
+        format!("{games} games played in the last two weeks count {times}")
     })
 }
 
@@ -1028,10 +1028,10 @@ fn in_library(game: &HoursGame) -> bool {
 
 fn dampen_hint(game: &HoursGame) -> String {
     if in_library(game) {
-        "Open it in Library to make it count less.".to_string()
+        "Open it in Library to make it count less".to_string()
     } else {
         format!(
-            "{} is a game you would try: change its vote in Votes.",
+            "{} is a game you would try: change its vote in Votes",
             game.name
         )
     }
@@ -1087,15 +1087,15 @@ mod tests {
                 &["Story Rich", "Open World", "Exploration", "RPG"],
                 354
             )),
-            "Mostly Story Rich, Open World and Exploration, from 354 games."
+            "Mostly Story Rich, Open World and Exploration, from 354 games"
         );
         assert_eq!(
             headline(&taste(&["Puzzle", "Mystery"], 2)),
-            "Mostly Puzzle and Mystery, from 2 games."
+            "Mostly Puzzle and Mystery, from 2 games"
         );
         assert_eq!(
             headline(&taste(&["Puzzle"], 1)),
-            "Mostly Puzzle, from 1 game."
+            "Mostly Puzzle, from 1 game"
         );
     }
 
@@ -1105,11 +1105,11 @@ mod tests {
 
         assert_eq!(
             source_tooltip(HoursSource::Wishlist, &hours),
-            "A game in your wishlist counts as 5 hours of play."
+            "A game in your wishlist counts as 5 hours of play"
         );
         assert_eq!(
             source_tooltip(HoursSource::Played, &hours),
-            "Games you played for at least 2 hours, by the hours you played."
+            "Games you played for at least 2 hours, by the hours you played"
         );
     }
 
@@ -1117,11 +1117,11 @@ mod tests {
     fn the_recent_note_says_how_much_recent_games_count() {
         assert_eq!(
             recent_note(6, 3.0).unwrap(),
-            "6 games played in the last two weeks count three times."
+            "6 games played in the last two weeks count three times"
         );
         assert_eq!(
             recent_note(1, 2.0).unwrap(),
-            "1 game played in the last two weeks counts twice."
+            "1 game played in the last two weeks counts twice"
         );
         assert_eq!(recent_note(0, 3.0), None);
         assert_eq!(recent_note(4, 1.0), None);
@@ -1219,11 +1219,11 @@ mod tests {
     fn the_dominant_game_opens_in_library() {
         assert_eq!(
             dampen_hint(&game("Call of Duty", 300.0, HoursSource::Played)),
-            "Open it in Library to make it count less."
+            "Open it in Library to make it count less"
         );
         assert_eq!(
             dampen_hint(&game("Hades", 1.0, HoursSource::WouldTry)),
-            "Hades is a game you would try: change its vote in Votes."
+            "Hades is a game you would try: change its vote in Votes"
         );
         assert!(!in_library(&game("Hades", 1.0, HoursSource::WouldTry)));
     }
@@ -1267,7 +1267,7 @@ mod tests {
     fn the_opinion_says_how_many_votes_are_missing() {
         assert_eq!(
             opinion_progress(&labels(4, 7)),
-            "Your votes start shaping the list at 10 Would try and 10 Not for me: 4 and 7 so far."
+            "Your votes start shaping the list at 10 Would try and 10 Not for me: 4 and 7 so far"
         );
     }
 

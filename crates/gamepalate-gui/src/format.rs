@@ -86,7 +86,7 @@ pub fn filters(options: &SearchOptions, currency: &Currency) -> String {
 
 pub fn empty_because(blame: Option<&Blame>) -> String {
     let Some(blame) = blame else {
-        return "No game passes your filters.".to_string();
+        return "No game passes your filters".to_string();
     };
     let games = match blame.discarded {
         1 => "1 game".to_string(),
@@ -202,7 +202,7 @@ pub fn quality(quality: f64) -> &'static str {
 }
 
 pub fn bet(every: usize) -> String {
-    format!("It's a Bet: 1 game in {every} is one your votes would skip.")
+    format!("It's a Bet: 1 game in {every} is one your votes would skip")
 }
 
 pub fn screenshot_position(index: usize, count: usize) -> String {
@@ -264,7 +264,7 @@ pub fn vote(kind: VoteKind) -> &'static str {
 }
 
 pub fn voted(name: &str, kind: VoteKind) -> String {
-    format!("{name}: voted {}.", vote(kind))
+    format!("{name}: voted {}", vote(kind))
 }
 
 pub fn voted_day(date: &str, today: Date) -> String {
@@ -437,7 +437,7 @@ mod tests {
             empty_because(Some(&blame(1))),
             "No game passes your filters. The strictest is max price: it removed 1 game."
         );
-        assert_eq!(empty_because(None), "No game passes your filters.");
+        assert_eq!(empty_because(None), "No game passes your filters");
     }
 
     #[test]
@@ -578,7 +578,7 @@ mod tests {
     fn says_how_often_a_bet_comes() {
         assert_eq!(
             bet(5),
-            "It's a Bet: 1 game in 5 is one your votes would skip."
+            "It's a Bet: 1 game in 5 is one your votes would skip"
         );
     }
 
@@ -648,10 +648,7 @@ mod tests {
 
     #[test]
     fn says_what_was_voted() {
-        assert_eq!(
-            voted("INFRA", VoteKind::WouldTry),
-            "INFRA: voted Would try."
-        );
+        assert_eq!(voted("INFRA", VoteKind::WouldTry), "INFRA: voted Would try");
     }
 
     #[test]

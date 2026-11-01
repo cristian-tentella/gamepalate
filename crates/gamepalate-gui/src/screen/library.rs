@@ -286,7 +286,7 @@ impl Library {
             }
             Message::Undone(Ok(())) => {
                 let reveal = self.reload();
-                return Task::batch([reveal, self.show_toast("Undone.".to_string(), false)]);
+                return Task::batch([reveal, self.show_toast("Undone".to_string(), false)]);
             }
             Message::HideToast(id) => {
                 if self.toast.as_ref().is_some_and(|toast| toast.id == id) {
@@ -710,7 +710,7 @@ impl Library {
         .push(space().height(8))
         .push(
             column![
-                text("To make a game count more, put it in a family.")
+                text("To make a game count more, put it in a family")
                     .size(font::NOTE_SIZE)
                     .style(style::muted),
                 button(text("Open folder ›").size(font::NOTE_SIZE))
@@ -966,7 +966,7 @@ fn correction_badge(correction: GameCorrection) -> Option<String> {
 
 fn divider_note(min_hours: f64) -> String {
     format!(
-        "Under {} of play, set to ×0, or without tags.",
+        "Under {} of play, set to ×0, or without tags",
         hours_text(min_hours)
     )
 }
@@ -1075,14 +1075,14 @@ fn weight_line(game: &LibraryGameView, view: &LibraryView) -> String {
         format!("Shapes {} of your taste", share(game.share))
     } else if game.hours < view.min_hours {
         format!(
-            "Doesn't shape your taste: {}, under the {} that count.",
+            "Doesn't shape your taste: {}, under the {} that count",
             hours(game.hours),
             hours_text(view.min_hours)
         )
     } else if game.correction.multiplier == Some(0.0) {
-        "Doesn't shape your taste: set to ×0.".to_string()
+        "Doesn't shape your taste: set to ×0".to_string()
     } else {
-        "Doesn't shape your taste: it has no tags.".to_string()
+        "Doesn't shape your taste: it has no tags".to_string()
     }
 }
 
@@ -1096,7 +1096,7 @@ fn hours_text(hours: f64) -> String {
 
 fn no_effect_text(game_hours: f64, min_hours: f64) -> String {
     format!(
-        "Correcting it would have no effect: it has {}, under {}.",
+        "Correcting it would have no effect: it has {}, under {}",
         hours(game_hours),
         hours_text(min_hours)
     )
@@ -1110,30 +1110,30 @@ fn corrected_text(
 ) -> String {
     if before.hidden != after.hidden {
         return if after.hidden {
-            format!("{name} is hidden from Discover.")
+            format!("{name} is hidden from Discover")
         } else {
-            format!("{name} shows in Discover again.")
+            format!("{name} shows in Discover again")
         };
     }
     match selected_choice(after.multiplier, dampen) {
-        Choice::Fully => format!("{name} counts fully."),
-        Choice::Half => format!("{name} counts half."),
-        Choice::Not => format!("{name} doesn't count."),
-        Choice::Custom(factor) => format!("{name} counts {}.", multiplier(factor)),
+        Choice::Fully => format!("{name} counts fully"),
+        Choice::Half => format!("{name} counts half"),
+        Choice::Not => format!("{name} doesn't count"),
+        Choice::Custom(factor) => format!("{name} counts {}", multiplier(factor)),
     }
 }
 
 fn empty_text(no_games: bool, filter: Filter, search: &str) -> String {
     let search = search.trim();
     if no_games {
-        "No games in your signals yet.".to_string()
+        "No games in your signals yet".to_string()
     } else if !search.is_empty() {
-        format!("No game matches \"{search}\".")
+        format!("No game matches \"{search}\"")
     } else {
         match filter {
-            Filter::All | Filter::Owned => "No games in your library.".to_string(),
-            Filter::Wishlist => "No games in your wishlist.".to_string(),
-            Filter::Followed => "No followed games.".to_string(),
+            Filter::All | Filter::Owned => "No games in your library".to_string(),
+            Filter::Wishlist => "No games in your wishlist".to_string(),
+            Filter::Followed => "No followed games".to_string(),
         }
     }
 }
@@ -1391,7 +1391,7 @@ mod tests {
         );
         assert_eq!(
             line(&games[2]),
-            "Doesn't shape your taste: 1.0 h, under the 2 hours that count."
+            "Doesn't shape your taste: 1.0 h, under the 2 hours that count"
         );
         let zero = LibraryGameView {
             counts: false,
@@ -1401,10 +1401,10 @@ mod tests {
             },
             ..games[1].clone()
         };
-        assert_eq!(line(&zero), "Doesn't shape your taste: set to ×0.");
+        assert_eq!(line(&zero), "Doesn't shape your taste: set to ×0");
         assert_eq!(
             no_effect_text(0.5, 2.0),
-            "Correcting it would have no effect: it has 0.5 h, under 2 hours."
+            "Correcting it would have no effect: it has 0.5 h, under 2 hours"
         );
     }
 
@@ -1415,15 +1415,15 @@ mod tests {
 
         assert_eq!(
             corrected_text("Black Ops II", none, with(Some(0.5), false), 0.5),
-            "Black Ops II counts half."
+            "Black Ops II counts half"
         );
         assert_eq!(
             corrected_text("Hades", with(Some(0.5), false), none, 0.5),
-            "Hades counts fully."
+            "Hades counts fully"
         );
         assert_eq!(
             corrected_text("Hades", none, with(Some(0.0), false), 0.5),
-            "Hades doesn't count."
+            "Hades doesn't count"
         );
         assert_eq!(
             corrected_text(
@@ -1432,15 +1432,15 @@ mod tests {
                 with(Some(0.25), false),
                 0.5
             ),
-            "Hades counts ×0.25."
+            "Hades counts ×0.25"
         );
         assert_eq!(
             corrected_text("Pentiment", none, with(None, true), 0.5),
-            "Pentiment is hidden from Discover."
+            "Pentiment is hidden from Discover"
         );
         assert_eq!(
             corrected_text("Pentiment", with(None, true), none, 0.5),
-            "Pentiment shows in Discover again."
+            "Pentiment shows in Discover again"
         );
     }
 
@@ -1543,15 +1543,15 @@ mod tests {
     fn the_divider_says_why_a_game_does_not_count() {
         assert_eq!(
             divider_note(2.0),
-            "Under 2 hours of play, set to ×0, or without tags."
+            "Under 2 hours of play, set to ×0, or without tags"
         );
         assert_eq!(
             divider_note(1.0),
-            "Under 1 hour of play, set to ×0, or without tags."
+            "Under 1 hour of play, set to ×0, or without tags"
         );
         assert_eq!(
             divider_note(0.5),
-            "Under 0.5 hours of play, set to ×0, or without tags."
+            "Under 0.5 hours of play, set to ×0, or without tags"
         );
     }
 
@@ -1559,15 +1559,15 @@ mod tests {
     fn an_empty_grid_says_why() {
         assert_eq!(
             empty_text(true, Filter::All, ""),
-            "No games in your signals yet."
+            "No games in your signals yet"
         );
         assert_eq!(
             empty_text(false, Filter::All, " xyz "),
-            "No game matches \"xyz\"."
+            "No game matches \"xyz\""
         );
         assert_eq!(
             empty_text(false, Filter::Wishlist, ""),
-            "No games in your wishlist."
+            "No games in your wishlist"
         );
     }
 }

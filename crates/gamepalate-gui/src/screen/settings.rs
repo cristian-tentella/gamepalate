@@ -25,7 +25,7 @@ use crate::{
 const COLUMN_WIDTH: f32 = 760.0;
 const LABEL_WIDTH: f32 = 120.0;
 const MEGABYTE: u64 = 1024 * 1024;
-const CONFIG_NOTE: &str = "Changes to the file count from the next update or the next start.";
+const CONFIG_NOTE: &str = "Changes to the file count from the next update or the next start";
 
 pub struct Settings {
     gamepalate: Arc<Gamepalate>,
@@ -468,7 +468,7 @@ fn region_change(editing: &Editing, saved: Region) -> Option<Region> {
 }
 
 fn region_note(text: &str) -> Option<&'static str> {
-    (!text.trim().is_empty() && parse_region(text).is_none()).then_some("Two letters, such as IT.")
+    (!text.trim().is_empty() && parse_region(text).is_none()).then_some("Two letters, such as IT")
 }
 
 fn region_confirmation(region: Region) -> String {
@@ -637,7 +637,7 @@ mod tests {
             region_change(&editing(Field::Region, "USA"), Region::ITALY),
             None
         );
-        assert_eq!(region_note("USA"), Some("Two letters, such as IT."));
+        assert_eq!(region_note("USA"), Some("Two letters, such as IT"));
         assert_eq!(region_note(""), None);
         assert_eq!(region_note("us"), None);
     }

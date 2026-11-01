@@ -297,7 +297,7 @@ impl Showcase {
             }
             Some(Page::Missing) => note("Not on the Steam store"),
             Some(Page::Failed) => column![
-                note("The Steam store didn't answer: showing catalog data only."),
+                note("The Steam store didn't answer: showing catalog data only"),
                 button(text("Retry").size(font::NOTE_SIZE))
                     .padding([4, 12])
                     .on_press(Message::RetryDetails),
