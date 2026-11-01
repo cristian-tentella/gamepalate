@@ -1,7 +1,7 @@
 use iced::{
     Border, Color, Element, Shadow, Theme, Vector,
     theme::palette,
-    widget::{button, container, progress_bar, rule, text},
+    widget::{button, container, progress_bar, rule, text, text_input},
 };
 
 pub fn top_bar(theme: &Theme) -> container::Style {
@@ -385,6 +385,18 @@ pub fn step_line(reached: bool) -> impl Fn(&Theme) -> container::Style {
             background: Some(color.into()),
             ..container::Style::default()
         }
+    }
+}
+
+pub fn field(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let style = text_input::default(theme, status);
+
+    text_input::Style {
+        border: Border {
+            radius: 6.0.into(),
+            ..style.border
+        },
+        ..style
     }
 }
 

@@ -452,6 +452,7 @@ impl Library {
                 .text_size(font::NOTE_SIZE)
                 .padding([4, 8]),
             text_input("Search by name (Ctrl+F)", &self.search)
+                .style(style::field)
                 .id(SEARCH)
                 .on_input(Message::Search)
                 .size(font::NOTE_SIZE)

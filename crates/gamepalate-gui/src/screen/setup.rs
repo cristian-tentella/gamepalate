@@ -509,6 +509,7 @@ impl Setup {
         let account = &self.account;
         let editable = !account.connecting;
         let steam_id = text_input(PROFILE_PLACEHOLDER, &account.steam_id)
+            .style(style::field)
             .on_input_maybe(editable.then_some(Message::SteamId))
             .on_submit(Message::Connect)
             .padding(8)
@@ -526,6 +527,7 @@ impl Setup {
         };
         let key = row![
             text_input(key_placeholder, &account.key)
+                .style(style::field)
                 .secure(true)
                 .on_input_maybe(editable.then_some(Message::Key))
                 .on_submit(Message::Connect)

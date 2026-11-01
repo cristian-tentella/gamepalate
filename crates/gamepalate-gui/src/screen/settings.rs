@@ -372,6 +372,7 @@ impl Settings {
             Field::Region => "Two letters, such as IT",
         };
         let input = text_input(placeholder, &editing.text)
+            .style(style::field)
             .secure(field == Field::Key)
             .on_input_maybe((!editing.saving).then_some(Message::Input))
             .on_submit(Message::Save)

@@ -274,6 +274,7 @@ impl Panel {
 
     fn input<'a>(&'a self, field: Field, placeholder: &str) -> Element<'a, Message> {
         text_input(placeholder, &self.drafts[index(field)])
+            .style(style::field)
             .on_input(move |value| Message::Input(field, value))
             .on_submit(Message::Submit)
             .size(font::BAR_SIZE)
