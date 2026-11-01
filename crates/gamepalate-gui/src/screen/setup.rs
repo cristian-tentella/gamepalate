@@ -840,7 +840,9 @@ fn download_status(stage: Stage, left: Option<Duration>, resume_within_hours: u3
         (Stage::StoreData { .. }, None) => "Working out the time left".to_string(),
         (Stage::Writing, _) => "Saving the catalog".to_string(),
     };
-    format!("{status}. You can close gamepalate and resume within {resume_within_hours} hours.")
+    format!(
+        "{status}. If you close gamepalate now, the download picks up from here when you open it again within {resume_within_hours} hours."
+    )
 }
 
 fn percent(stage: Stage) -> Option<String> {
@@ -1101,7 +1103,7 @@ mod tests {
 
         assert_eq!(
             download_status(store_data, Some(Duration::from_secs(720)), 24),
-            "About 12 minutes left. You can close gamepalate and resume within 24 hours."
+            "About 12 minutes left. If you close gamepalate now, the download picks up from here when you open it again within 24 hours."
         );
         assert!(download_status(store_data, None, 24).starts_with("Working out the time left."));
         assert!(download_status(Stage::Reading, None, 24).starts_with("Reading the list"));
