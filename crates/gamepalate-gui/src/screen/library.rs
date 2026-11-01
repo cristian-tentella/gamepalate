@@ -1,4 +1,4 @@
-use std::{fmt, ops::Range, path::PathBuf, sync::Arc, time::Duration};
+use std::{fmt, ops::Range, path::PathBuf, sync::Arc};
 
 use gamepalate_app::{
     AppId, Capsule, FamiliesChanged, FamiliesUndo, FamilyChange, GameCorrection, Gamepalate,
@@ -18,6 +18,7 @@ use iced::{
 };
 
 use super::{
+    Toasts,
     profile::HELD_OUT_TIP,
     sentence,
     showcase::images::{Images, Picture},
@@ -48,7 +49,6 @@ const DEFAULT_AREA: Size = Size::new(1280.0, 700.0);
 const PANEL_WIDTH: f32 = 360.0;
 const PANEL_CAPSULE_WIDTH: f32 = 160.0;
 const PANEL_CAPSULE_HEIGHT: f32 = 240.0;
-const TOAST_DURATION: Duration = Duration::from_secs(5);
 
 pub struct Library {
     gamepalate: Arc<Gamepalate>,
@@ -59,8 +59,7 @@ pub struct Library {
     reveal_pending: bool,
     undo: Option<Undo>,
     new_family: Option<String>,
-    toast: Option<Toast>,
-    toasts_shown: u64,
+    toasts: Toasts,
     filter: Filter,
     sort: Sort,
     search: String,
@@ -68,12 +67,6 @@ pub struct Library {
     offset: f32,
     area: Size,
     capsules: Images<image::Allocation, AppId>,
-}
-
-struct Toast {
-    id: u64,
-    text: String,
-    undo: bool,
 }
 
 enum Undo {
@@ -157,8 +150,7 @@ impl Library {
             reveal_pending: false,
             undo: None,
             new_family: None,
-            toast: None,
-            toasts_shown: 0,
+            toasts: Toasts::default(),
             filter: Filter::All,
             sort: Sort::TasteWeight,
             search: String::new(),
@@ -322,11 +314,7 @@ impl Library {
                 let reveal = self.reload();
                 return Task::batch([reveal, self.show_toast("Undone".to_string(), false)]);
             }
-            Message::HideToast(id) => {
-                if self.toast.as_ref().is_some_and(|toast| toast.id == id) {
-                    self.toast = None;
-                }
-            }
+            Message::HideToast(id) => self.toasts.hide(id),
             Message::ChangeFamilies(change) => {
                 let gamepalate = Arc::clone(&self.gamepalate);
                 return Task::perform(
@@ -419,13 +407,7 @@ impl Library {
     }
 
     fn show_toast(&mut self, text: String, undo: bool) -> Task<Message> {
-        self.toasts_shown += 1;
-        let id = self.toasts_shown;
-        self.toast = Some(Toast { id, text, undo });
-
-        Task::perform(tokio::time::sleep(TOAST_DURATION), move |_| {
-            Message::HideToast(id)
-        })
+        self.toasts.show(text, undo, Message::HideToast)
     }
 
     fn refresh(&mut self) -> Task<Message> {
@@ -564,27 +546,7 @@ impl Library {
                 .padding(8),
             ]
         });
-        let toast = self.toast.as_ref().map(|toast| {
-            let undo = toast.undo.then(|| {
-                button(text("Undo").size(font::NOTE_SIZE).font(font::SEMIBOLD))
-                    .padding(0)
-                    .style(style::toast_link)
-                    .on_press(Message::Undo)
-            });
-            container(
-                container(
-                    row![text(&toast.text)]
-                        .push(undo)
-                        .spacing(14)
-                        .align_y(Center),
-                )
-                .padding([8, 14])
-                .style(style::toast),
-            )
-            .center_x(Fill)
-            .align_bottom(Fill)
-            .padding(16)
-        });
+        let toast = self.toasts.view(Message::Undo);
 
         column![
             container(tools).padding([12, GRID_PADDING as u16]),

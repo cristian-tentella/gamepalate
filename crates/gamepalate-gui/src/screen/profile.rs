@@ -1,20 +1,22 @@
 use std::{collections::BTreeMap, path::PathBuf, process::Command, sync::Arc};
 
 use gamepalate_app::{
-    AppId, Ban, CorrectedGameView, CorrectionsView, FamilyView, Gamepalate, HoursGame, HoursSource,
-    ProfileView, SignalsConfig, TagView, TasteView, Timestamp, VoteKind, VotedGame, VotesView,
+    AppId, Ban, CorrectedGameView, CorrectionsView, FamiliesChanged, FamiliesUndo, FamilyChange,
+    FamilyGame, FamilyView, Gamepalate, HoursGame, HoursSource, ProfileView, SignalsConfig,
+    TagView, TasteView, Timestamp, VoteKind, VotedGame, VotesView,
 };
 use iced::{
     Center, Color, Element, Fill, Length, Subscription, Task, Theme,
     keyboard::{self, Key, key::Named},
     mouse, padding,
     widget::{
-        button, column, container, mouse_area, progress_bar, responsive, row, scrollable, space,
-        text, tooltip,
+        button, column, container, mouse_area, opaque, progress_bar, responsive, row, scrollable,
+        space, stack, text, text_input, tooltip,
     },
 };
 
 use super::{
+    Toasts, sentence,
     showcase::{self, Showcase},
     votes::{Filter, bets_summary, by_id},
 };
@@ -37,7 +39,7 @@ const VOTE_KINDS: [VoteKind; 4] = [
 const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–4.";
 const OPINION_ON: &str = "Your votes count";
 const LABEL_BAR_WIDTH: f32 = 120.0;
-const NO_FAMILIES: &str = "No families yet. Group the games of one taste in families.toml.";
+const NO_FAMILIES: &str = "No families yet. Add games to one from Library.";
 const COLUMN_WIDTH: f32 = 760.0;
 const HEADER_WIDTH: f32 = 140.0;
 const HEADER_HEIGHT: f32 = HEADER_WIDTH * 215.0 / 460.0;
@@ -46,6 +48,9 @@ const FAMILY_HEADERS: usize = 4;
 const FAMILY_HEADER_WIDTH: f32 = 80.0;
 const FAMILY_HEADER_HEIGHT: f32 = FAMILY_HEADER_WIDTH * 215.0 / 460.0;
 const FAMILY_TAGS: usize = 3;
+const EDITOR_WIDTH: f32 = 460.0;
+const EDITOR_GAMES_HEIGHT: f32 = 320.0;
+const REMOVE: char = '\u{E711}';
 pub(crate) const HELD_OUT_TIP: &str =
     "Games you like, kept out of families on purpose to see if Discover finds them";
 const TAG_NAME_WIDTH: f32 = 150.0;
@@ -57,6 +62,7 @@ const CLOSED: char = '\u{E76C}';
 const OPENED: char = '\u{E70D}';
 
 pub struct Profile {
+    gamepalate: Arc<Gamepalate>,
     data_dir: PathBuf,
     view: ProfileView,
     voted: BTreeMap<AppId, VotedGame>,
@@ -65,6 +71,15 @@ pub struct Profile {
     selected_tag: Option<usize>,
     all_tags: bool,
     showcase: Showcase,
+    editing: Option<Editing>,
+    undo: Option<FamiliesUndo>,
+    toasts: Toasts,
+}
+
+struct Editing {
+    family: String,
+    name: String,
+    games: Vec<FamilyGame>,
 }
 
 #[derive(Clone, Debug)]
@@ -77,10 +92,21 @@ pub enum Message {
     DiscoverFamily(String),
     OpenVotes(Filter),
     OpenInLibrary(AppId),
+    OpenLibrary,
     ToggleCorrection(Correction),
     OpenFamilies,
     OpenDataFolder,
     Showcase(showcase::Message),
+    EditFamily(String),
+    EditName(String),
+    RenameFamily,
+    DoneEditing,
+    CloseEditor,
+    ChangeFamilies(FamilyChange),
+    FamiliesSaved(FamilyChange, Result<FamiliesChanged, String>),
+    Undo,
+    Undone(Result<(), String>),
+    HideToast(u64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -92,6 +118,7 @@ pub enum Correction {
 impl Profile {
     pub fn new(gamepalate: &Arc<Gamepalate>) -> (Profile, Task<Message>) {
         let mut profile = Profile {
+            gamepalate: Arc::clone(gamepalate),
             data_dir: gamepalate.data_dir().to_path_buf(),
             view: gamepalate.profile_view(),
             voted: by_id(gamepalate.voted_games()),
@@ -100,6 +127,9 @@ impl Profile {
             selected_tag: None,
             all_tags: false,
             showcase: Showcase::new(gamepalate),
+            editing: None,
+            undo: None,
+            toasts: Toasts::default(),
         };
         let task = profile.load();
 
@@ -136,7 +166,10 @@ impl Profile {
                     self.open_tag = (self.open_tag != Some(index)).then_some(index);
                 }
             }
-            Message::DiscoverFamily(_) | Message::OpenVotes(_) | Message::OpenInLibrary(_) => {}
+            Message::DiscoverFamily(_)
+            | Message::OpenVotes(_)
+            | Message::OpenInLibrary(_)
+            | Message::OpenLibrary => {}
             Message::ToggleCorrection(correction) => {
                 self.open_correction =
                     (self.open_correction != Some(correction)).then_some(correction);
@@ -148,9 +181,106 @@ impl Profile {
             Message::Showcase(message) => {
                 return self.showcase.update(message).map(Message::Showcase);
             }
+            Message::EditFamily(family) => {
+                self.editing = Some(Editing {
+                    games: self.gamepalate.family_games(&family),
+                    name: family.clone(),
+                    family,
+                });
+            }
+            Message::EditName(name) => {
+                if let Some(editing) = &mut self.editing {
+                    editing.name = name;
+                }
+            }
+            Message::RenameFamily => return self.rename(),
+            Message::DoneEditing => {
+                let task = self.rename();
+                self.editing = None;
+                return task;
+            }
+            Message::CloseEditor => self.editing = None,
+            Message::ChangeFamilies(change) => return self.change_families(change),
+            Message::FamiliesSaved(change, Ok(changed)) => {
+                let games = self
+                    .editing
+                    .as_ref()
+                    .map_or(&[][..], |editing| &editing.games);
+                let text = families_text(&change, games, &changed.gone);
+                if let (FamilyChange::Rename { to, .. }, Some(editing)) =
+                    (&change, &mut self.editing)
+                {
+                    editing.family = to.trim().to_string();
+                    editing.name = editing.family.clone();
+                }
+                self.undo = Some(changed.undo);
+                self.reload();
+                return self.toasts.show(text, true, Message::HideToast);
+            }
+            Message::FamiliesSaved(_, Err(error)) | Message::Undone(Err(error)) => {
+                return self.toasts.show(error, false, Message::HideToast);
+            }
+            Message::Undo => {
+                if let Some(undo) = self.undo.take() {
+                    let gamepalate = Arc::clone(&self.gamepalate);
+                    return Task::perform(
+                        async move {
+                            gamepalate
+                                .undo_families(&undo)
+                                .map_err(|error| sentence(&error.to_string()))
+                        },
+                        Message::Undone,
+                    );
+                }
+            }
+            Message::Undone(Ok(())) => {
+                self.reload();
+                return self
+                    .toasts
+                    .show("Undone".to_string(), false, Message::HideToast);
+            }
+            Message::HideToast(id) => self.toasts.hide(id),
         }
 
         Task::none()
+    }
+
+    fn change_families(&self, change: FamilyChange) -> Task<Message> {
+        let gamepalate = Arc::clone(&self.gamepalate);
+        Task::perform(
+            async move {
+                let result = gamepalate
+                    .change_families(&change)
+                    .map_err(|error| sentence(&error.to_string()));
+                (change, result)
+            },
+            |(change, result)| Message::FamiliesSaved(change, result),
+        )
+    }
+
+    fn rename(&self) -> Task<Message> {
+        match &self.editing {
+            Some(editing) if editing.name.trim() != editing.family => {
+                self.change_families(FamilyChange::Rename {
+                    from: editing.family.clone(),
+                    to: editing.name.clone(),
+                })
+            }
+            _ => Task::none(),
+        }
+    }
+
+    fn reload(&mut self) {
+        self.view = self.gamepalate.profile_view();
+        let names = self.gamepalate.family_names();
+        self.editing = self
+            .editing
+            .take()
+            .filter(|editing| names.contains(&editing.family))
+            .map(|mut editing| {
+                editing.games = self.gamepalate.family_games(&editing.family);
+                editing
+            });
     }
 
     fn load(&mut self) -> Task<Message> {
@@ -165,6 +295,11 @@ impl Profile {
                     .families
                     .iter()
                     .flat_map(|family| family.games.iter().take(FAMILY_HEADERS).copied()),
+            )
+            .chain(
+                self.editing
+                    .iter()
+                    .flat_map(|editing| editing.games.iter().map(|game| game.id)),
             )
             .collect();
 
@@ -215,7 +350,7 @@ impl Profile {
             .into()
         };
 
-        scrollable(
+        let page = scrollable(
             column![
                 container(columns).padding(24).width(Fill),
                 style::separator(),
@@ -223,7 +358,85 @@ impl Profile {
             ]
             .width(Fill),
         )
-        .height(Fill)
+        .height(Fill);
+
+        stack![page]
+            .push(self.editing.as_ref().map(|editing| self.editor(editing)))
+            .push(self.toasts.view(Message::Undo))
+            .into()
+    }
+
+    fn editor<'a>(&'a self, editing: &'a Editing) -> Element<'a, Message> {
+        let games = column(editing.games.iter().map(|game| {
+            let remove = FamilyChange::RemoveGame {
+                family: editing.family.clone(),
+                game: game.id,
+            };
+            row![
+                self.showcase
+                    .header(game.id, FAMILY_HEADER_WIDTH, FAMILY_HEADER_HEIGHT)
+                    .map(Message::Showcase),
+                text(&game.name).size(font::BAR_SIZE).width(Fill),
+                button(text(REMOVE).font(font::ICONS).size(font::NOTE_SIZE))
+                    .padding([6, 8])
+                    .style(style::window_button)
+                    .on_press(Message::ChangeFamilies(remove)),
+            ]
+            .spacing(10)
+            .align_y(Center)
+            .into()
+        }))
+        .spacing(8);
+
+        let content = column![
+            text("Edit family")
+                .size(font::INFO_SIZE)
+                .font(font::SEMIBOLD),
+            row![
+                text("Name").size(font::BAR_SIZE),
+                text_input("Family name", &editing.name)
+                    .style(style::field)
+                    .on_input(Message::EditName)
+                    .on_submit(Message::RenameFamily)
+                    .size(font::BAR_SIZE)
+                    .padding([5, 8]),
+            ]
+            .spacing(10)
+            .align_y(Center),
+            container(scrollable(games)).max_height(EDITOR_GAMES_HEIGHT),
+            row![
+                button(text("Delete family").size(font::BAR_SIZE))
+                    .padding(0)
+                    .style(style::link)
+                    .on_press(Message::ChangeFamilies(FamilyChange::Delete {
+                        family: editing.family.clone(),
+                    })),
+                space().width(Fill),
+                button(text("Done").size(font::BAR_SIZE))
+                    .padding([6, 16])
+                    .style(style::primary)
+                    .on_press(Message::DoneEditing),
+            ]
+            .align_y(Center),
+        ]
+        .spacing(14)
+        .padding(20);
+
+        stack![
+            opaque(
+                mouse_area(
+                    container(space())
+                        .width(Fill)
+                        .height(Fill)
+                        .style(style::veil)
+                )
+                .on_press(Message::CloseEditor)
+            ),
+            container(opaque(
+                container(content).width(EDITOR_WIDTH).style(style::popup)
+            ))
+            .center(Fill),
+        ]
         .into()
     }
 
@@ -327,7 +540,11 @@ impl Profile {
         let body: Element<'_, Message> = if view.families.is_empty() {
             column![
                 text(NO_FAMILIES).size(font::BAR_SIZE),
-                button(text("Open families.toml").size(font::BAR_SIZE))
+                button(text("Open Library ›").size(font::BAR_SIZE))
+                    .padding(0)
+                    .style(style::link)
+                    .on_press(Message::OpenLibrary),
+                button(text("Open families.toml").size(font::NOTE_SIZE))
                     .padding(0)
                     .style(style::link)
                     .on_press(Message::OpenFamilies),
@@ -391,13 +608,18 @@ impl Profile {
                 .spacing(8)
                 .align_y(Center),
                 text(tags).size(font::NOTE_SIZE).style(style::muted),
-                container(
+                row![
+                    button(text("Edit").size(font::BAR_SIZE))
+                        .padding(0)
+                        .style(style::link)
+                        .on_press(Message::EditFamily(family.name.clone())),
+                    space().width(Fill),
                     button(text("Discover from it ›").size(font::BAR_SIZE))
                         .padding(0)
                         .style(style::link)
                         .on_press(Message::DiscoverFamily(family.name.clone())),
-                )
-                .align_right(Fill),
+                ]
+                .align_y(Center),
             ]
             .spacing(6),
         )
@@ -661,14 +883,36 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         return None;
     };
     if modifiers.command() {
-        return None;
+        return matches!(key.as_ref(), Key::Character("z" | "Z")).then_some(Message::Undo);
     }
 
     match key {
+        Key::Named(Named::Escape) => Some(Message::CloseEditor),
         Key::Named(Named::ArrowUp) => Some(Message::PreviousTag),
         Key::Named(Named::ArrowDown) => Some(Message::NextTag),
         Key::Named(Named::Enter) => Some(Message::ToggleSelectedTag),
         _ => None,
+    }
+}
+
+fn families_text(change: &FamilyChange, games: &[FamilyGame], gone: &[String]) -> String {
+    match change {
+        FamilyChange::Rename { to, .. } => format!("Renamed to {}", to.trim()),
+        FamilyChange::Delete { family } => format!("Deleted {family}"),
+        FamilyChange::RemoveGame { family, game } => {
+            let name = games
+                .iter()
+                .find(|found| found.id == *game)
+                .map_or_else(|| format!("#{}", game.0), |found| found.name.clone());
+            if gone.contains(family) {
+                format!("Removed {name} from {family}, which is now gone")
+            } else {
+                format!("Removed {name} from {family}")
+            }
+        }
+        FamilyChange::AddGame { .. }
+        | FamilyChange::HoldOut { .. }
+        | FamilyChange::Release { .. } => String::new(),
     }
 }
 
@@ -1046,6 +1290,52 @@ fn no_taste_text(min_hours: f64) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_toast_says_what_changed_in_a_family() {
+        let games = [FamilyGame {
+            id: AppId(1),
+            name: "Celeste".to_string(),
+        }];
+        let remove = |game| FamilyChange::RemoveGame {
+            family: "cozy".to_string(),
+            game: AppId(game),
+        };
+
+        assert_eq!(
+            families_text(
+                &FamilyChange::Rename {
+                    from: "cozy".to_string(),
+                    to: " calm ".to_string(),
+                },
+                &games,
+                &[],
+            ),
+            "Renamed to calm"
+        );
+        assert_eq!(
+            families_text(
+                &FamilyChange::Delete {
+                    family: "cozy".to_string(),
+                },
+                &games,
+                &["cozy".to_string()],
+            ),
+            "Deleted cozy"
+        );
+        assert_eq!(
+            families_text(&remove(1), &games, &[]),
+            "Removed Celeste from cozy"
+        );
+        assert_eq!(
+            families_text(&remove(1), &games, &["cozy".to_string()]),
+            "Removed Celeste from cozy, which is now gone"
+        );
+        assert_eq!(
+            families_text(&remove(2), &games, &[]),
+            "Removed #2 from cozy"
+        );
+    }
+
     fn game(name: &str, hours: f64, source: HoursSource) -> HoursGame {
         HoursGame {
             id: AppId(202990),
@@ -1359,7 +1649,7 @@ mod tests {
     }
 
     #[test]
-    fn the_keys_move_and_open_the_tags() {
+    fn the_keys_move_open_undo_and_close() {
         let key = |named| key_message(pressed(Key::Named(named), keyboard::Modifiers::empty()));
 
         assert!(matches!(key(Named::ArrowUp), Some(Message::PreviousTag)));
@@ -1368,7 +1658,7 @@ mod tests {
             key(Named::Enter),
             Some(Message::ToggleSelectedTag)
         ));
-        assert!(key(Named::Escape).is_none());
+        assert!(matches!(key(Named::Escape), Some(Message::CloseEditor)));
         assert!(
             key_message(pressed(
                 Key::Named(Named::ArrowDown),
@@ -1376,6 +1666,13 @@ mod tests {
             ))
             .is_none()
         );
+        assert!(matches!(
+            key_message(pressed(
+                Key::Character("z".into()),
+                keyboard::Modifiers::CTRL
+            )),
+            Some(Message::Undo)
+        ));
     }
 
     #[test]

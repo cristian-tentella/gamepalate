@@ -3,9 +3,16 @@ use std::{
     io::{self, ErrorKind, Write},
     path::Path,
     process::Command,
+    time::Duration,
 };
 
 use gamepalate_app::NEW_FAMILIES_FILE;
+use iced::{
+    Center, Element, Fill, Task,
+    widget::{button, container, row, text},
+};
+
+use crate::{font, style};
 
 pub mod discover;
 mod game;
@@ -40,6 +47,66 @@ pub(crate) fn open_families(data_dir: &Path) {
             .arg("url.dll,FileProtocolHandler")
             .arg(path)
             .spawn();
+    }
+}
+
+const TOAST_DURATION: Duration = Duration::from_secs(5);
+
+#[derive(Default)]
+pub(crate) struct Toasts {
+    shown: u64,
+    current: Option<Toast>,
+}
+
+struct Toast {
+    id: u64,
+    text: String,
+    undo: bool,
+}
+
+impl Toasts {
+    pub(crate) fn show<M: Send + 'static>(
+        &mut self,
+        text: String,
+        undo: bool,
+        hide: fn(u64) -> M,
+    ) -> Task<M> {
+        self.shown += 1;
+        let id = self.shown;
+        self.current = Some(Toast { id, text, undo });
+
+        Task::perform(tokio::time::sleep(TOAST_DURATION), move |_| hide(id))
+    }
+
+    pub(crate) fn hide(&mut self, id: u64) {
+        if self.current.as_ref().is_some_and(|toast| toast.id == id) {
+            self.current = None;
+        }
+    }
+
+    pub(crate) fn view<'a, M: Clone + 'a>(&'a self, undo: M) -> Option<Element<'a, M>> {
+        self.current.as_ref().map(|toast| {
+            let undo = toast.undo.then(|| {
+                button(text("Undo").size(font::NOTE_SIZE).font(font::SEMIBOLD))
+                    .padding(0)
+                    .style(style::toast_link)
+                    .on_press(undo)
+            });
+            container(
+                container(
+                    row![text(&toast.text)]
+                        .push(undo)
+                        .spacing(14)
+                        .align_y(Center),
+                )
+                .padding([8, 14])
+                .style(style::toast),
+            )
+            .center_x(Fill)
+            .align_bottom(Fill)
+            .padding(16)
+            .into()
+        })
     }
 }
 
