@@ -34,32 +34,12 @@ const TILE_WIDTH: f32 = 112.0;
 const TILE_HEIGHT: f32 = 168.0;
 const IMAGE_RADIUS: f32 = 6.0;
 const KEY_PAGE: &str = "https://steamcommunity.com/dev/apikey";
-const HOW_IT_WORKS: [(char, &str, &str); 3] = [
-    (
-        '\u{E823}',
-        "Signals",
-        "The hours you played tell gamepalate what you like.",
-    ),
-    (
-        '\u{E8F1}',
-        "Families",
-        "Groups of your games, to ask for more of the same kind.",
-    ),
-    (
-        '\u{E8E1}',
-        "Votes",
-        "Every game you vote on teaches gamepalate a bit more.",
-    ),
-];
-const ACCOUNT_ABOUT: &str =
-    "gamepalate reads the hours you played and your wishlist. It never changes anything on Steam.";
-const CATALOG_ABOUT: &str =
-    "Tags, reviews and prices of every game on Steam: 15-25 minutes the first time.";
-const VOTE_ABOUT: &str = "Vote on a few games: each vote teaches gamepalate what you like.";
+const ACCOUNT_ABOUT: &str = "gamepalate only reads your library, hours played and wishlist.";
+const CATALOG_ABOUT: &str = "Every game on the Steam store, with tags, reviews and prices. The first download takes 15 to 25 minutes.";
+const VOTE_ABOUT: &str = "The more games you vote on, the better the recommendations.";
 const LIBRARY_PAGE: &str = "steam://open/games";
 const STEAM_ID_LOOKUP: &str = "https://steamid.io";
-const FIND_STEAM_ID: &str =
-    "Open Steam → your name at the top right → Account details: the Steam ID is under your name.";
+const FIND_STEAM_ID: &str = "In Steam, click your name (top right), then Account details. The Steam ID is the 17-digit number under your name.";
 
 pub struct Setup {
     first_run: FirstRun,
@@ -386,7 +366,6 @@ impl Setup {
                     .push(self.done_view(step))
                     .push(card)
                     .push(self.most_played_view(step))
-                    .push((step == Step::Catalog).then(how_it_works))
                     .push(self.folder_view())
                     .spacing(28)
                     .max_width(WIDTH),
@@ -466,16 +445,8 @@ impl Setup {
 
     fn step_view(&self, step: Step) -> Element<'_, Message> {
         let (title, about, body) = match step {
-            Step::Account => (
-                "Connect your Steam account",
-                Some(ACCOUNT_ABOUT),
-                self.account_view(),
-            ),
-            Step::Catalog => (
-                "Download the Steam catalog",
-                Some(CATALOG_ABOUT),
-                self.catalog_view(),
-            ),
+            Step::Account => ("Steam account", Some(ACCOUNT_ABOUT), self.account_view()),
+            Step::Catalog => ("Steam catalog", Some(CATALOG_ABOUT), self.catalog_view()),
             Step::Ready => (ready_title(self.ready.as_ref()), None, self.ready_view()),
         };
 
@@ -504,7 +475,7 @@ impl Setup {
                     text("Your most played")
                         .size(font::INFO_SIZE)
                         .font(font::SEMIBOLD),
-                    note("These shape your first recommendations."),
+                    note("Recommendations start from these games."),
                 ]
                 .spacing(4),
                 row(tiles).spacing(12),
@@ -546,7 +517,7 @@ impl Setup {
                 .style(style::muted),
         };
         let key_placeholder = if self.first_run.api_key {
-            "Saved: leave empty to keep it"
+            "Already saved"
         } else {
             "Steam Web API key"
         };
@@ -627,7 +598,7 @@ impl Setup {
         };
 
         match ready {
-            Ready::Preparing => note("Preparing your profile…").into(),
+            Ready::Preparing => column![].into(),
             Ready::Failed(error) => column![
                 text(error.clone()).size(font::BAR_SIZE).style(text::danger),
                 small_button("Retry", Message::Prepare(false)),
@@ -712,7 +683,7 @@ impl Setup {
         let stage = tracker.stage();
         let (done, total) = tracker.done_of();
         let resume = format!(
-            "You can close gamepalate: it resumes where it stopped, within {} hours.",
+            "If you close gamepalate, the download picks up where it left off within {} hours.",
             self.first_run.resume_within_hours
         );
         let about = match tracker.time_left() {
@@ -752,17 +723,15 @@ fn empty_profile_text(min_hours: f64) -> String {
         format!("{min_hours} hours")
     };
     format!(
-        "None of your games has {hours} of play yet. Play one for a while, or add some to your wishlist, then Check again."
+        "No game in your library has {hours} of play. Play something for a while or add games to your wishlist, then check again."
     )
 }
 
 fn ready_title(ready: Option<&Ready>) -> &'static str {
     match ready {
-        Some(Ready::Checked(check)) if check.empty_profile => {
-            "Your profile needs a bit of play first"
-        }
-        Some(Ready::Checked(_)) => "You're all set",
-        Some(Ready::Preparing | Ready::Failed(_)) | None => "Almost ready",
+        Some(Ready::Checked(check)) if check.empty_profile => "Not enough play time yet",
+        Some(Ready::Checked(_)) => "Catalog ready",
+        Some(Ready::Preparing | Ready::Failed(_)) | None => "Preparing your profile",
     }
 }
 
@@ -822,7 +791,7 @@ pub(crate) fn steam_id_lookup(text: &str) -> (String, String) {
             format!("{STEAM_ID_LOOKUP}/lookup/{name}"),
         ),
         None => (
-            "Only know your profile name? Look it up on steamid.io ↗".to_string(),
+            "Find your Steam ID from your profile name on steamid.io ↗".to_string(),
             STEAM_ID_LOOKUP.to_string(),
         ),
     }
@@ -907,29 +876,6 @@ fn cover_tile(game: &Played) -> Element<'_, Message> {
         .width(TILE_WIDTH)
         .height(TILE_HEIGHT)
         .into()
-}
-
-fn how_it_works<'a>() -> Element<'a, Message> {
-    row(HOW_IT_WORKS.into_iter().map(|(icon, title, line)| {
-        container(
-            column![
-                row![
-                    text(icon).font(font::ICONS).size(16).style(text::primary),
-                    text(title).size(font::BAR_SIZE).font(font::SEMIBOLD),
-                ]
-                .spacing(8)
-                .align_y(Center),
-                text(line).size(font::BAR_SIZE).style(style::muted),
-            ]
-            .spacing(8),
-        )
-        .padding(16)
-        .width(Fill)
-        .style(style::card)
-        .into()
-    }))
-    .spacing(16)
-    .into()
 }
 
 fn can_change(download: &Download) -> bool {
@@ -1200,8 +1146,10 @@ mod tests {
 
     #[test]
     fn an_empty_profile_says_how_many_hours_are_needed() {
-        assert!(empty_profile_text(2.0).starts_with("None of your games has 2 hours of play yet."));
-        assert!(empty_profile_text(1.0).starts_with("None of your games has 1 hour of play yet."));
+        assert!(
+            empty_profile_text(2.0).starts_with("No game in your library has 2 hours of play.")
+        );
+        assert!(empty_profile_text(1.0).starts_with("No game in your library has 1 hour of play."));
         assert!(empty_profile_text(1.5).contains("1.5 hours"));
     }
 
@@ -1221,7 +1169,7 @@ mod tests {
                 ("312".to_string(), "games in your library"),
             ]
         );
-        assert_eq!(ready_title(Some(&Ready::Checked(check))), "You're all set");
+        assert_eq!(ready_title(Some(&Ready::Checked(check))), "Catalog ready");
     }
 
     #[test]
@@ -1235,10 +1183,13 @@ mod tests {
 
         assert_eq!(
             ready_title(Some(&Ready::Checked(check))),
-            "Your profile needs a bit of play first"
+            "Not enough play time yet"
         );
-        assert_eq!(ready_title(Some(&Ready::Preparing)), "Almost ready");
-        assert_eq!(ready_title(None), "Almost ready");
+        assert_eq!(
+            ready_title(Some(&Ready::Preparing)),
+            "Preparing your profile"
+        );
+        assert_eq!(ready_title(None), "Preparing your profile");
     }
 
     #[test]
