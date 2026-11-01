@@ -387,7 +387,6 @@ impl Setup {
                     .push(self.done_view(step))
                     .push(card)
                     .push(self.most_played_view(step))
-                    .push(self.folder_view())
                     .spacing(28)
                     .max_width(WIDTH),
             )
@@ -502,23 +501,6 @@ impl Setup {
                 row(tiles).spacing(12),
             ]
             .spacing(12)
-            .into(),
-        )
-    }
-
-    fn folder_view(&self) -> Option<Element<'_, Message>> {
-        let dir = self.first_run.data_dir.as_ref()?;
-
-        Some(
-            row![
-                note(format!("Data folder {}", dir.display())),
-                button(text("Open folder").size(font::NOTE_SIZE))
-                    .padding(0)
-                    .style(style::link)
-                    .on_press(Message::OpenFolder),
-            ]
-            .spacing(12)
-            .align_y(Center)
             .into(),
         )
     }
