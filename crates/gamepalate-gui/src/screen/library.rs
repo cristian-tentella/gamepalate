@@ -564,14 +564,19 @@ impl Library {
 
         let content = column![space().height(above)]
             .extend(rows[shown.clone()].iter().map(|line| self.line(line)))
-            .push(space().height(below));
+            .push(space().height(below))
+            .width(grid_width(columns(width)));
 
-        scrollable(container(content).padding([GRID_PADDING, GRID_PADDING]))
-            .id(GRID)
-            .on_scroll(Message::Scrolled)
-            .width(Fill)
-            .height(Fill)
-            .into()
+        scrollable(
+            container(content)
+                .padding([GRID_PADDING, GRID_PADDING])
+                .center_x(Fill),
+        )
+        .id(GRID)
+        .on_scroll(Message::Scrolled)
+        .width(Fill)
+        .height(Fill)
+        .into()
     }
 
     fn line<'a>(&'a self, line: &Row) -> Element<'a, Message> {
@@ -1012,6 +1017,10 @@ fn columns(width: f32) -> usize {
     (((inner + GAP) / (TILE_WIDTH + GAP)).floor() as usize).max(1)
 }
 
+fn grid_width(columns: usize) -> f32 {
+    columns as f32 * (TILE_WIDTH + GAP) - GAP
+}
+
 fn rows(counting: usize, total: usize, columns: usize, divided: bool) -> Vec<Row> {
     let chunks = |range: Range<usize>| {
         range
@@ -1333,6 +1342,13 @@ mod tests {
         assert_eq!(columns(1280.0), 7);
         assert_eq!(columns(1400.0), 8);
         assert_eq!(columns(100.0), 1);
+    }
+
+    #[test]
+    fn the_grid_is_as_wide_as_its_columns() {
+        assert_eq!(grid_width(1), TILE_WIDTH);
+        assert_eq!(grid_width(7), 7.0 * TILE_WIDTH + 6.0 * GAP);
+        assert!(grid_width(columns(2560.0)) <= 2560.0 - 2.0 * GRID_PADDING);
     }
 
     #[test]

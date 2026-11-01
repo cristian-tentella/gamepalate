@@ -21,6 +21,10 @@ const DETAILS_AHEAD: usize = 2;
 const SCREENSHOTS_AHEAD: usize = 2;
 const DESCRIPTION_WIDTH: f32 = 600.0;
 const DOT_SIZE: f32 = 8.0;
+const MEDIA_SPACING: f32 = 14.0;
+const DOTS_HEIGHT: f32 = 20.0;
+const SCREENSHOT_WIDTH: f32 = 820.0;
+pub const MAX_SCREENSHOT_WIDTH: f32 = 1280.0;
 const IMAGE_RADIUS: f32 = 8.0;
 
 pub struct Showcase {
@@ -121,7 +125,7 @@ impl Showcase {
                             .max_width(DESCRIPTION_WIDTH)
                     }),
             )
-            .spacing(14)
+            .spacing(MEDIA_SPACING)
             .width(width)
             .into()
     }
@@ -341,6 +345,12 @@ impl Showcase {
     }
 }
 
+pub fn screenshot_width(width: f32, height: f32) -> f32 {
+    let fitting = (height - MEDIA_SPACING - DOTS_HEIGHT) * 16.0 / 9.0;
+
+    width.min(fitting.clamp(SCREENSHOT_WIDTH, MAX_SCREENSHOT_WIDTH))
+}
+
 fn facts(details: &GameDetails) -> Element<'_, Message> {
     let store = &details.store;
     let lines = [
@@ -426,6 +436,14 @@ fn shown_screenshot<'a, T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_screenshot_grows_only_while_it_fits_in_the_height() {
+        assert_eq!(screenshot_width(600.0, 300.0), 600.0);
+        assert_eq!(screenshot_width(2000.0, 300.0), SCREENSHOT_WIDTH);
+        assert_eq!(screenshot_width(2000.0, 596.5), 1000.0);
+        assert_eq!(screenshot_width(2000.0, 1200.0), MAX_SCREENSHOT_WIDTH);
+    }
 
     #[test]
     fn loads_the_next_screenshots_first_then_the_rest() {

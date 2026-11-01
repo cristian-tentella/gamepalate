@@ -2,7 +2,7 @@ use std::{cmp::Reverse, collections::BTreeMap, fmt, sync::Arc, time::Duration};
 
 use gamepalate_app::{AppId, Gamepalate, Vote, VoteKind, VotedGame};
 use iced::{
-    Center, Element, Fill, Subscription, Task,
+    Center, Element, Fill, Size, Subscription, Task,
     keyboard::{self, Key, key::Named},
     never, padding,
     widget::{
@@ -36,7 +36,8 @@ const LIST_WIDTH: f32 = 340.0;
 const ROW_HEIGHT: f32 = 32.0;
 const HEADER_WIDTH: f32 = 230.0;
 const HEADER_HEIGHT: f32 = HEADER_WIDTH * 215.0 / 460.0;
-const MAX_SHOT_WIDTH: f32 = 820.0;
+const TOP_HEIGHT: f32 = 140.0;
+const CONTENT_SPACING: f32 = 18.0;
 const SCROLLBAR_GAP: f32 = 12.0;
 const TOAST_DURATION: Duration = Duration::from_secs(4);
 const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–4.";
@@ -322,7 +323,7 @@ impl Votes {
 
     fn card(&self) -> Element<'_, Message> {
         match self.current() {
-            Some(game) => responsive(move |size| self.details(game, size.width)).into(),
+            Some(game) => responsive(move |size| self.details(game, size)).into(),
             None => {
                 let note = if self.games.is_empty() { NO_VOTES } else { "" };
                 container(text(note).style(style::muted))
@@ -332,8 +333,11 @@ impl Votes {
         }
     }
 
-    fn details<'a>(&'a self, game: &'a VotedGame, width: f32) -> Element<'a, Message> {
-        let shot_width = (width - SCROLLBAR_GAP).min(MAX_SHOT_WIDTH);
+    fn details<'a>(&'a self, game: &'a VotedGame, size: Size) -> Element<'a, Message> {
+        let shot_width = showcase::screenshot_width(
+            size.width - SCROLLBAR_GAP,
+            size.height - TOP_HEIGHT - CONTENT_SPACING,
+        );
         let today = jiff::Zoned::now().date();
         let price = match &game.price {
             Some(price) => game::price_row(price, game.vote.bet, self.gamepalate.currency()),
@@ -383,8 +387,8 @@ impl Votes {
                 .facts(game.id)
                 .map(|facts| facts.map(Message::Showcase)),
         )
-        .spacing(18)
-        .max_width(MAX_SHOT_WIDTH);
+        .spacing(CONTENT_SPACING)
+        .max_width(shot_width);
 
         scrollable(
             container(content)

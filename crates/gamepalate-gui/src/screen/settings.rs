@@ -320,10 +320,11 @@ impl Settings {
                     .push(appearance)
                     .push(data)
                     .spacing(32)
+                    .width(Fill)
                     .max_width(COLUMN_WIDTH),
             )
             .padding(24)
-            .width(Fill),
+            .center_x(Fill),
         )
         .height(Fill)
         .into()

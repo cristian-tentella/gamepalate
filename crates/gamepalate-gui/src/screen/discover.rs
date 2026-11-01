@@ -14,7 +14,7 @@ use gamepalate_app::{
     SearchOptions, VoteKind,
 };
 use iced::{
-    Center, Element, Fill, Subscription, Task,
+    Center, Element, Fill, Size, Subscription, Task,
     keyboard::{self, Key, key::Named},
     never, padding,
     widget::{
@@ -39,7 +39,6 @@ const METER_VALUE_WIDTH: f32 = 72.0;
 const SIDE_WIDTH: f32 = 360.0;
 const HEADER_HEIGHT: f32 = SIDE_WIDTH * 215.0 / 460.0;
 const MIN_SHOT_WIDTH: f32 = 480.0;
-const MAX_SHOT_WIDTH: f32 = 820.0;
 const CARD_SPACING: f32 = 32.0;
 const SCROLLBAR_GAP: f32 = 12.0;
 
@@ -494,9 +493,9 @@ impl Discover {
         &'a self,
         queue: &'a Queue,
         game: &'a RecommendedGame,
-        width: f32,
+        size: Size,
     ) -> Element<'a, Message> {
-        let (shot_width, shot_height) = screenshot_size(width);
+        let (shot_width, shot_height) = screenshot_size(size);
         let (position, total) = queue.position();
         let progress = if queue.is_waiting() {
             "Loading the next games…".to_string()
@@ -555,7 +554,7 @@ impl Discover {
             .into(),
             State::Ready(queue) => match queue.current() {
                 None => self.empty(),
-                Some(game) => responsive(move |size| self.card(queue, game, size.width)).into(),
+                Some(game) => responsive(move |size| self.card(queue, game, size)).into(),
             },
         };
 
@@ -678,9 +677,9 @@ fn family_options(saved: &SearchOptions, family: &str) -> SearchOptions {
     }
 }
 
-fn screenshot_size(width: f32) -> (f32, f32) {
-    let shot_width =
-        (width - SIDE_WIDTH - CARD_SPACING - SCROLLBAR_GAP).clamp(MIN_SHOT_WIDTH, MAX_SHOT_WIDTH);
+fn screenshot_size(size: Size) -> (f32, f32) {
+    let width = size.width - SIDE_WIDTH - CARD_SPACING - SCROLLBAR_GAP;
+    let shot_width = showcase::screenshot_width(width, size.height).max(MIN_SHOT_WIDTH);
 
     (shot_width, shot_width * 9.0 / 16.0)
 }
@@ -795,9 +794,13 @@ mod tests {
 
     #[test]
     fn fits_the_screenshot_between_its_limits() {
-        assert_eq!(screenshot_size(1160.0), (756.0, 425.25));
-        assert_eq!(screenshot_size(2000.0).0, MAX_SHOT_WIDTH);
-        assert_eq!(screenshot_size(600.0).0, MIN_SHOT_WIDTH);
+        assert_eq!(screenshot_size(Size::new(1160.0, 600.0)), (756.0, 425.25));
+        assert_eq!(screenshot_size(Size::new(2000.0, 596.5)).0, 1000.0);
+        assert_eq!(
+            screenshot_size(Size::new(3000.0, 1400.0)).0,
+            showcase::MAX_SCREENSHOT_WIDTH
+        );
+        assert_eq!(screenshot_size(Size::new(600.0, 600.0)).0, MIN_SHOT_WIDTH);
     }
 
     #[test]

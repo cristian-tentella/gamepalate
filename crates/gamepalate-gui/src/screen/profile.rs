@@ -44,6 +44,8 @@ const COLUMN_WIDTH: f32 = 760.0;
 const HEADER_WIDTH: f32 = 140.0;
 const HEADER_HEIGHT: f32 = HEADER_WIDTH * 215.0 / 460.0;
 const SIDE_WIDTH: f32 = 380.0;
+const COLUMN_GAP: f32 = 32.0;
+const PAGE_WIDTH: f32 = COLUMN_WIDTH + COLUMN_GAP + SIDE_WIDTH;
 const FAMILY_HEADERS: usize = 4;
 const FAMILY_HEADER_WIDTH: f32 = 80.0;
 const FAMILY_HEADER_HEIGHT: f32 = FAMILY_HEADER_WIDTH * 215.0 / 460.0;
@@ -346,15 +348,19 @@ impl Profile {
                 container(taste).width(Fill),
                 container(side).width(SIDE_WIDTH),
             ]
-            .spacing(32)
+            .spacing(COLUMN_GAP)
             .into()
         };
 
         let page = scrollable(
             column![
-                container(columns).padding(24).width(Fill),
+                container(container(columns).width(Fill).max_width(PAGE_WIDTH))
+                    .padding(24)
+                    .center_x(Fill),
                 style::separator(),
-                container(self.data()).padding([12, 24]).width(Fill),
+                container(container(self.data()).width(Fill).max_width(PAGE_WIDTH))
+                    .padding([12, 24])
+                    .center_x(Fill),
             ]
             .width(Fill),
         )
