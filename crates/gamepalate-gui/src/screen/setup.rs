@@ -590,7 +590,7 @@ fn can_connect(account: &Account, first_run: &FirstRun) -> bool {
         && (!account.key.trim().is_empty() || first_run.api_key)
 }
 
-fn steam_id_note(text: &str) -> Option<&'static str> {
+pub(crate) fn steam_id_note(text: &str) -> Option<&'static str> {
     if text.trim().is_empty() {
         return None;
     }
@@ -603,7 +603,7 @@ fn steam_id_note(text: &str) -> Option<&'static str> {
     }
 }
 
-fn connect_error_text(error: &ConnectError) -> String {
+pub(crate) fn connect_error_text(error: &ConnectError) -> String {
     let down = "Steam is not responding: try again in a minute.";
     match error.steam_error() {
         Some(SteamError::KeyRejected { .. }) => {

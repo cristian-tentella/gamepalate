@@ -6,7 +6,7 @@ use std::{
 use gamepalate_app::{
     Gamepalate, PendingUpdate, ThemeChoice, Timestamp,
     refresh::{Step, refresh},
-    setup::FirstRun,
+    setup::{FirstRun, error_chain},
 };
 use iced::{
     Center, Color, Element, Fill, Length, Shrink, Subscription, Task, Theme,
@@ -23,7 +23,10 @@ use iced::{
 use crate::{
     font, format,
     progress::{self, Stage, Tracker},
-    screen::{Discover, Library, Profile, Screen, Votes, discover, library, profile, setup, votes},
+    screen::{
+        Discover, Library, Profile, Screen, Settings, Votes, discover, library, profile, settings,
+        setup, votes,
+    },
     style,
 };
 
@@ -38,6 +41,7 @@ const SUN: char = '\u{E706}';
 const MOON: char = '\u{E708}';
 const REFRESH: char = '\u{E72C}';
 const CANCEL: char = '\u{E711}';
+const GEAR: char = '\u{E713}';
 const DARK_BACKGROUND: Color = Color::from_rgb8(0x18, 0x19, 0x1c);
 
 pub struct App {
@@ -73,6 +77,7 @@ pub enum Message {
     Votes(votes::Message),
     Library(library::Message),
     Profile(profile::Message),
+    Settings(settings::Message),
     Setup(setup::Message),
     WindowFound(Option<window::Id>),
     Window(WindowAction),
@@ -85,6 +90,7 @@ pub enum Message {
     Refreshed(Result<Arc<Gamepalate>, String>),
     CancelRefresh,
     DismissRefreshError,
+    Reopened(Result<Arc<Gamepalate>, String>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -101,6 +107,7 @@ pub enum Page {
     Votes,
     Library,
     Profile,
+    Settings,
 }
 
 impl App {
@@ -186,6 +193,32 @@ impl App {
                     Task::none()
                 }
             }
+            Message::Settings(message) => {
+                let Screen::Settings(screen) = &mut self.screen else {
+                    return Task::none();
+                };
+                match screen.update(message) {
+                    settings::Action::None => Task::none(),
+                    settings::Action::Run(task) => task.map(Message::Settings),
+                    settings::Action::Theme(choice) => self.set_theme(choice),
+                    settings::Action::Reopen => self.reopen(),
+                    settings::Action::Close(page) => self.open(page),
+                }
+            }
+            Message::Reopened(Ok(gamepalate)) => {
+                self.gamepalate = Some(gamepalate);
+                self.find_pending();
+                match self.page() {
+                    Some(page) => self.open(page),
+                    None => Task::none(),
+                }
+            }
+            Message::Reopened(Err(error)) => {
+                if let Screen::Settings(screen) = &mut self.screen {
+                    screen.failed(error);
+                }
+                Task::none()
+            }
             Message::Setup(message) => {
                 let Screen::Setup(screen) = &mut self.screen else {
                     return Task::none();
@@ -250,26 +283,46 @@ impl App {
                 }
                 Task::none()
             }
-            Message::ToggleTheme => {
-                self.theme = toggled(&self.theme);
-                let choice = choice(&self.theme);
-                if let Some(gamepalate) = &self.gamepalate {
-                    let gamepalate = Arc::clone(gamepalate);
-                    Task::future(async move {
-                        gamepalate.change_gui_settings(|settings| settings.theme = choice)
-                    })
-                    .discard()
-                } else if let Screen::Setup(setup) = &self.screen {
-                    let first_run = setup.first_run().clone();
-                    Task::future(async move {
-                        first_run.change_gui_settings(|settings| settings.theme = choice)
-                    })
-                    .discard()
-                } else {
-                    Task::none()
-                }
-            }
+            Message::ToggleTheme => self.set_theme(choice(&toggled(&self.theme))),
         }
+    }
+
+    fn set_theme(&mut self, choice: ThemeChoice) -> Task<Message> {
+        self.theme = theme(choice);
+        if let Some(gamepalate) = &self.gamepalate {
+            let gamepalate = Arc::clone(gamepalate);
+            Task::future(async move {
+                gamepalate.change_gui_settings(|settings| settings.theme = choice)
+            })
+            .discard()
+        } else if let Screen::Setup(setup) = &self.screen {
+            let first_run = setup.first_run().clone();
+            Task::future(async move {
+                first_run.change_gui_settings(|settings| settings.theme = choice)
+            })
+            .discard()
+        } else {
+            Task::none()
+        }
+    }
+
+    fn reopen(&mut self) -> Task<Message> {
+        let Some(gamepalate) = &self.gamepalate else {
+            return Task::none();
+        };
+        let dir = gamepalate.data_dir().to_path_buf();
+
+        Task::perform(
+            async move {
+                Gamepalate::open(Some(dir)).map(Arc::new).map_err(|error| {
+                    format!(
+                        "gamepalate could not open the data files: {}",
+                        error_chain(&error)
+                    )
+                })
+            },
+            Message::Reopened,
+        )
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -278,6 +331,7 @@ impl App {
             Screen::Votes(_) => Votes::subscription().map(Message::Votes),
             Screen::Library(_) => Library::subscription().map(Message::Library),
             Screen::Profile(_) => Profile::subscription().map(Message::Profile),
+            Screen::Settings(_) => Settings::subscription().map(Message::Settings),
             Screen::Setup(_) | Screen::Starting => Subscription::none(),
         };
 
@@ -326,6 +380,7 @@ impl App {
                             .is_some()
                             .then(|| refresh_button(&self.refresh, self.pending)),
                     )
+                    .push(self.gamepalate.is_some().then(settings_button))
                     .push(theme_button(&self.theme))
                     .push(window_button(MINIMIZE, WindowAction::Minimize))
                     .push(window_button(
@@ -351,6 +406,7 @@ impl App {
             Screen::Library(screen) => screen.view().map(Message::Library),
             Screen::Setup(screen) => screen.view().map(Message::Setup),
             Screen::Profile(screen) => screen.view().map(Message::Profile),
+            Screen::Settings(screen) => screen.view(choice(&self.theme)).map(Message::Settings),
             Screen::Starting => column![].into(),
         };
 
@@ -488,7 +544,15 @@ impl App {
             Screen::Votes(_) => Some(Page::Votes),
             Screen::Library(_) => Some(Page::Library),
             Screen::Profile(_) => Some(Page::Profile),
+            Screen::Settings(_) => Some(Page::Settings),
             Screen::Setup(_) | Screen::Starting => None,
+        }
+    }
+
+    fn back_page(&self) -> Page {
+        match &self.screen {
+            Screen::Settings(settings) => settings.back(),
+            _ => self.page().unwrap_or(Page::Discover),
         }
     }
 
@@ -517,6 +581,11 @@ impl App {
                 let (profile, task) = Profile::new(gamepalate);
                 self.screen = Screen::Profile(Box::new(profile));
                 task.map(Message::Profile)
+            }
+            Page::Settings => {
+                let (settings, task) = Settings::new(gamepalate, self.back_page());
+                self.screen = Screen::Settings(Box::new(settings));
+                task.map(Message::Settings)
             }
         }
     }
@@ -730,7 +799,23 @@ fn refresh_button<'a>(refresh: &Refresh, pending: Option<PendingUpdate>) -> Elem
             (REFRESH, Some(Message::Refresh), refresh_tooltip(pending))
         }
     };
-    let icon = button(
+
+    with_tooltip(bar_icon(icon, message), tip)
+}
+
+fn settings_button<'a>() -> Element<'a, Message> {
+    with_tooltip(
+        bar_icon(GEAR, Some(Message::Navigate(Page::Settings))),
+        "Settings".to_string(),
+    )
+}
+
+fn theme_button<'a>(theme: &Theme) -> Element<'a, Message> {
+    bar_icon(theme_icon(theme), Some(Message::ToggleTheme)).into()
+}
+
+fn bar_icon<'a>(icon: char, message: Option<Message>) -> button::Button<'a, Message> {
+    button(
         container(
             text(icon)
                 .font(font::ICONS)
@@ -745,8 +830,10 @@ fn refresh_button<'a>(refresh: &Refresh, pending: Option<PendingUpdate>) -> Elem
     .height(Fill)
     .padding(0)
     .style(style::window_button)
-    .on_press_maybe(message);
+    .on_press_maybe(message)
+}
 
+fn with_tooltip<'a>(icon: button::Button<'a, Message>, tip: String) -> Element<'a, Message> {
     tooltip(
         icon,
         container(text(tip).size(font::NOTE_SIZE))
@@ -754,26 +841,6 @@ fn refresh_button<'a>(refresh: &Refresh, pending: Option<PendingUpdate>) -> Elem
             .style(style::popup),
         tooltip::Position::Bottom,
     )
-    .into()
-}
-
-fn theme_button<'a>(theme: &Theme) -> Element<'a, Message> {
-    button(
-        container(
-            text(theme_icon(theme))
-                .font(font::ICONS)
-                .size(14)
-                .width(Fill)
-                .height(Fill)
-                .center(),
-        )
-        .padding(padding::bottom(UNDERLINE_HEIGHT)),
-    )
-    .width(46)
-    .height(Fill)
-    .padding(0)
-    .style(style::window_button)
-    .on_press(Message::ToggleTheme)
     .into()
 }
 
