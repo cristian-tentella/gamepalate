@@ -284,11 +284,11 @@ impl Library {
                 if before != correction {
                     self.undo = Some(Undo::Correction(id, before));
                 }
-                let reveal = self.reload();
+                self.read_view();
                 let text = self.game(id).map_or_else(String::new, |game| {
                     corrected_text(&game.name, before, correction, self.view.dampen)
                 });
-                return Task::batch([reveal, self.show_toast(text, before != correction)]);
+                return self.show_toast(text, before != correction);
             }
             Message::Corrected(_, _, Err(error))
             | Message::Undone(Err(error))
@@ -382,9 +382,13 @@ impl Library {
     }
 
     fn reload(&mut self) -> Task<Message> {
+        self.read_view();
+        self.reveal_selected()
+    }
+
+    fn read_view(&mut self) {
         self.view = self.gamepalate.library_view();
         self.shown = shown(&self.view.games, self.filter, self.sort, &self.search);
-        self.reveal_selected()
     }
 
     fn selected_position(&self) -> Option<usize> {
