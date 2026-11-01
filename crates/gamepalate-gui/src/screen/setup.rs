@@ -1,4 +1,4 @@
-use std::{process::Command, time::Instant};
+use std::{cmp::Ordering, process::Command, time::Instant};
 
 use gamepalate_app::{
     Gamepalate, SteamError,
@@ -11,7 +11,7 @@ use iced::{
     Center, Element, Fill, Task,
     futures::{SinkExt, channel::mpsc},
     padding, stream,
-    widget::{button, column, container, progress_bar, row, text, text_input},
+    widget::{button, column, container, progress_bar, row, scrollable, text, text_input},
 };
 
 use crate::{
@@ -21,14 +21,19 @@ use crate::{
 };
 
 const CHECK: char = '\u{E73E}';
-const CROSS: char = '\u{E711}';
 const WIDTH: f32 = 760.0;
+const LABEL_WIDTH: f32 = 96.0;
+const STEP_MARK: f32 = 28.0;
 const KEY_PAGE: &str = "https://steamcommunity.com/dev/apikey";
 const HOW_IT_WORKS: [&str; 3] = [
     "Signals: the hours you played tell gamepalate what you like.",
     "Families: groups of your games, to ask for more of the same kind.",
     "Votes: every game you vote on teaches gamepalate a bit more.",
 ];
+const ACCOUNT_ABOUT: &str =
+    "gamepalate reads the hours you played and your wishlist. It never changes anything on Steam.";
+const CATALOG_ABOUT: &str =
+    "Tags, reviews and prices of every game on Steam: 15-25 minutes the first time.";
 const FIND_STEAM_ID: &str =
     "Open Steam → your name at the top right → Account details: the Steam ID is under your name.";
 
@@ -38,6 +43,32 @@ pub struct Setup {
     account: Account,
     download: Download,
     ready: Option<Ready>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Step {
+    Account,
+    Catalog,
+    Ready,
+}
+
+impl Step {
+    const ALL: [Step; 3] = [Step::Account, Step::Catalog, Step::Ready];
+
+    fn name(self) -> &'static str {
+        match self {
+            Step::Account => "Account",
+            Step::Catalog => "Catalog",
+            Step::Ready => "Ready",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StepState {
+    Done,
+    Current,
+    Next,
 }
 
 #[derive(Debug)]
@@ -85,13 +116,6 @@ pub enum Action {
     None,
     Run(Task<Message>),
     Open(Box<Gamepalate>),
-}
-
-#[derive(Debug, PartialEq)]
-struct Line {
-    label: &'static str,
-    present: bool,
-    hint: Option<String>,
 }
 
 pub fn start(first_run: FirstRun) -> Result<Gamepalate, Box<Setup>> {
@@ -268,69 +292,150 @@ impl Setup {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let title = text("gamepalate needs a few things before it can recommend games.")
-            .size(font::PRICE_SIZE)
-            .font(font::SEMIBOLD);
-        let folder: Element<'_, Message> = match &self.first_run.data_dir {
-            Some(dir) => row![
-                text!("Data folder: {}", dir.display()).size(font::BAR_SIZE),
-                button(text("Open folder").size(font::BAR_SIZE))
+        let step = current_step(&self.account, &self.first_run);
+        let welcome = column![
+            text("Welcome to gamepalate")
+                .size(font::TITLE_SIZE)
+                .font(font::BOLD),
+            text("Three steps, then it recommends games from what you play on Steam.")
+                .size(font::INFO_SIZE)
+                .style(style::muted),
+        ]
+        .spacing(8)
+        .align_x(Center);
+        let card = container(self.step_view(step))
+            .padding(24)
+            .width(Fill)
+            .style(style::card);
+
+        scrollable(
+            container(
+                column![container(welcome).center_x(Fill)]
+                    .push(self.problems_view())
+                    .push(steps_view(step))
+                    .push(self.done_view(step))
+                    .push(card)
+                    .push(self.folder_view())
+                    .spacing(28)
+                    .max_width(WIDTH),
+            )
+            .padding(40)
+            .center_x(Fill),
+        )
+        .height(Fill)
+        .into()
+    }
+
+    fn problems_view(&self) -> Option<Element<'_, Message>> {
+        let problems = file_problems(&self.first_run, self.error.as_deref());
+        if problems.is_empty() {
+            return None;
+        }
+        let actions = row![small_button("Check again", Message::CheckAgain)]
+            .push(
+                self.first_run
+                    .data_dir
+                    .is_some()
+                    .then(|| link("Open folder", Message::OpenFolder)),
+            )
+            .spacing(16)
+            .align_y(Center);
+
+        Some(
+            container(
+                column(problems.into_iter().map(|problem| {
+                    text(problem)
+                        .size(font::BAR_SIZE)
+                        .style(text::danger)
+                        .into()
+                }))
+                .push(actions)
+                .spacing(12),
+            )
+            .padding(16)
+            .width(Fill)
+            .style(style::card)
+            .into(),
+        )
+    }
+
+    fn done_view(&self, current: Step) -> Option<Element<'_, Message>> {
+        if current == Step::Account {
+            return None;
+        }
+        let steam_id = self
+            .first_run
+            .saved_steam_id
+            .map(|id| id.0.to_string())
+            .unwrap_or_default();
+        let account = row![
+            check_mark(),
+            text("Steam account")
+                .size(font::BAR_SIZE)
+                .font(font::SEMIBOLD),
+            text(steam_id).size(font::BAR_SIZE).style(style::muted),
+        ]
+        .push(can_change(&self.download).then(|| link("Change", Message::Change)))
+        .spacing(12)
+        .align_y(Center);
+        let catalog = (current == Step::Ready).then(|| {
+            row![
+                check_mark(),
+                text("Steam catalog")
+                    .size(font::BAR_SIZE)
+                    .font(font::SEMIBOLD),
+            ]
+            .spacing(12)
+            .align_y(Center)
+        });
+
+        Some(column![account].push(catalog).spacing(8).into())
+    }
+
+    fn step_view(&self, step: Step) -> Element<'_, Message> {
+        let (title, about, body) = match step {
+            Step::Account => (
+                "Connect your Steam account",
+                Some(ACCOUNT_ABOUT),
+                self.account_view(),
+            ),
+            Step::Catalog => (
+                "Download the Steam catalog",
+                Some(CATALOG_ABOUT),
+                self.catalog_view(),
+            ),
+            Step::Ready => ("Ready", None, self.ready_view()),
+        };
+
+        column![
+            column![text(title).size(font::PRICE_SIZE).font(font::SEMIBOLD)]
+                .push(about.map(|about| text(about).size(font::BAR_SIZE).style(style::muted)))
+                .spacing(6),
+            body,
+        ]
+        .spacing(20)
+        .into()
+    }
+
+    fn folder_view(&self) -> Option<Element<'_, Message>> {
+        let dir = self.first_run.data_dir.as_ref()?;
+
+        Some(
+            row![
+                note(format!("Data folder {}", dir.display())),
+                button(text("Open folder").size(font::NOTE_SIZE))
                     .padding(0)
                     .style(style::link)
                     .on_press(Message::OpenFolder),
             ]
-            .spacing(16)
+            .spacing(12)
             .align_y(Center)
             .into(),
-            None => text("Could not find the user data folder: set GAMEPALATE_DATA_DIR.")
-                .size(font::BAR_SIZE)
-                .style(text::danger)
-                .into(),
-        };
-        let lines = column(lines(&self.first_run).into_iter().map(line_view)).spacing(16);
-        let error = self.error.as_ref().map(|error| {
-            text!("gamepalate could not open the data files: {error}")
-                .size(font::BAR_SIZE)
-                .style(text::danger)
-        });
-        let check = button(text("Check again").size(font::BAR_SIZE))
-            .padding([8, 20])
-            .on_press(Message::CheckAgain);
-
-        container(
-            column![title, folder, self.account_view(), self.catalog_view(),]
-                .push(self.ready_view())
-                .push(lines)
-                .push(error)
-                .push(check)
-                .spacing(28)
-                .max_width(WIDTH),
         )
-        .padding(40)
-        .center_x(Fill)
-        .into()
     }
 
     fn account_view(&self) -> Element<'_, Message> {
         let account = &self.account;
-        if let Some(steam_id) = self.first_run.saved_steam_id
-            && account_done(account, &self.first_run)
-        {
-            return row![
-                mark(true),
-                text!("Steam account: {}", steam_id.0)
-                    .size(font::INFO_SIZE)
-                    .font(font::SEMIBOLD),
-                button(text("Change").size(font::BAR_SIZE))
-                    .padding(0)
-                    .style(style::link)
-                    .on_press(Message::Change),
-            ]
-            .spacing(12)
-            .align_y(Center)
-            .into();
-        }
-
         let editable = !account.connecting;
         let steam_id = text_input("Steam ID or profile link", &account.steam_id)
             .on_input_maybe(editable.then_some(Message::SteamId))
@@ -355,10 +460,7 @@ impl Setup {
                 .on_submit(Message::Connect)
                 .padding(8)
                 .size(font::BAR_SIZE),
-            button(text("Get a key ↗").size(font::BAR_SIZE))
-                .padding(0)
-                .style(style::link)
-                .on_press(Message::GetKey),
+            link("Get a key ↗", Message::GetKey),
         ]
         .spacing(16)
         .align_y(Center);
@@ -370,7 +472,12 @@ impl Setup {
             ),
             Part::Present | Part::Missing => None,
         };
+        let error = account
+            .error
+            .as_ref()
+            .map(|error| text(error.clone()).size(font::BAR_SIZE).style(text::danger));
         let connect = row![
+            container(column![].push(invalid).push(error).spacing(4)).width(Fill),
             button(
                 text(if account.connecting {
                     "Connecting…"
@@ -382,110 +489,59 @@ impl Setup {
             .padding([8, 20])
             .on_press_maybe(can_connect(account, &self.first_run).then_some(Message::Connect)),
         ]
-        .push(
-            account
-                .error
-                .as_ref()
-                .map(|error| text(error.clone()).size(font::BAR_SIZE).style(text::danger)),
-        )
         .spacing(16)
         .align_y(Center);
 
         column![
-            row![
-                mark(false),
-                text("Steam account")
-                    .size(font::INFO_SIZE)
-                    .font(font::SEMIBOLD)
-            ]
-            .spacing(12)
-            .align_y(Center),
-            container(
-                column![steam_id, steam_id_note, key]
-                    .push(invalid)
-                    .push(connect)
-                    .spacing(8)
-            )
-            .padding(padding::left(24)),
+            field("Steam ID", column![steam_id, steam_id_note].spacing(4)),
+            field("API key", key),
+            connect,
         ]
-        .spacing(8)
+        .spacing(12)
         .into()
     }
 }
 
 impl Setup {
     fn catalog_view(&self) -> Element<'_, Message> {
-        let ready = self.first_run.catalog == Part::Present;
-        let header = row![
-            mark(ready),
-            text("Catalog of Steam games")
-                .size(font::INFO_SIZE)
-                .font(font::SEMIBOLD)
-        ]
-        .spacing(12)
-        .align_y(Center);
-        if ready {
-            return header.into();
-        }
-
-        let body: Element<'_, Message> = if !account_done(&self.account, &self.first_run) {
-            note("Connect your Steam account first.").into()
-        } else if self.download.running {
+        if self.download.running {
             self.progress_view()
         } else {
             self.start_view()
-        };
-
-        column![header, container(body).padding(padding::left(24))]
-            .spacing(8)
-            .into()
+        }
     }
 
-    fn ready_view(&self) -> Option<Element<'_, Message>> {
-        let (done, body): (bool, Element<'_, Message>) = match self.ready.as_ref()? {
-            Ready::Preparing => (false, note("Preparing your profile…").into()),
-            Ready::Failed(error) => (
-                false,
-                column![
-                    text(error.clone()).size(font::BAR_SIZE).style(text::danger),
-                    small_button("Retry", Message::Prepare(false)),
-                ]
-                .spacing(8)
-                .into(),
-            ),
-            Ready::Checked(check) if check.empty_profile => (
-                false,
-                column![
-                    text(empty_profile_text(check.min_hours)).size(font::BAR_SIZE),
-                    small_button("Check again", Message::Prepare(true)),
-                ]
-                .spacing(8)
-                .into(),
-            ),
-            Ready::Checked(check) => (
-                true,
-                column![
-                    text(ready_text(check)).size(font::BAR_SIZE),
-                    small_button("Start voting", Message::StartVoting),
-                ]
-                .spacing(8)
-                .into(),
-            ),
+    fn ready_view(&self) -> Element<'_, Message> {
+        let Some(ready) = &self.ready else {
+            return column![
+                text("Read your Signals from Steam to finish.").size(font::BAR_SIZE),
+                small_button("Read Signals", Message::Prepare(true)),
+            ]
+            .spacing(8)
+            .into();
         };
 
-        Some(
-            column![
-                row![
-                    mark(done),
-                    text("Ready").size(font::INFO_SIZE).font(font::SEMIBOLD)
-                ]
-                .spacing(12)
-                .align_y(Center),
-                container(body).padding(padding::left(24)),
+        match ready {
+            Ready::Preparing => note("Preparing your profile…").into(),
+            Ready::Failed(error) => column![
+                text(error.clone()).size(font::BAR_SIZE).style(text::danger),
+                small_button("Retry", Message::Prepare(false)),
             ]
             .spacing(8)
             .into(),
-        )
+            Ready::Checked(check) if check.empty_profile => column![
+                text(empty_profile_text(check.min_hours)).size(font::BAR_SIZE),
+                small_button("Check again", Message::Prepare(true)),
+            ]
+            .spacing(8)
+            .into(),
+            Ready::Checked(check) => column![
+                text(ready_text(check)).size(font::BAR_SIZE),
+                small_button("Start voting", Message::StartVoting),
+            ]
+            .spacing(8)
+            .into(),
+        }
     }
 
     fn start_view(&self) -> Element<'_, Message> {
@@ -498,14 +554,13 @@ impl Setup {
         } else {
             "Download catalog"
         };
-        let about = match pending {
-            Some(pending) => format!(
+        let waiting = pending.map(|pending| {
+            note(format!(
                 "An update started on {} is waiting: {} responses saved.",
                 format::day_time(pending.started_at),
                 pending.responses
-            ),
-            None => "It takes 15-25 minutes the first time.".to_string(),
-        };
+            ))
+        });
 
         column![]
             .push(
@@ -514,7 +569,7 @@ impl Setup {
                     .as_ref()
                     .map(|error| text(error.clone()).size(font::BAR_SIZE).style(text::danger)),
             )
-            .push(note(about))
+            .push(waiting)
             .push(
                 button(text(label).size(font::BAR_SIZE))
                     .padding([8, 20])
@@ -617,48 +672,120 @@ pub(crate) fn connect_error_text(error: &ConnectError) -> String {
     }
 }
 
-fn lines(first_run: &FirstRun) -> Vec<Line> {
-    vec![part_line(
-        "Your Signals",
-        &first_run.signals,
-        "connect your Steam account, or run: gamepalate profile",
-    )]
-}
-
-fn part_line(label: &'static str, part: &Part, missing: &str) -> Line {
-    Line {
-        label,
-        present: *part == Part::Present,
-        hint: match part {
-            Part::Present => None,
-            Part::Missing => Some(missing.to_string()),
-            Part::Invalid(message) => Some(message.clone()),
-        },
+fn current_step(account: &Account, first_run: &FirstRun) -> Step {
+    if !account_done(account, first_run) {
+        Step::Account
+    } else if first_run.catalog != Part::Present {
+        Step::Catalog
+    } else {
+        Step::Ready
     }
 }
 
-fn mark<'a>(present: bool) -> Element<'a, Message> {
-    text(if present { CHECK } else { CROSS })
-        .font(font::ICONS)
-        .size(12)
-        .style(if present { text::success } else { text::danger })
+fn step_state(step: Step, current: Step) -> StepState {
+    match step.cmp(&current) {
+        Ordering::Less => StepState::Done,
+        Ordering::Equal => StepState::Current,
+        Ordering::Greater => StepState::Next,
+    }
+}
+
+fn can_change(download: &Download) -> bool {
+    !download.running
+}
+
+fn file_problems(first_run: &FirstRun, error: Option<&str>) -> Vec<String> {
+    let mut problems = Vec::new();
+    if first_run.data_dir.is_none() {
+        problems.push("Could not find the user data folder: set GAMEPALATE_DATA_DIR.".to_string());
+    }
+    if let Part::Invalid(message) = &first_run.signals {
+        problems.push(message.clone());
+    }
+    if let Some(error) = error {
+        problems.push(format!("gamepalate could not open the data files: {error}"));
+    }
+    problems
+}
+
+fn steps_view<'a>(current: Step) -> Element<'a, Message> {
+    let mut steps = row![].spacing(12).align_y(Center);
+    for (index, step) in Step::ALL.into_iter().enumerate() {
+        if index > 0 {
+            steps = steps.push(
+                container(column![])
+                    .width(Fill)
+                    .height(2)
+                    .style(style::step_line(step <= current)),
+            );
+        }
+        steps = steps.push(step_label(index + 1, step, step_state(step, current)));
+    }
+    steps.into()
+}
+
+fn step_label<'a>(number: usize, step: Step, state: StepState) -> Element<'a, Message> {
+    let mark = match state {
+        StepState::Done => text(CHECK).font(font::ICONS).size(12),
+        StepState::Current | StepState::Next => text(number.to_string())
+            .size(font::BAR_SIZE)
+            .font(font::SEMIBOLD),
+    };
+    let name = text(step.name())
+        .size(font::BAR_SIZE)
+        .font(if state == StepState::Current {
+            font::SEMIBOLD
+        } else {
+            font::REGULAR
+        });
+    let name = if state == StepState::Next {
+        name.style(style::muted)
+    } else {
+        name
+    };
+
+    row![
+        container(mark)
+            .width(STEP_MARK)
+            .height(STEP_MARK)
+            .align_x(Center)
+            .align_y(Center)
+            .style(style::step(
+                state == StepState::Done,
+                state == StepState::Current
+            )),
+        name,
+    ]
+    .spacing(8)
+    .align_y(Center)
+    .into()
+}
+
+fn field<'a>(label: &'a str, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    row![
+        container(text(label).size(font::BAR_SIZE).style(style::muted))
+            .width(LABEL_WIDTH)
+            .padding(padding::top(8)),
+        container(content).width(Fill),
+    ]
+    .spacing(16)
+    .into()
+}
+
+fn link(label: &str, message: Message) -> Element<'_, Message> {
+    button(text(label).size(font::BAR_SIZE))
+        .padding(0)
+        .style(style::link)
+        .on_press(message)
         .into()
 }
 
-fn line_view<'a>(line: Line) -> Element<'a, Message> {
-    column![
-        row![
-            mark(line.present),
-            text(line.label).size(font::INFO_SIZE).font(font::SEMIBOLD)
-        ]
-        .spacing(12)
-        .align_y(Center)
-    ]
-    .push(line.hint.map(|hint| {
-        container(text(hint).size(font::BAR_SIZE).style(style::muted)).padding(padding::left(24))
-    }))
-    .spacing(4)
-    .into()
+fn check_mark<'a>() -> Element<'a, Message> {
+    text(CHECK)
+        .font(font::ICONS)
+        .size(12)
+        .style(text::success)
+        .into()
 }
 
 #[cfg(test)]
@@ -722,11 +849,70 @@ mod tests {
     }
 
     #[test]
-    fn everything_there_has_no_hints() {
+    fn the_current_step_is_the_first_missing_one() {
+        let saved = account("76561198000000000", "");
+        let editing = Account {
+            editing: true,
+            ..account("76561198000000000", "")
+        };
+        let without_catalog = FirstRun {
+            catalog: Part::Missing,
+            ..first_run()
+        };
+        let without_key = FirstRun {
+            api_key: false,
+            catalog: Part::Missing,
+            ..first_run()
+        };
+
+        assert_eq!(current_step(&saved, &without_key), Step::Account);
+        assert_eq!(current_step(&editing, &first_run()), Step::Account);
+        assert_eq!(current_step(&saved, &without_catalog), Step::Catalog);
+        assert_eq!(current_step(&saved, &first_run()), Step::Ready);
+    }
+
+    #[test]
+    fn the_steps_before_the_current_one_are_done() {
+        assert_eq!(step_state(Step::Account, Step::Catalog), StepState::Done);
+        assert_eq!(step_state(Step::Catalog, Step::Catalog), StepState::Current);
+        assert_eq!(step_state(Step::Ready, Step::Catalog), StepState::Next);
+        assert_eq!(step_state(Step::Account, Step::Account), StepState::Current);
+    }
+
+    #[test]
+    fn the_account_does_not_change_during_the_download() {
+        let running = Download {
+            running: true,
+            ..Download::default()
+        };
+
+        assert!(can_change(&Download::default()));
+        assert!(!can_change(&running));
+    }
+
+    #[test]
+    fn only_files_that_do_not_open_are_problems() {
+        let missing = FirstRun {
+            catalog: Part::Missing,
+            signals: Part::Missing,
+            ..first_run()
+        };
+
+        assert!(file_problems(&first_run(), None).is_empty());
+        assert!(file_problems(&missing, None).is_empty());
+        assert_eq!(
+            file_problems(&first_run(), Some("config not found")),
+            ["gamepalate could not open the data files: config not found"]
+        );
         assert!(
-            lines(&first_run())
-                .iter()
-                .all(|line| line.present && line.hint.is_none())
+            file_problems(
+                &FirstRun {
+                    data_dir: None,
+                    ..first_run()
+                },
+                None
+            )[0]
+            .contains("GAMEPALATE_DATA_DIR")
         );
     }
 
@@ -759,10 +945,10 @@ mod tests {
             ..first_run()
         };
 
-        let line = &lines(&first_run)[0];
-
-        assert!(!line.present);
-        assert_eq!(line.hint.as_deref(), Some("the signals file is not valid"));
+        assert_eq!(
+            file_problems(&first_run, None),
+            ["the signals file is not valid"]
+        );
     }
 
     #[test]

@@ -336,6 +336,58 @@ pub fn dot(current: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     }
 }
 
+pub fn step(done: bool, current: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let palette = theme.extended_palette();
+        let (background, text, border) = if done {
+            (
+                Some(palette.success.base.color),
+                palette.success.base.text,
+                palette.success.base.color,
+            )
+        } else if current {
+            (
+                Some(palette.primary.base.color),
+                palette.primary.base.text,
+                palette.primary.base.color,
+            )
+        } else {
+            (
+                None,
+                palette.background.base.text.scale_alpha(0.5),
+                palette.background.strong.color,
+            )
+        };
+
+        container::Style {
+            background: background.map(Into::into),
+            text_color: Some(text),
+            border: Border {
+                color: border,
+                width: 1.5,
+                radius: 14.0.into(),
+            },
+            ..container::Style::default()
+        }
+    }
+}
+
+pub fn step_line(reached: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let palette = theme.extended_palette();
+        let color = if reached {
+            palette.primary.base.color
+        } else {
+            palette.background.strong.color
+        };
+
+        container::Style {
+            background: Some(color.into()),
+            ..container::Style::default()
+        }
+    }
+}
+
 pub fn meter(theme: &Theme) -> progress_bar::Style {
     let palette = theme.extended_palette();
 
