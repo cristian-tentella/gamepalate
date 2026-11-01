@@ -20,6 +20,7 @@ const GAME_TAGS: usize = 3;
 #[derive(Debug, Clone, PartialEq)]
 pub struct LibraryView {
     pub games: Vec<LibraryGameView>,
+    pub families: Vec<String>,
     pub min_hours: f64,
     pub wishlist_hours: f64,
     pub followed_hours: f64,
@@ -40,6 +41,8 @@ pub struct LibraryGameView {
     pub share: f64,
     pub tags: Vec<String>,
     pub correction: GameCorrection,
+    pub families: Vec<String>,
+    pub held_out: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -129,12 +132,26 @@ pub(crate) fn library_view(inputs: &SearchInputs) -> LibraryView {
                 share: if total == 0.0 { 0.0 } else { weight / total },
                 tags,
                 correction: game_correction(id, inputs.corrections),
+                families: inputs
+                    .families
+                    .families
+                    .iter()
+                    .filter(|family| family.games.contains(&id))
+                    .map(|family| family.name.clone())
+                    .collect(),
+                held_out: inputs.families.held_out.contains(&id),
             }
         })
         .collect();
 
     LibraryView {
         games,
+        families: inputs
+            .families
+            .families
+            .iter()
+            .map(|family| family.name.clone())
+            .collect(),
         min_hours: config.min_hours,
         wishlist_hours: config.wishlist_hours,
         followed_hours: config.followed_hours,
@@ -234,7 +251,7 @@ mod tests {
         catalog::{Catalog, Freshness, TagName},
         config::Config,
         currency::Currency,
-        families::Families,
+        families::{Families, Family},
         game::{Game, GameTag, Price, Reviews},
         ids::TagId,
         off_catalog::{OffCatalogGame, OffCatalogGames},
@@ -435,6 +452,31 @@ mod tests {
         assert_eq!(borrowed.owned_hours, None);
         assert!(borrowed.recent);
         assert_eq!(borrowed.hours, 6.0);
+    }
+
+    #[test]
+    fn a_game_says_its_families_and_if_it_is_held_out() {
+        let mut fixture = Fixture::new();
+        fixture.families = Families {
+            families: vec![
+                Family {
+                    name: "mysteries".to_string(),
+                    games: vec![AppId(1), AppId(2)],
+                },
+                Family {
+                    name: "space".to_string(),
+                    games: vec![AppId(1)],
+                },
+            ],
+            held_out: vec![AppId(5)],
+        };
+        let view = library_view(&fixture.inputs());
+
+        assert_eq!(view.families, ["mysteries", "space"]);
+        assert_eq!(find(&view, 1).families, ["mysteries", "space"]);
+        assert_eq!(find(&view, 2).families, ["mysteries"]);
+        assert!(find(&view, 3).families.is_empty());
+        assert!(find(&view, 5).held_out && !find(&view, 1).held_out);
     }
 
     #[test]

@@ -1155,6 +1155,8 @@ mod tests {
             share: 0.0,
             tags: Vec::new(),
             correction: GameCorrection::default(),
+            families: Vec::new(),
+            held_out: false,
         }
     }
 
@@ -1300,6 +1302,7 @@ mod tests {
     fn view_of(games: Vec<LibraryGameView>) -> LibraryView {
         LibraryView {
             games,
+            families: Vec::new(),
             min_hours: 2.0,
             wishlist_hours: 5.0,
             followed_hours: 3.0,

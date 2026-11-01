@@ -187,7 +187,11 @@ fn push_game(games: &mut Array, id: AppId, comment: &str) {
     let mut value = Value::from(i64::from(id.0));
     value.decor_mut().set_prefix(format!("{head}\n{indent}"));
     value.decor_mut().set_suffix("");
-    let trailing = format!(" # {}{rest}", comment.replace(['\r', '\n'], " "));
+    let trailing = if comment.is_empty() {
+        rest.to_string()
+    } else {
+        format!(" # {}{rest}", comment.replace(['\r', '\n'], " "))
+    };
 
     games.push_formatted(value);
     games.set_trailing(trailing);
@@ -388,6 +392,12 @@ games = [
                 "{NEW_FILE}\n[families.cozy]\ngames = [\n    413150, # Stardew Valley\n]\n\n[held_out]\ngames = [\n    30, # Outer Wilds\n]\n"
             )
         );
+    }
+
+    #[test]
+    fn a_game_without_a_name_has_no_comment() {
+        let text = edited(FILE, |editor| editor.hold_out(AppId(70), ""));
+        assert!(text.ends_with("    30, # Outer Wilds\n    70,\n]\n"));
     }
 
     #[test]

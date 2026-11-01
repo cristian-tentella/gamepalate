@@ -9,6 +9,7 @@ use gamepalate_core::{
     catalog::Catalog,
     corrections::Corrections,
     currency::Currency,
+    families::Families,
     filters::TagNameError,
     game::{Price, Reviews},
     game_vector::{GameVector, game_vectors},
@@ -29,6 +30,7 @@ use gamepalate_steam::{
 };
 use gamepalate_store::{
     data_files::{DataFiles, DataFilesError, load_data_files},
+    families_edit::restore_families,
     gui::{GuiSettings, load_gui_settings, save_gui_settings},
     votes::{VotesError, save_votes},
 };
@@ -37,6 +39,10 @@ use crate::{
     capsules::{Capsule, CapsuleFinder, capsule},
     data_dir,
     details::{GameDetails, StoreDetails},
+    families::{
+        FamiliesUndo, FamilyChange, FamilyChangeError, FamilyGame, changed_families, family_games,
+        renamed_choice,
+    },
     images::{ImageCache, LoadImageError, MAX_CACHE_BYTES, cache_dir},
     library::{
         GameCorrection, GameCorrectionError, LibraryView, corrected_game, game_correction,
@@ -48,6 +54,7 @@ use crate::{
 };
 
 pub(crate) const GUI_FILE: &str = "gui.toml";
+const FAMILIES_FILE: &str = "families.toml";
 
 #[derive(Debug)]
 pub struct Gamepalate {
@@ -55,6 +62,7 @@ pub struct Gamepalate {
     files: DataFiles,
     votes: Mutex<Votes>,
     corrections: Mutex<Corrections>,
+    families: Mutex<Families>,
     gui_saving: Mutex<()>,
     vectors: Vec<GameVector>,
     images: Arc<ImageCache>,
@@ -95,6 +103,7 @@ impl Gamepalate {
             data_dir: dir,
             votes: Mutex::new(files.votes.clone()),
             corrections: Mutex::new(files.corrections.clone()),
+            families: Mutex::new(files.families.clone()),
             gui_saving: Mutex::new(()),
             files,
             vectors,
@@ -171,12 +180,20 @@ impl Gamepalate {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn lock_families(&self) -> MutexGuard<'_, Families> {
+        self.families
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn with_inputs<R>(&self, f: impl FnOnce(&SearchInputs) -> R) -> R {
         let votes = self.lock_votes();
         let corrections = self.lock_corrections();
+        let families = self.lock_families();
         f(&SearchInputs {
             votes: &votes,
             corrections: &corrections,
+            families: &families,
             ..self.files.search_inputs(&self.vectors)
         })
     }
@@ -223,6 +240,7 @@ impl Gamepalate {
     ) -> Result<GameCorrection, GameCorrectionError> {
         let votes = self.lock_votes();
         let mut corrections = self.lock_corrections();
+        let families = self.lock_families();
         let before = game_correction(id, &corrections);
         *corrections = corrected_game(
             &self.data_dir.join("corrections.toml"),
@@ -231,10 +249,59 @@ impl Gamepalate {
             &SearchInputs {
                 votes: &votes,
                 corrections: &corrections,
+                families: &families,
                 ..self.files.search_inputs(&self.vectors)
             },
         )?;
         Ok(before)
+    }
+
+    pub fn change_families(
+        &self,
+        change: &FamilyChange,
+    ) -> Result<FamiliesUndo, FamilyChangeError> {
+        let mut families = self.lock_families();
+        let changed = changed_families(
+            &self.data_dir.join(FAMILIES_FILE),
+            &families,
+            change,
+            |id| {
+                let name = game_name(id, &self.files.catalog, &self.files.off_catalog);
+                (name != format!("#{}", id.0)).then_some(name)
+            },
+        )?;
+        *families = changed.families;
+
+        let mut discover_family = None;
+        if !changed.renamed.is_empty() {
+            let _ = self.change_gui_settings(|settings| {
+                let choice = renamed_choice(&settings.search.family, &changed.renamed);
+                if choice != settings.search.family {
+                    discover_family = Some(std::mem::replace(&mut settings.search.family, choice));
+                }
+            });
+        }
+
+        Ok(FamiliesUndo {
+            snapshot: changed.snapshot,
+            discover_family,
+        })
+    }
+
+    pub fn undo_families(&self, undo: &FamiliesUndo) -> Result<(), FamilyChangeError> {
+        let mut families = self.lock_families();
+        *families = restore_families(&self.data_dir.join(FAMILIES_FILE), &undo.snapshot)
+            .map_err(FamilyChangeError::Save)?;
+        if let Some(family) = &undo.discover_family {
+            let _ = self.change_gui_settings(|settings| settings.search.family = family.clone());
+        }
+        Ok(())
+    }
+
+    pub fn family_games(&self, family: &str) -> Vec<FamilyGame> {
+        family_games(&self.lock_families(), family, |id| {
+            game_name(id, &self.files.catalog, &self.files.off_catalog)
+        })
     }
 
     pub fn data_dir(&self) -> &Path {
@@ -242,8 +309,7 @@ impl Gamepalate {
     }
 
     pub fn family_names(&self) -> Vec<String> {
-        self.files
-            .families
+        self.lock_families()
             .families
             .iter()
             .map(|family| family.name.clone())

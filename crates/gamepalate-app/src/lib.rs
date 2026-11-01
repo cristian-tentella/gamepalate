@@ -3,6 +3,7 @@ pub mod app;
 mod capsules;
 mod data_dir;
 mod details;
+pub mod families;
 mod images;
 pub mod library;
 pub mod names;
@@ -16,6 +17,7 @@ pub mod update;
 pub use app::{Gamepalate, OpenError, RecommendError, VoteError, VotedGame};
 pub use capsules::{CAPSULE_HEIGHT, CAPSULE_WIDTH, Capsule};
 pub use details::GameDetails;
+pub use families::{FamiliesUndo, FamilyChange, FamilyChangeError, FamilyGame};
 pub use gamepalate_core::{
     config::SignalsConfig,
     corrections::Ban,
