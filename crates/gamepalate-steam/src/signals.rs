@@ -12,6 +12,9 @@ const OWNED_GAMES: &str = "IPlayerService/GetOwnedGames/v1";
 const RECENTLY_PLAYED: &str = "IPlayerService/GetRecentlyPlayedGames/v1";
 const WISHLIST: &str = "IWishlistService/GetWishlist/v1";
 const FOLLOWED: &str = "IStoreService/GetGamesFollowed/v1";
+const VANITY_URL: &str = "ISteamUser/ResolveVanityURL/v1";
+const VANITY_FOUND: u32 = 1;
+const VANITY_NO_MATCH: u32 = 42;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionalList {
@@ -35,6 +38,12 @@ pub struct SignalsRead {
 #[derive(Deserialize)]
 struct Envelope<T> {
     response: T,
+}
+
+#[derive(Deserialize)]
+struct VanityResponse {
+    success: u32,
+    steamid: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -215,6 +224,30 @@ pub async fn get_games_followed<S: Get>(
     parse_games_followed(value)
 }
 
+pub async fn resolve_vanity_url<S: Get>(
+    steam: &S,
+    name: &str,
+) -> Result<Option<SteamId>, SteamError> {
+    let value = steam.get(VANITY_URL, &[("vanityurl", name)], true).await?;
+    parse_vanity_url(value)
+}
+
+fn parse_vanity_url(value: Value) -> Result<Option<SteamId>, SteamError> {
+    let response = parse::<Envelope<VanityResponse>>(VANITY_URL, value)?.response;
+    let shape = |reason: String| SteamError::Shape {
+        endpoint: VANITY_URL.to_string(),
+        reason,
+    };
+    match (response.success, response.steamid) {
+        (VANITY_FOUND, Some(id)) => id
+            .parse()
+            .map(|id| Some(SteamId(id)))
+            .map_err(|_| shape(format!("steamid {id} is not a number"))),
+        (VANITY_NO_MATCH, _) => Ok(None),
+        (success, _) => Err(shape(format!("success {success}"))),
+    }
+}
+
 fn parse_owned_games(steam_id: SteamId, value: Value) -> Result<Vec<LibraryGame>, SteamError> {
     let games = parse::<Envelope<OwnedGamesResponse>>(OWNED_GAMES, value)?
         .response
@@ -279,6 +312,23 @@ mod tests {
     use super::*;
 
     const ME: SteamId = SteamId(76_561_198_000_000_000);
+
+    #[test]
+    fn a_custom_name_gives_a_steam_id_or_nothing() {
+        assert_eq!(
+            parse_vanity_url(
+                json!({ "response": { "steamid": "76561198000000000", "success": 1 } })
+            )
+            .unwrap(),
+            Some(ME)
+        );
+        assert_eq!(
+            parse_vanity_url(json!({ "response": { "success": 42, "message": "No match" } }))
+                .unwrap(),
+            None
+        );
+        assert!(parse_vanity_url(json!({ "response": { "success": 2 } })).is_err());
+    }
 
     struct FakeSteam {
         answers: HashMap<&'static str, Value>,

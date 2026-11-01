@@ -1,7 +1,10 @@
 use std::{path::Path, sync::OnceLock};
 
 use gamepalate_core::{ids::SteamId, timestamp::Timestamp};
-use gamepalate_steam::transport::{Get, SteamError, Transport};
+use gamepalate_steam::{
+    signals::resolve_vanity_url,
+    transport::{Get, SteamError, Transport},
+};
 use gamepalate_store::{
     config::{ConfigError, save_steam_id},
     signals::SignalsError,
@@ -47,6 +50,9 @@ pub enum ConnectError {
     #[error("Steam is not responding: the signals could not be read")]
     SteamDown,
 
+    #[error("Steam has no profile with the custom name {0}")]
+    NoProfile(String),
+
     #[error(transparent)]
     Config(#[from] ConfigError),
 
@@ -55,6 +61,12 @@ pub enum ConnectError {
 
     #[error(transparent)]
     Signals(#[from] SignalsError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Profile {
+    Id(SteamId),
+    CustomName(String),
 }
 
 pub trait KeyStore: Sync {
@@ -119,7 +131,14 @@ pub fn parse_steam_id(text: &str) -> Result<SteamId, SteamIdError> {
     }
 }
 
-pub fn custom_name(text: &str) -> Option<&str> {
+pub fn parse_profile(text: &str) -> Result<Profile, SteamIdError> {
+    match custom_name(text) {
+        Some(name) => Ok(Profile::CustomName(name.to_string())),
+        None => parse_steam_id(text).map(Profile::Id),
+    }
+}
+
+fn custom_name(text: &str) -> Option<&str> {
     let name = profile_path(text).strip_prefix(VANITY)?;
     let name = name.split(['/', '?', '#']).next()?;
     (!name.is_empty()).then_some(name)
@@ -140,14 +159,14 @@ pub fn steam_api_key() -> Option<String> {
 
 pub async fn connect(
     data_dir: &Path,
-    steam_id: SteamId,
+    profile: Profile,
     key: Option<String>,
 ) -> Result<(), ConnectError> {
     let transport = Transport::new(key.clone().or_else(steam_api_key))?;
     connect_with(
         data_dir,
         &transport,
-        steam_id,
+        profile,
         key.as_deref(),
         &CredentialManager,
         wall_clock(),
@@ -163,11 +182,17 @@ fn api_key(env: Option<String>, store: &dyn KeyStore) -> Option<String> {
 async fn connect_with<S: Get>(
     data_dir: &Path,
     steam: &S,
-    steam_id: SteamId,
+    profile: Profile,
     key: Option<&str>,
     keys: &dyn KeyStore,
     now: Timestamp,
 ) -> Result<(), ConnectError> {
+    let steam_id = match profile {
+        Profile::Id(steam_id) => steam_id,
+        Profile::CustomName(name) => resolve_vanity_url(steam, &name)
+            .await?
+            .ok_or(ConnectError::NoProfile(name))?,
+    };
     let read = read_signals(data_dir, steam, steam_id, now).await?;
     if !read.fresh {
         return Err(ConnectError::SteamDown);
@@ -222,7 +247,7 @@ mod tests {
         async fn get(
             &self,
             endpoint: &str,
-            _params: &[(&str, &str)],
+            params: &[(&str, &str)],
             _needs_key: bool,
         ) -> Result<Value, SteamError> {
             match (&self.0, endpoint) {
@@ -240,6 +265,13 @@ mod tests {
                 (Answer::Hidden, "IPlayerService/GetOwnedGames/v1") => {
                     Ok(json!({ "response": {} }))
                 }
+                (_, "ISteamUser/ResolveVanityURL/v1") => {
+                    Ok(if params.contains(&("vanityurl", "someone")) {
+                        json!({ "response": { "steamid": "76561198000000000", "success": 1 } })
+                    } else {
+                        json!({ "response": { "success": 42, "message": "No match" } })
+                    })
+                }
                 (_, "IPlayerService/GetOwnedGames/v1") => Ok(json!({ "response": {
                     "games": [{ "appid": 10, "playtime_forever": 120 }]
                 } })),
@@ -249,7 +281,15 @@ mod tests {
     }
 
     async fn connect_to(dir: &Path, answer: Answer, keys: &FakeKeys) -> Result<(), ConnectError> {
-        connect_with(dir, &FakeSteam(answer), ID, Some("KEY"), keys, NOW).await
+        connect_with(
+            dir,
+            &FakeSteam(answer),
+            Profile::Id(ID),
+            Some("KEY"),
+            keys,
+            NOW,
+        )
+        .await
     }
 
     #[test]
@@ -267,6 +307,61 @@ mod tests {
             custom_name("https://steamcommunity.com/profiles/76561198000000000"),
             None
         );
+    }
+
+    #[test]
+    fn a_profile_is_a_custom_name_or_a_steam_id() {
+        assert_eq!(
+            parse_profile("https://steamcommunity.com/id/someone/"),
+            Ok(Profile::CustomName("someone".to_string()))
+        );
+        assert_eq!(
+            parse_profile("steamcommunity.com/profiles/76561198000000000"),
+            Ok(Profile::Id(ID))
+        );
+        assert_eq!(parse_profile("123"), Err(SteamIdError::Invalid));
+    }
+
+    #[tokio::test]
+    async fn a_custom_name_is_saved_as_its_steam_id() {
+        let dir = tempfile::tempdir().unwrap();
+
+        connect_with(
+            dir.path(),
+            &FakeSteam(Answer::Library),
+            Profile::CustomName("someone".to_string()),
+            Some("KEY"),
+            &FakeKeys::default(),
+            NOW,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            load_config(&dir.path().join("config.toml"))
+                .unwrap()
+                .steam_id,
+            Some(ID)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_custom_name_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let error = connect_with(
+            dir.path(),
+            &FakeSteam(Answer::Library),
+            Profile::CustomName("nobody".to_string()),
+            Some("KEY"),
+            &FakeKeys::default(),
+            NOW,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(error, ConnectError::NoProfile(name) if name == "nobody"));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]
@@ -352,7 +447,7 @@ mod tests {
         connect_with(
             dir.path(),
             &FakeSteam(Answer::Library),
-            ID,
+            Profile::Id(ID),
             None,
             &keys,
             NOW,

@@ -7,7 +7,7 @@ use std::{
 
 use gamepalate_app::{
     AppId, Gamepalate, SteamError,
-    account::{ConnectError, SteamIdError, connect, custom_name, parse_steam_id},
+    account::{ConnectError, connect, parse_profile},
     ready::{ReadyCheck, check_ready},
     setup::{Covers, FirstRun, Part, error_chain, most_played},
     update::download_catalog,
@@ -40,10 +40,15 @@ const TILE_HEIGHT: f32 = 168.0;
 const IMAGE_RADIUS: f32 = 6.0;
 const KEY_PAGE: &str = "https://steamcommunity.com/dev/apikey";
 const ACCOUNT_ABOUT: &str = "gamepalate only reads your library, hours played and wishlist";
-const VOTE_ABOUT: &str = "The more games you vote on, the better the recommendations.";
+const VOTE_ABOUT: &str = "The more games you vote on, the better the recommendations";
 const LIBRARY_PAGE: &str = "steam://open/games";
-const STEAM_ID_LOOKUP: &str = "https://steamid.io";
-const FIND_STEAM_ID: &str = "In Steam, click your name (top right), then Account details. The Steam ID is the 17-digit number under your name.";
+pub(crate) const PRIVACY_PAGE: &str = "https://steamcommunity.com/my/edit/settings";
+pub(crate) const PRIVATE_LIBRARY: &str =
+    "Your game details are private. Set Game details to Public in your privacy settings.";
+pub(crate) const KEY_DOMAIN_NOTE: &str =
+    "Steam asks for a domain name. Any will do, like localhost.";
+pub(crate) const PROFILE_PLACEHOLDER: &str = "Steam profile address or Steam ID";
+const FIND_STEAM_ID: &str = "Open your profile on steamcommunity.com and copy the address.";
 
 pub struct Setup {
     first_run: FirstRun,
@@ -135,7 +140,7 @@ pub enum Message {
     Prepared(Result<ReadyCheck, String>),
     StartVoting,
     OpenLibrary,
-    LookUpSteamId,
+    OpenPrivacy,
     Cover(AppId, Option<image::Handle>),
 }
 
@@ -245,7 +250,7 @@ impl Setup {
             }
             Message::GetKey => open_link(KEY_PAGE),
             Message::OpenLibrary => open_link(LIBRARY_PAGE),
-            Message::LookUpSteamId => open_link(&steam_id_lookup(&self.account.steam_id).1),
+            Message::OpenPrivacy => open_link(PRIVACY_PAGE),
             Message::Connect => self.connect(),
             Message::Connected(Err(error)) => {
                 self.account.connecting = false;
@@ -347,9 +352,9 @@ impl Setup {
         if !can_connect(&self.account, &self.first_run) {
             return Action::None;
         }
-        let (Some(dir), Ok(steam_id)) = (
+        let (Some(dir), Ok(profile)) = (
             self.first_run.data_dir.clone(),
-            parse_steam_id(&self.account.steam_id),
+            parse_profile(&self.account.steam_id),
         ) else {
             return Action::None;
         };
@@ -359,7 +364,7 @@ impl Setup {
 
         Action::Run(Task::perform(
             async move {
-                connect(&dir, steam_id, key)
+                connect(&dir, profile, key)
                     .await
                     .map_err(|error| connect_error_text(&error))
             },
@@ -521,7 +526,7 @@ impl Setup {
     fn account_view(&self) -> Element<'_, Message> {
         let account = &self.account;
         let editable = !account.connecting;
-        let steam_id = text_input("Steam ID or profile link", &account.steam_id)
+        let steam_id = text_input(PROFILE_PLACEHOLDER, &account.steam_id)
             .on_input_maybe(editable.then_some(Message::SteamId))
             .on_submit(Message::Connect)
             .padding(8)
@@ -560,8 +565,13 @@ impl Setup {
             .error
             .as_ref()
             .map(|error| text(error.clone()).size(font::BAR_SIZE).style(text::danger));
+        let privacy = account
+            .error
+            .as_deref()
+            .filter(|error| needs_privacy(error))
+            .map(|_| note_link("Open privacy settings ↗", Message::OpenPrivacy));
         let connect = row![
-            container(column![].push(invalid).push(error).spacing(4)).width(Fill),
+            container(column![].push(invalid).push(error).push(privacy).spacing(4)).width(Fill),
             button(
                 text(if account.connecting {
                     "Connecting…"
@@ -577,16 +587,8 @@ impl Setup {
         .align_y(Center);
 
         column![
-            field(
-                "Steam ID",
-                column![
-                    steam_id,
-                    steam_id_note,
-                    steam_id_lookup_link(&account.steam_id, Message::LookUpSteamId),
-                ]
-                .spacing(4)
-            ),
-            field("API key", key),
+            field("Profile", column![steam_id, steam_id_note].spacing(4)),
+            field("API key", column![key, note(KEY_DOMAIN_NOTE)].spacing(4)),
             connect,
         ]
         .spacing(12)
@@ -606,7 +608,7 @@ impl Setup {
     fn ready_view(&self) -> Element<'_, Message> {
         let Some(ready) = &self.ready else {
             return column![
-                text("Read your Signals from Steam to finish.").size(font::BAR_SIZE),
+                text("Read your Signals from Steam to finish").size(font::BAR_SIZE),
                 small_button("Read Signals", Message::Prepare(true)),
             ]
             .spacing(8)
@@ -771,7 +773,7 @@ fn account_done(account: &Account, first_run: &FirstRun) -> bool {
 fn can_connect(account: &Account, first_run: &FirstRun) -> bool {
     first_run.data_dir.is_some()
         && !account.connecting
-        && parse_steam_id(&account.steam_id).is_ok()
+        && parse_profile(&account.steam_id).is_ok()
         && (!account.key.trim().is_empty() || first_run.api_key)
 }
 
@@ -779,30 +781,17 @@ pub(crate) fn steam_id_note(text: &str) -> Option<&'static str> {
     if text.trim().is_empty() {
         return None;
     }
-    match parse_steam_id(text) {
-        Ok(_) => None,
-        Err(SteamIdError::CustomName) => {
-            Some("That link has the custom name of the profile, not the Steam ID.")
-        }
-        Err(SteamIdError::Invalid) => Some("A Steam ID has 17 digits, like 76561198000000000."),
-    }
+    parse_profile(text)
+        .is_err()
+        .then_some("Paste the address of your profile, or the 17-digit Steam ID.")
 }
 
-pub(crate) fn steam_id_lookup(text: &str) -> (String, String) {
-    match custom_name(text) {
-        Some(name) => (
-            format!("Look up {name} on steamid.io ↗"),
-            format!("{STEAM_ID_LOOKUP}/lookup/{name}"),
-        ),
-        None => (
-            "Find your Steam ID from your profile name on steamid.io ↗".to_string(),
-            STEAM_ID_LOOKUP.to_string(),
-        ),
-    }
+pub(crate) fn needs_privacy(error: &str) -> bool {
+    error == PRIVATE_LIBRARY
 }
 
-pub(crate) fn steam_id_lookup_link<'a, M: Clone + 'a>(text: &str, message: M) -> Element<'a, M> {
-    button(iced::widget::text(steam_id_lookup(text).0).size(font::NOTE_SIZE))
+pub(crate) fn note_link<'a, M: Clone + 'a>(label: &'static str, message: M) -> Element<'a, M> {
+    button(text(label).size(font::NOTE_SIZE))
         .padding(0)
         .style(style::link)
         .on_press(message)
@@ -815,10 +804,13 @@ pub(crate) fn connect_error_text(error: &ConnectError) -> String {
         Some(SteamError::KeyRejected { .. }) => {
             "Steam rejected the key: check that you copied all of it.".to_string()
         }
-        Some(SteamError::LibraryHidden { .. }) => "Your game details are private: open Steam → Profile → Edit Profile → Privacy Settings → Game details: Public.".to_string(),
+        Some(SteamError::LibraryHidden { .. }) => PRIVATE_LIBRARY.to_string(),
         Some(SteamError::MissingKey { .. }) => "Write the Steam Web API key.".to_string(),
         Some(SteamError::SteamDown { .. }) => down.to_string(),
         _ if matches!(error, ConnectError::SteamDown) => down.to_string(),
+        _ if matches!(error, ConnectError::NoProfile(_)) => {
+            "Steam has no profile at that address. Check the name after /id/.".to_string()
+        }
         _ => error_chain(error),
     }
 }
@@ -1296,25 +1288,8 @@ mod tests {
     fn the_steam_id_field_says_what_is_wrong() {
         assert_eq!(steam_id_note(""), None);
         assert_eq!(steam_id_note("76561198000000000"), None);
-        assert!(steam_id_note("123").unwrap().contains("17 digits"));
-        assert!(
-            steam_id_note("https://steamcommunity.com/id/someone")
-                .unwrap()
-                .contains("custom name")
-        );
-    }
-
-    #[test]
-    fn a_custom_name_is_looked_up_on_steamid_io() {
-        assert_eq!(
-            steam_id_lookup("https://steamcommunity.com/id/someone/"),
-            (
-                "Look up someone on steamid.io ↗".to_string(),
-                "https://steamid.io/lookup/someone".to_string()
-            )
-        );
-        assert_eq!(steam_id_lookup("").1, "https://steamid.io");
-        assert_eq!(steam_id_lookup("76561198000000000").1, "https://steamid.io");
+        assert!(steam_id_note("123").unwrap().contains("17-digit"));
+        assert_eq!(steam_id_note("https://steamcommunity.com/id/someone"), None);
     }
 
     #[test]
@@ -1332,6 +1307,12 @@ mod tests {
         });
 
         assert!(connect_error_text(&hidden).starts_with("Your game details are private"));
+        assert!(needs_privacy(&connect_error_text(&hidden)));
+        assert!(!needs_privacy(&connect_error_text(&down)));
+        assert!(
+            connect_error_text(&ConnectError::NoProfile("nobody".to_string()))
+                .starts_with("Steam has no profile at that address")
+        );
         assert!(connect_error_text(&down).starts_with("Steam is not responding"));
         assert!(
             connect_error_text(&ConnectError::SteamDown).starts_with("Steam is not responding")

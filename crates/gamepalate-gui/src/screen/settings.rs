@@ -2,7 +2,7 @@ use std::{process::Command, sync::Arc};
 
 use gamepalate_app::{
     Gamepalate, Region, SteamId, ThemeChoice,
-    account::{connect, parse_steam_id},
+    account::{Profile, connect, parse_profile},
     settings::{self, KeySource, change_region},
     setup::error_chain,
 };
@@ -15,7 +15,10 @@ use iced::{
 use crate::{
     app::Page,
     font,
-    screen::setup::{connect_error_text, steam_id_lookup, steam_id_lookup_link, steam_id_note},
+    screen::setup::{
+        KEY_DOMAIN_NOTE, PRIVACY_PAGE, PROFILE_PLACEHOLDER, connect_error_text, needs_privacy,
+        note_link, steam_id_note,
+    },
     style,
 };
 
@@ -57,7 +60,7 @@ pub enum Message {
     Cancel,
     Saved(Result<(), String>),
     ConfirmRegion,
-    LookUpSteamId,
+    OpenPrivacy,
     RegionSaved(Result<(), String>),
     Theme(ThemeChoice),
     OpenFolder,
@@ -154,13 +157,11 @@ impl Settings {
                     .spawn();
                 Action::None
             }
-            Message::LookUpSteamId => {
-                if let Some(editing) = &self.editing {
-                    let _ = Command::new("rundll32")
-                        .arg("url.dll,FileProtocolHandler")
-                        .arg(steam_id_lookup(&editing.text).1)
-                        .spawn();
-                }
+            Message::OpenPrivacy => {
+                let _ = Command::new("rundll32")
+                    .arg("url.dll,FileProtocolHandler")
+                    .arg(PRIVACY_PAGE)
+                    .spawn();
                 Action::None
             }
             Message::OpenConfig => {
@@ -220,7 +221,7 @@ impl Settings {
             self.confirming = region_change(editing, self.settings.region);
             return Action::None;
         }
-        let Some((steam_id, key)) = account_change(editing, self.settings.steam_id) else {
+        let Some((profile, key)) = account_change(editing, self.settings.steam_id) else {
             return Action::None;
         };
         editing.saving = true;
@@ -229,7 +230,7 @@ impl Settings {
 
         Action::Run(Task::perform(
             async move {
-                connect(&dir, steam_id, key)
+                connect(&dir, profile, key)
                     .await
                     .map_err(|error| connect_error_text(&error))
             },
@@ -366,7 +367,7 @@ impl Settings {
         }
 
         let placeholder = match field {
-            Field::SteamId => "Steam ID or profile link",
+            Field::SteamId => PROFILE_PLACEHOLDER,
             Field::Key => "Steam Web API key",
             Field::Region => "Two letters, such as IT",
         };
@@ -408,17 +409,23 @@ impl Settings {
                 .map(|note| text(note).size(font::NOTE_SIZE).style(text::danger)),
             (Field::Region, None) => region_note(&editing.text)
                 .map(|note| text(note).size(font::NOTE_SIZE).style(text::danger)),
-            (Field::Key, None) => None,
+            (Field::Key, None) => Some(
+                text(KEY_DOMAIN_NOTE)
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted),
+            ),
         };
+        let privacy = editing
+            .error
+            .as_deref()
+            .filter(|error| needs_privacy(error))
+            .map(|_| note_link("Open privacy settings ↗", Message::OpenPrivacy));
 
         setting(
             label,
             column![input]
                 .push(note)
-                .push(
-                    (field == Field::SteamId)
-                        .then(|| steam_id_lookup_link(&editing.text, Message::LookUpSteamId)),
-                )
+                .push(privacy)
                 .push(buttons)
                 .spacing(8)
                 .into(),
@@ -470,18 +477,18 @@ fn region_confirmation(region: Region) -> String {
     )
 }
 
-fn account_change(editing: &Editing, saved: Option<SteamId>) -> Option<(SteamId, Option<String>)> {
+fn account_change(editing: &Editing, saved: Option<SteamId>) -> Option<(Profile, Option<String>)> {
     match editing.field {
-        Field::SteamId => parse_steam_id(&editing.text)
+        Field::SteamId => parse_profile(&editing.text)
             .ok()
-            .map(|steam_id| (steam_id, None)),
+            .map(|profile| (profile, None)),
         Field::Region => None,
         Field::Key => {
             let key = editing.text.trim();
             (!key.is_empty())
                 .then_some(saved)
                 .flatten()
-                .map(|steam_id| (steam_id, Some(key.to_string())))
+                .map(|steam_id| (Profile::Id(steam_id), Some(key.to_string())))
         }
     }
 }
@@ -589,7 +596,14 @@ mod tests {
                 ),
                 None
             ),
-            Some((ID, None))
+            Some((Profile::Id(ID), None))
+        );
+        assert_eq!(
+            account_change(
+                &editing(Field::SteamId, "https://steamcommunity.com/id/someone"),
+                Some(ID)
+            ),
+            Some((Profile::CustomName("someone".to_string()), None))
         );
         assert_eq!(
             account_change(&editing(Field::SteamId, "123"), Some(ID)),
@@ -601,7 +615,7 @@ mod tests {
     fn a_new_key_goes_with_the_saved_steam_id() {
         assert_eq!(
             account_change(&editing(Field::Key, " KEY "), Some(ID)),
-            Some((ID, Some("KEY".to_string())))
+            Some((Profile::Id(ID), Some("KEY".to_string())))
         );
         assert_eq!(account_change(&editing(Field::Key, "  "), Some(ID)), None);
         assert_eq!(account_change(&editing(Field::Key, "KEY"), None), None);
