@@ -241,6 +241,47 @@ pub fn choice(current: bool) -> impl Fn(&Theme, button::Status) -> button::Style
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Tone {
+    Primary,
+    Success,
+    Warning,
+    Danger,
+}
+
+pub fn tinted(tone: Tone, current: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let palette = theme.extended_palette();
+        let (base, weak) = match tone {
+            Tone::Primary => (palette.primary.base, palette.primary.weak),
+            Tone::Success => (palette.success.base, palette.success.weak),
+            Tone::Warning => (palette.warning.base, palette.warning.weak),
+            Tone::Danger => (palette.danger.base, palette.danger.weak),
+        };
+        let (background, text_color) = if current {
+            (base.color, base.text)
+        } else {
+            match status {
+                button::Status::Hovered | button::Status::Pressed => {
+                    (palette::mix(weak.color, base.color, 0.3), weak.text)
+                }
+                button::Status::Active => (weak.color, weak.text),
+                button::Status::Disabled => (palette.background.weak.color, faded(theme, 0.5)),
+            }
+        };
+
+        button::Style {
+            background: Some(background.into()),
+            text_color,
+            border: Border {
+                radius: 8.0.into(),
+                ..Border::default()
+            },
+            ..button::Style::default()
+        }
+    }
+}
+
 pub fn list_row(current: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme, status| {
         let background = theme.extended_palette().background;
@@ -498,5 +539,14 @@ mod tests {
 
         assert_eq!(faded(&Theme::Light, 0.7), light.scale_alpha(0.7));
         assert_eq!(faded(&Theme::Dark, 0.7), dark.scale_alpha(0.7 * 0.7));
+    }
+
+    #[test]
+    fn a_tinted_choice_is_filled_only_when_it_is_the_current_one() {
+        let success = Theme::Light.extended_palette().success;
+        let style = |current| tinted(Tone::Success, current)(&Theme::Light, button::Status::Active);
+
+        assert_eq!(style(true).background, Some(success.base.color.into()));
+        assert_eq!(style(false).background, Some(success.weak.color.into()));
     }
 }

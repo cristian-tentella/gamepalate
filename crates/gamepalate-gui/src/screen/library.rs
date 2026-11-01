@@ -5,7 +5,7 @@ use gamepalate_app::{
     HoursSource, LibraryGameView, LibraryView,
 };
 use iced::{
-    Center, ContentFit, Element, Fill, Size, Subscription, Task,
+    Center, ContentFit, Element, Fill, Padding, Point, Size, Subscription, Task,
     keyboard::{self, Key, key::Named},
     mouse,
     widget::{
@@ -23,7 +23,10 @@ use super::{
     sentence,
     showcase::images::{Images, Picture},
 };
-use crate::{font, style};
+use crate::{
+    font,
+    style::{self, Tone},
+};
 
 const FILTERS: [Filter; 4] = [
     Filter::All,
@@ -46,9 +49,11 @@ const SCREENS_KEPT: f32 = 2.0;
 const CHROME_HEIGHT: f32 = 110.0;
 const IMAGE_RADIUS: f32 = 6.0;
 const DEFAULT_AREA: Size = Size::new(1280.0, 700.0);
-const PANEL_WIDTH: f32 = 360.0;
-const PANEL_CAPSULE_WIDTH: f32 = 160.0;
-const PANEL_CAPSULE_HEIGHT: f32 = 240.0;
+const POPUP_WIDTH: f32 = 320.0;
+const POPUP_HEIGHT: f32 = 360.0;
+const POPUP_GAP: f32 = 8.0;
+const POPUP_MARGIN: f32 = 8.0;
+const PICKS: [Choice; 3] = [Choice::Fully, Choice::Half, Choice::Not];
 
 pub struct Library {
     gamepalate: Arc<Gamepalate>,
@@ -249,15 +254,18 @@ impl Library {
                 let Some(game) = self.open.and_then(|id| self.game(id)) else {
                     return Task::none();
                 };
-                let choice = [Choice::Fully, Choice::Half, Choice::Not][index.min(2)];
+                let choice = PICKS[index.min(2)];
                 if game.hours >= view.min_hours
                     && choice != selected_choice(game.correction.multiplier, view.dampen)
                 {
+                    let id = game.id;
                     let correction = GameCorrection {
                         multiplier: choice_multiplier(choice, view.dampen),
                         ..game.correction
                     };
-                    return self.update(Message::Correct(game.id, correction));
+                    self.open = None;
+                    self.new_family = None;
+                    return self.update(Message::Correct(id, correction));
                 }
             }
             Message::FocusSearch => return operation::focus(SEARCH),
@@ -533,17 +541,10 @@ impl Library {
             responsive(move |size| self.grid(size.width)).into()
         };
 
-        let panel = self.open.and_then(|id| self.game(id)).map(|game| {
+        let popup = self.open.and_then(|id| self.game(id)).map(|game| {
             stack![
                 opaque(mouse_area(space().width(Fill).height(Fill)).on_press(Message::Close)),
-                container(opaque(
-                    container(scrollable(self.panel(game)).height(Fill))
-                        .width(PANEL_WIDTH)
-                        .height(Fill)
-                        .style(style::popup),
-                ))
-                .align_right(Fill)
-                .padding(8),
+                responsive(move |size| self.placed_popup(game, size)),
             ]
         });
         let toast = self.toasts.view(Message::Undo);
@@ -551,7 +552,7 @@ impl Library {
         column![
             container(tools).padding([12, GRID_PADDING as u16]),
             style::separator(),
-            stack![body].push(panel).push(toast),
+            stack![body].push(popup).push(toast),
         ]
         .into()
     }
@@ -672,45 +673,58 @@ impl Library {
         .into()
     }
 
-    fn panel<'a>(&'a self, game: &'a LibraryGameView) -> Element<'a, Message> {
-        let view = &self.view;
-        let capsule: Element<'a, Message> = match self.capsules.get(&game.id) {
-            Some(Picture::Ready(allocation)) => image(allocation.handle().clone())
-                .width(PANEL_CAPSULE_WIDTH)
-                .height(PANEL_CAPSULE_HEIGHT)
-                .content_fit(ContentFit::Cover)
-                .border_radius(IMAGE_RADIUS)
-                .into(),
-            _ => container(space())
-                .width(PANEL_CAPSULE_WIDTH)
-                .height(PANEL_CAPSULE_HEIGHT)
-                .style(style::picture)
-                .into(),
+    fn placed_popup<'a>(&'a self, game: &'a LibraryGameView, size: Size) -> Element<'a, Message> {
+        let rows = self.rows(size.width);
+        let Some(tile) = self
+            .shown
+            .iter()
+            .position(|&index| self.view.games[index].id == game.id)
+            .and_then(|position| tile_origin(&rows, position, size.width, self.offset))
+        else {
+            return space().into();
         };
-        let tags = (!game.tags.is_empty()).then(|| {
-            text!("Brings {}", game.tags.join(", "))
-                .size(font::BAR_SIZE)
-                .style(style::muted)
-        });
+        let origin = popup_origin(tile, size);
+
+        container(opaque(
+            container(self.popup(game))
+                .width(POPUP_WIDTH)
+                .style(style::popup),
+        ))
+        .padding(Padding {
+            top: origin.y,
+            left: origin.x,
+            ..Padding::ZERO
+        })
+        .into()
+    }
+
+    fn popup<'a>(&'a self, game: &'a LibraryGameView) -> Element<'a, Message> {
+        let view = &self.view;
         let correctable = game.hours >= view.min_hours;
         let selected = selected_choice(game.correction.multiplier, view.dampen);
         let choices = row(choices(selected).into_iter().map(|choice| {
-            let correction = GameCorrection {
-                multiplier: choice_multiplier(choice, view.dampen),
-                ..game.correction
-            };
-            button(text(choice_label(choice, view.dampen)).size(font::NOTE_SIZE))
-                .padding([4, 12])
-                .style(style::choice(choice == selected))
-                .on_press_maybe(
-                    (correctable && choice != selected)
-                        .then_some(Message::Correct(game.id, correction)),
-                )
-                .into()
+            let pick = PICKS.iter().position(|&pick| pick == choice);
+            button(
+                column![
+                    text(choice_factor(choice, view.dampen))
+                        .size(font::INFO_SIZE)
+                        .font(font::SEMIBOLD),
+                    text(choice_label(choice)).size(font::NOTE_SIZE),
+                ]
+                .spacing(2)
+                .align_x(Center)
+                .width(Fill),
+            )
+            .width(Fill)
+            .padding([6, 4])
+            .style(style::tinted(choice_tone(choice), choice == selected))
+            .on_press_maybe(
+                pick.filter(|_| correctable && choice != selected)
+                    .map(Message::Pick),
+            )
+            .into()
         }))
-        .spacing(6)
-        .wrap()
-        .vertical_spacing(6);
+        .spacing(6);
         let hide = game.owned_hours.is_none().then(|| {
             let id = game.id;
             let correction = game.correction;
@@ -729,37 +743,41 @@ impl Library {
         });
 
         column![
-            capsule,
-            text(&game.name).size(font::INFO_SIZE).font(font::SEMIBOLD),
-            text(source_line(game, view)).size(font::BAR_SIZE),
-            text(weight_line(game, view)).size(font::BAR_SIZE),
-        ]
-        .push(tags)
-        .push(space().height(8))
-        .push(
+            column![
+                text(&game.name).size(font::INFO_SIZE).font(font::SEMIBOLD),
+                text(source_line(game, view))
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted),
+                text(weight_line(game, view)).size(font::BAR_SIZE),
+            ]
+            .push((!game.tags.is_empty()).then(|| {
+                text!("Brings {}", game.tags.join(", "))
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted)
+            }))
+            .spacing(2),
             text("Counts for your taste")
-                .size(font::BAR_SIZE)
-                .font(font::SEMIBOLD),
-        )
-        .push(choices)
+                .size(font::NOTE_SIZE)
+                .style(style::muted),
+            choices,
+        ]
         .push((!correctable).then(|| {
             text(no_effect_text(game.hours, view.min_hours))
                 .size(font::NOTE_SIZE)
                 .style(style::muted)
         }))
-        .push(hide.map(|hide| column![space().height(8), hide]))
-        .push(space().height(8))
-        .push(text("Families").size(font::BAR_SIZE).font(font::SEMIBOLD))
+        .push(style::separator())
+        .push(text("Families").size(font::NOTE_SIZE).style(style::muted))
         .push(self.family_chips(game))
-        .push(held_out(game))
+        .push(row![held_out(game)].push(hide).spacing(16))
         .push(
             button(text("Open families.toml ›").size(font::NOTE_SIZE))
                 .padding(0)
                 .style(style::link)
                 .on_press(Message::OpenFamilies),
         )
-        .spacing(8)
-        .padding(20)
+        .spacing(10)
+        .padding(16)
         .into()
     }
 
@@ -1155,14 +1173,54 @@ fn choice_multiplier(choice: Choice, dampen: f64) -> Option<f64> {
     }
 }
 
-fn choice_label(choice: Choice, dampen: f64) -> String {
+fn choice_factor(choice: Choice, dampen: f64) -> String {
+    multiplier(choice_multiplier(choice, dampen).unwrap_or(1.0))
+}
+
+fn choice_label(choice: Choice) -> &'static str {
     match choice {
-        Choice::Fully => "Fully".to_string(),
-        Choice::Half if dampen == 0.5 => "Half".to_string(),
-        Choice::Half => format!("Half {}", multiplier(dampen)),
-        Choice::Not => "Not".to_string(),
-        Choice::Custom(factor) => multiplier(factor),
+        Choice::Fully => "Fully",
+        Choice::Half => "Half",
+        Choice::Not => "Not",
+        Choice::Custom(_) => "Custom",
     }
+}
+
+fn choice_tone(choice: Choice) -> Tone {
+    match choice {
+        Choice::Fully => Tone::Success,
+        Choice::Half => Tone::Warning,
+        Choice::Not => Tone::Danger,
+        Choice::Custom(_) => Tone::Primary,
+    }
+}
+
+fn tile_origin(rows: &[Row], position: usize, width: f32, offset: f32) -> Option<Point> {
+    let free = width - 2.0 * GRID_PADDING - grid_width(columns(width));
+    let left = GRID_PADDING + (free / 2.0).max(0.0);
+    let mut top = GRID_PADDING - offset;
+    for row in rows {
+        if let Row::Games(games) = row
+            && games.contains(&position)
+        {
+            let column = (position - games.start) as f32;
+            return Some(Point::new(left + column * (TILE_WIDTH + GAP), top));
+        }
+        top += row_height(row);
+    }
+    None
+}
+
+fn popup_origin(tile: Point, area: Size) -> Point {
+    let right = tile.x + TILE_WIDTH + POPUP_GAP;
+    let x = if right + POPUP_WIDTH + POPUP_MARGIN <= area.width {
+        right
+    } else {
+        tile.x - POPUP_GAP - POPUP_WIDTH
+    };
+    let y = tile.y.min(area.height - POPUP_HEIGHT - POPUP_MARGIN);
+
+    Point::new(x.max(POPUP_MARGIN), y.max(POPUP_MARGIN))
 }
 
 fn counts_as(hours: f64) -> String {
@@ -1480,9 +1538,64 @@ mod tests {
                 Choice::Custom(0.25)
             ]
         );
-        assert_eq!(choice_label(Choice::Custom(0.25), 0.5), "×0.25");
-        assert_eq!(choice_label(Choice::Half, 0.5), "Half");
-        assert_eq!(choice_label(Choice::Half, 0.6), "Half ×0.6");
+        assert_eq!(choice_factor(Choice::Custom(0.25), 0.5), "×0.25");
+        assert_eq!(choice_label(Choice::Custom(0.25)), "Custom");
+    }
+
+    #[test]
+    fn each_choice_shows_its_factor_and_its_colour() {
+        assert_eq!(choice_factor(Choice::Fully, 0.5), "×1");
+        assert_eq!(choice_factor(Choice::Half, 0.5), "×0.5");
+        assert_eq!(choice_factor(Choice::Half, 0.6), "×0.6");
+        assert_eq!(choice_factor(Choice::Not, 0.5), "×0");
+        assert_eq!(choice_tone(Choice::Fully), Tone::Success);
+        assert_eq!(choice_tone(Choice::Half), Tone::Warning);
+        assert_eq!(choice_tone(Choice::Not), Tone::Danger);
+        assert_eq!(choice_tone(Choice::Custom(0.25)), Tone::Primary);
+    }
+
+    #[test]
+    fn the_tile_corner_follows_the_column_the_divider_and_the_scroll() {
+        let width = 2.0 * GRID_PADDING + grid_width(4);
+        let rows = rows(5, 9, 4, true);
+
+        assert_eq!(
+            tile_origin(&rows, 0, width, 0.0),
+            Some(Point::new(GRID_PADDING, GRID_PADDING))
+        );
+        assert_eq!(
+            tile_origin(&rows, 6, width, 100.0),
+            Some(Point::new(
+                GRID_PADDING + TILE_WIDTH + GAP,
+                GRID_PADDING + 2.0 * (TILE_HEIGHT + GAP) + DIVIDER_HEIGHT - 100.0
+            ))
+        );
+        assert_eq!(
+            tile_origin(&rows, 0, width + 100.0, 0.0),
+            Some(Point::new(GRID_PADDING + 50.0, GRID_PADDING))
+        );
+        assert_eq!(tile_origin(&rows, 99, width, 0.0), None);
+    }
+
+    #[test]
+    fn the_popup_opens_beside_the_tile_and_stays_in_the_grid() {
+        let area = Size::new(1280.0, 700.0);
+        let first = Point::new(GRID_PADDING, GRID_PADDING);
+        let last = Point::new(area.width - GRID_PADDING - TILE_WIDTH, GRID_PADDING);
+
+        assert_eq!(
+            popup_origin(first, area),
+            Point::new(first.x + TILE_WIDTH + POPUP_GAP, first.y)
+        );
+        assert_eq!(popup_origin(last, area).x, last.x - POPUP_GAP - POPUP_WIDTH);
+        assert_eq!(
+            popup_origin(Point::new(first.x, 600.0), area).y,
+            area.height - POPUP_HEIGHT - POPUP_MARGIN
+        );
+        assert_eq!(
+            popup_origin(Point::new(first.x, -100.0), area).y,
+            POPUP_MARGIN
+        );
     }
 
     #[test]
