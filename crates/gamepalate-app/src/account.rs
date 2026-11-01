@@ -106,12 +106,7 @@ impl KeyStore for CredentialManager {
 }
 
 pub fn parse_steam_id(text: &str) -> Result<SteamId, SteamIdError> {
-    let text = text.trim().trim_end_matches('/');
-    let text = ["https://", "http://"]
-        .iter()
-        .find_map(|scheme| text.strip_prefix(scheme))
-        .unwrap_or(text);
-    let text = text.strip_prefix("www.").unwrap_or(text);
+    let text = profile_path(text);
     if text.starts_with(VANITY) {
         return Err(SteamIdError::CustomName);
     }
@@ -122,6 +117,21 @@ pub fn parse_steam_id(text: &str) -> Result<SteamId, SteamIdError> {
     } else {
         Err(SteamIdError::Invalid)
     }
+}
+
+pub fn custom_name(text: &str) -> Option<&str> {
+    let name = profile_path(text).strip_prefix(VANITY)?;
+    let name = name.split(['/', '?', '#']).next()?;
+    (!name.is_empty()).then_some(name)
+}
+
+fn profile_path(text: &str) -> &str {
+    let text = text.trim().trim_end_matches('/');
+    let text = ["https://", "http://"]
+        .iter()
+        .find_map(|scheme| text.strip_prefix(scheme))
+        .unwrap_or(text);
+    text.strip_prefix("www.").unwrap_or(text)
 }
 
 pub fn steam_api_key() -> Option<String> {
@@ -240,6 +250,23 @@ mod tests {
 
     async fn connect_to(dir: &Path, answer: Answer, keys: &FakeKeys) -> Result<(), ConnectError> {
         connect_with(dir, &FakeSteam(answer), ID, Some("KEY"), keys, NOW).await
+    }
+
+    #[test]
+    fn the_custom_name_comes_from_the_profile_link() {
+        assert_eq!(
+            custom_name("https://steamcommunity.com/id/someone/"),
+            Some("someone")
+        );
+        assert_eq!(
+            custom_name("www.steamcommunity.com/id/someone/games?tab=all"),
+            Some("someone")
+        );
+        assert_eq!(custom_name("76561198000000000"), None);
+        assert_eq!(
+            custom_name("https://steamcommunity.com/profiles/76561198000000000"),
+            None
+        );
     }
 
     #[test]

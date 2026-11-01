@@ -15,7 +15,7 @@ use iced::{
 use crate::{
     app::Page,
     font,
-    screen::setup::{connect_error_text, steam_id_note},
+    screen::setup::{connect_error_text, steam_id_lookup, steam_id_lookup_link, steam_id_note},
     style,
 };
 
@@ -57,6 +57,7 @@ pub enum Message {
     Cancel,
     Saved(Result<(), String>),
     ConfirmRegion,
+    LookUpSteamId,
     RegionSaved(Result<(), String>),
     Theme(ThemeChoice),
     OpenFolder,
@@ -151,6 +152,15 @@ impl Settings {
                 let _ = Command::new("explorer")
                     .arg(&self.settings.data_dir)
                     .spawn();
+                Action::None
+            }
+            Message::LookUpSteamId => {
+                if let Some(editing) = &self.editing {
+                    let _ = Command::new("rundll32")
+                        .arg("url.dll,FileProtocolHandler")
+                        .arg(steam_id_lookup(&editing.text).1)
+                        .spawn();
+                }
                 Action::None
             }
             Message::OpenConfig => {
@@ -403,7 +413,15 @@ impl Settings {
 
         setting(
             label,
-            column![input].push(note).push(buttons).spacing(8).into(),
+            column![input]
+                .push(note)
+                .push(
+                    (field == Field::SteamId)
+                        .then(|| steam_id_lookup_link(&editing.text, Message::LookUpSteamId)),
+                )
+                .push(buttons)
+                .spacing(8)
+                .into(),
             None,
         )
     }

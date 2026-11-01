@@ -2,7 +2,7 @@ use std::{cmp::Ordering, process::Command, sync::Arc, time::Instant};
 
 use gamepalate_app::{
     AppId, Gamepalate, SteamError,
-    account::{ConnectError, SteamIdError, connect, parse_steam_id},
+    account::{ConnectError, SteamIdError, connect, custom_name, parse_steam_id},
     ready::{ReadyCheck, check_ready},
     setup::{Covers, FirstRun, Part, error_chain, most_played},
     update::download_catalog,
@@ -57,6 +57,7 @@ const CATALOG_ABOUT: &str =
     "Tags, reviews and prices of every game on Steam: 15-25 minutes the first time.";
 const VOTE_ABOUT: &str = "Vote on a few games: each vote teaches gamepalate what you like.";
 const LIBRARY_PAGE: &str = "steam://open/games";
+const STEAM_ID_LOOKUP: &str = "https://steamid.io";
 const FIND_STEAM_ID: &str =
     "Open Steam → your name at the top right → Account details: the Steam ID is under your name.";
 
@@ -150,6 +151,7 @@ pub enum Message {
     Prepared(Result<ReadyCheck, String>),
     StartVoting,
     OpenLibrary,
+    LookUpSteamId,
     Cover(AppId, Option<image::Handle>),
 }
 
@@ -247,6 +249,7 @@ impl Setup {
             }
             Message::GetKey => open_link(KEY_PAGE),
             Message::OpenLibrary => open_link(LIBRARY_PAGE),
+            Message::LookUpSteamId => open_link(&steam_id_lookup(&self.account.steam_id).1),
             Message::Connect => self.connect(),
             Message::Connected(Err(error)) => {
                 self.account.connecting = false;
@@ -370,16 +373,6 @@ impl Setup {
 
     pub fn view(&self) -> Element<'_, Message> {
         let step = current_step(&self.account, &self.first_run);
-        let welcome = column![
-            text("Welcome to gamepalate")
-                .size(font::TITLE_SIZE)
-                .font(font::BOLD),
-            text("Three steps, then it recommends games from what you play on Steam.")
-                .size(font::INFO_SIZE)
-                .style(style::muted),
-        ]
-        .spacing(8)
-        .align_x(Center);
         let card = container(self.step_view(step))
             .padding(24)
             .width(Fill)
@@ -387,7 +380,7 @@ impl Setup {
 
         scrollable(
             container(
-                column![container(welcome).center_x(Fill)]
+                column![]
                     .push(self.problems_view())
                     .push(steps_view(step))
                     .push(self.done_view(step))
@@ -597,7 +590,15 @@ impl Setup {
         .align_y(Center);
 
         column![
-            field("Steam ID", column![steam_id, steam_id_note].spacing(4)),
+            field(
+                "Steam ID",
+                column![
+                    steam_id,
+                    steam_id_note,
+                    steam_id_lookup_link(&account.steam_id, Message::LookUpSteamId),
+                ]
+                .spacing(4)
+            ),
             field("API key", key),
             connect,
         ]
@@ -808,10 +809,31 @@ pub(crate) fn steam_id_note(text: &str) -> Option<&'static str> {
     match parse_steam_id(text) {
         Ok(_) => None,
         Err(SteamIdError::CustomName) => {
-            Some("That link has the custom name of the profile: write the Steam ID instead.")
+            Some("That link has the custom name of the profile, not the Steam ID.")
         }
         Err(SteamIdError::Invalid) => Some("A Steam ID has 17 digits, like 76561198000000000."),
     }
+}
+
+pub(crate) fn steam_id_lookup(text: &str) -> (String, String) {
+    match custom_name(text) {
+        Some(name) => (
+            format!("Look up {name} on steamid.io ↗"),
+            format!("{STEAM_ID_LOOKUP}/lookup/{name}"),
+        ),
+        None => (
+            "Only know your profile name? Look it up on steamid.io ↗".to_string(),
+            STEAM_ID_LOOKUP.to_string(),
+        ),
+    }
+}
+
+pub(crate) fn steam_id_lookup_link<'a, M: Clone + 'a>(text: &str, message: M) -> Element<'a, M> {
+    button(iced::widget::text(steam_id_lookup(text).0).size(font::NOTE_SIZE))
+        .padding(0)
+        .style(style::link)
+        .on_press(message)
+        .into()
 }
 
 pub(crate) fn connect_error_text(error: &ConnectError) -> String {
@@ -1299,6 +1321,19 @@ mod tests {
                 .unwrap()
                 .contains("custom name")
         );
+    }
+
+    #[test]
+    fn a_custom_name_is_looked_up_on_steamid_io() {
+        assert_eq!(
+            steam_id_lookup("https://steamcommunity.com/id/someone/"),
+            (
+                "Look up someone on steamid.io ↗".to_string(),
+                "https://steamid.io/lookup/someone".to_string()
+            )
+        );
+        assert_eq!(steam_id_lookup("").1, "https://steamid.io");
+        assert_eq!(steam_id_lookup("76561198000000000").1, "https://steamid.io");
     }
 
     #[test]
