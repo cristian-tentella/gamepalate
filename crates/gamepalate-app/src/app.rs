@@ -14,6 +14,7 @@ use gamepalate_core::{
     game_vector::{GameVector, game_vectors},
     ids::AppId,
     off_catalog::OffCatalogGames,
+    region::Region,
     search::{
         Recommendation, RecommendedGame, SearchError, SearchInputs, SearchOptions, recommend,
     },
@@ -305,6 +306,11 @@ impl Gamepalate {
 
     pub fn pending_update(&self) -> Option<PendingUpdate> {
         update::pending_update(&self.data_dir, &self.files.config)
+    }
+
+    pub fn prices_region(&self) -> Option<Region> {
+        let region = self.files.catalog.freshness.region;
+        (region != self.files.config.region).then_some(region)
     }
 
     pub fn currency(&self) -> &Currency {

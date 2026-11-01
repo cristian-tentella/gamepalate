@@ -1,9 +1,10 @@
 use std::{process::Command, sync::Arc};
 
 use gamepalate_app::{
-    Gamepalate, SteamId, ThemeChoice,
+    Gamepalate, Region, SteamId, ThemeChoice,
     account::{connect, parse_steam_id},
-    settings::{self, KeySource},
+    settings::{self, KeySource, change_region},
+    setup::error_chain,
 };
 use iced::{
     Center, Element, Fill, Subscription, Task,
@@ -29,6 +30,7 @@ pub struct Settings {
     back: Page,
     cache_bytes: Option<u64>,
     editing: Option<Editing>,
+    confirming: Option<Region>,
     error: Option<String>,
 }
 
@@ -44,6 +46,7 @@ struct Editing {
 pub enum Field {
     SteamId,
     Key,
+    Region,
 }
 
 #[derive(Clone, Debug)]
@@ -53,6 +56,8 @@ pub enum Message {
     Save,
     Cancel,
     Saved(Result<(), String>),
+    ConfirmRegion,
+    RegionSaved(Result<(), String>),
     Theme(ThemeChoice),
     OpenFolder,
     OpenConfig,
@@ -66,6 +71,7 @@ pub enum Action {
     Run(Task<Message>),
     Theme(ThemeChoice),
     Reopen,
+    RegionChanged,
     Close(Page),
 }
 
@@ -77,6 +83,7 @@ impl Settings {
             back,
             cache_bytes: None,
             editing: None,
+            confirming: None,
             error: None,
         };
         let task = settings.measure_cache();
@@ -99,6 +106,7 @@ impl Settings {
     pub fn update(&mut self, message: Message) -> Action {
         match message {
             Message::Edit(field) => {
+                self.confirming = None;
                 self.editing = Some(Editing {
                     field,
                     text: String::new(),
@@ -117,21 +125,26 @@ impl Settings {
             }
             Message::Save => self.save(),
             Message::Cancel => {
-                if self.editing.as_ref().is_some_and(|editing| !editing.saving) {
-                    self.editing = None;
-                }
+                self.step_back();
                 Action::None
             }
             Message::Saved(Ok(())) => {
                 self.editing = None;
                 Action::Reopen
             }
-            Message::Saved(Err(error)) => {
+            Message::Saved(Err(error)) | Message::RegionSaved(Err(error)) => {
+                self.confirming = None;
                 if let Some(editing) = &mut self.editing {
                     editing.saving = false;
                     editing.error = Some(error);
                 }
                 Action::None
+            }
+            Message::ConfirmRegion => self.save_region(),
+            Message::RegionSaved(Ok(())) => {
+                self.editing = None;
+                self.confirming = None;
+                Action::RegionChanged
             }
             Message::Theme(choice) => Action::Theme(choice),
             Message::OpenFolder => {
@@ -162,14 +175,22 @@ impl Settings {
                 self.cache_bytes = Some(bytes);
                 Action::None
             }
-            Message::Escape => match &self.editing {
-                Some(editing) if editing.saving => Action::None,
-                Some(_) => {
-                    self.editing = None;
-                    Action::None
+            Message::Escape => {
+                if self.editing.is_none() {
+                    return Action::Close(self.back);
                 }
-                None => Action::Close(self.back),
-            },
+                self.step_back();
+                Action::None
+            }
+        }
+    }
+
+    fn step_back(&mut self) {
+        if self.editing.as_ref().is_some_and(|editing| editing.saving) {
+            return;
+        }
+        if self.confirming.take().is_none() {
+            self.editing = None;
         }
     }
 
@@ -185,6 +206,10 @@ impl Settings {
         let Some(editing) = &mut self.editing else {
             return Action::None;
         };
+        if editing.field == Field::Region {
+            self.confirming = region_change(editing, self.settings.region);
+            return Action::None;
+        }
         let Some((steam_id, key)) = account_change(editing, self.settings.steam_id) else {
             return Action::None;
         };
@@ -202,15 +227,26 @@ impl Settings {
         ))
     }
 
+    fn save_region(&mut self) -> Action {
+        let (Some(editing), Some(region)) = (&mut self.editing, self.confirming) else {
+            return Action::None;
+        };
+        editing.saving = true;
+        editing.error = None;
+        let dir = self.settings.data_dir.clone();
+
+        Action::Run(Task::perform(
+            async move { change_region(&dir, region).map_err(|error| error_chain(&error)) },
+            Message::RegionSaved,
+        ))
+    }
+
     pub fn view(&self, theme: ThemeChoice) -> Element<'_, Message> {
         let account = group(
             "Account",
-            column![
-                self.account_line(Field::SteamId),
-                self.account_line(Field::Key),
-            ]
-            .spacing(12),
+            column![self.line(Field::SteamId), self.line(Field::Key),].spacing(12),
         );
+        let country = group("Country", self.line(Field::Region));
         let appearance = group(
             "Appearance",
             setting(
@@ -269,6 +305,7 @@ impl Settings {
                 column![]
                     .push(error)
                     .push(account)
+                    .push(country)
                     .push(appearance)
                     .push(data)
                     .spacing(32)
@@ -281,10 +318,11 @@ impl Settings {
         .into()
     }
 
-    fn account_line(&self, field: Field) -> Element<'_, Message> {
+    fn line(&self, field: Field) -> Element<'_, Message> {
         let label = match field {
             Field::SteamId => "Steam ID",
             Field::Key => "API key",
+            Field::Region => "Prices from",
         };
         let shown = match field {
             Field::SteamId => self
@@ -293,6 +331,7 @@ impl Settings {
                 .map(|id| id.0.to_string())
                 .unwrap_or_else(|| "Missing".to_string()),
             Field::Key => key_text(self.settings.key).to_string(),
+            Field::Region => self.settings.region.to_string(),
         };
 
         let Some(editing) = self
@@ -301,7 +340,7 @@ impl Settings {
             .filter(|editing| editing.field == field)
         else {
             let action = match field {
-                Field::SteamId => Some("Change"),
+                Field::SteamId | Field::Region => Some("Change"),
                 Field::Key => (self.settings.key != KeySource::Environment).then_some("Replace"),
             };
             let action = action.filter(|_| self.editing.is_none());
@@ -312,9 +351,14 @@ impl Settings {
             );
         };
 
+        if let Some(region) = self.confirming.filter(|_| field == Field::Region) {
+            return setting(label, self.confirmation(region, editing), None);
+        }
+
         let placeholder = match field {
             Field::SteamId => "Steam ID or profile link",
             Field::Key => "Steam Web API key",
+            Field::Region => "Two letters, such as IT",
         };
         let input = text_input(placeholder, &editing.text)
             .secure(field == Field::Key)
@@ -322,7 +366,13 @@ impl Settings {
             .on_submit(Message::Save)
             .padding(8)
             .size(font::BAR_SIZE);
-        let can_save = !editing.saving && account_change(editing, self.settings.steam_id).is_some();
+        let can_save = !editing.saving
+            && match field {
+                Field::Region => region_change(editing, self.settings.region).is_some(),
+                Field::SteamId | Field::Key => {
+                    account_change(editing, self.settings.steam_id).is_some()
+                }
+            };
         let buttons = row![
             button(
                 text(if editing.saving {
@@ -346,6 +396,8 @@ impl Settings {
             ),
             (Field::SteamId, None) => steam_id_note(&editing.text)
                 .map(|note| text(note).size(font::NOTE_SIZE).style(text::danger)),
+            (Field::Region, None) => region_note(&editing.text)
+                .map(|note| text(note).size(font::NOTE_SIZE).style(text::danger)),
             (Field::Key, None) => None,
         };
 
@@ -355,6 +407,49 @@ impl Settings {
             None,
         )
     }
+
+    fn confirmation<'a>(&self, region: Region, editing: &Editing) -> Element<'a, Message> {
+        let buttons = row![
+            button(
+                text(if editing.saving {
+                    "Saving…"
+                } else {
+                    "Change and update"
+                })
+                .size(font::BAR_SIZE)
+            )
+            .padding([8, 20])
+            .on_press_maybe((!editing.saving).then_some(Message::ConfirmRegion)),
+        ]
+        .push((!editing.saving).then(|| link("Cancel", Message::Cancel)))
+        .spacing(16)
+        .align_y(Center);
+
+        column![
+            text(region_confirmation(region)).size(font::BAR_SIZE),
+            buttons,
+        ]
+        .spacing(8)
+        .into()
+    }
+}
+
+fn parse_region(text: &str) -> Option<Region> {
+    Region::new(&text.trim().to_ascii_uppercase())
+}
+
+fn region_change(editing: &Editing, saved: Region) -> Option<Region> {
+    parse_region(&editing.text).filter(|region| *region != saved)
+}
+
+fn region_note(text: &str) -> Option<&'static str> {
+    (!text.trim().is_empty() && parse_region(text).is_none()).then_some("Two letters, such as IT.")
+}
+
+fn region_confirmation(region: Region) -> String {
+    format!(
+        "Prices in {region} need a full update, like the first one: about 20 minutes. You can keep using gamepalate meanwhile."
+    )
 }
 
 fn account_change(editing: &Editing, saved: Option<SteamId>) -> Option<(SteamId, Option<String>)> {
@@ -362,6 +457,7 @@ fn account_change(editing: &Editing, saved: Option<SteamId>) -> Option<(SteamId,
         Field::SteamId => parse_steam_id(&editing.text)
             .ok()
             .map(|steam_id| (steam_id, None)),
+        Field::Region => None,
         Field::Key => {
             let key = editing.text.trim();
             (!key.is_empty())
@@ -491,6 +587,35 @@ mod tests {
         );
         assert_eq!(account_change(&editing(Field::Key, "  "), Some(ID)), None);
         assert_eq!(account_change(&editing(Field::Key, "KEY"), None), None);
+    }
+
+    #[test]
+    fn a_region_is_two_letters_different_from_the_saved_one() {
+        let us = Region::new("US").unwrap();
+
+        assert_eq!(
+            region_change(&editing(Field::Region, " us "), Region::ITALY),
+            Some(us)
+        );
+        assert_eq!(
+            region_change(&editing(Field::Region, "IT"), Region::ITALY),
+            None
+        );
+        assert_eq!(
+            region_change(&editing(Field::Region, "USA"), Region::ITALY),
+            None
+        );
+        assert_eq!(region_note("USA"), Some("Two letters, such as IT."));
+        assert_eq!(region_note(""), None);
+        assert_eq!(region_note("us"), None);
+    }
+
+    #[test]
+    fn the_confirmation_names_the_new_region() {
+        assert!(
+            region_confirmation(Region::new("US").unwrap())
+                .starts_with("Prices in US need a full update")
+        );
     }
 
     #[test]

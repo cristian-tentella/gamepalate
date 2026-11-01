@@ -4,7 +4,7 @@ use std::{
 };
 
 use gamepalate_app::{
-    Gamepalate, PendingUpdate, ThemeChoice, Timestamp,
+    Gamepalate, PendingUpdate, Region, ThemeChoice, Timestamp,
     refresh::{Step, refresh},
     setup::{FirstRun, error_chain},
 };
@@ -202,6 +202,9 @@ impl App {
                     settings::Action::Run(task) => task.map(Message::Settings),
                     settings::Action::Theme(choice) => self.set_theme(choice),
                     settings::Action::Reopen => self.reopen(),
+                    settings::Action::RegionChanged => {
+                        Task::batch([self.reopen(), self.start_refresh()])
+                    }
                     settings::Action::Close(page) => self.open(page),
                 }
             }
@@ -637,12 +640,22 @@ fn page_key(event: keyboard::Event) -> Option<Message> {
 fn freshness<'a>(gamepalate: &Gamepalate) -> Element<'a, Message> {
     let now = Timestamp(jiff::Timestamp::now().as_millisecond());
     let signals = format::when(gamepalate.signals_read_at(), now);
-    let prices = format::when(gamepalate.prices_updated_at(), now);
+    let prices = prices_text(
+        format::when(gamepalate.prices_updated_at(), now),
+        gamepalate.prices_region(),
+    );
 
-    text!("Signals {signals} · Prices {prices}")
+    text!("Signals {signals} · {prices}")
         .size(font::NOTE_SIZE)
         .style(style::muted)
         .into()
+}
+
+fn prices_text(when: String, other_region: Option<Region>) -> String {
+    match other_region {
+        Some(region) => format!("Prices {when} · {region}"),
+        None => format!("Prices {when}"),
+    }
 }
 
 fn window_button<'a>(icon: char, action: WindowAction) -> Element<'a, Message> {
@@ -992,6 +1005,15 @@ mod tests {
                 "Resume the update started on {}",
                 format::day_time(started_at)
             )
+        );
+    }
+
+    #[test]
+    fn prices_of_another_region_say_their_region() {
+        assert_eq!(prices_text("28 Oct".to_string(), None), "Prices 28 Oct");
+        assert_eq!(
+            prices_text("28 Oct".to_string(), Some(Region::ITALY)),
+            "Prices 28 Oct · IT"
         );
     }
 
