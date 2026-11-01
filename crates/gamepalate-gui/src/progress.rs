@@ -87,14 +87,6 @@ fn time_left(batches: &[Duration], done: usize, total: usize) -> Option<Duration
     Some(per_batch * total.saturating_sub(done) as u32)
 }
 
-pub fn stage_text(stage: Stage) -> String {
-    match stage {
-        Stage::Starting | Stage::Reading => "Reading the list of Steam games…".to_string(),
-        Stage::StoreData { done, total } => format!("Store data: {done} of {total} requests"),
-        Stage::Writing => "Writing the catalog…".to_string(),
-    }
-}
-
 pub fn update_error_text(error: &UpdateError) -> String {
     match error {
         UpdateError::Stopped {
@@ -172,22 +164,6 @@ mod tests {
 
         assert_eq!(tracker.batches.len(), RECENT_BATCHES);
         assert_eq!(tracker.time_left(), Some(Duration::from_secs(300)));
-    }
-
-    #[test]
-    fn each_stage_has_its_sentence() {
-        assert_eq!(
-            stage_text(Stage::Reading),
-            "Reading the list of Steam games…"
-        );
-        assert_eq!(
-            stage_text(Stage::StoreData {
-                done: 312,
-                total: 757
-            }),
-            "Store data: 312 of 757 requests"
-        );
-        assert_eq!(stage_text(Stage::Writing), "Writing the catalog…");
     }
 
     #[test]

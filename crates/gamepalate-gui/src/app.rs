@@ -124,11 +124,11 @@ impl App {
         };
         let task = match setup::start(FirstRun::check(None)) {
             Ok(gamepalate) => app.opened(gamepalate),
-            Err(setup) => {
+            Err(mut setup) => {
                 app.theme = theme(setup.first_run().gui_settings().theme);
-                let covers = setup.load_covers().map(Message::Setup);
+                let task = setup.begin().map(Message::Setup);
                 app.screen = Screen::Setup(setup);
-                covers
+                task
             }
         };
 

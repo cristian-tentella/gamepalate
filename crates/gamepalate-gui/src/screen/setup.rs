@@ -1,4 +1,9 @@
-use std::{cmp::Ordering, process::Command, sync::Arc, time::Instant};
+use std::{
+    cmp::Ordering,
+    process::Command,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use gamepalate_app::{
     AppId, Gamepalate, SteamError,
@@ -20,7 +25,7 @@ use iced::{
 use super::library::hours;
 use crate::{
     font, format,
-    progress::{Stage, Tracker, stage_text, update_error_text},
+    progress::{Stage, Tracker, update_error_text},
     style,
 };
 
@@ -34,8 +39,7 @@ const TILE_WIDTH: f32 = 112.0;
 const TILE_HEIGHT: f32 = 168.0;
 const IMAGE_RADIUS: f32 = 6.0;
 const KEY_PAGE: &str = "https://steamcommunity.com/dev/apikey";
-const ACCOUNT_ABOUT: &str = "gamepalate only reads your library, hours played and wishlist.";
-const CATALOG_ABOUT: &str = "Every game on the Steam store, with tags, reviews and prices. The first download takes 15 to 25 minutes.";
+const ACCOUNT_ABOUT: &str = "gamepalate only reads your library, hours played and wishlist";
 const VOTE_ABOUT: &str = "The more games you vote on, the better the recommendations.";
 const LIBRARY_PAGE: &str = "steam://open/games";
 const STEAM_ID_LOOKUP: &str = "https://steamid.io";
@@ -184,7 +188,19 @@ impl Setup {
         }
     }
 
-    pub fn load_covers(&self) -> Task<Message> {
+    pub fn begin(&mut self) -> Task<Message> {
+        let covers = self.load_covers();
+        if current_step(&self.account, &self.first_run) != Step::Catalog {
+            return covers;
+        }
+
+        match self.download() {
+            Action::Run(download) => Task::batch([covers, download]),
+            Action::None | Action::Open(_) => covers,
+        }
+    }
+
+    fn load_covers(&self) -> Task<Message> {
         let Some(covers) = &self.covers else {
             return Task::none();
         };
@@ -322,7 +338,7 @@ impl Setup {
             Ok(gamepalate) => Action::Open(Box::new(gamepalate)),
             Err(setup) => {
                 *self = *setup;
-                Action::Run(self.load_covers())
+                Action::Run(self.begin())
             }
         }
     }
@@ -446,7 +462,7 @@ impl Setup {
     fn step_view(&self, step: Step) -> Element<'_, Message> {
         let (title, about, body) = match step {
             Step::Account => ("Steam account", Some(ACCOUNT_ABOUT), self.account_view()),
-            Step::Catalog => ("Steam catalog", Some(CATALOG_ABOUT), self.catalog_view()),
+            Step::Catalog => return self.catalog_view(),
             Step::Ready => (ready_title(self.ready.as_ref()), None, self.ready_view()),
         };
 
@@ -644,74 +660,62 @@ impl Setup {
     }
 
     fn start_view(&self) -> Element<'_, Message> {
-        let download = &self.download;
-        let pending = self.first_run.pending_update;
-        let label = if download.error.is_some() {
+        let error = self
+            .download
+            .error
+            .as_ref()
+            .map(|error| text(error.clone()).size(font::BAR_SIZE).style(text::danger));
+        let label = if self.download.error.is_some() {
             "Retry"
-        } else if pending.is_some() {
-            "Resume"
         } else {
             "Download catalog"
         };
-        let waiting = pending.map(|pending| {
-            note(format!(
-                "An update started on {} is waiting: {} responses saved.",
-                format::day_time(pending.started_at),
-                pending.responses
-            ))
-        });
 
-        column![]
-            .push(
-                download
-                    .error
-                    .as_ref()
-                    .map(|error| text(error.clone()).size(font::BAR_SIZE).style(text::danger)),
-            )
-            .push(waiting)
-            .push(
-                button(text(label).size(font::BAR_SIZE))
-                    .padding([8, 20])
-                    .on_press(Message::Download),
-            )
-            .spacing(8)
-            .into()
+        column![
+            text("Steam catalog")
+                .size(font::PRICE_SIZE)
+                .font(font::SEMIBOLD)
+        ]
+        .push(error)
+        .push(
+            button(text(label).size(font::BAR_SIZE))
+                .padding([8, 20])
+                .on_press(Message::Download),
+        )
+        .spacing(12)
+        .into()
     }
 
     fn progress_view(&self) -> Element<'_, Message> {
         let tracker = &self.download.tracker;
         let stage = tracker.stage();
         let (done, total) = tracker.done_of();
-        let resume = format!(
-            "If you close gamepalate, the download picks up where it left off within {} hours.",
-            self.first_run.resume_within_hours
-        );
-        let about = match tracker.time_left() {
-            Some(left) => format!("{} · {resume}", format::time_left(left)),
-            None => resume,
-        };
 
         column![
             row![
                 container(
-                    text(stage_text(stage))
-                        .size(font::INFO_SIZE)
+                    text("Downloading the Steam catalog")
+                        .size(font::PRICE_SIZE)
                         .font(font::SEMIBOLD)
                 )
                 .width(Fill)
             ]
             .push(
                 percent(stage)
-                    .map(|percent| { text(percent).size(font::INFO_SIZE).font(font::SEMIBOLD) })
+                    .map(|percent| { text(percent).size(font::PRICE_SIZE).font(font::SEMIBOLD) })
             )
             .align_y(Center),
             progress_bar(0.0..=total.max(1) as f32, done as f32)
                 .girth(10)
                 .length(Fill)
                 .style(style::meter),
-            note(about),
+            note(download_status(
+                stage,
+                tracker.time_left(),
+                self.first_run.resume_within_hours
+            )),
         ]
-        .spacing(10)
+        .spacing(12)
         .into()
     }
 }
@@ -835,6 +839,16 @@ fn step_state(step: Step, current: Step) -> StepState {
         Ordering::Equal => StepState::Current,
         Ordering::Greater => StepState::Next,
     }
+}
+
+fn download_status(stage: Stage, left: Option<Duration>, resume_within_hours: u32) -> String {
+    let status = match (stage, left) {
+        (Stage::Starting | Stage::Reading, _) => "Reading the list of Steam games".to_string(),
+        (Stage::StoreData { .. }, Some(left)) => format::time_left(left),
+        (Stage::StoreData { .. }, None) => "Working out the time left".to_string(),
+        (Stage::Writing, _) => "Saving the catalog".to_string(),
+    };
+    format!("{status}. You can close gamepalate and resume within {resume_within_hours} hours.")
 }
 
 fn percent(stage: Stage) -> Option<String> {
@@ -1084,6 +1098,22 @@ mod tests {
         let ids: Vec<u32> = shown(&played).map(|game| game.id.0).collect();
 
         assert_eq!(ids, [1, 3, 4, 6, 7, 8]);
+    }
+
+    #[test]
+    fn the_download_says_what_it_is_doing() {
+        let store_data = Stage::StoreData {
+            done: 312,
+            total: 757,
+        };
+
+        assert_eq!(
+            download_status(store_data, Some(Duration::from_secs(720)), 24),
+            "About 12 minutes left. You can close gamepalate and resume within 24 hours."
+        );
+        assert!(download_status(store_data, None, 24).starts_with("Working out the time left."));
+        assert!(download_status(Stage::Reading, None, 24).starts_with("Reading the list"));
+        assert!(download_status(Stage::Writing, None, 24).starts_with("Saving the catalog."));
     }
 
     #[test]
