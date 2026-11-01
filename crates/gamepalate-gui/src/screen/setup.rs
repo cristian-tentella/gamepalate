@@ -40,7 +40,7 @@ const TILE_HEIGHT: f32 = 168.0;
 const IMAGE_RADIUS: f32 = 6.0;
 const KEY_PAGE: &str = "https://steamcommunity.com/dev/apikey";
 const ACCOUNT_ABOUT: &str = "gamepalate only reads your library, hours played and wishlist";
-const VOTE_ABOUT: &str = "The more games you vote on, the better the recommendations";
+const PREPARING: &str = "Looking up the tags of your games that are no longer on the store";
 const LIBRARY_PAGE: &str = "steam://open/games";
 pub(crate) const PRIVACY_PAGE: &str = "https://steamcommunity.com/my/edit/settings";
 pub(crate) const PRIVATE_LIBRARY: &str =
@@ -78,17 +78,17 @@ enum Cover {
 enum Step {
     Account,
     Catalog,
-    Ready,
+    Profile,
 }
 
 impl Step {
-    const ALL: [Step; 3] = [Step::Account, Step::Catalog, Step::Ready];
+    const ALL: [Step; 3] = [Step::Account, Step::Catalog, Step::Profile];
 
     fn name(self) -> &'static str {
         match self {
             Step::Account => "Account",
             Step::Catalog => "Catalog",
-            Step::Ready => "Ready",
+            Step::Profile => "Profile",
         }
     }
 }
@@ -103,7 +103,7 @@ enum StepState {
 #[derive(Debug)]
 enum Ready {
     Preparing,
-    Checked(ReadyCheck),
+    Empty { min_hours: f64 },
     Failed(String),
 }
 
@@ -138,7 +138,6 @@ pub enum Message {
     Downloaded(Result<(), String>),
     Prepare(bool),
     Prepared(Result<ReadyCheck, String>),
-    StartVoting,
     OpenLibrary,
     OpenPrivacy,
     Cover(AppId, Option<image::Handle>),
@@ -230,9 +229,7 @@ impl Setup {
 
     pub fn update(&mut self, message: Message) -> Action {
         match message {
-            Message::CheckAgain | Message::Connected(Ok(())) | Message::StartVoting => {
-                self.check_again()
-            }
+            Message::CheckAgain | Message::Connected(Ok(())) => self.check_again(),
             Message::OpenFolder => {
                 if let Some(dir) = &self.first_run.data_dir {
                     let _ = std::fs::create_dir_all(dir);
@@ -273,9 +270,12 @@ impl Setup {
                 self.prepare(false)
             }
             Message::Prepare(read_signals_again) => self.prepare(read_signals_again),
+            Message::Prepared(Ok(check)) if !check.empty_profile => self.check_again(),
             Message::Prepared(result) => {
                 self.ready = Some(match result {
-                    Ok(check) => Ready::Checked(check),
+                    Ok(check) => Ready::Empty {
+                        min_hours: check.min_hours,
+                    },
                     Err(error) => Ready::Failed(error),
                 });
                 Action::None
@@ -450,7 +450,7 @@ impl Setup {
         .push(can_change(&self.download).then(|| link("Change", Message::Change)))
         .spacing(12)
         .align_y(Center);
-        let catalog = (current == Step::Ready).then(|| {
+        let catalog = (current == Step::Profile).then(|| {
             row![
                 check_mark(),
                 text("Steam catalog")
@@ -468,7 +468,7 @@ impl Setup {
         let (title, about, body) = match step {
             Step::Account => ("Steam account", Some(ACCOUNT_ABOUT), self.account_view()),
             Step::Catalog => return self.catalog_view(),
-            Step::Ready => (ready_title(self.ready.as_ref()), None, self.ready_view()),
+            Step::Profile => (ready_title(self.ready.as_ref()), None, self.ready_view()),
         };
 
         column![
@@ -608,23 +608,23 @@ impl Setup {
     fn ready_view(&self) -> Element<'_, Message> {
         let Some(ready) = &self.ready else {
             return column![
-                text("Read your Signals from Steam to finish").size(font::BAR_SIZE),
-                small_button("Read Signals", Message::Prepare(true)),
+                text("Read your library from Steam to finish").size(font::BAR_SIZE),
+                small_button("Read my library", Message::Prepare(true)),
             ]
             .spacing(8)
             .into();
         };
 
         match ready {
-            Ready::Preparing => column![].into(),
+            Ready::Preparing => note(PREPARING).into(),
             Ready::Failed(error) => column![
                 text(error.clone()).size(font::BAR_SIZE).style(text::danger),
                 small_button("Retry", Message::Prepare(false)),
             ]
             .spacing(8)
             .into(),
-            Ready::Checked(check) if check.empty_profile => column![
-                text(empty_profile_text(check.min_hours)).size(font::BAR_SIZE),
+            Ready::Empty { min_hours } => column![
+                text(empty_profile_text(*min_hours)).size(font::BAR_SIZE),
                 row![
                     button(text("Open Steam library").size(font::BAR_SIZE))
                         .padding([8, 20])
@@ -635,28 +635,6 @@ impl Setup {
                 .spacing(12),
             ]
             .spacing(16)
-            .into(),
-            Ready::Checked(check) => column![
-                row(ready_numbers(check).into_iter().map(|(number, label)| {
-                    column![
-                        text(number).size(font::TITLE_SIZE).font(font::BOLD),
-                        note(label),
-                    ]
-                    .spacing(2)
-                    .align_x(Center)
-                    .width(Fill)
-                    .into()
-                }))
-                .spacing(16),
-                text(VOTE_ABOUT).size(font::BAR_SIZE),
-                container(
-                    button(text("Start voting").size(font::INFO_SIZE))
-                        .padding([12, 36])
-                        .on_press(Message::StartVoting)
-                )
-                .center_x(Fill),
-            ]
-            .spacing(24)
             .into(),
         }
     }
@@ -735,17 +713,9 @@ fn empty_profile_text(min_hours: f64) -> String {
 
 fn ready_title(ready: Option<&Ready>) -> &'static str {
     match ready {
-        Some(Ready::Checked(check)) if check.empty_profile => "Not enough play time yet",
-        Some(Ready::Checked(_)) => "Catalog ready",
+        Some(Ready::Empty { .. }) => "Not enough play time yet",
         Some(Ready::Preparing | Ready::Failed(_)) | None => "Preparing your profile",
     }
-}
-
-fn ready_numbers(check: &ReadyCheck) -> [(String, &'static str); 2] {
-    [
-        (format::count(check.games as u32), "games in the catalog"),
-        (format::count(check.library as u32), "games in your library"),
-    ]
 }
 
 fn open_link(url: &str) -> Action {
@@ -821,7 +791,7 @@ fn current_step(account: &Account, first_run: &FirstRun) -> Step {
     } else if first_run.catalog != Part::Present {
         Step::Catalog
     } else {
-        Step::Ready
+        Step::Profile
     }
 }
 
@@ -1064,14 +1034,14 @@ mod tests {
         assert_eq!(current_step(&saved, &without_key), Step::Account);
         assert_eq!(current_step(&editing, &first_run()), Step::Account);
         assert_eq!(current_step(&saved, &without_catalog), Step::Catalog);
-        assert_eq!(current_step(&saved, &first_run()), Step::Ready);
+        assert_eq!(current_step(&saved, &first_run()), Step::Profile);
     }
 
     #[test]
     fn the_steps_before_the_current_one_are_done() {
         assert_eq!(step_state(Step::Account, Step::Catalog), StepState::Done);
         assert_eq!(step_state(Step::Catalog, Step::Catalog), StepState::Current);
-        assert_eq!(step_state(Step::Ready, Step::Catalog), StepState::Next);
+        assert_eq!(step_state(Step::Profile, Step::Catalog), StepState::Next);
         assert_eq!(step_state(Step::Account, Step::Account), StepState::Current);
     }
 
@@ -1178,35 +1148,9 @@ mod tests {
     }
 
     #[test]
-    fn a_ready_profile_counts_the_catalog_and_the_library() {
-        let check = ReadyCheck {
-            games: 84_312,
-            library: 312,
-            min_hours: 2.0,
-            empty_profile: false,
-        };
-
+    fn only_an_empty_profile_stops_the_setup() {
         assert_eq!(
-            ready_numbers(&check),
-            [
-                ("84,312".to_string(), "games in the catalog"),
-                ("312".to_string(), "games in your library"),
-            ]
-        );
-        assert_eq!(ready_title(Some(&Ready::Checked(check))), "Catalog ready");
-    }
-
-    #[test]
-    fn an_empty_profile_is_not_an_error() {
-        let check = ReadyCheck {
-            games: 84_312,
-            library: 3,
-            min_hours: 2.0,
-            empty_profile: true,
-        };
-
-        assert_eq!(
-            ready_title(Some(&Ready::Checked(check))),
+            ready_title(Some(&Ready::Empty { min_hours: 2.0 })),
             "Not enough play time yet"
         );
         assert_eq!(
