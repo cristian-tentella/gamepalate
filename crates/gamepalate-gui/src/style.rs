@@ -18,16 +18,26 @@ pub fn separator<'a, Message: 'a>() -> Element<'a, Message> {
     rule::horizontal(1).style(rule::weak).into()
 }
 
+fn faded(theme: &Theme, alpha: f32) -> Color {
+    let palette = theme.extended_palette();
+    let alpha = if palette.is_dark {
+        alpha * alpha
+    } else {
+        alpha
+    };
+
+    palette.background.base.text.scale_alpha(alpha)
+}
+
 pub fn tab(current: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme, status| {
-        let text = theme.extended_palette().background.base.text;
         let highlighted = current || matches!(status, button::Status::Hovered);
 
         button::Style {
             text_color: if highlighted {
-                text
+                theme.extended_palette().background.base.text
             } else {
-                text.scale_alpha(0.6)
+                faded(theme, 0.6)
             },
             ..button::Style::default()
         }
@@ -36,14 +46,7 @@ pub fn tab(current: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
 
 pub fn muted(theme: &Theme) -> text::Style {
     text::Style {
-        color: Some(
-            theme
-                .extended_palette()
-                .background
-                .base
-                .text
-                .scale_alpha(0.7),
-        ),
+        color: Some(faded(theme, 0.7)),
     }
 }
 
@@ -55,12 +58,17 @@ pub fn tab_underline(theme: &Theme) -> container::Style {
 }
 
 pub fn link(theme: &Theme, status: button::Status) -> button::Style {
-    let primary = theme.extended_palette().primary;
+    let palette = theme.extended_palette();
+    let color = if palette.is_dark {
+        palette::mix(palette.primary.base.color, Color::WHITE, 0.4)
+    } else {
+        palette.primary.base.color
+    };
 
     button::Style {
         text_color: match status {
-            button::Status::Hovered | button::Status::Pressed => primary.strong.color,
-            button::Status::Active | button::Status::Disabled => primary.base.color,
+            button::Status::Hovered | button::Status::Pressed => palette::deviate(color, 0.1),
+            button::Status::Active | button::Status::Disabled => color,
         },
         ..button::Style::default()
     }
@@ -158,7 +166,7 @@ pub fn toast(theme: &Theme) -> container::Style {
     let background = theme.extended_palette().background.base;
 
     container::Style {
-        background: Some(background.text.scale_alpha(0.9).into()),
+        background: Some(faded(theme, 0.9).into()),
         text_color: Some(background.color),
         border: Border {
             radius: 6.0.into(),
@@ -320,7 +328,7 @@ pub fn dot(current: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
         let color = if current {
             palette.primary.base.color
         } else if matches!(status, button::Status::Hovered) {
-            palette.background.base.text.scale_alpha(0.4)
+            faded(theme, 0.4)
         } else {
             palette.background.strong.color
         };
@@ -352,11 +360,7 @@ pub fn step(done: bool, current: bool) -> impl Fn(&Theme) -> container::Style {
                 palette.primary.base.color,
             )
         } else {
-            (
-                None,
-                palette.background.base.text.scale_alpha(0.5),
-                palette.background.strong.color,
-            )
+            (None, faded(theme, 0.5), palette.background.strong.color)
         };
 
         container::Style {
@@ -480,5 +484,19 @@ pub fn capsule_selected(theme: &Theme) -> container::Style {
             radius: 6.0.into(),
         },
         ..container::Style::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn faded_text_keeps_its_alpha_in_the_light_and_fades_more_in_the_dark() {
+        let light = Theme::Light.extended_palette().background.base.text;
+        let dark = Theme::Dark.extended_palette().background.base.text;
+
+        assert_eq!(faded(&Theme::Light, 0.7), light.scale_alpha(0.7));
+        assert_eq!(faded(&Theme::Dark, 0.7), dark.scale_alpha(0.7 * 0.7));
     }
 }

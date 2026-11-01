@@ -43,6 +43,9 @@ const REFRESH: char = '\u{E72C}';
 const CANCEL: char = '\u{E711}';
 const GEAR: char = '\u{E713}';
 const DARK_BACKGROUND: Color = Color::from_rgb8(0x18, 0x19, 0x1c);
+const DARK_TEXT: Color = Color::from_rgb8(0xf5, 0xf5, 0xf5);
+const DARK_SUCCESS: Color = Color::from_rgb8(0x78, 0xe3, 0xb3);
+const DARK_WARNING: Color = Color::from_rgb8(0xff, 0xe2, 0xa3);
 
 pub struct App {
     gamepalate: Option<Arc<Gamepalate>>,
@@ -688,6 +691,9 @@ fn dark() -> Theme {
         "Dark",
         Palette {
             background: DARK_BACKGROUND,
+            text: DARK_TEXT,
+            success: DARK_SUCCESS,
+            warning: DARK_WARNING,
             ..Palette::DARK
         },
     )
@@ -1045,6 +1051,25 @@ mod tests {
 
         assert_eq!(background, DARK_BACKGROUND);
         assert!(background.relative_luminance() < Palette::DARK.background.relative_luminance());
+    }
+
+    #[test]
+    fn links_and_discounts_stand_out_in_the_dark_as_in_the_light() {
+        let contrast = |theme: &Theme| {
+            let background = theme.palette().background;
+            let link = style::link(theme, button::Status::Active).text_color;
+            let discount = style::discount(theme).color.unwrap();
+
+            (
+                link.relative_contrast(background),
+                discount.relative_contrast(background),
+            )
+        };
+        let (light_link, light_discount) = contrast(&Theme::Light);
+        let (dark_link, dark_discount) = contrast(&dark());
+
+        assert!(dark_link >= light_link);
+        assert!(dark_discount >= light_discount);
     }
 
     #[test]
