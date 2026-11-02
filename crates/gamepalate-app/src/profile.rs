@@ -54,6 +54,7 @@ pub struct HoursGame {
     pub name: String,
     pub hours: f64,
     pub source: HoursSource,
+    pub recent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -129,6 +130,7 @@ pub(crate) fn profile_view(inputs: &SearchInputs) -> ProfileView {
                 name: name(id),
                 hours,
                 source,
+                recent: inputs.signals.recent.iter().any(|recent| recent.id == id),
             }
         };
 
@@ -288,7 +290,7 @@ mod tests {
         ids::TagId,
         off_catalog::OffCatalogGames,
         region::Region,
-        signals::{LibraryGame, Signals},
+        signals::{LibraryGame, RecentGame, Signals},
         votes::{Vote, Votes},
     };
 
@@ -448,6 +450,30 @@ mod tests {
             .find(|game| game.name == "Portal 2")
             .unwrap();
         assert_eq!((portal.hours, portal.source), (5.0, HoursSource::Wishlist));
+    }
+
+    #[test]
+    fn a_game_played_lately_is_marked_recent() {
+        let signals = Signals {
+            recent: vec![RecentGame {
+                id: AppId(1),
+                total_hours: 50.0,
+                recent_hours: 3.0,
+            }],
+            ..signals()
+        };
+        let taste = view_with(&signals, &votes()).taste.unwrap();
+        let recent = |name| {
+            taste
+                .shaping_games
+                .iter()
+                .find(|game| game.name == name)
+                .unwrap()
+                .recent
+        };
+
+        assert!(recent("Outer Wilds"));
+        assert!(!recent("Portal 2"));
     }
 
     #[test]

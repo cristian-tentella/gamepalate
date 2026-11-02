@@ -51,6 +51,8 @@ pub(crate) const HELD_OUT_TIP: &str =
     "Games you like, kept out of families on purpose to see if Discover finds them";
 const TAG_NAME_WIDTH: f32 = 150.0;
 const TAG_BAR_WIDTH: f32 = 140.0;
+const SHAPING_NOTE: &str =
+    "Hours count less as they grow, and games with more uncommon tags count more";
 const BAR_HEIGHT: f32 = 8.0;
 const PORTIONS: u16 = 1000;
 const WARNING: char = '\u{E7BA}';
@@ -461,7 +463,7 @@ impl Profile {
             column![
                 header,
                 text(&game.name).size(font::NOTE_SIZE),
-                text(game_hours(game))
+                text(shaping_text(game))
                     .size(font::NOTE_SIZE)
                     .style(style::muted),
             ]
@@ -474,9 +476,21 @@ impl Profile {
         .vertical_spacing(12);
 
         column![
-            text("Counts most")
-                .size(font::BAR_SIZE)
-                .font(font::SEMIBOLD),
+            row![
+                text("Counts most")
+                    .size(font::BAR_SIZE)
+                    .font(font::SEMIBOLD),
+                space().width(Fill),
+                button(text("See all in Library ›").size(font::BAR_SIZE))
+                    .padding(0)
+                    .style(style::link)
+                    .on_press(Message::OpenLibrary(
+                        library::Filter::All,
+                        library::Sort::TasteWeight,
+                    )),
+            ]
+            .align_y(Center),
+            text(SHAPING_NOTE).size(font::NOTE_SIZE).style(style::muted),
             games,
         ]
         .spacing(8)
@@ -1230,6 +1244,14 @@ fn game_hours(game: &HoursGame) -> String {
     }
 }
 
+fn shaping_text(game: &HoursGame) -> String {
+    if game.recent {
+        format!("{} · recent", game_hours(game))
+    } else {
+        game_hours(game)
+    }
+}
+
 fn games_line(tag: &TagView) -> String {
     let mut parts: Vec<String> = tag
         .games
@@ -1355,6 +1377,7 @@ mod tests {
             name: name.to_string(),
             hours,
             source,
+            recent: false,
         }
     }
 
@@ -1560,6 +1583,20 @@ mod tests {
         assert_eq!(
             game_hours(&game("Blue Prince", 5.0, HoursSource::WouldTry)),
             "would try"
+        );
+    }
+
+    #[test]
+    fn a_game_played_lately_says_so() {
+        let recent = HoursGame {
+            recent: true,
+            ..game("Dwarf Fortress", 86.0, HoursSource::Played)
+        };
+
+        assert_eq!(shaping_text(&recent), "86 h · recent");
+        assert_eq!(
+            shaping_text(&game("ELDEN RING", 376.0, HoursSource::Played)),
+            "376 h"
         );
     }
 
