@@ -2,6 +2,7 @@
 name = "gamepalate-cli"
 version = "0.2.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 gamepalate-app = { version = "0.2.0", path = "../gamepalate-app" }
