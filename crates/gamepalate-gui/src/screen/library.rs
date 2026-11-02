@@ -10,7 +10,7 @@ use iced::{
     mouse,
     widget::{
         Id, button, checkbox, column, container, image, mouse_area, opaque, operation, pick_list,
-        responsive, row, scrollable,
+        progress_bar, responsive, row, scrollable,
         scrollable::{AbsoluteOffset, Viewport},
         space, stack, text, text_input, tooltip,
     },
@@ -25,16 +25,17 @@ use super::{
     steam_client::SteamClientQuestion,
 };
 use crate::{
-    font,
+    font, format,
     style::{self, Tone},
 };
 
-const FILTERS: [Filter; 5] = [
+const FILTERS: [Filter; 6] = [
     Filter::All,
     Filter::Owned,
     Filter::NotOwned,
     Filter::Wishlist,
     Filter::Followed,
+    Filter::Corrected,
 ];
 const SORTS: [Sort; 3] = [Sort::TasteWeight, Sort::Hours, Sort::Name];
 const GRID: Id = Id::new("library-grid");
@@ -63,6 +64,7 @@ pub struct Library {
     gamepalate: Arc<Gamepalate>,
     data_dir: PathBuf,
     view: LibraryView,
+    heaviest: f64,
     question: Option<SteamClientQuestion>,
     open: Option<AppId>,
     selected: Option<AppId>,
@@ -107,6 +109,7 @@ pub enum Filter {
     NotOwned,
     Wishlist,
     Followed,
+    Corrected,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -166,6 +169,7 @@ impl Library {
             gamepalate: Arc::clone(gamepalate),
             data_dir: gamepalate.data_dir().to_path_buf(),
             view: gamepalate.library_view(),
+            heaviest: 0.0,
             question: SteamClientQuestion::ask(gamepalate.data_dir()),
             open: None,
             selected: None,
@@ -181,6 +185,7 @@ impl Library {
             area: DEFAULT_AREA,
             capsules: Images::default(),
         };
+        library.heaviest = heaviest(&library.view.games);
         library.shown = shown(&library.view.games, library.filter, library.sort, "");
         let window_size = window::latest()
             .and_then(window::size)
@@ -418,6 +423,7 @@ impl Library {
 
     fn read_view(&mut self) {
         self.view = self.gamepalate.library_view();
+        self.heaviest = heaviest(&self.view.games);
         self.shown = shown(&self.view.games, self.filter, self.sort, &self.search);
     }
 
@@ -528,7 +534,7 @@ impl Library {
         let searching = !self.search.trim().is_empty();
         let filters = row(FILTERS
             .into_iter()
-            .filter(|&filter| filter != Filter::NotOwned || count(&self.view.games, filter) > 0)
+            .filter(|&filter| !filter.hides_when_empty() || count(&self.view.games, filter) > 0)
             .map(|filter| {
                 let chip = button(
                     text!(
@@ -697,10 +703,20 @@ impl Library {
                 .padding([1, 6])
                 .style(style::capsule_badge)
         });
-        let strip = container(text(tile_label(game)).size(font::NOTE_SIZE))
-            .padding([3, 8])
-            .width(Fill)
-            .style(style::capsule_strip);
+        let bar = weight_fraction(game.share, self.heaviest).map(|fraction| {
+            progress_bar(0.0..=1.0, fraction)
+                .girth(3)
+                .length(Fill)
+                .style(style::weight_bar)
+        });
+        let strip = container(
+            column![text(tile_label(game)).size(font::NOTE_SIZE)]
+                .push(bar)
+                .spacing(3),
+        )
+        .padding([3, 8])
+        .width(Fill)
+        .style(style::capsule_strip);
         let overlay = column![
             row![space().width(Fill)].push(badge).padding(6),
             space().height(Fill),
@@ -1001,7 +1017,14 @@ impl Filter {
             Filter::NotOwned => game.borrowed,
             Filter::Wishlist => game.wishlist,
             Filter::Followed => game.followed,
+            Filter::Corrected => {
+                game.correction.multiplier.is_some() || game.correction.hidden || game.held_out
+            }
         }
+    }
+
+    fn hides_when_empty(self) -> bool {
+        matches!(self, Filter::NotOwned | Filter::Corrected)
     }
 }
 
@@ -1022,6 +1045,7 @@ fn filter_label(filter: Filter) -> &'static str {
         Filter::NotOwned => "Not owned",
         Filter::Wishlist => "Wishlist",
         Filter::Followed => "Followed",
+        Filter::Corrected => "Corrected",
     }
 }
 
@@ -1154,12 +1178,20 @@ pub(crate) fn hours(hours: f64) -> String {
 }
 
 fn tile_label(game: &LibraryGameView) -> String {
-    match (game.owned_hours, game.source) {
-        (Some(owned), _) => hours(owned),
-        (None, HoursSource::Played) => hours(game.hours),
-        (None, _) if game.wishlist => "wishlist".to_string(),
-        (None, _) => "followed".to_string(),
+    match game.source {
+        HoursSource::Played => hours(game.owned_hours.unwrap_or(game.hours)),
+        HoursSource::Wishlist => "wishlist".to_string(),
+        HoursSource::Followed => "followed".to_string(),
+        HoursSource::WouldTry => "would try".to_string(),
     }
+}
+
+fn heaviest(games: &[LibraryGameView]) -> f64 {
+    games.iter().map(|game| game.share).fold(0.0, f64::max)
+}
+
+fn weight_fraction(share: f64, heaviest: f64) -> Option<f32> {
+    (share > 0.0 && heaviest > 0.0).then(|| (share / heaviest) as f32)
 }
 
 fn multiplier(factor: f64) -> String {
@@ -1316,18 +1348,35 @@ fn source_line(game: &LibraryGameView, view: &LibraryView) -> String {
     parts.join(" · ")
 }
 
-fn share(share: f64) -> String {
-    let percent = share * 100.0;
-    if percent < 1.0 {
-        "less than 1%".to_string()
-    } else {
-        format!("{percent:.0}%")
-    }
+fn ordinal(number: usize) -> String {
+    let suffix = match (number % 10, number % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{number}{suffix}")
 }
 
 fn weight_line(game: &LibraryGameView, view: &LibraryView) -> String {
     if game.counts {
-        format!("{} of your taste", share(game.share))
+        let counting: Vec<&LibraryGameView> =
+            view.games.iter().filter(|other| other.counts).collect();
+        let name = folded(&game.name);
+        let heavier = counting
+            .iter()
+            .filter(|other| {
+                other.share > game.share
+                    || (other.share == game.share && folded(&other.name) < name)
+            })
+            .count();
+        format!(
+            "{} of {} · {} the average game",
+            ordinal(heavier + 1),
+            counting.len(),
+            format::affinity(game.share * counting.len() as f64)
+        )
     } else if game.hours < view.min_hours {
         format!(
             "{}, under the {} that count",
@@ -1390,6 +1439,7 @@ fn empty_text(no_games: bool, filter: Filter, search: &str) -> String {
             Filter::NotOwned => "No games played without owning them".to_string(),
             Filter::Wishlist => "No games in your wishlist".to_string(),
             Filter::Followed => "No followed games".to_string(),
+            Filter::Corrected => "No corrected games".to_string(),
         }
     }
 }
@@ -1564,6 +1614,37 @@ mod tests {
         assert_eq!(tile_label(&borrowed), "6.0 h");
     }
 
+    #[test]
+    fn a_tile_names_the_signal_its_hours_come_from() {
+        let followed = LibraryGameView {
+            followed: true,
+            hours: 3.0,
+            source: HoursSource::Followed,
+            ..owned(7, "Paradise Killer", 0.0, 0.01)
+        };
+        let would_try = LibraryGameView {
+            hours: 4.0,
+            source: HoursSource::WouldTry,
+            ..game(8, "Tunic")
+        };
+
+        assert_eq!(tile_label(&followed), "followed");
+        assert_eq!(tile_label(&would_try), "would try");
+        assert_eq!(tile_label(&owned(9, "Elden Ring", 376.0, 0.3)), "376 h");
+    }
+
+    #[test]
+    fn the_weight_bar_is_as_long_as_the_share_of_the_heaviest_game() {
+        let games = games();
+        let heaviest = heaviest(&games);
+
+        assert_eq!(heaviest, 0.5);
+        assert_eq!(weight_fraction(games[1].share, heaviest), Some(1.0));
+        assert_eq!(weight_fraction(games[0].share, heaviest), Some(0.4));
+        assert_eq!(weight_fraction(games[2].share, heaviest), None);
+        assert_eq!(weight_fraction(0.1, 0.0), None);
+    }
+
     fn view_of(games: Vec<LibraryGameView>) -> LibraryView {
         LibraryView {
             games,
@@ -1725,19 +1806,54 @@ mod tests {
     }
 
     #[test]
+    fn corrected_keeps_the_games_with_a_correction_or_held_out() {
+        let mut games = games();
+        games.push(LibraryGameView {
+            correction: GameCorrection {
+                multiplier: Some(0.5),
+                hidden: false,
+            },
+            ..owned(7, "Valheim", 266.0, 0.1)
+        });
+        games.push(LibraryGameView {
+            correction: GameCorrection {
+                multiplier: None,
+                hidden: true,
+            },
+            ..game(8, "Splitgate")
+        });
+        games.push(LibraryGameView {
+            held_out: true,
+            ..owned(9, "Factorio", 90.0, 0.1)
+        });
+        games.push(LibraryGameView {
+            families: vec!["Strategy".to_string()],
+            ..owned(10, "Civilization VI", 70.0, 0.1)
+        });
+
+        assert_eq!(
+            ids(&games, &shown(&games, Filter::Corrected, Sort::Name, "")),
+            [9, 8, 7]
+        );
+        assert_eq!(count(&games, Filter::Corrected), 3);
+        assert_eq!(count(&games[..6], Filter::Corrected), 0);
+        assert!(Filter::Corrected.hides_when_empty());
+        assert!(!Filter::Followed.hides_when_empty());
+        assert_eq!(
+            empty_text(false, Filter::Corrected, ""),
+            "No corrected games"
+        );
+    }
+
+    #[test]
     fn the_weight_line_says_how_much_or_why_not() {
         let games = games();
-        let view = view_of(Vec::new());
+        let view = view_of(games.clone());
         let line = |game: &LibraryGameView| weight_line(game, &view);
 
-        assert_eq!(line(&games[1]), "50% of your taste");
-        assert_eq!(
-            line(&LibraryGameView {
-                share: 0.004,
-                ..games[1].clone()
-            }),
-            "less than 1% of your taste"
-        );
+        assert_eq!(line(&games[1]), "1st of 4 · 2× the average game");
+        assert_eq!(line(&games[0]), "2nd of 4 · 0.8× the average game");
+        assert_eq!(line(&games[4]), "4th of 4 · 0.2× the average game");
         assert_eq!(line(&games[2]), "1.0 h, under the 2 hours that count");
         let zero = LibraryGameView {
             counts: false,
@@ -1751,6 +1867,22 @@ mod tests {
         assert_eq!(
             no_effect_text(0.5, 2.0),
             "It has 0.5 h, under 2 hours, so a correction changes nothing"
+        );
+    }
+
+    #[test]
+    fn the_place_takes_its_english_ordinal() {
+        let ordinals: Vec<String> = [1, 2, 3, 4, 11, 12, 13, 21, 22, 101, 111, 374]
+            .into_iter()
+            .map(ordinal)
+            .collect();
+
+        assert_eq!(
+            ordinals,
+            [
+                "1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "101st",
+                "111th", "374th"
+            ]
         );
     }
 

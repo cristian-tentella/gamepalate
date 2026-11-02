@@ -263,10 +263,10 @@ pub fn tinted(tone: Tone, current: bool) -> impl Fn(&Theme, button::Status) -> b
             (base.color, base.text)
         } else {
             match status {
-                button::Status::Hovered | button::Status::Pressed => {
-                    (palette::mix(weak.color, base.color, 0.3), weak.text)
+                button::Status::Hovered | button::Status::Pressed => (weak.color, weak.text),
+                button::Status::Active => {
+                    (palette.background.weak.color, palette.background.base.text)
                 }
-                button::Status::Active => (weak.color, weak.text),
                 button::Status::Disabled => (palette.background.weak.color, faded(theme, 0.5)),
             }
         };
@@ -552,6 +552,17 @@ pub fn meter(theme: &Theme) -> progress_bar::Style {
     }
 }
 
+pub fn weight_bar(theme: &Theme) -> progress_bar::Style {
+    progress_bar::Style {
+        background: Color::WHITE.scale_alpha(0.15).into(),
+        bar: theme.extended_palette().primary.base.color.into(),
+        border: Border {
+            radius: 1.5.into(),
+            ..Border::default()
+        },
+    }
+}
+
 pub fn capsule_strip(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Color::BLACK.scale_alpha(0.7).into()),
@@ -618,11 +629,22 @@ mod tests {
     }
 
     #[test]
-    fn a_tinted_choice_is_filled_only_when_it_is_the_current_one() {
-        let success = Theme::Light.extended_palette().success;
-        let style = |current| tinted(Tone::Success, current)(&Theme::Light, button::Status::Active);
+    fn a_tinted_choice_is_coloured_only_when_current_or_under_the_mouse() {
+        let palette = Theme::Light.extended_palette();
+        let style =
+            |current, status| tinted(Tone::Success, current)(&Theme::Light, status).background;
 
-        assert_eq!(style(true).background, Some(success.base.color.into()));
-        assert_eq!(style(false).background, Some(success.weak.color.into()));
+        assert_eq!(
+            style(true, button::Status::Active),
+            Some(palette.success.base.color.into())
+        );
+        assert_eq!(
+            style(false, button::Status::Active),
+            Some(palette.background.weak.color.into())
+        );
+        assert_eq!(
+            style(false, button::Status::Hovered),
+            Some(palette.success.weak.color.into())
+        );
     }
 }
