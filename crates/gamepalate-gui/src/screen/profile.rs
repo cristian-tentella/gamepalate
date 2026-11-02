@@ -50,7 +50,7 @@ const REMOVE: char = '\u{E711}';
 pub(crate) const HELD_OUT_TIP: &str =
     "Games you like, kept out of families on purpose to see if Discover finds them";
 const TAG_NAME_WIDTH: f32 = 150.0;
-const NOTE_WIDTH: f32 = 110.0;
+const TAG_BAR_WIDTH: f32 = 140.0;
 const BAR_HEIGHT: f32 = 8.0;
 const PORTIONS: u16 = 1000;
 const WARNING: char = '\u{E7BA}';
@@ -65,8 +65,6 @@ pub struct Profile {
     view: ProfileView,
     voted: BTreeMap<AppId, VotedGame>,
     open_correction: Option<Correction>,
-    open_tag: Option<usize>,
-    selected_tag: Option<usize>,
     all_tags: bool,
     showcase: Showcase,
     editing: Option<Editing>,
@@ -82,11 +80,7 @@ struct Editing {
 
 #[derive(Clone, Debug)]
 pub enum Message {
-    ToggleTag(usize),
     ToggleAllTags,
-    PreviousTag,
-    NextTag,
-    ToggleSelectedTag,
     DiscoverFamily(String),
     OpenVotes(Filter),
     OpenInLibrary(AppId),
@@ -121,8 +115,6 @@ impl Profile {
             view: gamepalate.profile_view(),
             voted: by_id(gamepalate.voted_games()),
             open_correction: None,
-            open_tag: None,
-            selected_tag: None,
             all_tags: false,
             showcase: Showcase::new(gamepalate),
             editing: None,
@@ -142,28 +134,7 @@ impl Profile {
 
     fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::ToggleTag(index) => {
-                self.selected_tag = Some(index);
-                self.open_tag = (self.open_tag != Some(index)).then_some(index);
-            }
-            Message::ToggleAllTags => {
-                self.all_tags = !self.all_tags;
-                let shown = self.shown_tags();
-                let visible = |tag: Option<usize>| tag.filter(|&index| index < shown);
-                self.open_tag = visible(self.open_tag);
-                self.selected_tag = visible(self.selected_tag);
-            }
-            Message::PreviousTag => {
-                self.selected_tag = moved(self.selected_tag, self.shown_tags(), false);
-            }
-            Message::NextTag => {
-                self.selected_tag = moved(self.selected_tag, self.shown_tags(), true);
-            }
-            Message::ToggleSelectedTag => {
-                if let Some(index) = self.selected_tag {
-                    self.open_tag = (self.open_tag != Some(index)).then_some(index);
-                }
-            }
+            Message::ToggleAllTags => self.all_tags = !self.all_tags,
             Message::DiscoverFamily(_)
             | Message::OpenVotes(_)
             | Message::OpenInLibrary(_)
@@ -445,16 +416,7 @@ impl Profile {
     fn taste<'a>(&'a self, taste: &'a TasteView) -> Element<'a, Message> {
         let shown = self.shown_tags();
         let top = top_weight(&taste.tags);
-        let tags = column(taste.tags[..shown].iter().enumerate().map(|(index, tag)| {
-            tag_row(
-                index,
-                tag,
-                top,
-                self.open_tag == Some(index),
-                self.selected_tag == Some(index),
-            )
-        }))
-        .spacing(2);
+        let tags = column(taste.tags[..shown].iter().map(|tag| tag_row(tag, top))).spacing(2);
         let more = (taste.tags.len() > FIRST_TAGS).then(|| {
             button(text(more_tags_label(taste.tags.len(), self.all_tags)).size(font::BAR_SIZE))
                 .padding(0)
@@ -473,6 +435,7 @@ impl Profile {
         .push(space().height(6))
         .push(self.shaping(taste))
         .push(space().height(6))
+        .push(dominant(taste))
         .push(tags)
         .push(more)
         .spacing(10)
@@ -893,9 +856,6 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
 
     match key {
         Key::Named(Named::Escape) => Some(Message::CloseEditor),
-        Key::Named(Named::ArrowUp) => Some(Message::PreviousTag),
-        Key::Named(Named::ArrowDown) => Some(Message::NextTag),
-        Key::Named(Named::Enter) => Some(Message::ToggleSelectedTag),
         _ => None,
     }
 }
@@ -919,17 +879,6 @@ fn families_text(change: &FamilyChange, games: &[FamilyGame], gone: &[String]) -
         | FamilyChange::HoldOut { .. }
         | FamilyChange::Release { .. } => String::new(),
     }
-}
-
-fn moved(selected: Option<usize>, shown: usize, down: bool) -> Option<usize> {
-    if shown == 0 {
-        return None;
-    }
-    Some(match (selected, down) {
-        (None, _) => 0,
-        (Some(index), true) => (index + 1).min(shown - 1),
-        (Some(index), false) => index.saturating_sub(1).min(shown - 1),
-    })
 }
 
 fn stacked(width: f32) -> bool {
@@ -1000,13 +949,7 @@ fn sources<'a>(taste: &TasteView, hours: &SignalsConfig) -> Element<'a, Message>
     .into()
 }
 
-fn tag_row(
-    index: usize,
-    tag: &TagView,
-    top: f64,
-    open: bool,
-    selected: bool,
-) -> Element<'_, Message> {
+fn tag_row(tag: &TagView, top: f64) -> Element<'_, Message> {
     let (solid, ghost, rest) = bar_portions(tag.weight, tag.weight_before, top);
     let bar = row![]
         .push((solid > 0).then(|| {
@@ -1024,73 +967,75 @@ fn tag_row(
                 })
         }))
         .push((rest > 0).then(|| space().width(Length::FillPortion(rest))))
-        .width(Fill)
+        .width(TAG_BAR_WIDTH)
         .align_y(Center);
 
-    let line = row![
-        text(&tag.name).size(font::BAR_SIZE).width(TAG_NAME_WIDTH),
-        bar,
-        container(
-            text(tag_note(tag))
-                .size(font::NOTE_SIZE)
-                .style(style::muted)
-        )
-        .align_right(NOTE_WIDTH),
-        text(if open { OPENED } else { CLOSED })
+    let tone: fn(&Theme) -> text::Style = if tag.dominant {
+        warning_text
+    } else {
+        style::muted
+    };
+    let games = tooltip(
+        text(tag_games_text(tag)).size(font::NOTE_SIZE).style(tone),
+        container(text(games_line(tag)).size(font::NOTE_SIZE))
+            .padding([6, 10])
+            .style(style::popup),
+        tooltip::Position::Bottom,
+    );
+    let note = tag_note(tag);
+
+    container(
+        row![
+            text(&tag.name).size(font::BAR_SIZE).width(TAG_NAME_WIDTH),
+            bar,
+            container(games).width(Fill),
+        ]
+        .push((!note.is_empty()).then(|| text(note).size(font::NOTE_SIZE).style(style::muted)))
+        .spacing(10)
+        .align_y(Center),
+    )
+    .padding([6, 8])
+    .into()
+}
+
+fn dominant(taste: &TasteView) -> Option<Element<'_, Message>> {
+    let tags = dominant_tags(taste);
+    if tags.is_empty() {
+        return None;
+    }
+
+    let title = row![
+        text(WARNING)
             .font(font::ICONS)
-            .size(10),
+            .size(font::NOTE_SIZE)
+            .style(warning_text),
+        text("Mostly from one game")
+            .size(font::BAR_SIZE)
+            .font(font::SEMIBOLD)
+            .style(warning_text),
     ]
-    .spacing(10)
+    .spacing(8)
     .align_y(Center);
 
-    let header = button(line)
-        .width(Fill)
-        .padding([6, 8])
-        .style(style::list_row(selected))
-        .on_press(Message::ToggleTag(index));
-
-    let below = padding::left(TAG_NAME_WIDTH + 18.0);
-    let dominant = tag.games.first().filter(|_| tag.dominant).map(|game| {
-        let warning = row![
-            text(WARNING)
-                .font(font::ICONS)
-                .size(font::NOTE_SIZE)
-                .style(warning_text),
-            text(format!("mostly from {}", game.name))
-                .size(font::NOTE_SIZE)
-                .style(warning_text),
-        ]
-        .spacing(6)
-        .align_y(Center);
-
-        let warning: Element<'_, Message> = if in_library(game) {
-            button(warning)
+    let lines = tags.into_iter().map(|(tag, game)| {
+        tooltip(
+            button(text!("{} · {} ›", tag.name, game.name).size(font::BAR_SIZE))
                 .padding(0)
                 .style(style::link)
-                .on_press(Message::OpenInLibrary(game.id))
-                .into()
-        } else {
-            warning.into()
-        };
-        container(tooltip(
-            warning,
+                .on_press(dominant_message(game)),
             container(text(dampen_hint(game)).size(font::NOTE_SIZE))
                 .padding([6, 10])
                 .style(style::popup),
             tooltip::Position::Bottom,
-        ))
-        .padding(below)
-    });
-    let games = open.then(|| {
-        container(
-            text(games_line(tag))
-                .size(font::NOTE_SIZE)
-                .style(style::muted),
         )
-        .padding(below.right(8))
+        .into()
     });
 
-    column![header].push(dominant).push(games).spacing(2).into()
+    Some(
+        container(column![title].extend(lines).spacing(6))
+            .padding([6, 8])
+            .into(),
+    )
 }
 
 fn filled(color: Color) -> container::Style {
@@ -1297,6 +1242,42 @@ fn games_line(tag: &TagView) -> String {
     }
 
     parts.join(" · ")
+}
+
+fn short_name(name: &str) -> &str {
+    let end = [": ", " - "]
+        .into_iter()
+        .filter_map(|separator| name.find(separator))
+        .min()
+        .unwrap_or(name.len());
+    let short = name[..end].trim();
+
+    if short.is_empty() { name } else { short }
+}
+
+fn tag_games_text(tag: &TagView) -> String {
+    tag.games
+        .iter()
+        .map(|game| short_name(&game.name))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn dominant_tags(taste: &TasteView) -> Vec<(&TagView, &HoursGame)> {
+    taste
+        .tags
+        .iter()
+        .filter(|tag| tag.dominant)
+        .filter_map(|tag| tag.games.first().map(|game| (tag, game)))
+        .collect()
+}
+
+fn dominant_message(game: &HoursGame) -> Message {
+    if in_library(game) {
+        Message::OpenInLibrary(game.id)
+    } else {
+        Message::OpenVotes(Filter::Kind(VoteKind::WouldTry))
+    }
 }
 
 fn in_library(game: &HoursGame) -> bool {
@@ -1541,7 +1522,7 @@ mod tests {
     }
 
     #[test]
-    fn an_open_tag_lists_its_games_and_how_many_more() {
+    fn the_tooltip_of_a_tag_lists_its_games_and_how_many_more() {
         let open = TagView {
             games: vec![
                 game("Outer Wilds", 64.4, HoursSource::Played),
@@ -1703,14 +1684,69 @@ mod tests {
     }
 
     #[test]
-    fn the_arrows_move_through_the_shown_tags() {
-        assert_eq!(moved(None, 12, true), Some(0));
-        assert_eq!(moved(None, 12, false), Some(0));
-        assert_eq!(moved(Some(3), 12, true), Some(4));
-        assert_eq!(moved(Some(11), 12, true), Some(11));
-        assert_eq!(moved(Some(0), 12, false), Some(0));
-        assert_eq!(moved(Some(20), 12, false), Some(11));
-        assert_eq!(moved(None, 0, true), None);
+    fn a_short_name_stops_before_the_subtitle() {
+        assert_eq!(short_name("Clair Obscur: Expedition 33"), "Clair Obscur");
+        assert_eq!(short_name("Disco Elysium - The Final Cut"), "Disco Elysium");
+        assert_eq!(
+            short_name("Call of Duty: Black Ops II - Multiplayer"),
+            "Call of Duty"
+        );
+        assert_eq!(short_name("OMORI"), "OMORI");
+        assert_eq!(short_name(": odd"), ": odd");
+    }
+
+    #[test]
+    fn a_tag_shows_the_short_names_of_its_games() {
+        let story = TagView {
+            games: vec![
+                game("Clair Obscur: Expedition 33", 120.0, HoursSource::Played),
+                game("Disco Elysium - The Final Cut", 40.0, HoursSource::Played),
+                game("OMORI", 30.0, HoursSource::Played),
+            ],
+            ..tag("Story Rich")
+        };
+
+        assert_eq!(tag_games_text(&story), "Clair Obscur, Disco Elysium, OMORI");
+    }
+
+    #[test]
+    fn the_dominant_tags_come_from_all_the_tags_not_only_the_shown_ones() {
+        let mut taste = taste(
+            &[
+                "Story Rich",
+                "RPG",
+                "Open World",
+                "Great Soundtrack",
+                "Atmospheric",
+                "Exploration",
+                "Adventure",
+                "Souls-like",
+                "Action RPG",
+                "Puzzle",
+                "Difficult",
+                "Metroidvania",
+                "Action",
+            ],
+            717,
+        );
+        taste.tags[12].dominant = true;
+        taste.tags[12].games = vec![game(
+            "Call of Duty: Black Ops II - Multiplayer",
+            300.0,
+            HoursSource::Played,
+        )];
+
+        let dominant = dominant_tags(&taste);
+        assert_eq!(dominant.len(), 1);
+        assert_eq!(dominant[0].0.name, "Action");
+        assert!(matches!(
+            dominant_message(dominant[0].1),
+            Message::OpenInLibrary(AppId(202990))
+        ));
+        assert!(matches!(
+            dominant_message(&game("Hades", 5.0, HoursSource::WouldTry)),
+            Message::OpenVotes(Filter::Kind(VoteKind::WouldTry))
+        ));
     }
 
     fn pressed(key: Key, modifiers: keyboard::Modifiers) -> keyboard::Event {
@@ -1728,16 +1764,12 @@ mod tests {
     }
 
     #[test]
-    fn the_keys_move_open_undo_and_close() {
+    fn the_keys_undo_and_close() {
         let key = |named| key_message(pressed(Key::Named(named), keyboard::Modifiers::empty()));
 
-        assert!(matches!(key(Named::ArrowUp), Some(Message::PreviousTag)));
-        assert!(matches!(key(Named::ArrowDown), Some(Message::NextTag)));
-        assert!(matches!(
-            key(Named::Enter),
-            Some(Message::ToggleSelectedTag)
-        ));
         assert!(matches!(key(Named::Escape), Some(Message::CloseEditor)));
+        assert!(key(Named::ArrowDown).is_none());
+        assert!(key(Named::Enter).is_none());
         assert!(
             key_message(pressed(
                 Key::Named(Named::ArrowDown),
