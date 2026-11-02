@@ -43,7 +43,7 @@ use crate::{
         FamiliesChanged, FamiliesUndo, FamilyChange, FamilyChangeError, FamilyGame,
         changed_families, family_games, renamed_choice,
     },
-    images::{ImageCache, LoadImageError, MAX_CACHE_BYTES, cache_dir},
+    images::{ImageCache, ImageKind, LoadImageError, MAX_CACHE_BYTES, cache_dir},
     library::{
         GameCorrection, GameCorrectionError, LibraryView, corrected_game, game_correction,
         library_view,
@@ -199,8 +199,8 @@ impl Gamepalate {
         })
     }
 
-    pub async fn image(&self, url: &str) -> Result<Vec<u8>, LoadImageError> {
-        self.images.image(url).await
+    pub async fn image(&self, url: &str, kind: ImageKind) -> Result<Vec<u8>, LoadImageError> {
+        self.images.image(url, kind).await
     }
 
     pub async fn capsule(&self, id: AppId) -> Result<Capsule, LoadImageError> {

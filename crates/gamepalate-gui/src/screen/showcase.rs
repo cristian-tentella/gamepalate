@@ -3,7 +3,7 @@ mod pages;
 
 use std::sync::Arc;
 
-use gamepalate_app::{AppId, GameDetails, Gamepalate};
+use gamepalate_app::{AppId, GameDetails, Gamepalate, ImageKind};
 use iced::{
     Center, ContentFit, Element, Task, padding,
     widget::{button, column, container, image, row, space, text},
@@ -194,18 +194,17 @@ impl Showcase {
             return Task::none();
         };
 
-        let (soon, later) = screenshot_order(self.screenshots(current), self.screenshot);
+        let soon = next_screenshots(self.screenshots(current), self.screenshot);
         let wanted = if self.current_is_loaded() {
             let next = next
                 .iter()
                 .map(|&id| (self.header_url(id), self.first_screenshot(id)))
                 .collect();
-            download_order(self.header_url(current), soon, next, later)
+            download_order(self.header_url(current), soon, next)
         } else {
             download_order(
                 self.header_url(current),
                 &soon[..soon.len().min(1)],
-                Vec::new(),
                 Vec::new(),
             )
         };
@@ -231,10 +230,15 @@ impl Showcase {
     fn download(&self, started: Vec<String>) -> Task<Message> {
         Task::batch(started.into_iter().map(|url| {
             let gamepalate = Arc::clone(&self.gamepalate);
+            let kind = if self.pages.is_screenshot(&url) {
+                ImageKind::Screenshot
+            } else {
+                ImageKind::Cover
+            };
             Task::perform(
                 async move {
                     let handle = gamepalate
-                        .image(&url)
+                        .image(&url, kind)
                         .await
                         .ok()
                         .map(image::Handle::from_bytes);
@@ -401,7 +405,6 @@ fn download_order(
     header: String,
     soon: &[String],
     next: Vec<(String, Option<String>)>,
-    later: Vec<String>,
 ) -> Vec<String> {
     let mut wanted = vec![header];
     wanted.extend(soon.iter().cloned());
@@ -409,20 +412,14 @@ fn download_order(
         wanted.push(header);
         wanted.extend(screenshot);
     }
-    wanted.extend(later);
     wanted
 }
 
-fn screenshot_order(screenshots: &[String], index: usize) -> (&[String], Vec<String>) {
+fn next_screenshots(screenshots: &[String], index: usize) -> &[String] {
     let start = index.min(screenshots.len());
     let end = (index + 1 + SCREENSHOTS_AHEAD).min(screenshots.len());
-    let later = screenshots[end..]
-        .iter()
-        .chain(screenshots[..start].iter().rev())
-        .cloned()
-        .collect();
 
-    (&screenshots[start..end], later)
+    &screenshots[start..end]
 }
 
 fn next_index(index: usize, count: usize) -> usize {
@@ -453,13 +450,13 @@ mod tests {
     }
 
     #[test]
-    fn loads_the_next_screenshots_first_then_the_rest() {
+    fn loads_only_the_shown_screenshot_and_the_next_two() {
         let shots: Vec<String> = (0..6).map(|index| format!("ss_{index}.jpg")).collect();
 
-        let (soon, later) = screenshot_order(&shots, 2);
-
-        assert_eq!(soon, ["ss_2.jpg", "ss_3.jpg", "ss_4.jpg"]);
-        assert_eq!(later, ["ss_5.jpg", "ss_1.jpg", "ss_0.jpg"]);
+        assert_eq!(
+            next_screenshots(&shots, 2),
+            ["ss_2.jpg", "ss_3.jpg", "ss_4.jpg"]
+        );
     }
 
     #[test]
@@ -495,7 +492,6 @@ mod tests {
                 ("next header".to_string(), Some("next shot".to_string())),
                 ("last header".to_string(), None),
             ],
-            urls(&["shot 3"]),
         );
 
         assert_eq!(
@@ -507,7 +503,6 @@ mod tests {
                 "next header",
                 "next shot",
                 "last header",
-                "shot 3"
             ])
         );
     }
@@ -516,11 +511,8 @@ mod tests {
     fn the_screenshot_order_stops_at_the_ends() {
         let shots: Vec<String> = (0..2).map(|index| format!("ss_{index}.jpg")).collect();
 
-        assert_eq!(
-            screenshot_order(&shots, 1),
-            (&shots[1..], vec![shots[0].clone()])
-        );
-        assert_eq!(screenshot_order(&[], 0), (&[][..], Vec::new()));
+        assert_eq!(next_screenshots(&shots, 1), &shots[1..]);
+        assert!(next_screenshots(&[], 0).is_empty());
     }
 
     #[test]

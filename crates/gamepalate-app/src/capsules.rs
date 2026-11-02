@@ -10,7 +10,7 @@ use gamepalate_steam::{
 use image::imageops::FilterType;
 use reqwest::StatusCode;
 
-use crate::images::{ImageCache, LoadImageError};
+use crate::images::{ImageCache, ImageKind, LoadImageError};
 
 const LANGUAGE: &str = "english";
 pub const CAPSULE_WIDTH: u32 = 300;
@@ -79,10 +79,10 @@ pub(crate) async fn capsule<F: Fetch, S: Get + Sync>(
     finder: &CapsuleFinder<S>,
 ) -> Result<Capsule, LoadImageError> {
     let bytes = match finder.known(id).await {
-        Some(url) => images.image(&url).await?,
-        None => match images.image(&capsule_url(id)).await {
+        Some(url) => images.image(&url, ImageKind::Cover).await?,
+        None => match images.image(&capsule_url(id), ImageKind::Cover).await {
             Err(error) if is_not_found(&error) => match finder.find(id).await? {
-                Some(url) => images.image(&url).await?,
+                Some(url) => images.image(&url, ImageKind::Cover).await?,
                 None => return Err(error),
             },
             result => result?,
@@ -95,7 +95,9 @@ pub(crate) async fn classic_capsule<F: Fetch>(
     id: AppId,
     images: &ImageCache<F>,
 ) -> Result<Capsule, LoadImageError> {
-    Ok(downscale(&images.image(&capsule_url(id)).await?)?)
+    Ok(downscale(
+        &images.image(&capsule_url(id), ImageKind::Cover).await?,
+    )?)
 }
 
 fn is_not_found(error: &LoadImageError) -> bool {

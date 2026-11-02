@@ -31,6 +31,12 @@ impl Pages {
         }
     }
 
+    pub fn is_screenshot(&self, url: &str) -> bool {
+        self.pages.values().any(|page| {
+            matches!(page, Page::Ready(details) if details.store.screenshot_urls.iter().any(|shot| shot == url))
+        })
+    }
+
     pub fn want(&mut self, ids: &[AppId]) -> Vec<AppId> {
         let mut started = Vec::new();
         for &id in ids {
@@ -118,6 +124,16 @@ mod tests {
         assert!(matches!(pages.get(AppId(2)), Some(Page::Missing)));
         assert!(matches!(pages.get(AppId(3)), Some(Page::Failed(reason)) if reason == "down"));
         assert!(pages.want(&[AppId(2), AppId(3)]).is_empty());
+    }
+
+    #[test]
+    fn knows_which_addresses_are_screenshots() {
+        let mut pages = Pages::default();
+        pages.want(&[AppId(1)]);
+        pages.loaded(AppId(1), details());
+
+        assert!(pages.is_screenshot("https://example.com/1.jpg"));
+        assert!(!pages.is_screenshot("https://example.com/header.jpg"));
     }
 
     #[test]

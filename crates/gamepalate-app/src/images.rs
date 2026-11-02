@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 
 const EXTENSIONS: [&str; 3] = ["jpg", "png", "webp"];
 pub(crate) const MAX_CACHE_BYTES: u64 = 300 * 1024 * 1024;
+const PRUNE_EVERY: u64 = 20;
 const TEMPORARY: &str = ".tmp";
 
 static WRITES: AtomicU64 = AtomicU64::new(0);
@@ -40,10 +41,29 @@ pub enum LoadImageError {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ImageKind {
+    Cover,
+    Screenshot,
+}
+
+impl ImageKind {
+    const ALL: [ImageKind; 2] = [ImageKind::Cover, ImageKind::Screenshot];
+
+    fn folder(self) -> &'static str {
+        match self {
+            ImageKind::Cover => "covers",
+            ImageKind::Screenshot => "screenshots",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ImageCache<F = Client> {
     dir: Option<PathBuf>,
     downloader: ImageDownloader<F>,
+    limit: u64,
+    written: AtomicU64,
 }
 
 pub(crate) fn cache_dir() -> Option<PathBuf> {
@@ -52,11 +72,20 @@ pub(crate) fn cache_dir() -> Option<PathBuf> {
 
 impl<F: Fetch> ImageCache<F> {
     pub fn new(dir: Option<PathBuf>, downloader: ImageDownloader<F>) -> ImageCache<F> {
-        ImageCache { dir, downloader }
+        ImageCache {
+            dir,
+            downloader,
+            limit: MAX_CACHE_BYTES,
+            written: AtomicU64::new(0),
+        }
     }
 
-    pub async fn image(&self, url: &str) -> Result<Vec<u8>, LoadImageError> {
-        let dir = self.dir.as_deref().ok_or(LoadImageError::NoCacheDir)?;
+    pub async fn image(&self, url: &str, kind: ImageKind) -> Result<Vec<u8>, LoadImageError> {
+        let dir = self
+            .dir
+            .as_deref()
+            .ok_or(LoadImageError::NoCacheDir)?
+            .join(kind.folder());
         let path = dir.join(file_name(url));
 
         match fs::read(&path) {
@@ -71,7 +100,10 @@ impl<F: Fetch> ImageCache<F> {
         }
 
         let bytes = self.downloader.download(url).await?;
-        write(dir, &path, &bytes)?;
+        write(&dir, &path, &bytes)?;
+        if (self.written.fetch_add(1, Ordering::Relaxed) + 1).is_multiple_of(PRUNE_EVERY) {
+            self.prune();
+        }
 
         Ok(bytes)
     }
@@ -80,12 +112,18 @@ impl<F: Fetch> ImageCache<F> {
 impl<F> ImageCache<F> {
     pub fn prune(&self) {
         if let Some(dir) = &self.dir {
-            prune(dir, MAX_CACHE_BYTES);
+            prune(dir, self.limit);
         }
     }
 
     pub fn bytes(&self) -> u64 {
-        self.dir.as_deref().map(folder_bytes).unwrap_or(0)
+        self.dir.as_deref().map_or(0, |dir| {
+            folder_bytes(dir)
+                + ImageKind::ALL
+                    .iter()
+                    .map(|kind| folder_bytes(&dir.join(kind.folder())))
+                    .sum::<u64>()
+        })
     }
 
     pub fn clear(&self) {
@@ -109,15 +147,27 @@ fn folder_bytes(dir: &Path) -> u64 {
 
 struct CachedFile {
     path: PathBuf,
+    kind: Option<ImageKind>,
     size: u64,
     used_at: SystemTime,
 }
 
 fn prune(dir: &Path, limit: u64) {
+    let mut files = cached_files(dir, None);
+    for kind in ImageKind::ALL {
+        files.extend(cached_files(&dir.join(kind.folder()), Some(kind)));
+    }
+
+    for path in to_delete(files, limit) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn cached_files(dir: &Path, kind: Option<ImageKind>) -> Vec<CachedFile> {
     let Ok(entries) = fs::read_dir(dir) else {
-        return;
+        return Vec::new();
     };
-    let files = entries
+    entries
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let metadata = entry
@@ -126,22 +176,19 @@ fn prune(dir: &Path, limit: u64) {
                 .filter(|metadata| metadata.is_file())?;
             Some(CachedFile {
                 path: entry.path(),
+                kind,
                 size: metadata.len(),
                 used_at: metadata.modified().ok()?,
             })
         })
-        .collect();
-
-    for path in to_delete(files, limit) {
-        let _ = fs::remove_file(path);
-    }
+        .collect()
 }
 
 fn to_delete(files: Vec<CachedFile>, limit: u64) -> Vec<PathBuf> {
     let (temporary, mut images): (Vec<_>, Vec<_>) = files
         .into_iter()
-        .partition(|file| file.path.to_string_lossy().ends_with(TEMPORARY));
-    images.sort_by_key(|file| std::cmp::Reverse(file.used_at));
+        .partition(|file| file.kind.is_none() || file.path.to_string_lossy().ends_with(TEMPORARY));
+    images.sort_by_key(|file| (file.kind, std::cmp::Reverse(file.used_at)));
 
     let mut kept = 0;
     let mut full = false;
@@ -264,7 +311,7 @@ mod tests {
     }
 
     fn files(dir: &Path) -> Vec<String> {
-        fs::read_dir(dir.join("images"))
+        fs::read_dir(dir.join("images").join("covers"))
             .map(|entries| {
                 entries
                     .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -278,7 +325,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (cache, calls) = cache(Some(dir.path()), 200);
 
-        assert_eq!(cache.image(URL).await.unwrap(), vec![1, 2, 3]);
+        assert_eq!(
+            cache.image(URL, ImageKind::Cover).await.unwrap(),
+            vec![1, 2, 3]
+        );
 
         assert_eq!(files(dir.path()), vec![file_name(URL)]);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
@@ -288,9 +338,12 @@ mod tests {
     async fn reads_a_saved_image_from_disk() {
         let dir = tempfile::tempdir().unwrap();
         let (cache, calls) = cache(Some(dir.path()), 200);
-        cache.image(URL).await.unwrap();
+        cache.image(URL, ImageKind::Cover).await.unwrap();
 
-        assert_eq!(cache.image(URL).await.unwrap(), vec![1, 2, 3]);
+        assert_eq!(
+            cache.image(URL, ImageKind::Cover).await.unwrap(),
+            vec![1, 2, 3]
+        );
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
@@ -301,7 +354,7 @@ mod tests {
         let (cache, _) = cache(Some(dir.path()), 404);
 
         assert!(matches!(
-            cache.image(URL).await,
+            cache.image(URL, ImageKind::Cover).await,
             Err(LoadImageError::Download(_))
         ));
 
@@ -313,7 +366,7 @@ mod tests {
         let (cache, calls) = cache(None, 200);
 
         assert!(matches!(
-            cache.image(URL).await,
+            cache.image(URL, ImageKind::Cover).await,
             Err(LoadImageError::NoCacheDir)
         ));
         assert_eq!(calls.load(Ordering::Relaxed), 0);
@@ -322,6 +375,7 @@ mod tests {
     fn cached(name: &str, size: u64, seconds_ago: u64) -> CachedFile {
         CachedFile {
             path: PathBuf::from(name),
+            kind: Some(ImageKind::Cover),
             size,
             used_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_000 - seconds_ago),
         }
@@ -371,11 +425,73 @@ mod tests {
     }
 
     #[test]
+    fn deletes_the_screenshots_before_the_covers() {
+        let mut shot = cached("shot.jpg", 40, 1);
+        shot.kind = Some(ImageKind::Screenshot);
+        let files = vec![shot, cached("cover.jpg", 40, 30), cached("old.jpg", 40, 40)];
+
+        assert_eq!(deleted(files, 80), vec!["shot.jpg"]);
+    }
+
+    #[test]
+    fn deletes_the_files_left_by_the_old_layout() {
+        let mut loose = cached("loose.jpg", 10, 1);
+        loose.kind = None;
+
+        assert_eq!(
+            deleted(vec![loose, cached("a.jpg", 10, 2)], 100),
+            vec!["loose.jpg"]
+        );
+    }
+
+    #[tokio::test]
+    async fn keeps_to_the_limit_while_it_downloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cache, _) = cache(Some(dir.path()), 200);
+        let cache = ImageCache { limit: 30, ..cache };
+
+        for index in 0..PRUNE_EVERY {
+            cache
+                .image(
+                    &format!("https://example.com/{index}.jpg"),
+                    ImageKind::Screenshot,
+                )
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(cache.bytes(), 30);
+    }
+
+    #[tokio::test]
+    async fn keeps_covers_and_screenshots_in_their_own_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cache, _) = cache(Some(dir.path()), 200);
+
+        cache.image(URL, ImageKind::Cover).await.unwrap();
+        cache
+            .image("https://example.com/ss_1.jpg", ImageKind::Screenshot)
+            .await
+            .unwrap();
+
+        assert_eq!(files(dir.path()), vec![file_name(URL)]);
+        assert!(
+            dir.path()
+                .join("images")
+                .join("screenshots")
+                .join(file_name("https://example.com/ss_1.jpg"))
+                .is_file()
+        );
+    }
+
+    #[test]
     fn prunes_the_folder_down_to_the_most_recent_files() {
         let dir = tempfile::tempdir().unwrap();
         let now = SystemTime::now();
+        let covers = dir.path().join("covers");
+        fs::create_dir(&covers).unwrap();
         for (name, seconds_ago) in [("old.jpg", 30), ("middle.jpg", 20), ("new.jpg", 10)] {
-            let path = dir.path().join(name);
+            let path = covers.join(name);
             fs::write(&path, [0; 40]).unwrap();
             File::options()
                 .write(true)
@@ -387,7 +503,7 @@ mod tests {
 
         prune(dir.path(), 100);
 
-        let mut left: Vec<String> = fs::read_dir(dir.path())
+        let mut left: Vec<String> = fs::read_dir(&covers)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
@@ -401,8 +517,11 @@ mod tests {
         let (cache, _) = cache(Some(dir.path()), 200);
         assert_eq!(cache.bytes(), 0);
 
-        cache.image(URL).await.unwrap();
-        cache.image("https://example.com/other.jpg").await.unwrap();
+        cache.image(URL, ImageKind::Cover).await.unwrap();
+        cache
+            .image("https://example.com/other.jpg", ImageKind::Cover)
+            .await
+            .unwrap();
         assert_eq!(cache.bytes(), 6);
 
         cache.clear();
