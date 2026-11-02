@@ -606,12 +606,12 @@ impl Discover {
             Layout::Stacked(_) => {
                 let header_width = ((shot_width - CARD_SPACING) / 2.0).min(SIDE_WIDTH);
                 column![
-                    media,
                     row![
-                        self.summary(game, header_width).width(Fill),
+                        self.summary(game, header_width).width(header_width),
                         self.reasons(queue, game).width(Fill),
                     ]
                     .spacing(CARD_SPACING),
+                    media,
                 ]
                 .spacing(CARD_SPACING)
                 .width(shot_width)
