@@ -17,6 +17,7 @@ fn main() -> anyhow::Result<()> {
     let saved = saved_gui_settings().window;
 
     iced::application(move || App::new(saved), App::update, App::view)
+        .title("gamepalate")
         .theme(App::theme)
         .subscription(App::subscription)
         .window(window_settings(saved))
