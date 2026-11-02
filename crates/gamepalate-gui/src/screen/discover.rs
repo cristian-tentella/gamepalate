@@ -19,7 +19,7 @@ use iced::{
     never, padding,
     widget::{
         button, column, container, mouse_area, opaque, progress_bar, responsive, rich_text, row,
-        scrollable, space, span, stack, text,
+        scrollable, space, span, stack, text, tooltip,
     },
 };
 
@@ -34,8 +34,11 @@ static SEARCHES: AtomicU64 = AtomicU64::new(0);
 const COMPACT_WIDTH: f32 = 1100.0;
 const TOAST_DURATION: Duration = Duration::from_secs(4);
 const FLASH_DURATION: Duration = Duration::from_millis(600);
-const METER_LABEL_WIDTH: f32 = 64.0;
-const METER_VALUE_WIDTH: f32 = 72.0;
+const METER_LABEL_WIDTH: f32 = 96.0;
+const METER_VALUE_WIDTH: f32 = 136.0;
+const AFFINITY_TIP: &str =
+    "Compared with an average game in the catalog, from the tags of the games you play and vote";
+const QUALITY_TIP: &str = "How good the Steam reviews are. With few reviews it counts less";
 const SIDE_WIDTH: f32 = 360.0;
 const HEADER_HEIGHT: f32 = SIDE_WIDTH * 215.0 / 460.0;
 const MIN_SHOT_WIDTH: f32 = 480.0;
@@ -601,12 +604,14 @@ impl Discover {
                     .size(font::NOTE_SIZE)
                     .style(style::muted),
                 meter(
-                    "Affinity",
+                    "Fits your taste",
+                    AFFINITY_TIP,
                     format::affinity_share(game.affinity),
                     format::affinity(game.affinity),
                 ),
                 meter(
-                    "Quality",
+                    "Reviews",
+                    QUALITY_TIP,
                     game.quality as f32,
                     format::quality(game.quality).to_string(),
                 ),
@@ -684,8 +689,8 @@ fn screenshot_size(size: Size) -> (f32, f32) {
     (shot_width, shot_width * 9.0 / 16.0)
 }
 
-fn meter<'a>(label: &'a str, share: f32, value: String) -> Element<'a, Message> {
-    row![
+fn meter<'a>(label: &'a str, tip: &'a str, share: f32, value: String) -> Element<'a, Message> {
+    let line = row![
         text(label).size(font::BAR_SIZE).width(METER_LABEL_WIDTH),
         progress_bar(0.0..=1.0, share)
             .girth(4)
@@ -695,7 +700,15 @@ fn meter<'a>(label: &'a str, share: f32, value: String) -> Element<'a, Message> 
             .align_right(METER_VALUE_WIDTH),
     ]
     .spacing(8)
-    .align_y(Center)
+    .align_y(Center);
+
+    tooltip(
+        line,
+        container(text(tip).size(font::NOTE_SIZE))
+            .padding([6, 10])
+            .style(style::popup),
+        tooltip::Position::Bottom,
+    )
     .into()
 }
 

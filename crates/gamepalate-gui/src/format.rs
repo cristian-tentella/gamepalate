@@ -184,7 +184,8 @@ pub fn reviews(reviews: &Reviews) -> (String, String) {
 }
 
 pub fn affinity(affinity: f64) -> String {
-    format!("{affinity:.1}×")
+    let times = format!("{affinity:.1}");
+    format!("{}× the average game", times.trim_end_matches(".0"))
 }
 
 pub fn affinity_share(affinity: f64) -> f32 {
@@ -559,7 +560,8 @@ mod tests {
 
     #[test]
     fn fills_the_affinity_bar_on_a_log_scale() {
-        assert_eq!(affinity(6.5), "6.5×");
+        assert_eq!(affinity(6.5), "6.5× the average game");
+        assert_eq!(affinity(4.0), "4× the average game");
         assert_eq!(affinity_share(0.5), 0.0);
         assert!((affinity_share(6.5) - 0.81).abs() < 0.01);
         assert_eq!(affinity_share(40.0), 1.0);
