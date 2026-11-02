@@ -353,14 +353,16 @@ impl Discover {
                 Message::Source
             )
             .text_size(font::NOTE_SIZE)
-            .padding([2, 8])
-            .style(style::dropdown),
+            .padding([4, 8])
+            .style(style::dropdown)
+            .menu_style(style::menu),
             pick_list(SORTS, Some(Sort(self.options.sort)), Message::Sort)
                 .text_size(font::NOTE_SIZE)
-                .padding([2, 8])
-                .style(style::dropdown),
+                .padding([4, 8])
+                .style(style::dropdown)
+                .menu_style(style::menu),
             button(text!("Filters (Ctrl+F) {arrow}").size(font::NOTE_SIZE))
-                .padding([2, 8])
+                .padding([4, 8])
                 .style(style::text_button)
                 .on_press(Message::ToggleFilters),
         ]

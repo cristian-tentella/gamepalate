@@ -1,5 +1,6 @@
 use iced::{
     Border, Color, Element, Shadow, Theme, Vector,
+    overlay::menu,
     theme::palette,
     widget::{button, container, pick_list, progress_bar, rule, text, text_input},
 };
@@ -473,6 +474,32 @@ pub fn dropdown(theme: &Theme, status: pick_list::Status) -> pick_list::Style {
             color: border,
             width: 1.0,
             radius: 6.0.into(),
+        },
+    }
+}
+
+pub fn menu(theme: &Theme) -> menu::Style {
+    let palette = theme.extended_palette();
+
+    menu::Style {
+        background: palette.background.base.color.into(),
+        border: Border {
+            color: palette.background.strong.color,
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        text_color: palette.background.base.text,
+        selected_text_color: palette.background.base.text,
+        selected_background: palette
+            .primary
+            .base
+            .color
+            .scale_alpha(if palette.is_dark { 0.3 } else { 0.12 })
+            .into(),
+        shadow: Shadow {
+            color: Color::BLACK.scale_alpha(0.2),
+            offset: Vector::new(0.0, 4.0),
+            blur_radius: 12.0,
         },
     }
 }
