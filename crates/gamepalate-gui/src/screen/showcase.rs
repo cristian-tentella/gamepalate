@@ -19,7 +19,7 @@ use crate::{font, format, style};
 
 pub const AHEAD: usize = 5;
 pub const BEHIND: usize = 5;
-const DETAILS_AHEAD: usize = 2;
+const DETAILS_AHEAD: usize = 3;
 const SCREENSHOTS_AHEAD: usize = 2;
 const DESCRIPTION_WIDTH: f32 = 600.0;
 const DOT_SIZE: f32 = 8.0;
@@ -28,6 +28,7 @@ const DOTS_HEIGHT: f32 = 20.0;
 const SCREENSHOT_WIDTH: f32 = 820.0;
 pub const MAX_SCREENSHOT_WIDTH: f32 = 1280.0;
 const IMAGE_RADIUS: f32 = 8.0;
+const WAITING_OPACITY: f32 = 0.5;
 const MAX_ZOOM: f32 = 4.0;
 const ZOOM_STEP: f32 = 0.25;
 const CLOSE: char = '\u{E8BB}';
@@ -39,6 +40,7 @@ pub struct Showcase {
     screenshot: usize,
     last_screenshot: Option<String>,
     shown: Option<AppId>,
+    browsing: bool,
     zoomed: bool,
     originals: HashMap<String, Picture>,
 }
@@ -67,6 +69,7 @@ impl Showcase {
             screenshot: 0,
             last_screenshot: None,
             shown: None,
+            browsing: false,
             zoomed: false,
             originals: HashMap::new(),
         }
@@ -145,6 +148,7 @@ impl Showcase {
             self.shown = current;
             self.screenshot = 0;
             self.last_screenshot = None;
+            self.browsing = false;
             self.zoomed = false;
             self.originals.clear();
         }
@@ -201,6 +205,7 @@ impl Showcase {
         if index == self.screenshot {
             return;
         }
+        self.browsing = true;
         let shown = self.current_screenshot();
         if shown.is_some_and(|url| matches!(self.images.get(url), Some(Picture::Ready(_)))) {
             self.last_screenshot = shown.cloned();
@@ -253,17 +258,24 @@ impl Showcase {
             return Task::none();
         };
 
-        let soon = next_screenshots(self.screenshots(current), self.screenshot);
+        let screenshots = self.screenshots(current);
+        let soon = next_screenshots(screenshots, self.screenshot);
         let wanted = if self.current_is_loaded() {
+            let later = if self.browsing {
+                other_screenshots(screenshots, self.screenshot)
+            } else {
+                Vec::new()
+            };
             let next = next
                 .iter()
                 .map(|&id| (self.header_url(id), self.first_screenshot(id)))
                 .collect();
-            download_order(self.header_url(current), soon, next)
+            download_order(self.header_url(current), soon, later, next)
         } else {
             download_order(
                 self.header_url(current),
                 &soon[..soon.len().min(1)],
+                Vec::new(),
                 Vec::new(),
             )
         };
@@ -336,12 +348,23 @@ impl Showcase {
     }
 
     fn picture<'a>(&self, url: &str, width: f32, height: f32) -> Element<'a, Message> {
+        self.faded_picture(url, width, height, 1.0)
+    }
+
+    fn faded_picture<'a>(
+        &self,
+        url: &str,
+        width: f32,
+        height: f32,
+        opacity: f32,
+    ) -> Element<'a, Message> {
         let content: Element<'a, Message> = match self.images.get(url) {
             Some(Picture::Ready(allocation)) => image(allocation.handle().clone())
                 .width(width)
                 .height(height)
                 .content_fit(ContentFit::Cover)
                 .border_radius(IMAGE_RADIUS)
+                .opacity(opacity)
                 .into(),
             Some(Picture::Failed) => note("Image unavailable"),
             Some(Picture::Loading) | None => space().into(),
@@ -358,10 +381,11 @@ impl Showcase {
         let content: Element<'a, Message> = match self.pages.get(id) {
             Some(Page::Ready(details)) => {
                 match details.store.screenshot_urls.get(self.screenshot) {
-                    Some(url) => {
+                    Some(wanted) => {
                         let url =
-                            shown_screenshot(url, &self.images, self.last_screenshot.as_ref());
-                        let picture = self.picture(url, width, height);
+                            shown_screenshot(wanted, &self.images, self.last_screenshot.as_ref());
+                        let opacity = if url == wanted { 1.0 } else { WAITING_OPACITY };
+                        let picture = self.faded_picture(url, width, height, opacity);
                         if !matches!(self.images.get(url), Some(Picture::Ready(_))) {
                             return picture;
                         }
@@ -530,10 +554,12 @@ fn is_loaded<T>(
 fn download_order(
     header: String,
     soon: &[String],
+    later: Vec<String>,
     next: Vec<(String, Option<String>)>,
 ) -> Vec<String> {
     let mut wanted = vec![header];
     wanted.extend(soon.iter().cloned());
+    wanted.extend(later);
     for (header, screenshot) in next {
         wanted.push(header);
         wanted.extend(screenshot);
@@ -546,6 +572,17 @@ fn next_screenshots(screenshots: &[String], index: usize) -> &[String] {
     let end = (index + 1 + SCREENSHOTS_AHEAD).min(screenshots.len());
 
     &screenshots[start..end]
+}
+
+fn other_screenshots(screenshots: &[String], index: usize) -> Vec<String> {
+    let start = index.min(screenshots.len());
+    let end = (index + 1 + SCREENSHOTS_AHEAD).min(screenshots.len());
+
+    screenshots[end..]
+        .iter()
+        .chain(screenshots[..start].iter().rev())
+        .cloned()
+        .collect()
 }
 
 fn next_index(index: usize, count: usize) -> usize {
@@ -614,6 +651,7 @@ mod tests {
         let order = download_order(
             "header".to_string(),
             &urls(&["shot 1", "shot 2"]),
+            urls(&["shot 3"]),
             vec![
                 ("next header".to_string(), Some("next shot".to_string())),
                 ("last header".to_string(), None),
@@ -626,11 +664,23 @@ mod tests {
                 "header",
                 "shot 1",
                 "shot 2",
+                "shot 3",
                 "next header",
                 "next shot",
                 "last header",
             ])
         );
+    }
+
+    #[test]
+    fn a_game_being_browsed_wants_its_other_screenshots_after_the_next_ones() {
+        let shots: Vec<String> = (0..6).map(|index| format!("ss_{index}.jpg")).collect();
+
+        assert_eq!(
+            other_screenshots(&shots, 2),
+            ["ss_5.jpg", "ss_1.jpg", "ss_0.jpg"]
+        );
+        assert_eq!(other_screenshots(&shots[..2], 1), ["ss_0.jpg"]);
     }
 
     #[test]
