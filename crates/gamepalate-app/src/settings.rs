@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use gamepalate_core::{ids::SteamId, region::Region, timestamp::Timestamp};
-use gamepalate_store::config::{ConfigError, save_region};
+use gamepalate_core::{config::Config, ids::SteamId, region::Region, timestamp::Timestamp};
+use gamepalate_store::config::{
+    ConfigError, ConfigValue, remove_config_value, save_config_value, save_region,
+};
 
 use crate::account::{CredentialManager, KEY_ENV_VAR, KeyStore};
 
@@ -23,6 +25,89 @@ pub struct Settings {
     pub steam_client_file: Option<PathBuf>,
     pub catalog_games: usize,
     pub tags_updated_at: Timestamp,
+    pub config: Config,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigKey {
+    WishlistHours,
+    FollowedHours,
+    WouldTryHours,
+    MinHours,
+    MaxHours,
+    RecentHoursMultiplier,
+    Count,
+    EarlyAccess,
+    MinReviews,
+    MinPositivePercent,
+    BetEvery,
+    QualityWeight,
+    VotesWeight,
+    Boost,
+    Dampen,
+}
+
+impl ConfigKey {
+    pub fn keys(self) -> [&'static str; 2] {
+        match self {
+            ConfigKey::WishlistHours => ["signals", "wishlist_hours"],
+            ConfigKey::FollowedHours => ["signals", "followed_hours"],
+            ConfigKey::WouldTryHours => ["signals", "would_try_hours"],
+            ConfigKey::MinHours => ["signals", "min_hours"],
+            ConfigKey::MaxHours => ["signals", "max_hours"],
+            ConfigKey::RecentHoursMultiplier => ["signals", "recent_hours_multiplier"],
+            ConfigKey::Count => ["results", "count"],
+            ConfigKey::EarlyAccess => ["results", "early_access"],
+            ConfigKey::MinReviews => ["relevance", "min_reviews"],
+            ConfigKey::MinPositivePercent => ["results", "min_positive_percent"],
+            ConfigKey::BetEvery => ["results", "bet_every"],
+            ConfigKey::QualityWeight => ["relevance", "quality_weight"],
+            ConfigKey::VotesWeight => ["relevance", "votes_weight"],
+            ConfigKey::Boost => ["corrections", "boost"],
+            ConfigKey::Dampen => ["corrections", "dampen"],
+        }
+    }
+
+    pub fn value(self, config: &Config) -> ConfigValue {
+        let integer = |value: usize| ConfigValue::Integer(value as i64);
+        match self {
+            ConfigKey::WishlistHours => ConfigValue::Number(config.signals.wishlist_hours),
+            ConfigKey::FollowedHours => ConfigValue::Number(config.signals.followed_hours),
+            ConfigKey::WouldTryHours => ConfigValue::Number(config.signals.would_try_hours),
+            ConfigKey::MinHours => ConfigValue::Number(config.signals.min_hours),
+            ConfigKey::MaxHours => ConfigValue::Number(config.signals.max_hours),
+            ConfigKey::RecentHoursMultiplier => {
+                ConfigValue::Number(config.signals.recent_hours_multiplier)
+            }
+            ConfigKey::Count => integer(config.results.count),
+            ConfigKey::EarlyAccess => ConfigValue::Flag(config.results.early_access),
+            ConfigKey::MinReviews => ConfigValue::Integer(config.relevance.min_reviews.into()),
+            ConfigKey::MinPositivePercent => {
+                ConfigValue::Integer(config.results.min_positive_percent.into())
+            }
+            ConfigKey::BetEvery => integer(config.results.bet_every),
+            ConfigKey::QualityWeight => ConfigValue::Number(config.relevance.quality_weight),
+            ConfigKey::VotesWeight => ConfigValue::Number(config.relevance.votes_weight),
+            ConfigKey::Boost => ConfigValue::Number(config.corrections.boost),
+            ConfigKey::Dampen => ConfigValue::Number(config.corrections.dampen),
+        }
+    }
+
+    pub fn default_value(self) -> ConfigValue {
+        self.value(&Config::default())
+    }
+}
+
+pub fn change_config(
+    data_dir: &Path,
+    key: ConfigKey,
+    value: ConfigValue,
+) -> Result<(), ConfigError> {
+    save_config_value(&data_dir.join("config.toml"), &key.keys(), value)
+}
+
+pub fn reset_config(data_dir: &Path, key: ConfigKey) -> Result<(), ConfigError> {
+    remove_config_value(&data_dir.join("config.toml"), &key.keys())
 }
 
 pub fn change_region(data_dir: &Path, region: Region) -> Result<(), ConfigError> {
@@ -94,6 +179,84 @@ mod tests {
     fn no_key_or_a_broken_store_is_a_missing_key() {
         assert_eq!(key_source_with(None, &FakeKeys(None)), KeySource::Missing);
         assert_eq!(key_source_with(None, &BrokenKeys), KeySource::Missing);
+    }
+
+    #[test]
+    fn a_changed_value_is_read_back_and_a_reset_one_is_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "steam_id = \"76561198000000000\"\n").unwrap();
+
+        change_config(
+            dir.path(),
+            ConfigKey::WouldTryHours,
+            ConfigValue::Number(3.0),
+        )
+        .unwrap();
+        change_config(dir.path(), ConfigKey::MinReviews, ConfigValue::Integer(500)).unwrap();
+        change_config(dir.path(), ConfigKey::EarlyAccess, ConfigValue::Flag(false)).unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(
+            ConfigKey::WouldTryHours.value(&config),
+            ConfigValue::Number(3.0)
+        );
+        assert_eq!(
+            ConfigKey::MinReviews.value(&config),
+            ConfigValue::Integer(500)
+        );
+        assert_eq!(
+            ConfigKey::EarlyAccess.value(&config),
+            ConfigValue::Flag(false)
+        );
+
+        reset_config(dir.path(), ConfigKey::WouldTryHours).unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(
+            ConfigKey::WouldTryHours.value(&config),
+            ConfigKey::WouldTryHours.default_value()
+        );
+        assert_eq!(
+            ConfigKey::MinReviews.value(&config),
+            ConfigValue::Integer(500)
+        );
+    }
+
+    #[test]
+    fn every_key_writes_a_value_the_config_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "steam_id = \"76561198000000000\"\n").unwrap();
+        let keys = [
+            ConfigKey::WishlistHours,
+            ConfigKey::FollowedHours,
+            ConfigKey::WouldTryHours,
+            ConfigKey::MinHours,
+            ConfigKey::MaxHours,
+            ConfigKey::RecentHoursMultiplier,
+            ConfigKey::Count,
+            ConfigKey::EarlyAccess,
+            ConfigKey::MinReviews,
+            ConfigKey::MinPositivePercent,
+            ConfigKey::BetEvery,
+            ConfigKey::QualityWeight,
+            ConfigKey::VotesWeight,
+            ConfigKey::Boost,
+            ConfigKey::Dampen,
+        ];
+
+        for key in keys {
+            change_config(dir.path(), key, key.default_value()).unwrap();
+        }
+
+        assert_eq!(
+            load_config(&path).unwrap(),
+            Config {
+                steam_id: Some(SteamId(76_561_198_000_000_000)),
+                ..Config::default()
+            }
+        );
     }
 
     #[test]

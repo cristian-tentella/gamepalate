@@ -41,6 +41,13 @@ pub enum ConfigError {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ConfigValue {
+    Number(f64),
+    Integer(i64),
+    Flag(bool),
+}
+
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields, default)]
 struct ConfigFile {
@@ -127,13 +134,58 @@ pub fn save_steam_client_hours(path: &Path, read: bool) -> Result<(), ConfigErro
     )
 }
 
+pub fn save_config_value(
+    path: &Path,
+    keys: &[&str],
+    value: ConfigValue,
+) -> Result<(), ConfigError> {
+    let value = match value {
+        ConfigValue::Number(number) => toml_edit::value(number),
+        ConfigValue::Integer(integer) => toml_edit::value(integer),
+        ConfigValue::Flag(flag) => toml_edit::value(flag),
+    };
+    let mut document = read_document(path)?;
+    set_value(&mut document, keys, value);
+    parse_config(&document.to_string())?;
+
+    write_document(path, &document)
+}
+
+pub fn remove_config_value(path: &Path, keys: &[&str]) -> Result<(), ConfigError> {
+    let mut document = read_document(path)?;
+    let (last, tables) = keys.split_last().expect("at least one key");
+    let mut table = Some(document.as_table_mut() as &mut dyn toml_edit::TableLike);
+    for key in tables {
+        table = table
+            .and_then(|table| table.get_mut(key))
+            .and_then(|item| item.as_table_like_mut());
+    }
+    if let Some(table) = table {
+        table.remove(last);
+    }
+    parse_config(&document.to_string())?;
+
+    write_document(path, &document)
+}
+
 fn save_value(path: &Path, keys: &[&str], value: toml_edit::Item) -> Result<(), ConfigError> {
+    let mut document = read_document(path)?;
+    set_value(&mut document, keys, value);
+
+    write_document(path, &document)
+}
+
+fn read_document(path: &Path) -> Result<DocumentMut, ConfigError> {
     let text = if path.is_file() {
         std::fs::read_to_string(path)?
     } else {
         String::new()
     };
-    let mut document: DocumentMut = text.parse()?;
+
+    Ok(text.parse()?)
+}
+
+fn set_value(document: &mut DocumentMut, keys: &[&str], value: toml_edit::Item) {
     let (last, tables) = keys.split_last().expect("at least one key");
     let mut item = document.as_item_mut();
     for key in tables {
@@ -143,7 +195,9 @@ fn save_value(path: &Path, keys: &[&str], value: toml_edit::Item) -> Result<(), 
         }
     }
     item[*last] = value;
+}
 
+fn write_document(path: &Path, document: &DocumentMut) -> Result<(), ConfigError> {
     let write_error = |source| ConfigError::Write {
         path: path.to_path_buf(),
         source,
@@ -507,6 +561,117 @@ steam_client_hours = true
         let config = load_config(&path).unwrap();
         assert_eq!(config.signals.steam_client_hours, Some(false));
         assert_eq!(config.signals.min_hours, 3.0);
+    }
+
+    const WITH_COMMENTS: &str = "# my settings
+steam_id = \"76561198000000000\"
+
+[signals]
+# hours
+min_hours = 3.0
+";
+
+    fn written(text: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, text).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn saving_a_value_keeps_comments_and_other_keys() {
+        let (_dir, path) = written(WITH_COMMENTS);
+
+        save_config_value(
+            &path,
+            &["signals", "would_try_hours"],
+            ConfigValue::Number(3.0),
+        )
+        .unwrap();
+        save_config_value(&path, &["results", "count"], ConfigValue::Integer(30)).unwrap();
+        save_config_value(
+            &path,
+            &["results", "early_access"],
+            ConfigValue::Flag(false),
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# my settings
+steam_id = \"76561198000000000\"
+
+[signals]
+# hours
+min_hours = 3.0
+would_try_hours = 3.0
+
+[results]
+count = 30
+early_access = false
+"
+        );
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.signals.would_try_hours, 3.0);
+        assert_eq!(config.results.count, 30);
+        assert!(!config.results.early_access);
+    }
+
+    #[test]
+    fn a_value_out_of_range_is_not_written() {
+        let (_dir, path) = written(WITH_COMMENTS);
+
+        let result = save_config_value(
+            &path,
+            &["relevance", "quality_weight"],
+            ConfigValue::Number(2.0),
+        );
+
+        assert_eq!(
+            invalid_field(result.map(|()| Config::default())),
+            "relevance.quality_weight"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), WITH_COMMENTS);
+    }
+
+    #[test]
+    fn a_broken_file_is_not_touched() {
+        let (_dir, path) = written("steam_id = \"123\"\n");
+
+        let result = save_config_value(&path, &["results", "count"], ConfigValue::Integer(30));
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "steam_id = \"123\"\n"
+        );
+    }
+
+    #[test]
+    fn removing_a_value_brings_back_the_default() {
+        let (_dir, path) = written(WITH_COMMENTS);
+
+        remove_config_value(&path, &["signals", "min_hours"]).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# my settings
+steam_id = \"76561198000000000\"
+
+[signals]
+"
+        );
+        assert_eq!(load_config(&path).unwrap().signals.min_hours, 2.0);
+    }
+
+    #[test]
+    fn removing_a_value_that_is_not_there_changes_nothing() {
+        let (_dir, path) = written(WITH_COMMENTS);
+
+        remove_config_value(&path, &["signals", "max_hours"]).unwrap();
+        remove_config_value(&path, &["results", "count"]).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), WITH_COMMENTS);
     }
 
     #[test]

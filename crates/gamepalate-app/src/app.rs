@@ -365,6 +365,7 @@ impl Gamepalate {
             steam_client_file: steam_client_file_of(&self.data_dir),
             catalog_games: self.files.catalog.games().len(),
             tags_updated_at: self.files.catalog.freshness.tags_updated_at,
+            config: self.files.config,
         }
     }
 

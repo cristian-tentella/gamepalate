@@ -37,6 +37,7 @@ pub use gamepalate_steam::details::{
     Controller, Italian, ItemDetails, SteamDeck, original_screenshot, thumbnail_screenshot,
 };
 pub use gamepalate_steam::{archive::PendingUpdate, transport::SteamError};
+pub use gamepalate_store::config::ConfigValue;
 pub use gamepalate_store::families_edit::NEW_FILE as NEW_FAMILIES_FILE;
 pub use gamepalate_store::gui::{GuiSettings, SavedWindow, ThemeChoice};
 pub use images::{ImageKind, LoadImageError};
