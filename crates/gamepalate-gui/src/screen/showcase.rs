@@ -5,8 +5,10 @@ use std::sync::Arc;
 
 use gamepalate_app::{AppId, GameDetails, Gamepalate, ImageKind};
 use iced::{
-    Center, ContentFit, Element, Task, padding,
-    widget::{button, column, container, image, row, space, text},
+    Center, ContentFit, Element, Fill, Task, mouse, padding,
+    widget::{
+        button, column, container, image, keyed_column, mouse_area, opaque, row, space, text,
+    },
 };
 
 use self::{
@@ -26,6 +28,9 @@ const DOTS_HEIGHT: f32 = 20.0;
 const SCREENSHOT_WIDTH: f32 = 820.0;
 pub const MAX_SCREENSHOT_WIDTH: f32 = 1280.0;
 const IMAGE_RADIUS: f32 = 8.0;
+const MAX_ZOOM: f32 = 4.0;
+const ZOOM_STEP: f32 = 0.25;
+const CLOSE: char = '\u{E8BB}';
 
 pub struct Showcase {
     gamepalate: Arc<Gamepalate>,
@@ -34,6 +39,7 @@ pub struct Showcase {
     screenshot: usize,
     last_screenshot: Option<String>,
     shown: Option<AppId>,
+    zoomed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -45,6 +51,8 @@ pub enum Message {
     NextScreenshot,
     ShowScreenshot(usize),
     RetryDetails,
+    Zoom,
+    CloseZoom,
 }
 
 impl Showcase {
@@ -56,6 +64,7 @@ impl Showcase {
             screenshot: 0,
             last_screenshot: None,
             shown: None,
+            zoomed: false,
         }
     }
 
@@ -78,6 +87,8 @@ impl Showcase {
                     self.pages.retry(id);
                 }
             }
+            Message::Zoom => self.zoomed = self.current_screenshot().is_some(),
+            Message::CloseZoom => self.zoomed = false,
         }
 
         Task::none()
@@ -88,6 +99,7 @@ impl Showcase {
             self.shown = current;
             self.screenshot = 0;
             self.last_screenshot = None;
+            self.zoomed = false;
         }
     }
 
@@ -302,7 +314,14 @@ impl Showcase {
                     Some(url) => {
                         let url =
                             shown_screenshot(url, &self.images, self.last_screenshot.as_ref());
-                        return self.picture(url, width, height);
+                        let picture = self.picture(url, width, height);
+                        if !matches!(self.images.get(url), Some(Picture::Ready(_))) {
+                            return picture;
+                        }
+                        return mouse_area(picture)
+                            .on_press(Message::Zoom)
+                            .interaction(mouse::Interaction::ZoomIn)
+                            .into();
                     }
                     None => note("No screenshots"),
                 }
@@ -330,6 +349,56 @@ impl Showcase {
             .center_y(height)
             .style(style::picture)
             .into()
+    }
+
+    pub fn is_zoomed(&self) -> bool {
+        self.zoomed
+    }
+
+    pub fn zoom(&self) -> Option<Element<'_, Message>> {
+        if !self.zoomed {
+            return None;
+        }
+        let url = shown_screenshot(
+            self.current_screenshot()?,
+            &self.images,
+            self.last_screenshot.as_ref(),
+        );
+        let screenshot: Element<'_, Message> = match self.images.get(url) {
+            Some(Picture::Ready(allocation)) => keyed_column([(
+                self.screenshot,
+                image::viewer(allocation.handle().clone())
+                    .width(Fill)
+                    .height(Fill)
+                    .min_scale(1.0)
+                    .max_scale(MAX_ZOOM)
+                    .scale_step(ZOOM_STEP)
+                    .into(),
+            )])
+            .height(Fill)
+            .into(),
+            Some(Picture::Failed) => container(note("Image unavailable")).center(Fill).into(),
+            Some(Picture::Loading) | None => space().height(Fill).into(),
+        };
+        let close = button(text(CLOSE).font(font::ICONS).size(12))
+            .padding([8, 12])
+            .style(style::window_button)
+            .on_press(Message::CloseZoom);
+
+        Some(opaque(
+            container(
+                column![row![space().width(Fill), close], screenshot]
+                    .push(
+                        self.dots(self.screenshot_count())
+                            .map(|dots| container(dots).center_x(Fill)),
+                    )
+                    .spacing(8),
+            )
+            .padding(16)
+            .width(Fill)
+            .height(Fill)
+            .style(style::zoom),
+        ))
     }
 
     fn dots<'a>(&self, count: usize) -> Option<Element<'a, Message>> {

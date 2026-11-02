@@ -118,6 +118,18 @@ impl Votes {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        if self.showcase.is_zoomed()
+            && matches!(
+                message,
+                Message::Previous
+                    | Message::Next
+                    | Message::Vote(_)
+                    | Message::Open(_)
+                    | Message::FocusSearch
+            )
+        {
+            return Task::none();
+        }
         let task = self.handle(message);
 
         Task::batch([task, self.load()])
@@ -208,11 +220,12 @@ impl Votes {
             .padding([10, 20])
             .width(Fill);
 
-        row![
+        stack![row![
             container(self.list()).width(LIST_WIDTH).height(Fill),
             rule::vertical(1).style(rule::weak),
             column![stack![card].push(toast), style::separator(), votes],
-        ]
+        ]]
+        .push(self.showcase.zoom().map(|zoom| zoom.map(Message::Showcase)))
         .into()
     }
 
@@ -629,6 +642,7 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
     }
 
     match key {
+        Key::Named(Named::Escape) => Some(Message::Showcase(showcase::Message::CloseZoom)),
         Key::Named(Named::ArrowUp) => Some(Message::Previous),
         Key::Named(Named::ArrowDown) => Some(Message::Next),
         Key::Named(Named::ArrowRight) => Some(Message::Showcase(showcase::Message::NextScreenshot)),
@@ -808,6 +822,14 @@ mod tests {
         assert!(matches!(
             key_message(pressed(Key::Character("6".into()))),
             Some(Message::Open(Link::Eneba))
+        ));
+    }
+
+    #[test]
+    fn closes_the_zoomed_screenshot_with_escape() {
+        assert!(matches!(
+            key_message(pressed(Key::Named(Named::Escape))),
+            Some(Message::Showcase(showcase::Message::CloseZoom))
         ));
     }
 

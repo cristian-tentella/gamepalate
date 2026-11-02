@@ -350,6 +350,16 @@ pub fn card(theme: &Theme) -> container::Style {
     }
 }
 
+pub fn zoom(theme: &Theme) -> container::Style {
+    let background = theme.extended_palette().background.base;
+
+    container::Style {
+        background: Some(background.color.into()),
+        text_color: Some(background.text),
+        ..container::Style::default()
+    }
+}
+
 pub fn picture(theme: &Theme) -> container::Style {
     let background = theme.extended_palette().background;
 

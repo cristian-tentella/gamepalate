@@ -134,6 +134,19 @@ impl Discover {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        if self.showcase.is_zoomed() {
+            match message {
+                Message::CloseFilters => {
+                    return self.update(Message::Showcase(showcase::Message::CloseZoom));
+                }
+                Message::Next
+                | Message::Previous
+                | Message::Vote(_)
+                | Message::Open(_)
+                | Message::ToggleFilters => return Task::none(),
+                _ => {}
+            }
+        }
         let task = self.handle(message);
         self.showcase.follow(self.current().map(|game| game.id));
 
@@ -338,7 +351,9 @@ impl Discover {
 
         let below = stack![column![main, style::separator(), votes]].push(popup);
 
-        column![filters, style::separator(), below].into()
+        stack![column![filters, style::separator(), below]]
+            .push(self.showcase.zoom().map(|zoom| zoom.map(Message::Showcase)))
+            .into()
     }
 
     fn vote_row(&self, compact: bool) -> Element<'_, Message> {
