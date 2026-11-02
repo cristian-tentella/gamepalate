@@ -15,6 +15,7 @@ const NUMBER_WIDTH: f32 = 72.0;
 const RANGE_WIDTH: f32 = 196.0;
 const TAG_WIDTH: f32 = 196.0;
 const SPACING: f32 = 12.0;
+const PANEL_WIDTH: f32 = 520.0;
 const INFO: char = '\u{E946}';
 
 #[derive(Debug, Clone, PartialEq)]
@@ -310,6 +311,7 @@ impl Panel {
 
         column![price, reviews, tags, choices, actions]
             .spacing(14)
+            .max_width(PANEL_WIDTH)
             .into()
     }
 
