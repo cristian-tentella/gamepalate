@@ -50,10 +50,11 @@ const LIGHT_TEXT: Color = Color::from_rgb8(0x02, 0x31, 0x3d);
 const LIGHT_PRIMARY: Color = Color::from_rgb8(0x04, 0x77, 0x91);
 const LIGHT_ACCENT: Color = Color::from_rgb8(0x91, 0x33, 0x78);
 const LIGHT_DANGER: Color = Color::from_rgb8(0xa1, 0x59, 0x5a);
-const DARK_BACKGROUND: Color = Color::from_rgb8(0x10, 0x11, 0x13);
-const DARK_TEXT: Color = Color::from_rgb8(0xf5, 0xf5, 0xf5);
-const DARK_SUCCESS: Color = Color::from_rgb8(0x78, 0xe3, 0xb3);
-const DARK_WARNING: Color = Color::from_rgb8(0xff, 0xe2, 0xa3);
+const DARK_BACKGROUND: Color = Color::from_rgb8(0x08, 0x0f, 0x11);
+const DARK_TEXT: Color = Color::from_rgb8(0xda, 0xeb, 0xf1);
+const DARK_PRIMARY: Color = Color::from_rgb8(0x8d, 0xd6, 0xed);
+const DARK_ACCENT: Color = Color::from_rgb8(0xd8, 0x9b, 0xc3);
+const DARK_DANGER: Color = Color::from_rgb8(0xff, 0xba, 0xb9);
 
 pub struct App {
     gamepalate: Option<Arc<Gamepalate>>,
@@ -795,9 +796,10 @@ fn dark() -> Theme {
         Palette {
             background: DARK_BACKGROUND,
             text: DARK_TEXT,
-            success: DARK_SUCCESS,
-            warning: DARK_WARNING,
-            ..Palette::DARK
+            primary: DARK_PRIMARY,
+            success: DARK_ACCENT,
+            warning: DARK_ACCENT,
+            danger: DARK_DANGER,
         },
     )
 }
