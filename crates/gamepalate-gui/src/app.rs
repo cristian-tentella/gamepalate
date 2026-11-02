@@ -45,6 +45,11 @@ const CANCEL: char = '\u{E711}';
 const GEAR: char = '\u{E713}';
 const DEFAULT_SIZE: Size = Size::new(1280.0, 800.0);
 const MIN_SIZE: Size = Size::new(960.0, 600.0);
+const LIGHT_BACKGROUND: Color = Color::from_rgb8(0xff, 0xff, 0xff);
+const LIGHT_TEXT: Color = Color::from_rgb8(0x02, 0x31, 0x3d);
+const LIGHT_PRIMARY: Color = Color::from_rgb8(0x04, 0x77, 0x91);
+const LIGHT_ACCENT: Color = Color::from_rgb8(0x91, 0x33, 0x78);
+const LIGHT_DANGER: Color = Color::from_rgb8(0xa1, 0x59, 0x5a);
 const DARK_BACKGROUND: Color = Color::from_rgb8(0x10, 0x11, 0x13);
 const DARK_TEXT: Color = Color::from_rgb8(0xf5, 0xf5, 0xf5);
 const DARK_SUCCESS: Color = Color::from_rgb8(0x78, 0xe3, 0xb3);
@@ -125,7 +130,7 @@ impl App {
         let mut app = App {
             gamepalate: None,
             screen: Screen::Starting,
-            theme: Theme::Light,
+            theme: light(),
             window: None,
             maximized: saved.is_some_and(|saved| saved.maximized),
             size: saved_size(saved),
@@ -770,6 +775,20 @@ fn restored(size: Size, maximized: bool) -> Option<Size> {
     (!maximized && size.width >= MIN_SIZE.width && size.height >= MIN_SIZE.height).then_some(size)
 }
 
+fn light() -> Theme {
+    Theme::custom(
+        "Light",
+        Palette {
+            background: LIGHT_BACKGROUND,
+            text: LIGHT_TEXT,
+            primary: LIGHT_PRIMARY,
+            success: LIGHT_ACCENT,
+            warning: LIGHT_ACCENT,
+            danger: LIGHT_DANGER,
+        },
+    )
+}
+
 fn dark() -> Theme {
     Theme::custom(
         "Dark",
@@ -788,12 +807,12 @@ fn is_dark(theme: &Theme) -> bool {
 }
 
 fn toggled(theme: &Theme) -> Theme {
-    if is_dark(theme) { Theme::Light } else { dark() }
+    if is_dark(theme) { light() } else { dark() }
 }
 
 fn theme(choice: ThemeChoice) -> Theme {
     match choice {
-        ThemeChoice::Light => Theme::Light,
+        ThemeChoice::Light => light(),
         ThemeChoice::Dark => dark(),
     }
 }
@@ -1157,8 +1176,8 @@ mod tests {
 
     #[test]
     fn the_theme_goes_from_light_to_dark_and_back() {
-        assert_eq!(toggled(&Theme::Light), dark());
-        assert_eq!(toggled(&dark()), Theme::Light);
+        assert_eq!(toggled(&light()), dark());
+        assert_eq!(toggled(&dark()), light());
     }
 
     #[test]
@@ -1181,7 +1200,7 @@ mod tests {
                 discount.relative_contrast(background),
             )
         };
-        let (light_link, light_discount) = contrast(&Theme::Light);
+        let (light_link, light_discount) = contrast(&light());
         let (dark_link, dark_discount) = contrast(&dark());
 
         assert!(dark_link >= light_link);
@@ -1197,7 +1216,7 @@ mod tests {
 
     #[test]
     fn the_button_shows_the_theme_it_switches_to() {
-        assert_eq!(theme_icon(&Theme::Light), MOON);
+        assert_eq!(theme_icon(&light()), MOON);
         assert_eq!(theme_icon(&dark()), SUN);
     }
 }
