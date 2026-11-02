@@ -18,8 +18,8 @@ use iced::{
     keyboard::{self, Key, key::Named},
     never, padding,
     widget::{
-        button, column, container, mouse_area, opaque, pick_list, responsive, rich_text, row,
-        scrollable, space, span, stack, text,
+        Column, button, column, container, mouse_area, opaque, pick_list, responsive, rich_text,
+        row, scrollable, space, span, stack, text,
     },
 };
 
@@ -38,10 +38,13 @@ const COMPACT_WIDTH: f32 = 1100.0;
 const TOAST_DURATION: Duration = Duration::from_secs(4);
 const FLASH_DURATION: Duration = Duration::from_millis(600);
 const SIDE_WIDTH: f32 = 360.0;
-const HEADER_HEIGHT: f32 = SIDE_WIDTH * 215.0 / 460.0;
 const MIN_SHOT_WIDTH: f32 = 480.0;
 const CARD_SPACING: f32 = 32.0;
+const INFO_SPACING: f32 = 14.0;
 const SCROLLBAR_GAP: f32 = 12.0;
+const MEDIA_BELOW: f32 = 80.0;
+const SIDE_HEIGHT: f32 = 560.0;
+const STACKED_BELOW: f32 = 440.0;
 
 pub struct Discover {
     gamepalate: Arc<Gamepalate>,
@@ -554,43 +557,75 @@ impl Discover {
         game: &'a RecommendedGame,
         size: Size,
     ) -> Element<'a, Message> {
-        let (shot_width, shot_height) = screenshot_size(size);
+        let layout = Layout::new(size);
+        let (shot_width, shot_height) = layout.shot_size();
+        let media = self
+            .showcase
+            .media(game.id, shot_width, shot_height)
+            .map(Message::Showcase);
+        let content: Element<'a, Message> = match layout {
+            Layout::Beside(_) => row![
+                media,
+                column![self.summary(game, SIDE_WIDTH), self.reasons(queue, game)]
+                    .spacing(INFO_SPACING)
+                    .width(SIDE_WIDTH),
+            ]
+            .spacing(CARD_SPACING)
+            .into(),
+            Layout::Stacked(_) => {
+                let header_width = ((shot_width - CARD_SPACING) / 2.0).min(SIDE_WIDTH);
+                column![
+                    media,
+                    row![
+                        self.summary(game, header_width).width(Fill),
+                        self.reasons(queue, game).width(Fill),
+                    ]
+                    .spacing(CARD_SPACING),
+                ]
+                .spacing(CARD_SPACING)
+                .width(shot_width)
+                .into()
+            }
+        };
+
+        scrollable(
+            container(content)
+                .center_x(Fill)
+                .padding(padding::right(SCROLLBAR_GAP).top(layout.top_space(size.height))),
+        )
+        .height(Fill)
+        .into()
+    }
+
+    fn summary<'a>(&'a self, game: &'a RecommendedGame, header_width: f32) -> Column<'a, Message> {
+        column![
+            self.showcase
+                .header(game.id, header_width, header_width * 215.0 / 460.0)
+                .map(Message::Showcase),
+            text(&game.name).size(font::TITLE_SIZE).font(font::SEMIBOLD),
+            game::price_row(&game.price, game.bet, self.gamepalate.currency()),
+            game::stats(Some(&game.reviews), self.showcase.year(game.id)),
+        ]
+        .spacing(INFO_SPACING)
+    }
+
+    fn reasons<'a>(&'a self, queue: &'a Queue, game: &'a RecommendedGame) -> Column<'a, Message> {
         let waiting = queue.is_waiting().then(|| {
             text("Loading the next games…")
                 .size(font::NOTE_SIZE)
                 .style(style::muted)
         });
 
-        let media = self
-            .showcase
-            .media(game.id, shot_width, shot_height)
-            .map(Message::Showcase);
-        let info = column![
-            self.showcase
-                .header(game.id, SIDE_WIDTH, HEADER_HEIGHT)
-                .map(Message::Showcase),
-            text(&game.name).size(font::TITLE_SIZE).font(font::SEMIBOLD),
-            game::price_row(&game.price, game.bet, self.gamepalate.currency()),
-            game::stats(Some(&game.reviews), self.showcase.year(game.id)),
-        ]
-        .push(similar_lines(game))
-        .push(self.why(game))
-        .push(
-            self.showcase
-                .facts(game.id)
-                .map(|facts| facts.map(Message::Showcase)),
-        )
-        .push(waiting)
-        .spacing(14)
-        .width(SIDE_WIDTH);
-
-        scrollable(
-            container(row![media, info].spacing(CARD_SPACING))
-                .center_x(Fill)
-                .padding(padding::right(SCROLLBAR_GAP)),
-        )
-        .height(Fill)
-        .into()
+        column![]
+            .push(similar_lines(game))
+            .push(self.why(game))
+            .push(
+                self.showcase
+                    .facts(game.id)
+                    .map(|facts| facts.map(Message::Showcase)),
+            )
+            .push(waiting)
+            .spacing(INFO_SPACING)
     }
 
     fn current(&self) -> Option<&RecommendedGame> {
@@ -729,11 +764,42 @@ fn family_options(saved: &SearchOptions, family: &str) -> SearchOptions {
     }
 }
 
-fn screenshot_size(size: Size) -> (f32, f32) {
-    let width = size.width - SIDE_WIDTH - CARD_SPACING - SCROLLBAR_GAP;
-    let shot_width = showcase::screenshot_width(width, size.height).max(MIN_SHOT_WIDTH);
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Layout {
+    Beside(f32),
+    Stacked(f32),
+}
 
-    (shot_width, shot_width * 9.0 / 16.0)
+impl Layout {
+    fn new(size: Size) -> Self {
+        let width = size.width - SIDE_WIDTH - CARD_SPACING - SCROLLBAR_GAP;
+        let beside = showcase::screenshot_width(width, size.height).max(MIN_SHOT_WIDTH);
+        let stacked = (size.width - SCROLLBAR_GAP)
+            .min(showcase::MAX_SCREENSHOT_WIDTH)
+            .min((size.height - STACKED_BELOW) * 16.0 / 9.0);
+
+        if stacked > beside {
+            Self::Stacked(stacked)
+        } else {
+            Self::Beside(beside)
+        }
+    }
+
+    fn shot_size(self) -> (f32, f32) {
+        let (Self::Beside(width) | Self::Stacked(width)) = self;
+
+        (width, width * 9.0 / 16.0)
+    }
+
+    fn top_space(self, height: f32) -> f32 {
+        let (_, shot_height) = self.shot_size();
+        let content = match self {
+            Self::Beside(_) => (shot_height + MEDIA_BELOW).max(SIDE_HEIGHT),
+            Self::Stacked(_) => shot_height + STACKED_BELOW,
+        };
+
+        ((height - content) / 2.0).max(0.0)
+    }
 }
 
 fn after(duration: Duration, message: Message) -> Task<Message> {
@@ -843,13 +909,48 @@ mod tests {
 
     #[test]
     fn fits_the_screenshot_between_its_limits() {
-        assert_eq!(screenshot_size(Size::new(1160.0, 600.0)), (756.0, 425.25));
-        assert_eq!(screenshot_size(Size::new(2000.0, 596.5)).0, 1000.0);
         assert_eq!(
-            screenshot_size(Size::new(3000.0, 1400.0)).0,
-            showcase::MAX_SCREENSHOT_WIDTH
+            Layout::new(Size::new(1160.0, 600.0)).shot_size(),
+            (756.0, 425.25)
         );
-        assert_eq!(screenshot_size(Size::new(600.0, 600.0)).0, MIN_SHOT_WIDTH);
+        assert_eq!(
+            Layout::new(Size::new(2000.0, 596.5)),
+            Layout::Beside(1000.0)
+        );
+        assert_eq!(
+            Layout::new(Size::new(3000.0, 1400.0)),
+            Layout::Beside(showcase::MAX_SCREENSHOT_WIDTH)
+        );
+        assert_eq!(
+            Layout::new(Size::new(600.0, 600.0)),
+            Layout::Beside(MIN_SHOT_WIDTH)
+        );
+    }
+
+    #[test]
+    fn stacks_the_game_when_the_screenshot_gets_wider() {
+        assert_eq!(Layout::new(Size::new(1248.0, 632.0)), Layout::Beside(844.0));
+        assert_eq!(
+            Layout::new(Size::new(1888.0, 864.0)),
+            Layout::Beside(showcase::MAX_SCREENSHOT_WIDTH)
+        );
+        assert_eq!(
+            Layout::new(Size::new(2528.0, 1272.0)),
+            Layout::Beside(showcase::MAX_SCREENSHOT_WIDTH)
+        );
+        assert_eq!(
+            Layout::new(Size::new(1248.0, 1272.0)),
+            Layout::Stacked(1236.0)
+        );
+        assert_eq!(Layout::new(Size::new(928.0, 890.0)), Layout::Stacked(800.0));
+    }
+
+    #[test]
+    fn centers_the_game_only_when_it_fits() {
+        assert_eq!(Layout::Beside(844.0).top_space(632.0), 36.0);
+        assert_eq!(Layout::Beside(480.0).top_space(500.0), 0.0);
+        assert_eq!(Layout::Stacked(1236.0).top_space(1272.0), 68.375);
+        assert_eq!(Layout::Stacked(800.0).top_space(800.0), 0.0);
     }
 
     #[test]
