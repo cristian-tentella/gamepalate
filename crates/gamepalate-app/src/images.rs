@@ -80,6 +80,10 @@ impl<F: Fetch> ImageCache<F> {
         }
     }
 
+    pub async fn download(&self, url: &str) -> Result<Vec<u8>, LoadImageError> {
+        Ok(self.downloader.download(url).await?)
+    }
+
     pub async fn image(&self, url: &str, kind: ImageKind) -> Result<Vec<u8>, LoadImageError> {
         let dir = self
             .dir
@@ -359,6 +363,18 @@ mod tests {
         ));
 
         assert!(files(dir.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_download_without_cache_leaves_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cache, calls) = cache(Some(dir.path()), 200);
+
+        assert_eq!(cache.download(URL).await.unwrap(), vec![1, 2, 3]);
+        assert_eq!(cache.download(URL).await.unwrap(), vec![1, 2, 3]);
+
+        assert_eq!(cache.bytes(), 0);
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test]

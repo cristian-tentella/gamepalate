@@ -1,9 +1,9 @@
 pub(super) mod images;
 mod pages;
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use gamepalate_app::{AppId, GameDetails, Gamepalate, ImageKind};
+use gamepalate_app::{AppId, GameDetails, Gamepalate, ImageKind, original_screenshot};
 use iced::{
     Center, ContentFit, Element, Fill, Task, mouse, padding,
     widget::{
@@ -40,12 +40,15 @@ pub struct Showcase {
     last_screenshot: Option<String>,
     shown: Option<AppId>,
     zoomed: bool,
+    originals: HashMap<String, Picture>,
 }
 
 #[derive(Clone, Debug)]
 pub enum Message {
     ImageLoaded(String, Option<image::Handle>),
     ImageAllocated(String, Option<image::Allocation>),
+    OriginalLoaded(String, Option<image::Handle>),
+    OriginalAllocated(String, Option<image::Allocation>),
     DetailsLoaded(AppId, Result<Option<Arc<GameDetails>>, String>),
     PreviousScreenshot,
     NextScreenshot,
@@ -65,6 +68,7 @@ impl Showcase {
             last_screenshot: None,
             shown: None,
             zoomed: false,
+            originals: HashMap::new(),
         }
     }
 
@@ -76,6 +80,13 @@ impl Showcase {
                     .map(move |allocation| Message::ImageAllocated(url.clone(), allocation.ok()));
             }
             Message::ImageAllocated(url, allocation) => self.images.loaded(url, allocation),
+            Message::OriginalLoaded(url, Some(handle)) => {
+                return image::allocate(handle).map(move |allocation| {
+                    Message::OriginalAllocated(url.clone(), allocation.ok())
+                });
+            }
+            Message::OriginalLoaded(url, None) => self.original_loaded(&url, None),
+            Message::OriginalAllocated(url, allocation) => self.original_loaded(&url, allocation),
             Message::DetailsLoaded(id, result) => self.pages.loaded(id, result),
             Message::PreviousScreenshot => self.show_screenshot(self.screenshot.saturating_sub(1)),
             Message::NextScreenshot => {
@@ -91,7 +102,42 @@ impl Showcase {
             Message::CloseZoom => self.zoomed = false,
         }
 
-        Task::none()
+        self.load_original()
+    }
+
+    fn load_original(&mut self) -> Task<Message> {
+        if !self.zoomed {
+            return Task::none();
+        }
+        let Some(url) = self.current_screenshot().cloned() else {
+            return Task::none();
+        };
+        let Some(original) = original_screenshot(&url) else {
+            return Task::none();
+        };
+        if self.originals.contains_key(&url) {
+            return Task::none();
+        }
+        self.originals.insert(url.clone(), Picture::Loading);
+
+        let gamepalate = Arc::clone(&self.gamepalate);
+        Task::perform(
+            async move {
+                let handle = gamepalate
+                    .image_without_cache(&original)
+                    .await
+                    .ok()
+                    .map(image::Handle::from_bytes);
+                (url, handle)
+            },
+            |(url, handle)| Message::OriginalLoaded(url, handle),
+        )
+    }
+
+    fn original_loaded(&mut self, url: &str, allocation: Option<image::Allocation>) {
+        if let Some(picture) = self.originals.get_mut(url) {
+            *picture = allocation.map_or(Picture::Failed, Picture::Ready);
+        }
     }
 
     pub fn follow(&mut self, current: Option<AppId>) {
@@ -100,6 +146,7 @@ impl Showcase {
             self.screenshot = 0;
             self.last_screenshot = None;
             self.zoomed = false;
+            self.originals.clear();
         }
     }
 
@@ -364,8 +411,13 @@ impl Showcase {
             &self.images,
             self.last_screenshot.as_ref(),
         );
-        let screenshot: Element<'_, Message> = match self.images.get(url) {
-            Some(Picture::Ready(allocation)) => keyed_column([(
+        let shown = match (self.originals.get(url), self.images.get(url)) {
+            (Some(Picture::Ready(original)), _) => Some(original),
+            (_, Some(Picture::Ready(copy))) => Some(copy),
+            _ => None,
+        };
+        let screenshot: Element<'_, Message> = match (shown, self.images.get(url)) {
+            (Some(allocation), _) => keyed_column([(
                 self.screenshot,
                 image::viewer(allocation.handle().clone())
                     .width(Fill)
@@ -377,8 +429,10 @@ impl Showcase {
             )])
             .height(Fill)
             .into(),
-            Some(Picture::Failed) => container(note("Image unavailable")).center(Fill).into(),
-            Some(Picture::Loading) | None => space().height(Fill).into(),
+            (None, Some(Picture::Failed)) => {
+                container(note("Image unavailable")).center(Fill).into()
+            }
+            (None, _) => space().height(Fill).into(),
         };
         let close = button(text(CLOSE).font(font::ICONS).size(12))
             .padding([8, 12])

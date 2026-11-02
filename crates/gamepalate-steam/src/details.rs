@@ -334,6 +334,18 @@ fn to_details(item: SteamDetails) -> ItemDetails {
     }
 }
 
+pub fn original_screenshot(url: &str) -> Option<String> {
+    let (path, query) = url
+        .split_once('?')
+        .map_or((url, None), |(path, query)| (path, Some(query)));
+    let name = path.strip_suffix(&format!("{SCREENSHOT_SIZE}.jpg"))?;
+
+    Some(match query {
+        Some(query) => format!("{name}.jpg?{query}"),
+        None => format!("{name}.jpg"),
+    })
+}
+
 fn screenshot_url(filename: &str) -> String {
     let (path, query) = filename
         .split_once('?')
@@ -514,6 +526,22 @@ mod tests {
                 audio: false,
             })
         );
+    }
+
+    #[test]
+    fn the_original_screenshot_drops_the_size() {
+        assert_eq!(
+            original_screenshot(&format!(
+                "{ASSETS_BASE_URL}steam/apps/692850/ss_63cc.1920x1080.jpg?t=1793353694"
+            ))
+            .unwrap(),
+            format!("{ASSETS_BASE_URL}steam/apps/692850/ss_63cc.jpg?t=1793353694")
+        );
+        assert_eq!(
+            original_screenshot("https://example.com/ss_1.1920x1080.jpg").unwrap(),
+            "https://example.com/ss_1.jpg"
+        );
+        assert_eq!(original_screenshot("https://example.com/header.jpg"), None);
     }
 
     #[test]

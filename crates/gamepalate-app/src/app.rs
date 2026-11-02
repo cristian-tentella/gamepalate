@@ -203,6 +203,10 @@ impl Gamepalate {
         self.images.image(url, kind).await
     }
 
+    pub async fn image_without_cache(&self, url: &str) -> Result<Vec<u8>, LoadImageError> {
+        self.images.download(url).await
+    }
+
     pub async fn capsule(&self, id: AppId) -> Result<Capsule, LoadImageError> {
         capsule(id, &self.images, &self.capsules).await
     }
