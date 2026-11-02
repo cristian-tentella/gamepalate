@@ -315,7 +315,7 @@ impl Discover {
         ])
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
+    pub fn view(&self, scale: f32) -> Element<'_, Message> {
         let summary = if self.updating {
             Some("Updating…".to_string())
         } else {
@@ -377,7 +377,7 @@ impl Discover {
             .align_bottom(Fill)
             .padding(16)
         });
-        let game = container(self.game())
+        let game = container(self.game(scale))
             .padding(16)
             .width(Fill)
             .height(Fill)
@@ -556,8 +556,9 @@ impl Discover {
         queue: &'a Queue,
         game: &'a RecommendedGame,
         size: Size,
+        scale: f32,
     ) -> Element<'a, Message> {
-        let layout = Layout::new(size);
+        let layout = Layout::new(size, showcase::max_screenshot_width(scale));
         let (shot_width, shot_height) = layout.shot_size();
         let media = self
             .showcase
@@ -635,7 +636,7 @@ impl Discover {
         }
     }
 
-    fn game(&self) -> Element<'_, Message> {
+    fn game(&self, scale: f32) -> Element<'_, Message> {
         let content: Element<'_, Message> = match &self.state {
             State::Loading => text("Loading…").style(style::muted).into(),
             State::Failed(error) => column![
@@ -647,7 +648,7 @@ impl Discover {
             .into(),
             State::Ready(queue) => match queue.current() {
                 None => self.empty(),
-                Some(game) => responsive(move |size| self.card(queue, game, size)).into(),
+                Some(game) => responsive(move |size| self.card(queue, game, size, scale)).into(),
             },
         };
 
@@ -771,11 +772,11 @@ enum Layout {
 }
 
 impl Layout {
-    fn new(size: Size) -> Self {
+    fn new(size: Size, max_shot: f32) -> Self {
         let width = size.width - SIDE_WIDTH - CARD_SPACING - SCROLLBAR_GAP;
-        let beside = showcase::screenshot_width(width, size.height).max(MIN_SHOT_WIDTH);
+        let beside = showcase::screenshot_width(width, size.height, max_shot).max(MIN_SHOT_WIDTH);
         let stacked = (size.width - SCROLLBAR_GAP)
-            .min(showcase::MAX_SCREENSHOT_WIDTH)
+            .min(max_shot)
             .min((size.height - STACKED_BELOW) * 16.0 / 9.0);
 
         if stacked > beside {
@@ -910,39 +911,53 @@ mod tests {
     #[test]
     fn fits_the_screenshot_between_its_limits() {
         assert_eq!(
-            Layout::new(Size::new(1160.0, 600.0)).shot_size(),
+            Layout::new(Size::new(1160.0, 600.0), 1280.0).shot_size(),
             (756.0, 425.25)
         );
         assert_eq!(
-            Layout::new(Size::new(2000.0, 596.5)),
+            Layout::new(Size::new(2000.0, 596.5), 1280.0),
             Layout::Beside(1000.0)
         );
         assert_eq!(
-            Layout::new(Size::new(3000.0, 1400.0)),
-            Layout::Beside(showcase::MAX_SCREENSHOT_WIDTH)
+            Layout::new(Size::new(3000.0, 1400.0), 1280.0),
+            Layout::Beside(1280.0)
         );
         assert_eq!(
-            Layout::new(Size::new(600.0, 600.0)),
+            Layout::new(Size::new(600.0, 600.0), 1280.0),
             Layout::Beside(MIN_SHOT_WIDTH)
         );
     }
 
     #[test]
     fn stacks_the_game_when_the_screenshot_gets_wider() {
-        assert_eq!(Layout::new(Size::new(1248.0, 632.0)), Layout::Beside(844.0));
         assert_eq!(
-            Layout::new(Size::new(1888.0, 864.0)),
-            Layout::Beside(showcase::MAX_SCREENSHOT_WIDTH)
+            Layout::new(Size::new(1248.0, 632.0), 1280.0),
+            Layout::Beside(844.0)
         );
         assert_eq!(
-            Layout::new(Size::new(2528.0, 1272.0)),
-            Layout::Beside(showcase::MAX_SCREENSHOT_WIDTH)
+            Layout::new(Size::new(1888.0, 864.0), 1280.0),
+            Layout::Beside(1280.0)
         );
         assert_eq!(
-            Layout::new(Size::new(1248.0, 1272.0)),
+            Layout::new(Size::new(2528.0, 1272.0), 1280.0),
+            Layout::Beside(1280.0)
+        );
+        assert_eq!(
+            Layout::new(Size::new(1248.0, 1272.0), 1280.0),
             Layout::Stacked(1236.0)
         );
-        assert_eq!(Layout::new(Size::new(928.0, 890.0)), Layout::Stacked(800.0));
+        assert_eq!(
+            Layout::new(Size::new(928.0, 890.0), 1280.0),
+            Layout::Stacked(800.0)
+        );
+    }
+
+    #[test]
+    fn a_bigger_screenshot_keeps_the_game_beside_it() {
+        assert_eq!(
+            Layout::new(Size::new(2528.0, 1272.0), 1920.0),
+            Layout::Beside(1920.0)
+        );
     }
 
     #[test]

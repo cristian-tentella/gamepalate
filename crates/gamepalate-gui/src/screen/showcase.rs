@@ -29,7 +29,7 @@ const DOT_SIZE: f32 = 8.0;
 const MEDIA_SPACING: f32 = 14.0;
 const DOTS_HEIGHT: f32 = 20.0;
 const SCREENSHOT_WIDTH: f32 = 820.0;
-pub const MAX_SCREENSHOT_WIDTH: f32 = 1280.0;
+const SOURCE_WIDTH: f32 = 1920.0;
 const IMAGE_RADIUS: f32 = 8.0;
 const WAITING_OPACITY: f32 = 0.5;
 const MAX_ZOOM: f32 = 4.0;
@@ -548,10 +548,14 @@ impl Showcase {
     }
 }
 
-pub fn screenshot_width(width: f32, height: f32) -> f32 {
+pub fn max_screenshot_width(scale: f32) -> f32 {
+    (SOURCE_WIDTH / scale).max(SCREENSHOT_WIDTH)
+}
+
+pub fn screenshot_width(width: f32, height: f32, max: f32) -> f32 {
     let fitting = (height - MEDIA_SPACING - DOTS_HEIGHT) * 16.0 / 9.0;
 
-    width.min(fitting.clamp(SCREENSHOT_WIDTH, MAX_SCREENSHOT_WIDTH))
+    width.min(fitting.clamp(SCREENSHOT_WIDTH, max))
 }
 
 fn framed<'a>(
@@ -716,10 +720,19 @@ mod tests {
 
     #[test]
     fn the_screenshot_grows_only_while_it_fits_in_the_height() {
-        assert_eq!(screenshot_width(600.0, 300.0), 600.0);
-        assert_eq!(screenshot_width(2000.0, 300.0), SCREENSHOT_WIDTH);
-        assert_eq!(screenshot_width(2000.0, 596.5), 1000.0);
-        assert_eq!(screenshot_width(2000.0, 1200.0), MAX_SCREENSHOT_WIDTH);
+        assert_eq!(screenshot_width(600.0, 300.0, 1280.0), 600.0);
+        assert_eq!(screenshot_width(2000.0, 300.0, 1280.0), SCREENSHOT_WIDTH);
+        assert_eq!(screenshot_width(2000.0, 596.5, 1280.0), 1000.0);
+        assert_eq!(screenshot_width(2000.0, 1200.0, 1280.0), 1280.0);
+        assert_eq!(screenshot_width(2000.0, 1200.0, 1920.0), 1920.0);
+    }
+
+    #[test]
+    fn the_screenshot_stops_at_the_pixels_steam_gives() {
+        assert_eq!(max_screenshot_width(1.0), 1920.0);
+        assert_eq!(max_screenshot_width(1.25), 1536.0);
+        assert_eq!(max_screenshot_width(1.5), 1280.0);
+        assert_eq!(max_screenshot_width(3.0), SCREENSHOT_WIDTH);
     }
 
     #[test]

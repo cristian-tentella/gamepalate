@@ -57,6 +57,7 @@ pub struct App {
     maximized: bool,
     size: Size,
     resized: Size,
+    scale: f32,
     last_bar_press: Option<Instant>,
     refresh: Refresh,
     pending: Option<PendingUpdate>,
@@ -90,6 +91,7 @@ pub enum Message {
     Window(WindowAction),
     BarPressed,
     Resized(Size),
+    Rescaled(f32),
     Maximized(bool),
     ToggleTheme,
     Refresh,
@@ -127,6 +129,7 @@ impl App {
             maximized: saved.is_some_and(|saved| saved.maximized),
             size: saved_size(saved),
             resized: saved_size(saved),
+            scale: 1.0,
             last_bar_press: None,
             refresh: Refresh::Idle,
             pending: None,
@@ -246,6 +249,13 @@ impl App {
             }
             Message::WindowFound(id) => {
                 self.window = id;
+                match id {
+                    Some(id) => window::scale_factor(id).map(Message::Rescaled),
+                    None => Task::none(),
+                }
+            }
+            Message::Rescaled(scale) => {
+                self.scale = scale;
                 Task::none()
             }
             Message::Window(action) => self.window_action(action),
@@ -359,6 +369,7 @@ impl App {
 
         Subscription::batch([
             window::resize_events().map(|(_, size)| Message::Resized(size)),
+            window::events().filter_map(rescaled),
             window::close_requests().map(|_| Message::Window(WindowAction::Close)),
             keyboard::listen().filter_map(page_key),
             screen,
@@ -424,8 +435,8 @@ impl App {
         let bar = mouse_area(bar).on_press(Message::BarPressed);
 
         let content = match &self.screen {
-            Screen::Discover(screen) => screen.view().map(Message::Discover),
-            Screen::Votes(screen) => screen.view().map(Message::Votes),
+            Screen::Discover(screen) => screen.view(self.scale).map(Message::Discover),
+            Screen::Votes(screen) => screen.view(self.scale).map(Message::Votes),
             Screen::Library(screen) => screen.view().map(Message::Library),
             Screen::Setup(screen) => screen.view().map(Message::Setup),
             Screen::Profile(screen) => screen.view().map(Message::Profile),
@@ -706,6 +717,13 @@ fn window_button<'a>(icon: char, action: WindowAction) -> Element<'a, Message> {
     })
     .on_press(Message::Window(action))
     .into()
+}
+
+fn rescaled((_, event): (window::Id, window::Event)) -> Option<Message> {
+    match event {
+        window::Event::Rescaled(scale) => Some(Message::Rescaled(scale)),
+        _ => None,
+    }
 }
 
 pub fn window_settings(saved: Option<SavedWindow>) -> window::Settings {

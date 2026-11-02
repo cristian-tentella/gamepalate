@@ -200,7 +200,7 @@ impl Votes {
         keyboard::listen().filter_map(key_message)
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
+    pub fn view(&self, scale: f32) -> Element<'_, Message> {
         let toast = self.toast.as_ref().map(|toast| {
             container(
                 container(text(&toast.text))
@@ -211,7 +211,7 @@ impl Votes {
             .align_bottom(Fill)
             .padding(16)
         });
-        let card = container(self.card())
+        let card = container(self.card(scale))
             .padding(16)
             .width(Fill)
             .height(Fill)
@@ -335,9 +335,9 @@ impl Votes {
         .into()
     }
 
-    fn card(&self) -> Element<'_, Message> {
+    fn card(&self, scale: f32) -> Element<'_, Message> {
         match self.current() {
-            Some(game) => responsive(move |size| self.details(game, size)).into(),
+            Some(game) => responsive(move |size| self.details(game, size, scale)).into(),
             None => {
                 let note = if self.games.is_empty() { NO_VOTES } else { "" };
                 container(text(note).style(style::muted))
@@ -347,10 +347,11 @@ impl Votes {
         }
     }
 
-    fn details<'a>(&'a self, game: &'a VotedGame, size: Size) -> Element<'a, Message> {
+    fn details<'a>(&'a self, game: &'a VotedGame, size: Size, scale: f32) -> Element<'a, Message> {
         let shot_width = showcase::screenshot_width(
             size.width - SCROLLBAR_GAP,
             size.height - TOP_HEIGHT - CONTENT_SPACING,
+            showcase::max_screenshot_width(scale),
         );
         let today = jiff::Zoned::now().date();
         let price = match &game.price {
