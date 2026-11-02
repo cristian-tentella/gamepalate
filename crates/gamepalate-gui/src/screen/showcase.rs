@@ -10,7 +10,8 @@ use gamepalate_app::{
 use iced::{
     Center, ContentFit, Element, Fill, Task, mouse, padding,
     widget::{
-        button, column, container, image, keyed_column, mouse_area, opaque, row, space, stack, text,
+        Column, button, column, container, image, keyed_column, mouse_area, opaque, row, space,
+        stack, text,
     },
 };
 
@@ -229,21 +230,37 @@ impl Showcase {
     }
 
     pub fn media<'a>(&'a self, id: AppId, width: f32, height: f32) -> Element<'a, Message> {
-        let details = self.pages.details(id);
+        self.gallery_column(id, width, height)
+            .push(self.description(id))
+            .into()
+    }
 
+    pub fn gallery<'a>(&'a self, id: AppId, width: f32, height: f32) -> Element<'a, Message> {
+        self.gallery_column(id, width, height).into()
+    }
+
+    pub fn description<'a>(&'a self, id: AppId) -> Option<Element<'a, Message>> {
+        self.pages
+            .details(id)?
+            .store
+            .short_description
+            .as_deref()
+            .map(|description| {
+                container(text(description).size(font::BAR_SIZE))
+                    .max_width(DESCRIPTION_WIDTH)
+                    .into()
+            })
+    }
+
+    fn gallery_column<'a>(&'a self, id: AppId, width: f32, height: f32) -> Column<'a, Message> {
         column![self.screenshot(id, width, height)]
-            .push(details.and_then(|details| self.dots(details.store.screenshot_urls.len())))
             .push(
-                details
-                    .and_then(|details| details.store.short_description.as_deref())
-                    .map(|description| {
-                        container(text(description).size(font::BAR_SIZE))
-                            .max_width(DESCRIPTION_WIDTH)
-                    }),
+                self.pages
+                    .details(id)
+                    .and_then(|details| self.dots(details.store.screenshot_urls.len())),
             )
             .spacing(MEDIA_SPACING)
             .width(width)
-            .into()
     }
 
     pub fn facts<'a>(&'a self, id: AppId) -> Option<Element<'a, Message>> {

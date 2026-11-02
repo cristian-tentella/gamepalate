@@ -51,6 +51,7 @@ const HINT_WIDTH: f32 = 240.0;
 const MEDIA_BELOW: f32 = 80.0;
 const SIDE_HEIGHT: f32 = 560.0;
 const STACKED_BELOW: f32 = 440.0;
+const STACKED_TOP: f32 = 24.0;
 
 pub struct Discover {
     gamepalate: Arc<Gamepalate>,
@@ -592,16 +593,17 @@ impl Discover {
         height: f32,
     ) -> Element<'a, Message> {
         let (shot_width, shot_height) = layout.shot_size();
-        let media = self
-            .showcase
-            .media(game.id, shot_width, shot_height)
-            .map(Message::Showcase);
         let content: Element<'a, Message> = match layout {
             Layout::Beside(_) => row![
-                media,
-                column![self.summary(game, SIDE_WIDTH), self.reasons(queue, game)]
-                    .spacing(INFO_SPACING)
-                    .width(SIDE_WIDTH),
+                self.showcase
+                    .media(game.id, shot_width, shot_height)
+                    .map(Message::Showcase),
+                column![
+                    self.summary(game, SIDE_WIDTH),
+                    self.reasons(queue, game, false)
+                ]
+                .spacing(INFO_SPACING)
+                .width(SIDE_WIDTH),
             ]
             .spacing(CARD_SPACING)
             .into(),
@@ -610,10 +612,12 @@ impl Discover {
                 column![
                     row![
                         self.summary(game, header_width).width(header_width),
-                        self.reasons(queue, game).width(Fill),
+                        self.reasons(queue, game, true).width(Fill),
                     ]
                     .spacing(CARD_SPACING),
-                    media,
+                    self.showcase
+                        .gallery(game.id, shot_width, shot_height)
+                        .map(Message::Showcase),
                 ]
                 .spacing(CARD_SPACING)
                 .width(shot_width)
@@ -642,7 +646,12 @@ impl Discover {
         .spacing(INFO_SPACING)
     }
 
-    fn reasons<'a>(&'a self, queue: &'a Queue, game: &'a RecommendedGame) -> Column<'a, Message> {
+    fn reasons<'a>(
+        &'a self,
+        queue: &'a Queue,
+        game: &'a RecommendedGame,
+        with_description: bool,
+    ) -> Column<'a, Message> {
         let waiting = queue.is_waiting().then(|| {
             text("Loading the next games…")
                 .size(font::NOTE_SIZE)
@@ -652,6 +661,12 @@ impl Discover {
         column![]
             .push(similar_lines(game))
             .push(self.why(game))
+            .push(
+                with_description
+                    .then(|| self.showcase.description(game.id))
+                    .flatten()
+                    .map(|description| description.map(Message::Showcase)),
+            )
             .push(
                 self.showcase
                     .facts(game.id)
@@ -832,13 +847,14 @@ impl Layout {
     }
 
     fn top_space(self, height: f32) -> f32 {
-        let (_, shot_height) = self.shot_size();
-        let content = match self {
-            Self::Beside(_) => (shot_height + MEDIA_BELOW).max(SIDE_HEIGHT),
-            Self::Stacked(_) => shot_height + STACKED_BELOW,
-        };
-
-        ((height - content) / 2.0).max(0.0)
+        match self {
+            Self::Beside(_) => {
+                let (_, shot_height) = self.shot_size();
+                let content = (shot_height + MEDIA_BELOW).max(SIDE_HEIGHT);
+                ((height - content) / 2.0).max(0.0)
+            }
+            Self::Stacked(_) => STACKED_TOP,
+        }
     }
 }
 
@@ -1014,11 +1030,11 @@ mod tests {
     }
 
     #[test]
-    fn centers_the_game_only_when_it_fits() {
+    fn centers_the_game_beside_only_when_it_fits_and_starts_it_on_top_when_stacked() {
         assert_eq!(Layout::Beside(844.0).top_space(632.0), 36.0);
         assert_eq!(Layout::Beside(480.0).top_space(500.0), 0.0);
-        assert_eq!(Layout::Stacked(1236.0).top_space(1272.0), 68.375);
-        assert_eq!(Layout::Stacked(800.0).top_space(800.0), 0.0);
+        assert_eq!(Layout::Stacked(1236.0).top_space(1272.0), 24.0);
+        assert_eq!(Layout::Stacked(800.0).top_space(800.0), 24.0);
     }
 
     #[test]
