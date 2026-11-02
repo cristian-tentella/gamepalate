@@ -34,7 +34,7 @@ pub use gamepalate_core::{
     votes::{Vote, VoteKind},
 };
 pub use gamepalate_steam::details::{
-    Controller, Italian, ItemDetails, SteamDeck, original_screenshot,
+    Controller, Italian, ItemDetails, SteamDeck, original_screenshot, thumbnail_screenshot,
 };
 pub use gamepalate_steam::{archive::PendingUpdate, transport::SteamError};
 pub use gamepalate_store::families_edit::NEW_FILE as NEW_FAMILIES_FILE;

@@ -3,7 +3,10 @@ mod pages;
 
 use std::{collections::HashMap, sync::Arc};
 
-use gamepalate_app::{AppId, GameDetails, Gamepalate, ImageKind, original_screenshot};
+use ::image::imageops::FilterType;
+use gamepalate_app::{
+    AppId, GameDetails, Gamepalate, ImageKind, original_screenshot, thumbnail_screenshot,
+};
 use iced::{
     Center, ContentFit, Element, Fill, Task, mouse, padding,
     widget::{
@@ -32,6 +35,8 @@ const WAITING_OPACITY: f32 = 0.5;
 const MAX_ZOOM: f32 = 4.0;
 const ZOOM_STEP: f32 = 0.25;
 const CLOSE: char = '\u{E8BB}';
+const BLURRED_WIDTH: u32 = 320;
+const BLUR_SIGMA: f32 = 5.0;
 
 pub struct Showcase {
     gamepalate: Arc<Gamepalate>,
@@ -43,14 +48,27 @@ pub struct Showcase {
     browsing: bool,
     zoomed: bool,
     originals: HashMap<String, Picture>,
+    thumbnails: HashMap<String, Picture>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Version {
+    Original,
+    Thumbnail,
+}
+
+enum Shown<'a> {
+    Wanted,
+    Thumbnail,
+    Last(&'a String),
 }
 
 #[derive(Clone, Debug)]
 pub enum Message {
     ImageLoaded(String, Option<image::Handle>),
     ImageAllocated(String, Option<image::Allocation>),
-    OriginalLoaded(String, Option<image::Handle>),
-    OriginalAllocated(String, Option<image::Allocation>),
+    VersionLoaded(Version, String, Option<image::Handle>),
+    VersionAllocated(Version, String, Option<image::Allocation>),
     DetailsLoaded(AppId, Result<Option<Arc<GameDetails>>, String>),
     PreviousScreenshot,
     NextScreenshot,
@@ -72,6 +90,7 @@ impl Showcase {
             browsing: false,
             zoomed: false,
             originals: HashMap::new(),
+            thumbnails: HashMap::new(),
         }
     }
 
@@ -83,13 +102,15 @@ impl Showcase {
                     .map(move |allocation| Message::ImageAllocated(url.clone(), allocation.ok()));
             }
             Message::ImageAllocated(url, allocation) => self.images.loaded(url, allocation),
-            Message::OriginalLoaded(url, Some(handle)) => {
+            Message::VersionLoaded(version, url, Some(handle)) => {
                 return image::allocate(handle).map(move |allocation| {
-                    Message::OriginalAllocated(url.clone(), allocation.ok())
+                    Message::VersionAllocated(version, url.clone(), allocation.ok())
                 });
             }
-            Message::OriginalLoaded(url, None) => self.original_loaded(&url, None),
-            Message::OriginalAllocated(url, allocation) => self.original_loaded(&url, allocation),
+            Message::VersionLoaded(version, url, None) => self.version_loaded(version, &url, None),
+            Message::VersionAllocated(version, url, allocation) => {
+                self.version_loaded(version, &url, allocation);
+            }
             Message::DetailsLoaded(id, result) => self.pages.loaded(id, result),
             Message::PreviousScreenshot => self.show_screenshot(self.screenshot.saturating_sub(1)),
             Message::NextScreenshot => {
@@ -105,40 +126,75 @@ impl Showcase {
             Message::CloseZoom => self.zoomed = false,
         }
 
-        self.load_original()
+        self.load_versions()
     }
 
-    fn load_original(&mut self) -> Task<Message> {
-        if !self.zoomed {
-            return Task::none();
+    fn load_versions(&mut self) -> Task<Message> {
+        let mut wanted = Vec::new();
+        if self.zoomed {
+            wanted.extend(
+                self.current_screenshot()
+                    .map(|url| (Version::Original, url.clone())),
+            );
         }
-        let Some(url) = self.current_screenshot().cloned() else {
+        if self.browsing
+            && let Some(id) = self.shown
+        {
+            wanted.extend(
+                self.screenshots(id)
+                    .iter()
+                    .map(|url| (Version::Thumbnail, url.clone())),
+            );
+        }
+
+        Task::batch(
+            wanted
+                .into_iter()
+                .map(|(version, url)| self.load_version(version, url)),
+        )
+    }
+
+    fn load_version(&mut self, version: Version, url: String) -> Task<Message> {
+        let address = match version {
+            Version::Original => original_screenshot(&url),
+            Version::Thumbnail => thumbnail_screenshot(&url),
+        };
+        let Some(address) = address else {
             return Task::none();
         };
-        let Some(original) = original_screenshot(&url) else {
-            return Task::none();
-        };
-        if self.originals.contains_key(&url) {
+        if self.versions(version).contains_key(&url) {
             return Task::none();
         }
-        self.originals.insert(url.clone(), Picture::Loading);
+        self.versions(version).insert(url.clone(), Picture::Loading);
 
         let gamepalate = Arc::clone(&self.gamepalate);
         Task::perform(
             async move {
-                let handle = gamepalate
-                    .image_without_cache(&original)
-                    .await
-                    .ok()
-                    .map(image::Handle::from_bytes);
+                let bytes = gamepalate.image_without_cache(&address).await.ok();
+                let handle = bytes.and_then(|bytes| match version {
+                    Version::Original => Some(image::Handle::from_bytes(bytes)),
+                    Version::Thumbnail => blurred(&bytes),
+                });
                 (url, handle)
             },
-            |(url, handle)| Message::OriginalLoaded(url, handle),
+            move |(url, handle)| Message::VersionLoaded(version, url, handle),
         )
     }
 
-    fn original_loaded(&mut self, url: &str, allocation: Option<image::Allocation>) {
-        if let Some(picture) = self.originals.get_mut(url) {
+    fn versions(&mut self, version: Version) -> &mut HashMap<String, Picture> {
+        match version {
+            Version::Original => &mut self.originals,
+            Version::Thumbnail => &mut self.thumbnails,
+        }
+    }
+
+    fn version_loaded(
+        &mut self,
+        version: Version,
+        url: &str,
+        allocation: Option<image::Allocation>,
+    ) {
+        if let Some(picture) = self.versions(version).get_mut(url) {
             *picture = allocation.map_or(Picture::Failed, Picture::Ready);
         }
     }
@@ -151,6 +207,7 @@ impl Showcase {
             self.browsing = false;
             self.zoomed = false;
             self.originals.clear();
+            self.thumbnails.clear();
         }
     }
 
@@ -348,33 +405,23 @@ impl Showcase {
     }
 
     fn picture<'a>(&self, url: &str, width: f32, height: f32) -> Element<'a, Message> {
-        self.faded_picture(url, width, height, 1.0)
+        framed(self.images.get(url), width, height, 1.0)
     }
 
-    fn faded_picture<'a>(
-        &self,
-        url: &str,
-        width: f32,
-        height: f32,
-        opacity: f32,
-    ) -> Element<'a, Message> {
-        let content: Element<'a, Message> = match self.images.get(url) {
-            Some(Picture::Ready(allocation)) => image(allocation.handle().clone())
-                .width(width)
-                .height(height)
-                .content_fit(ContentFit::Cover)
-                .border_radius(IMAGE_RADIUS)
-                .opacity(opacity)
-                .into(),
-            Some(Picture::Failed) => note("Image unavailable"),
-            Some(Picture::Loading) | None => space().into(),
-        };
+    fn shown(&self, wanted: &String) -> Shown<'_> {
+        shown(
+            wanted,
+            &self.images,
+            self.thumbnails.get(wanted),
+            self.last_screenshot.as_ref(),
+        )
+    }
 
-        container(content)
-            .center_x(width)
-            .center_y(height)
-            .style(style::picture)
-            .into()
+    fn best(&self, url: &str) -> Option<&Picture> {
+        match self.originals.get(url) {
+            Some(original) if matches!(original, Picture::Ready(_)) => Some(original),
+            _ => self.images.get(url),
+        }
     }
 
     fn screenshot<'a>(&self, id: AppId, width: f32, height: f32) -> Element<'a, Message> {
@@ -382,11 +429,14 @@ impl Showcase {
             Some(Page::Ready(details)) => {
                 match details.store.screenshot_urls.get(self.screenshot) {
                     Some(wanted) => {
-                        let url =
-                            shown_screenshot(wanted, &self.images, self.last_screenshot.as_ref());
-                        let opacity = if url == wanted { 1.0 } else { WAITING_OPACITY };
-                        let picture = self.faded_picture(url, width, height, opacity);
-                        if !matches!(self.images.get(url), Some(Picture::Ready(_))) {
+                        let (picture, opacity) = match self.shown(wanted) {
+                            Shown::Wanted => (self.images.get(wanted), 1.0),
+                            Shown::Thumbnail => (self.thumbnails.get(wanted), 1.0),
+                            Shown::Last(last) => (self.images.get(last), WAITING_OPACITY),
+                        };
+                        let ready = matches!(picture, Some(Picture::Ready(_)));
+                        let picture = framed(picture, width, height, opacity);
+                        if !ready {
                             return picture;
                         }
                         return mouse_area(picture)
@@ -430,18 +480,15 @@ impl Showcase {
         if !self.zoomed {
             return None;
         }
-        let url = shown_screenshot(
-            self.current_screenshot()?,
-            &self.images,
-            self.last_screenshot.as_ref(),
-        );
-        let shown = match (self.originals.get(url), self.images.get(url)) {
-            (Some(Picture::Ready(original)), _) => Some(original),
-            (_, Some(Picture::Ready(copy))) => Some(copy),
-            _ => None,
+        let wanted = self.current_screenshot()?;
+        let picture = match (self.originals.get(wanted), self.shown(wanted)) {
+            (Some(original), _) if matches!(original, Picture::Ready(_)) => Some(original),
+            (_, Shown::Thumbnail) => self.thumbnails.get(wanted),
+            (_, Shown::Last(last)) => self.best(last),
+            (_, Shown::Wanted) => self.best(wanted),
         };
-        let screenshot: Element<'_, Message> = match (shown, self.images.get(url)) {
-            (Some(allocation), _) => keyed_column([(
+        let screenshot: Element<'_, Message> = match picture {
+            Some(Picture::Ready(allocation)) => keyed_column([(
                 self.screenshot,
                 image::viewer(allocation.handle().clone())
                     .width(Fill)
@@ -453,10 +500,8 @@ impl Showcase {
             )])
             .height(Fill)
             .into(),
-            (None, Some(Picture::Failed)) => {
-                container(note("Image unavailable")).center(Fill).into()
-            }
-            (None, _) => space().height(Fill).into(),
+            Some(Picture::Failed) => container(note("Image unavailable")).center(Fill).into(),
+            Some(Picture::Loading) | None => space().height(Fill).into(),
         };
         let close = button(text(CLOSE).font(font::ICONS).size(12))
             .padding([8, 12])
@@ -511,6 +556,46 @@ pub fn screenshot_width(width: f32, height: f32) -> f32 {
     let fitting = (height - MEDIA_SPACING - DOTS_HEIGHT) * 16.0 / 9.0;
 
     width.min(fitting.clamp(SCREENSHOT_WIDTH, MAX_SCREENSHOT_WIDTH))
+}
+
+fn framed<'a>(
+    picture: Option<&Picture>,
+    width: f32,
+    height: f32,
+    opacity: f32,
+) -> Element<'a, Message> {
+    let content: Element<'a, Message> = match picture {
+        Some(Picture::Ready(allocation)) => image(allocation.handle().clone())
+            .width(width)
+            .height(height)
+            .content_fit(ContentFit::Cover)
+            .border_radius(IMAGE_RADIUS)
+            .opacity(opacity)
+            .into(),
+        Some(Picture::Failed) => note("Image unavailable"),
+        Some(Picture::Loading) | None => space().into(),
+    };
+
+    container(content)
+        .center_x(width)
+        .center_y(height)
+        .style(style::picture)
+        .into()
+}
+
+fn blurred(bytes: &[u8]) -> Option<image::Handle> {
+    let thumbnail = ::image::load_from_memory(bytes).ok()?;
+    let height = BLURRED_WIDTH * thumbnail.height() / thumbnail.width().max(1);
+    let blurred = thumbnail
+        .resize_exact(BLURRED_WIDTH, height.max(1), FilterType::Triangle)
+        .fast_blur(BLUR_SIGMA)
+        .into_rgba8();
+
+    Some(image::Handle::from_rgba(
+        blurred.width(),
+        blurred.height(),
+        blurred.into_raw(),
+    ))
 }
 
 fn facts(details: &GameDetails) -> Element<'_, Message> {
@@ -589,14 +674,17 @@ fn next_index(index: usize, count: usize) -> usize {
     if index + 1 < count { index + 1 } else { index }
 }
 
-fn shown_screenshot<'a, T>(
-    url: &'a String,
+fn shown<'a, T, U>(
+    url: &String,
     images: &Images<T>,
+    thumbnail: Option<&Picture<U>>,
     last: Option<&'a String>,
-) -> &'a String {
-    match (images.get(url), last) {
-        (Some(Picture::Loading) | None, Some(last)) => last,
-        _ => url,
+) -> Shown<'a> {
+    match (images.get(url), thumbnail, last) {
+        (Some(Picture::Ready(_) | Picture::Failed), _, _) => Shown::Wanted,
+        (_, Some(Picture::Ready(_)), _) => Shown::Thumbnail,
+        (_, _, Some(last)) => Shown::Last(last),
+        _ => Shown::Wanted,
     }
 }
 
@@ -691,6 +779,8 @@ mod tests {
         assert!(next_screenshots(&[], 0).is_empty());
     }
 
+    const NO_THUMBNAIL: Option<&Picture<u8>> = None;
+
     #[test]
     fn shows_the_last_screenshot_until_the_next_is_ready() {
         let (last, next) = ("last".to_string(), "next".to_string());
@@ -698,12 +788,44 @@ mod tests {
         images.want(vec![last.clone(), next.clone()]);
         images.loaded(last.clone(), Some(0));
 
-        assert_eq!(shown_screenshot(&next, &images, Some(&last)), &last);
-        assert_eq!(shown_screenshot(&next, &images, None), &next);
+        assert!(matches!(
+            shown(&next, &images, NO_THUMBNAIL, Some(&last)),
+            Shown::Last(url) if url == &last
+        ));
+        assert!(matches!(
+            shown(&next, &images, NO_THUMBNAIL, None),
+            Shown::Wanted
+        ));
 
         images.loaded(next.clone(), Some(0));
 
-        assert_eq!(shown_screenshot(&next, &images, Some(&last)), &next);
+        assert!(matches!(
+            shown(&next, &images, NO_THUMBNAIL, Some(&last)),
+            Shown::Wanted
+        ));
+    }
+
+    #[test]
+    fn shows_the_thumbnail_while_the_screenshot_loads() {
+        let (last, next) = ("last".to_string(), "next".to_string());
+        let mut images = Images::<u8>::default();
+        images.want(vec![next.clone()]);
+
+        assert!(matches!(
+            shown(&next, &images, Some(&Picture::Ready(0u8)), Some(&last)),
+            Shown::Thumbnail
+        ));
+        assert!(matches!(
+            shown(&next, &images, Some(&Picture::<u8>::Loading), Some(&last)),
+            Shown::Last(_)
+        ));
+
+        images.loaded(next.clone(), Some(0));
+
+        assert!(matches!(
+            shown(&next, &images, Some(&Picture::Ready(0u8)), Some(&last)),
+            Shown::Wanted
+        ));
     }
 
     #[test]
@@ -713,7 +835,28 @@ mod tests {
         images.want(vec![next.clone()]);
         images.loaded(next.clone(), None);
 
-        assert_eq!(shown_screenshot(&next, &images, Some(&last)), &next);
+        assert!(matches!(
+            shown(&next, &images, Some(&Picture::Ready(0u8)), Some(&last)),
+            Shown::Wanted
+        ));
+    }
+
+    #[test]
+    fn the_thumbnail_is_enlarged_and_blurred() {
+        let mut bytes = Vec::new();
+        ::image::RgbImage::from_fn(116, 65, |x, _| ::image::Rgb([(x * 2) as u8, 0, 0]))
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                ::image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+
+        let Some(image::Handle::Rgba { width, height, .. }) = blurred(&bytes) else {
+            panic!("the thumbnail is not an image");
+        };
+
+        assert_eq!((width, height), (BLURRED_WIDTH, 179));
+        assert!(blurred(b"not an image").is_none());
     }
 
     #[test]

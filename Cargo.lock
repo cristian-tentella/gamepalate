@@ -1737,6 +1737,7 @@ dependencies = [
  "anyhow",
  "gamepalate-app",
  "iced",
+ "image",
  "jiff",
  "tempfile",
  "tokio",

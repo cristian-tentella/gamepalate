@@ -17,6 +17,7 @@ const ITALIAN: i32 = 3;
 const FULL_CONTROLLER: u32 = 28;
 const PARTIAL_CONTROLLER: u32 = 18;
 const SCREENSHOT_SIZE: &str = ".1920x1080";
+const THUMBNAIL_SIZE: &str = ".116x65";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ItemDetails {
@@ -335,14 +336,22 @@ fn to_details(item: SteamDetails) -> ItemDetails {
 }
 
 pub fn original_screenshot(url: &str) -> Option<String> {
+    resized_screenshot(url, "")
+}
+
+pub fn thumbnail_screenshot(url: &str) -> Option<String> {
+    resized_screenshot(url, THUMBNAIL_SIZE)
+}
+
+fn resized_screenshot(url: &str, size: &str) -> Option<String> {
     let (path, query) = url
         .split_once('?')
         .map_or((url, None), |(path, query)| (path, Some(query)));
     let name = path.strip_suffix(&format!("{SCREENSHOT_SIZE}.jpg"))?;
 
     Some(match query {
-        Some(query) => format!("{name}.jpg?{query}"),
-        None => format!("{name}.jpg"),
+        Some(query) => format!("{name}{size}.jpg?{query}"),
+        None => format!("{name}{size}.jpg"),
     })
 }
 
@@ -542,6 +551,15 @@ mod tests {
             "https://example.com/ss_1.jpg"
         );
         assert_eq!(original_screenshot("https://example.com/header.jpg"), None);
+    }
+
+    #[test]
+    fn the_thumbnail_screenshot_is_the_small_size() {
+        assert_eq!(
+            thumbnail_screenshot("https://example.com/ss_1.1920x1080.jpg?t=1").unwrap(),
+            "https://example.com/ss_1.116x65.jpg?t=1"
+        );
+        assert_eq!(thumbnail_screenshot("https://example.com/header.jpg"), None);
     }
 
     #[test]
