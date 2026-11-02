@@ -10,8 +10,8 @@ use iced::{
     window::{self, RedrawRequest},
 };
 
-const LINE: f32 = 60.0;
-const TIME_CONSTANT: Duration = Duration::from_millis(40);
+const LINE: f32 = 100.0;
+const TIME_CONSTANT: Duration = Duration::from_millis(25);
 const REST: f32 = 0.5;
 
 pub fn smooth<'a, Message, Theme, Renderer>(
@@ -280,9 +280,9 @@ mod tests {
     }
 
     #[test]
-    fn a_notch_is_sixty_pixels_and_sideways_with_shift() {
-        assert_eq!(notch(lines(1.0), false), Some(Vector::new(0.0, 60.0)));
-        assert_eq!(notch(lines(-1.0), true), Some(Vector::new(-60.0, 0.0)));
+    fn a_notch_is_a_hundred_pixels_and_sideways_with_shift() {
+        assert_eq!(notch(lines(1.0), false), Some(Vector::new(0.0, 100.0)));
+        assert_eq!(notch(lines(-1.0), true), Some(Vector::new(-100.0, 0.0)));
     }
 
     #[test]
@@ -294,17 +294,17 @@ mod tests {
     }
 
     #[test]
-    fn a_notch_slows_down_and_is_done_within_150_ms() {
-        let (_, left) = step(Vector::new(0.0, 60.0), FRAME);
-        assert!((left.y / 60.0 - 0.67).abs() < 0.01);
+    fn a_notch_slows_down_and_is_done_within_100_ms() {
+        let (_, left) = step(Vector::new(0.0, 100.0), FRAME);
+        assert!((left.y / 100.0 - 0.53).abs() < 0.01);
 
-        let (_, left) = step(Vector::new(0.0, 60.0), Duration::from_millis(150));
-        assert!(left.y < 60.0 * 0.03);
+        let (_, left) = step(Vector::new(0.0, 100.0), Duration::from_millis(100));
+        assert!(left.y < 100.0 * 0.02);
     }
 
     #[test]
     fn the_frames_add_up_to_the_whole_notch() {
-        let mut remaining = Vector::new(0.0, 60.0);
+        let mut remaining = Vector::new(0.0, 100.0);
         let mut total = 0.0;
         let mut frames = 0;
 
@@ -315,8 +315,8 @@ mod tests {
             frames += 1;
         }
 
-        assert!((total - 60.0).abs() < 1e-3);
-        assert!(frames <= 12);
+        assert!((total - 100.0).abs() < 1e-3);
+        assert!(frames <= 9);
     }
 
     #[test]
@@ -324,7 +324,7 @@ mod tests {
         let down = notch(lines(1.0), false).unwrap();
         let up = notch(lines(-1.0), false).unwrap();
 
-        assert_eq!(down + down, Vector::new(0.0, 120.0));
+        assert_eq!(down + down, Vector::new(0.0, 200.0));
         assert_eq!(down + up, Vector::ZERO);
     }
 
