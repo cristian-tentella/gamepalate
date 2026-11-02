@@ -16,6 +16,7 @@ thiserror = "2.0.21"
 keyring-core = "1.0.1"
 windows-native-keyring-store = "1.1.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+tokio = { version = "1", features = ["sync"] }
 
 [dev-dependencies]
 http = "1.5.0"

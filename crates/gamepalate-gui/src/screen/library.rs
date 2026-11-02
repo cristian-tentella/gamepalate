@@ -47,7 +47,7 @@ const GAP: f32 = 12.0;
 const GRID_PADDING: f32 = 24.0;
 const DIVIDER_HEIGHT: f32 = 56.0;
 const DIMMED: f32 = 0.45;
-const SCREENS_AHEAD: f32 = 1.0;
+const SCREENS_AHEAD: f32 = 2.0;
 const SCREENS_KEPT: f32 = 2.0;
 const CHROME_HEIGHT: f32 = 110.0;
 const IMAGE_RADIUS: f32 = 6.0;
@@ -77,6 +77,7 @@ pub struct Library {
     search: String,
     shown: Vec<usize>,
     offset: f32,
+    upward: bool,
     area: Size,
     capsules: Images<image::Allocation, AppId>,
 }
@@ -182,6 +183,7 @@ impl Library {
             search: String::new(),
             shown: Vec::new(),
             offset: 0.0,
+            upward: false,
             area: DEFAULT_AREA,
             capsules: Images::default(),
         };
@@ -228,7 +230,11 @@ impl Library {
                 return self.refresh();
             }
             Message::Scrolled(viewport) => {
-                self.offset = viewport.absolute_offset().y;
+                let offset = viewport.absolute_offset().y;
+                if offset != self.offset {
+                    self.upward = offset < self.offset;
+                }
+                self.offset = offset;
                 self.area = viewport.bounds().size();
             }
             Message::WindowResized(size) => {
@@ -504,11 +510,11 @@ impl Library {
         let open = self.open.into_iter();
         let wanted: Vec<AppId> = open
             .clone()
-            .chain(ids(visible_rows(
-                &rows,
-                self.offset,
-                height * (1.0 + SCREENS_AHEAD),
-            )))
+            .chain(
+                wanted_rows(&rows, self.offset, height, self.upward)
+                    .into_iter()
+                    .flat_map(|index| ids(index..index + 1)),
+            )
             .collect();
         let kept: Vec<AppId> = open
             .chain(ids(visible_rows(
@@ -1147,6 +1153,21 @@ fn row_height(row: &Row) -> f32 {
     }
 }
 
+fn wanted_rows(rows: &[Row], offset: f32, height: f32, upward: bool) -> Vec<usize> {
+    let visible = visible_rows(rows, offset, height);
+    let ahead = height * SCREENS_AHEAD;
+
+    if upward {
+        visible
+            .chain(visible_rows(rows, offset - ahead, ahead).rev())
+            .collect()
+    } else {
+        visible
+            .chain(visible_rows(rows, offset + height, ahead))
+            .collect()
+    }
+}
+
 fn visible_rows(rows: &[Row], offset: f32, height: f32) -> Range<usize> {
     let top = offset - GRID_PADDING;
     let bottom = top + height;
@@ -1595,6 +1616,21 @@ mod tests {
         );
         assert_eq!(visible_rows(&rows, 100_000.0, 500.0), 11..11);
         assert_eq!(visible_rows(&rows, -5_000.0, 1.0), 0..0);
+    }
+
+    #[test]
+    fn loads_the_rows_in_view_then_two_screens_the_way_it_scrolls() {
+        let rows = rows(20, 40, 4, true);
+        let row = TILE_HEIGHT + GAP;
+
+        assert_eq!(
+            wanted_rows(&rows, GRID_PADDING + row * 2.0, row, false),
+            [2, 3, 4]
+        );
+        assert_eq!(
+            wanted_rows(&rows, GRID_PADDING + row * 4.0, row, true),
+            [4, 3, 2]
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::{
 
 use iced::widget::image::Allocation;
 
-const MAX_DOWNLOADS: usize = 4;
+const MAX_LOADS: usize = 16;
 const MAX_PICTURES: usize = 100;
 
 pub enum Picture<T = Allocation> {
@@ -44,7 +44,7 @@ impl<T, K: Hash + Eq + Clone> Images<T, K> {
             .collect();
 
         let mut started = Vec::new();
-        while self.downloads() < MAX_DOWNLOADS {
+        while self.loads() < MAX_LOADS {
             let Some(url) = self.waiting.pop_front() else {
                 break;
             };
@@ -71,7 +71,7 @@ impl<T, K: Hash + Eq + Clone> Images<T, K> {
             .retain(|url, picture| matches!(picture, Picture::Loading) || nearby.contains(url));
     }
 
-    fn downloads(&self) -> usize {
+    fn loads(&self) -> usize {
         self.pictures
             .values()
             .filter(|picture| matches!(picture, Picture::Loading))
@@ -98,17 +98,17 @@ mod tests {
     }
 
     #[test]
-    fn starts_at_most_four_downloads_at_once() {
+    fn starts_at_most_sixteen_loads_at_once() {
         let mut images = Images::<u8>::default();
 
-        assert_eq!(images.want(urls(1..=6)), urls(1..=4));
-        assert!(images.want(urls(1..=6)).is_empty());
+        assert_eq!(images.want(urls(1..=18)), urls(1..=16));
+        assert!(images.want(urls(1..=18)).is_empty());
 
         images.loaded(url(1), handle());
-        assert_eq!(images.want(urls(1..=6)), vec![url(5)]);
+        assert_eq!(images.want(urls(1..=18)), vec![url(17)]);
 
         images.loaded(url(2), None);
-        assert_eq!(images.want(urls(1..=6)), vec![url(6)]);
+        assert_eq!(images.want(urls(1..=18)), vec![url(18)]);
     }
 
     #[test]

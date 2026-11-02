@@ -11,10 +11,12 @@ use gamepalate_steam::{
 };
 use reqwest::Client;
 use sha2::{Digest, Sha256};
+use tokio::sync::Semaphore;
 
 const EXTENSIONS: [&str; 3] = ["jpg", "png", "webp"];
 pub(crate) const MAX_CACHE_BYTES: u64 = 300 * 1024 * 1024;
 const PRUNE_EVERY: u64 = 20;
+const MAX_DOWNLOADS: usize = 4;
 const TEMPORARY: &str = ".tmp";
 
 static WRITES: AtomicU64 = AtomicU64::new(0);
@@ -64,6 +66,7 @@ pub struct ImageCache<F = Client> {
     downloader: ImageDownloader<F>,
     limit: u64,
     written: AtomicU64,
+    downloads: Semaphore,
 }
 
 pub(crate) fn cache_dir() -> Option<PathBuf> {
@@ -77,6 +80,7 @@ impl<F: Fetch> ImageCache<F> {
             downloader,
             limit: MAX_CACHE_BYTES,
             written: AtomicU64::new(0),
+            downloads: Semaphore::new(MAX_DOWNLOADS),
         }
     }
 
@@ -103,7 +107,10 @@ impl<F: Fetch> ImageCache<F> {
             Err(_) => {}
         }
 
-        let bytes = self.downloader.download(url).await?;
+        let bytes = {
+            let _download = self.downloads.acquire().await;
+            self.downloader.download(url).await?
+        };
         write(&dir, &path, &bytes)?;
         if (self.written.fetch_add(1, Ordering::Relaxed) + 1).is_multiple_of(PRUNE_EVERY) {
             self.prune();
@@ -336,6 +343,66 @@ mod tests {
 
         assert_eq!(files(dir.path()), vec![file_name(URL)]);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    struct SlowCdn {
+        running: Arc<AtomicU32>,
+        most: Arc<AtomicU32>,
+    }
+
+    impl Fetch for SlowCdn {
+        fn fetch(
+            &self,
+            _request: Request,
+        ) -> impl Future<Output = reqwest::Result<Response>> + Send {
+            let running = Arc::clone(&self.running);
+            let most = Arc::clone(&self.most);
+
+            async move {
+                let now = running.fetch_add(1, Ordering::Relaxed) + 1;
+                most.fetch_max(now, Ordering::Relaxed);
+                for _ in 0..20 {
+                    tokio::task::yield_now().await;
+                }
+                running.fetch_sub(1, Ordering::Relaxed);
+                let response = http::Response::builder()
+                    .status(200)
+                    .header("content-type", "image/jpeg")
+                    .body(vec![1, 2, 3])
+                    .unwrap();
+                Ok(response.into())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn downloads_at_most_four_images_at_once_but_reads_the_saved_ones_freely() {
+        let dir = tempfile::tempdir().unwrap();
+        let most = Arc::new(AtomicU32::new(0));
+        let cache = Arc::new(ImageCache::new(
+            Some(dir.path().join("images")),
+            ImageDownloader::with_fetch(SlowCdn {
+                running: Arc::new(AtomicU32::new(0)),
+                most: Arc::clone(&most),
+            }),
+        ));
+        let mut loads = tokio::task::JoinSet::new();
+        for id in 0..12 {
+            let cache = Arc::clone(&cache);
+            loads.spawn(async move {
+                cache
+                    .image(&format!("https://cdn.test/{id}.jpg"), ImageKind::Cover)
+                    .await
+                    .unwrap()
+            });
+        }
+
+        while let Some(bytes) = loads.join_next().await {
+            assert_eq!(bytes.unwrap(), vec![1, 2, 3]);
+        }
+
+        assert_eq!(most.load(Ordering::Relaxed), MAX_DOWNLOADS as u32);
+        assert_eq!(cache.downloads.available_permits(), MAX_DOWNLOADS);
     }
 
     #[tokio::test]
