@@ -247,7 +247,8 @@ impl Votes {
         let tools = row![
             pick_list(ORDERS, Some(self.order), Message::Order)
                 .text_size(font::NOTE_SIZE)
-                .padding([4, 8]),
+                .padding([4, 8])
+                .style(style::dropdown),
             text_input("Search by name (Ctrl+F)", &self.search)
                 .style(style::field)
                 .id(SEARCH)

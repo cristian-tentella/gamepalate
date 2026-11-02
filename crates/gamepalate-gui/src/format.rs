@@ -1,6 +1,5 @@
 use gamepalate_app::{
-    Blame, Controller, Currency, Price, Reviews, SearchOptions, SortBy, SteamDeck, Timestamp,
-    VoteKind,
+    Blame, Controller, Currency, Price, Reviews, SearchOptions, SteamDeck, Timestamp, VoteKind,
 };
 use jiff::{civil::Date, tz::TimeZone};
 
@@ -29,13 +28,9 @@ fn when_in(at: Timestamp, now: Timestamp, zone: &TimeZone) -> String {
     }
 }
 
-pub fn filters(options: &SearchOptions, currency: &Currency) -> String {
+pub fn filters(options: &SearchOptions, currency: &Currency) -> Option<String> {
     let filters = &options.filters;
-    let mut parts = vec![match (&options.family, options.signals_only) {
-        (Some(family), _) => format!("From: {family}"),
-        (None, true) => "From: Signals only".to_string(),
-        (None, false) => "From: All tastes".to_string(),
-    }];
+    let mut parts = Vec::new();
 
     if options.only_bets {
         parts.push("Bets only".to_string());
@@ -74,16 +69,11 @@ pub fn filters(options: &SearchOptions, currency: &Currency) -> String {
     if !filters.without_tags.is_empty() {
         parts.push(format!("Without: {}", filters.without_tags.join(", ")));
     }
-    match options.sort {
-        SortBy::Relevance => {}
-        SortBy::Discount => parts.push("By discount".to_string()),
-        SortBy::Price => parts.push("By price".to_string()),
-    }
     if let Some(limit) = options.limit {
         parts.push(format!("Top {limit}"));
     }
 
-    parts.join(" · ")
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 pub fn empty_because(blame: Option<&Blame>) -> String {
@@ -318,7 +308,7 @@ fn search_text(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use gamepalate_app::Discount;
+    use gamepalate_app::{Discount, SortBy};
 
     use super::*;
 
@@ -396,25 +386,15 @@ mod tests {
     }
 
     #[test]
-    fn says_all_tastes_without_filters() {
-        assert_eq!(
-            filters(&SearchOptions::default(), &Currency::italian()),
-            "From: All tastes"
-        );
-    }
-
-    #[test]
-    fn says_signals_only_and_leaves_the_voted_games_out() {
+    fn says_nothing_without_filters_and_leaves_out_the_source_and_the_order() {
         let mut options = SearchOptions {
             signals_only: true,
+            sort: SortBy::Price,
             ..SearchOptions::default()
         };
         options.filters.without_voted = true;
 
-        assert_eq!(
-            filters(&options, &Currency::italian()),
-            "From: Signals only"
-        );
+        assert_eq!(filters(&options, &Currency::italian()), None);
     }
 
     #[test]
@@ -443,21 +423,17 @@ mod tests {
 
         assert_eq!(
             filters(&options, &Currency::italian()),
-            "From: All tastes · On sale · ≤ 15,00€"
+            Some("On sale · ≤ 15,00€".to_string())
         );
         assert_eq!(
             filters(&options, &dollars()),
-            "From: All tastes · On sale · ≤ $15.00"
+            Some("On sale · ≤ $15.00".to_string())
         );
     }
 
     #[test]
-    fn names_the_family_ranges_and_tags() {
-        let mut options = SearchOptions {
-            family: Some("azione".to_string()),
-            sort: SortBy::Price,
-            ..SearchOptions::default()
-        };
+    fn names_the_ranges_and_tags() {
+        let mut options = SearchOptions::default();
         options.filters.min_price_cents = Some(499);
         options.filters.max_price_cents = Some(2000);
         options.filters.min_reviews = Some(1000);
@@ -465,7 +441,7 @@ mod tests {
 
         assert_eq!(
             filters(&options, &Currency::italian()),
-            "From: azione · 4,99€–20,00€ · ≥ 1,000 reviews · Tags: Metroidvania, Souls-like · By price"
+            Some("4,99€–20,00€ · ≥ 1,000 reviews · Tags: Metroidvania, Souls-like".to_string())
         );
     }
 

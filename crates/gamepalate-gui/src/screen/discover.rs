@@ -18,13 +18,13 @@ use iced::{
     keyboard::{self, Key, key::Named},
     never, padding,
     widget::{
-        button, column, container, mouse_area, opaque, responsive, rich_text, row, scrollable,
-        space, span, stack, text,
+        button, column, container, mouse_area, opaque, pick_list, responsive, rich_text, row,
+        scrollable, space, span, stack, text,
     },
 };
 
 use self::{
-    filters::{Action, Panel},
+    filters::{Action, Panel, SORTS, Sort, Source},
     queue::Queue,
 };
 use super::{
@@ -46,6 +46,7 @@ const SCROLLBAR_GAP: f32 = 12.0;
 pub struct Discover {
     gamepalate: Arc<Gamepalate>,
     options: SearchOptions,
+    sources: Vec<Source>,
     panel: Panel,
     panel_open: bool,
     undo: Option<SearchOptions>,
@@ -75,6 +76,8 @@ struct Toast {
 pub enum Message {
     Recommended(u64, Result<Recommendation, RecommendError>),
     MoreRecommended(u64, Result<Recommendation, RecommendError>),
+    Source(Source),
+    Sort(Sort),
     Filters(filters::Message),
     ToggleFilters,
     CloseFilters,
@@ -113,7 +116,6 @@ impl Discover {
             None => saved.clone(),
         };
         let panel = Panel::new(
-            gamepalate.family_names(),
             gamepalate.tag_names(),
             &gamepalate.config_filters(),
             format::currency_symbol(gamepalate.currency()),
@@ -123,6 +125,7 @@ impl Discover {
         let mut discover = Discover {
             gamepalate: Arc::clone(gamepalate),
             options,
+            sources: filters::sources(gamepalate.family_names()),
             panel,
             panel_open: false,
             undo: changed.then_some(saved),
@@ -251,6 +254,17 @@ impl Discover {
                     game::open(link, &game.name, &game.store_url);
                 }
             }
+            Message::Source(source) => {
+                let options = filters::with_source(&self.options, source);
+                return self.search_if_changed(options);
+            }
+            Message::Sort(Sort(sort)) => {
+                let options = SearchOptions {
+                    sort,
+                    ..self.options.clone()
+                };
+                return self.search_if_changed(options);
+            }
             Message::Filters(message) => return self.change_filters(message),
             Message::ToggleFilters if self.panel_open => self.panel_open = false,
             Message::ToggleFilters => {
@@ -300,29 +314,43 @@ impl Discover {
 
     pub fn view(&self) -> Element<'_, Message> {
         let summary = if self.updating {
-            "Updating…".to_string()
+            Some("Updating…".to_string())
         } else {
             format::filters(&self.options, self.gamepalate.currency())
         };
         let arrow = if self.panel_open { '▴' } else { '▾' };
         let line = row![
-            button(
-                row![
-                    text!("{summary} ·")
-                        .size(font::NOTE_SIZE)
-                        .style(style::muted),
-                    text!("Filters (Ctrl+F) {arrow}").size(font::NOTE_SIZE),
-                ]
-                .spacing(4),
+            text("From").size(font::NOTE_SIZE).style(style::muted),
+            pick_list(
+                self.sources.as_slice(),
+                Some(filters::source(&self.options)),
+                Message::Source
             )
-            .padding(0)
-            .style(style::link)
-            .on_press(Message::ToggleFilters),
-            space().width(Fill),
+            .text_size(font::NOTE_SIZE)
+            .padding([2, 8])
+            .style(style::dropdown),
+            pick_list(SORTS, Some(Sort(self.options.sort)), Message::Sort)
+                .text_size(font::NOTE_SIZE)
+                .padding([2, 8])
+                .style(style::dropdown),
+            button(text!("Filters (Ctrl+F) {arrow}").size(font::NOTE_SIZE))
+                .padding([2, 8])
+                .style(style::text_button)
+                .on_press(Message::ToggleFilters),
+        ]
+        .push(summary.map(|summary| {
+            text(summary)
+                .size(font::NOTE_SIZE)
+                .style(style::muted)
+                .wrapping(text::Wrapping::None)
+        }))
+        .push(space().width(Fill))
+        .push(
             text(format::votes_this_session(self.votes_this_session))
                 .size(font::NOTE_SIZE)
                 .style(style::muted),
-        ]
+        )
+        .spacing(8)
         .align_y(Center);
         let filters = container(line).padding([6, 20]).width(Fill);
         let popup = self.panel_open.then(|| {
@@ -433,6 +461,14 @@ impl Discover {
         self.undo = Some(std::mem::replace(&mut self.options, options));
         self.updating = true;
         self.recommend()
+    }
+
+    fn search_if_changed(&mut self, options: SearchOptions) -> Task<Message> {
+        if options == self.options {
+            Task::none()
+        } else {
+            self.search(options)
+        }
     }
 
     fn change_filters(&mut self, message: filters::Message) -> Task<Message> {

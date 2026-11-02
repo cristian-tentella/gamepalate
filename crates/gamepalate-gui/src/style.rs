@@ -1,7 +1,7 @@
 use iced::{
     Border, Color, Element, Shadow, Theme, Vector,
     theme::palette,
-    widget::{button, container, progress_bar, rule, text, text_input},
+    widget::{button, container, pick_list, progress_bar, rule, text, text_input},
 };
 
 pub fn top_bar(theme: &Theme) -> container::Style {
@@ -452,6 +452,45 @@ pub fn field(theme: &Theme, status: text_input::Status) -> text_input::Style {
             ..style.border
         },
         ..style
+    }
+}
+
+pub fn dropdown(theme: &Theme, status: pick_list::Status) -> pick_list::Style {
+    let palette = theme.extended_palette();
+    let border = match status {
+        pick_list::Status::Active => palette.background.strong.color,
+        pick_list::Status::Hovered | pick_list::Status::Opened { .. } => {
+            palette.primary.strong.color
+        }
+    };
+
+    pick_list::Style {
+        text_color: palette.background.base.text,
+        placeholder_color: palette.secondary.base.color,
+        handle_color: faded(theme, 0.7),
+        background: palette.background.base.color.into(),
+        border: Border {
+            color: border,
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+    }
+}
+
+pub fn text_button(theme: &Theme, status: button::Status) -> button::Style {
+    let background = theme.extended_palette().background;
+
+    button::Style {
+        background: match status {
+            button::Status::Hovered => Some(background.weak.color.into()),
+            button::Status::Pressed => Some(background.strong.color.into()),
+            button::Status::Active | button::Status::Disabled => None,
+        },
+        border: Border {
+            radius: 6.0.into(),
+            ..Border::default()
+        },
+        ..link(theme, status)
     }
 }
 

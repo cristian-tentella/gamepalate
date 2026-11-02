@@ -552,7 +552,8 @@ impl Library {
             text("Sort").size(font::NOTE_SIZE).style(style::muted),
             pick_list(SORTS, Some(self.sort), Message::Sort)
                 .text_size(font::NOTE_SIZE)
-                .padding([4, 8]),
+                .padding([4, 8])
+                .style(style::dropdown),
             text_input("Search by name (Ctrl+F)", &self.search)
                 .style(style::field)
                 .id(SEARCH)
