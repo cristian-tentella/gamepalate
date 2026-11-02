@@ -51,7 +51,7 @@ pub struct Showcase {
     thumbnails: HashMap<String, Picture>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Version {
     Original,
     Thumbnail,
@@ -130,22 +130,17 @@ impl Showcase {
     }
 
     fn load_versions(&mut self) -> Task<Message> {
-        let mut wanted = Vec::new();
-        if self.zoomed {
-            wanted.extend(
-                self.current_screenshot()
-                    .map(|url| (Version::Original, url.clone())),
-            );
-        }
-        if self.browsing
-            && let Some(id) = self.shown
-        {
-            wanted.extend(
-                self.screenshots(id)
-                    .iter()
-                    .map(|url| (Version::Thumbnail, url.clone())),
-            );
-        }
+        let screenshots = self.shown.map_or(&[][..], |id| self.screenshots(id));
+        let waiting = self
+            .current_screenshot()
+            .is_some_and(|url| matches!(self.images.get(url), None | Some(Picture::Loading)));
+        let wanted = wanted_versions(
+            screenshots,
+            self.screenshot,
+            self.zoomed,
+            self.browsing,
+            waiting,
+        );
 
         Task::batch(
             wanted
@@ -216,8 +211,9 @@ impl Showcase {
             return Task::none();
         }
         let details = self.load_details(upcoming, nearby);
+        let images = self.load_images(upcoming, nearby);
 
-        Task::batch([details, self.load_images(upcoming, nearby)])
+        Task::batch([details, images, self.load_versions()])
     }
 
     pub fn load_headers(&mut self, ids: &[AppId]) -> Task<Message> {
@@ -583,6 +579,32 @@ fn framed<'a>(
         .into()
 }
 
+fn wanted_versions(
+    screenshots: &[String],
+    index: usize,
+    zoomed: bool,
+    browsing: bool,
+    waiting: bool,
+) -> Vec<(Version, String)> {
+    let current = screenshots.get(index);
+    let mut wanted: Vec<(Version, String)> = current
+        .filter(|_| zoomed)
+        .map(|url| (Version::Original, url.clone()))
+        .into_iter()
+        .collect();
+    if browsing {
+        wanted.extend(
+            screenshots
+                .iter()
+                .map(|url| (Version::Thumbnail, url.clone())),
+        );
+    } else if waiting {
+        wanted.extend(current.map(|url| (Version::Thumbnail, url.clone())));
+    }
+
+    wanted
+}
+
 fn blurred(bytes: &[u8]) -> Option<image::Handle> {
     let thumbnail = ::image::load_from_memory(bytes).ok()?;
     let height = BLURRED_WIDTH * thumbnail.height() / thumbnail.width().max(1);
@@ -839,6 +861,27 @@ mod tests {
             shown(&next, &images, Some(&Picture::Ready(0u8)), Some(&last)),
             Shown::Wanted
         ));
+    }
+
+    #[test]
+    fn a_screenshot_still_loading_wants_its_thumbnail() {
+        let shots: Vec<String> = (0..3).map(|index| format!("ss_{index}.jpg")).collect();
+        let thumbnail = |url: &str| (Version::Thumbnail, url.to_string());
+
+        assert_eq!(
+            wanted_versions(&shots, 0, false, false, true),
+            [thumbnail("ss_0.jpg")]
+        );
+        assert!(wanted_versions(&shots, 0, false, false, false).is_empty());
+        assert_eq!(
+            wanted_versions(&shots, 1, true, true, true),
+            [
+                (Version::Original, "ss_1.jpg".to_string()),
+                thumbnail("ss_0.jpg"),
+                thumbnail("ss_1.jpg"),
+                thumbnail("ss_2.jpg"),
+            ]
+        );
     }
 
     #[test]
