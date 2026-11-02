@@ -3,6 +3,7 @@ mod font;
 mod format;
 mod progress;
 mod screen;
+mod smooth;
 mod style;
 
 use gamepalate_app::setup::saved_gui_settings;

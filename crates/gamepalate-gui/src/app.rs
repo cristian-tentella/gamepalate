@@ -27,6 +27,7 @@ use crate::{
         Discover, Library, Profile, Screen, Settings, Votes, discover, library, profile, settings,
         setup, votes,
     },
+    smooth::smooth,
     style,
 };
 
@@ -460,7 +461,7 @@ impl App {
         let app = column![
             bar,
             style::separator(),
-            container(content).width(Fill).height(Fill),
+            smooth(container(content).width(Fill).height(Fill)),
         ];
 
         if self.maximized {
