@@ -51,6 +51,7 @@ const PORTIONS: u16 = 1000;
 const WARNING: char = '\u{E7BA}';
 const CLOSED: char = '\u{E76C}';
 const OPENED: char = '\u{E70D}';
+const SETTINGS_HINT: &str = "Change it in Settings, under Taste";
 const SOURCE_BAR_WIDTH: f32 = 220.0;
 const PERCENT_WIDTH: f32 = 40.0;
 
@@ -1100,12 +1101,12 @@ fn source_text(source: &SourceView, hours: &SignalsConfig) -> String {
 fn source_tooltip(source: HoursSource, hours: &SignalsConfig) -> String {
     match source {
         HoursSource::Played => format!(
-            "Games with at least {} of play, set by signals.min_hours in config.toml",
+            "Games with at least {} of play. {SETTINGS_HINT}",
             hours_text(hours.min_hours)
         ),
-        HoursSource::Wishlist => "Set by signals.wishlist_hours in config.toml".to_string(),
-        HoursSource::Followed => "Set by signals.followed_hours in config.toml".to_string(),
-        HoursSource::WouldTry => "Set by signals.would_try_hours in config.toml".to_string(),
+        HoursSource::Wishlist | HoursSource::Followed | HoursSource::WouldTry => {
+            SETTINGS_HINT.to_string()
+        }
     }
 }
 
@@ -1403,6 +1404,20 @@ mod tests {
         assert_eq!(
             source_text(&source(HoursSource::Followed, 0.06, 1), &hours),
             "1 game, 3 hours each"
+        );
+    }
+
+    #[test]
+    fn a_source_says_where_to_change_what_it_counts() {
+        let hours = SignalsConfig::default();
+
+        assert_eq!(
+            source_tooltip(HoursSource::Played, &hours),
+            "Games with at least 2 hours of play. Change it in Settings, under Taste"
+        );
+        assert_eq!(
+            source_tooltip(HoursSource::WouldTry, &hours),
+            "Change it in Settings, under Taste"
         );
     }
 
