@@ -2,9 +2,9 @@ use std::path::Path;
 
 use anyhow::{Context, bail};
 use clap::{Args, CommandFactory, error::ErrorKind};
+use gamepalate_app::library::{GameCorrectionError, check_game_multiplier};
 use gamepalate_core::{
     corrections::Ban,
-    effective_hours::effective_hours,
     filters::find_tag,
     ids::{AppId, TagId},
     taste::game_name,
@@ -15,7 +15,7 @@ use gamepalate_store::{
 };
 
 use crate::{
-    format::{decimal, multiplier, parse_number},
+    format::{multiplier, parse_number},
     names::{game_label, tag_name_error_text},
 };
 
@@ -190,28 +190,22 @@ fn correct_game(
         [factor] => parse_number(factor).unwrap_or_else(|error| usage_error("dampen", error)),
         _ => usage_error("dampen", "after --game only a factor can follow"),
     };
-    if !(0.0..=1.0).contains(&factor) {
-        let message = format!(
-            "the factor of a game must be from 0 to 1, where 0 means it does not count: to make a game count more, put it in a family in {}",
-            families_path.display()
-        );
-        if words.is_empty() {
-            bail!("corrections.dampen of the config is {factor}: {message}");
-        }
-        usage_error("dampen", message);
-    }
     let id = AppId(appid);
-    let label = game_label(id, &files.catalog, &files.off_catalog);
-    let min_hours = files.config.signals.min_hours;
-    let hours = effective_hours(&files.signals, &files.votes, &files.config.signals);
-    match hours.get(&id) {
-        None => bail!("{label} is not in your signals: dampening it would have no effect"),
-        Some(&game_hours) if game_hours < min_hours => bail!(
-            "{label} has {} effective hours, below the threshold of {min_hours} hours: dampening it would have no effect",
-            decimal(game_hours)
-        ),
-        Some(_) => {}
+    match check_game_multiplier(id, factor, &files.search_inputs(&[])) {
+        Ok(()) => {}
+        Err(GameCorrectionError::FactorOutOfRange { factor }) => {
+            let message = format!(
+                "the factor of a game must be from 0 to 1, where 0 means it does not count: to make a game count more, put it in a family in {}",
+                families_path.display()
+            );
+            if words.is_empty() {
+                bail!("corrections.dampen of the config is {factor}: {message}");
+            }
+            usage_error("dampen", message);
+        }
+        Err(error) => bail!(error),
     }
+    let label = game_label(id, &files.catalog, &files.off_catalog);
 
     if files.corrections.game_multipliers.get(&id) == Some(&factor) {
         println!("Game {label} was already at {}.", multiplier(factor));

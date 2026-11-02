@@ -5,7 +5,7 @@ use clap::{Args, ValueEnum};
 use gamepalate_core::{
     ids::AppId,
     taste::game_name,
-    votes::{Vote, VoteKind},
+    votes::{VoteKind, cast},
 };
 use gamepalate_store::{data_files::DataFiles, votes::save_votes};
 
@@ -57,16 +57,13 @@ impl VoteChoice {
 
 pub fn run(args: &VoteArgs, files: &DataFiles, data_dir: &Path) -> anyhow::Result<()> {
     let id = AppId(args.appid);
-    let was_bet = files.votes.get(&id).is_some_and(|vote| vote.bet);
-
     let mut votes = files.votes.clone();
-    votes.insert(
+    cast(
+        &mut votes,
         id,
-        Vote {
-            kind: args.vote.kind(),
-            date: jiff::Zoned::now().date().to_string(),
-            bet: args.bet || was_bet,
-        },
+        args.vote.kind(),
+        jiff::Zoned::now().date().to_string(),
+        args.bet,
     );
 
     let path = data_dir.join("votes.toml");
@@ -76,7 +73,7 @@ pub fn run(args: &VoteArgs, files: &DataFiles, data_dir: &Path) -> anyhow::Resul
     })
     .with_context(|| format!("in {}", path.display()))?;
 
-    let bet = if args.bet || was_bet { " (bet)" } else { "" };
+    let bet = if votes[&id].bet { " (bet)" } else { "" };
     println!(
         "Voted {}: {}{bet}.",
         game_label(id, &files.catalog, &files.off_catalog),

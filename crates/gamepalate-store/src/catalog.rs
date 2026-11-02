@@ -6,13 +6,15 @@ use std::{
 
 use gamepalate_core::{
     catalog::{Catalog, Freshness, TagName},
+    currency::Currency,
     game::{Discount, Game, GameTag, Price, Reviews},
     ids::{AppId, TagId},
+    region::Region,
     timestamp::Timestamp,
 };
 use rusqlite::{Connection, OpenFlags, Row, params};
 
-const CACHE_FORMAT: u32 = 1;
+const CACHE_FORMAT: u32 = 2;
 
 const SCHEMA: &str = "
     CREATE TABLE games (
@@ -35,7 +37,15 @@ const SCHEMA: &str = "
     ) WITHOUT ROWID;
     CREATE TABLE tags (tagid INTEGER PRIMARY KEY, name_it TEXT NOT NULL, name_en TEXT NOT NULL);
     CREATE TABLE tag_idf (tagid INTEGER PRIMARY KEY, idf REAL NOT NULL);
-    CREATE TABLE freshness (prices_updated_at INTEGER NOT NULL, tags_updated_at INTEGER NOT NULL);
+    CREATE TABLE freshness (
+        prices_updated_at INTEGER NOT NULL,
+        tags_updated_at INTEGER NOT NULL,
+        region TEXT NOT NULL,
+        currency_prefix TEXT NOT NULL,
+        currency_suffix TEXT NOT NULL,
+        decimal_separator TEXT,
+        group_separator TEXT
+    );
 ";
 
 #[derive(Debug, thiserror::Error)]
@@ -45,6 +55,9 @@ pub enum CatalogError {
 
     #[error("could not read the catalog")]
     Sqlite(#[from] rusqlite::Error),
+
+    #[error("the catalog has an invalid region {0:?}")]
+    Region(String),
 
     #[error("could not write the catalog")]
     Write(#[source] rusqlite::Error),
@@ -184,11 +197,19 @@ fn insert_catalog(
             insert_idf.execute(params![id.0, idf])?;
         }
 
+        let currency = &catalog.currency;
         transaction.execute(
-            "INSERT INTO freshness (prices_updated_at, tags_updated_at) VALUES (?, ?)",
+            "INSERT INTO freshness (prices_updated_at, tags_updated_at, region,
+                currency_prefix, currency_suffix, decimal_separator, group_separator)
+            VALUES (?, ?, ?, ?, ?, ?, ?)",
             params![
                 catalog.freshness.prices_updated_at.0,
-                catalog.freshness.tags_updated_at.0
+                catalog.freshness.tags_updated_at.0,
+                catalog.freshness.region.as_str(),
+                currency.prefix,
+                currency.suffix,
+                currency.decimal_separator.map(String::from),
+                currency.group_separator.map(String::from),
             ],
         )?;
     }
@@ -202,9 +223,9 @@ fn read_catalog(conn: &Connection) -> Result<Catalog, CatalogError> {
 
     let tag_names = read_tag_names(conn)?;
     let idf = read_idf(conn)?;
-    let freshness = read_freshness(conn)?;
+    let (freshness, currency) = read_freshness(conn)?;
 
-    Ok(Catalog::new(games, tag_names, idf, freshness))
+    Ok(Catalog::new(games, tag_names, idf, freshness, currency))
 }
 
 fn read_games(conn: &Connection) -> Result<Vec<Game>, CatalogError> {
@@ -295,17 +316,62 @@ fn read_idf(conn: &Connection) -> Result<BTreeMap<TagId, f64>, CatalogError> {
         .collect::<Result<BTreeMap<_, _>, _>>()?)
 }
 
-fn read_freshness(conn: &Connection) -> Result<Freshness, CatalogError> {
-    Ok(conn.query_row(
-        "SELECT prices_updated_at, tags_updated_at FROM freshness",
+fn read_freshness(conn: &Connection) -> Result<(Freshness, Currency), CatalogError> {
+    if !has_region(conn)? {
+        return Ok(conn.query_row(
+            "SELECT prices_updated_at, tags_updated_at FROM freshness",
+            [],
+            |row| {
+                Ok((
+                    Freshness {
+                        prices_updated_at: Timestamp(row.get(0)?),
+                        tags_updated_at: Timestamp(row.get(1)?),
+                        region: Region::ITALY,
+                    },
+                    Currency::italian(),
+                ))
+            },
+        )?);
+    }
+
+    let (prices_updated_at, tags_updated_at, region, currency) = conn.query_row(
+        "SELECT prices_updated_at, tags_updated_at, region,
+            currency_prefix, currency_suffix, decimal_separator, group_separator
+        FROM freshness",
         [],
         |row| {
-            Ok(Freshness {
-                prices_updated_at: Timestamp(row.get(0)?),
-                tags_updated_at: Timestamp(row.get(1)?),
-            })
+            Ok((
+                Timestamp(row.get(0)?),
+                Timestamp(row.get(1)?),
+                row.get::<_, String>(2)?,
+                Currency {
+                    prefix: row.get(3)?,
+                    suffix: row.get(4)?,
+                    decimal_separator: separator(row.get(5)?),
+                    group_separator: separator(row.get(6)?),
+                },
+            ))
         },
-    )?)
+    )?;
+    let region = Region::new(&region).ok_or(CatalogError::Region(region))?;
+
+    Ok((
+        Freshness {
+            prices_updated_at,
+            tags_updated_at,
+            region,
+        },
+        currency,
+    ))
+}
+
+fn has_region(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.prepare("SELECT 1 FROM pragma_table_info('freshness') WHERE name = 'region'")?
+        .exists([])
+}
+
+fn separator(text: Option<String>) -> Option<char> {
+    text.and_then(|text| text.chars().next())
 }
 
 #[cfg(test)]
@@ -331,7 +397,7 @@ mod tests {
                 (99, 2, 1.0);
             INSERT INTO tags VALUES (2, 'Azione', 'Action'), (5, 'Indipendente', 'Indie');
             INSERT INTO tag_idf VALUES (2, 0.5), (5, 1.25);
-            INSERT INTO freshness VALUES (1700000000000, 1690000000000);",
+            INSERT INTO freshness VALUES (1700000000000, 1690000000000, 'IT', '', '€', ',', NULL);",
         )
         .unwrap();
         conn
@@ -446,8 +512,10 @@ mod tests {
             Freshness {
                 prices_updated_at: Timestamp(UPDATED_AT),
                 tags_updated_at: Timestamp(1_690_000_000_000),
+                region: Region::ITALY,
             }
         );
+        assert_eq!(catalog.currency, Currency::italian());
     }
 
     #[test]
@@ -461,6 +529,7 @@ mod tests {
         assert_eq!(read.games(), catalog.games());
         assert_eq!(read.idf, catalog.idf);
         assert_eq!(read.freshness, catalog.freshness);
+        assert_eq!(read.currency, catalog.currency);
         let names = |catalog: &Catalog| -> Vec<(TagId, String, String)> {
             catalog
                 .tags
@@ -486,6 +555,96 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(numbers, [(10, 0), (20, 42), (30, 0)]);
+    }
+
+    fn dollar_catalog() -> Catalog {
+        let mut catalog = test_catalog();
+        catalog.freshness.region = Region::new("US").unwrap();
+        catalog.currency = Currency {
+            prefix: "$".to_string(),
+            suffix: String::new(),
+            decimal_separator: Some('.'),
+            group_separator: None,
+        };
+        catalog
+    }
+
+    #[test]
+    fn a_written_catalog_keeps_its_region_and_currency() {
+        let catalog = dollar_catalog();
+        let mut conn = Connection::open_in_memory().unwrap();
+
+        insert_catalog(&mut conn, &catalog, &HashMap::new()).unwrap();
+        let read = read_catalog(&conn).unwrap();
+
+        assert_eq!(read.freshness.region.as_str(), "US");
+        assert_eq!(read.currency, catalog.currency);
+    }
+
+    #[test]
+    fn a_catalog_without_region_and_currency_is_italian() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE games (
+                appid INTEGER PRIMARY KEY, name TEXT NOT NULL, final_price_cents INTEGER NOT NULL,
+                original_price_cents INTEGER NOT NULL, discount_percent INTEGER NOT NULL,
+                discount_end_ms INTEGER, review_count INTEGER NOT NULL,
+                positive_count INTEGER NOT NULL, early_access INTEGER NOT NULL,
+                price_change_number INTEGER NOT NULL
+            );
+            CREATE TABLE game_tags (appid INTEGER NOT NULL, tagid INTEGER NOT NULL, weight REAL NOT NULL);
+            CREATE TABLE tags (tagid INTEGER PRIMARY KEY, name_it TEXT NOT NULL, name_en TEXT NOT NULL);
+            CREATE TABLE tag_idf (tagid INTEGER PRIMARY KEY, idf REAL NOT NULL);
+            CREATE TABLE freshness (prices_updated_at INTEGER NOT NULL, tags_updated_at INTEGER NOT NULL);
+            INSERT INTO games VALUES (10, 'Alpha', 1500, 1500, 0, NULL, 100, 90, 0, 3);
+            INSERT INTO freshness VALUES (1700000000000, 1690000000000);",
+        )
+        .unwrap();
+
+        let catalog = read_catalog(&conn).unwrap();
+
+        assert_eq!(catalog.games().len(), 1);
+        assert_eq!(catalog.freshness.region, Region::ITALY);
+        assert_eq!(catalog.freshness.prices_updated_at, Timestamp(UPDATED_AT));
+        assert_eq!(catalog.currency, Currency::italian());
+    }
+
+    #[test]
+    fn an_invalid_region_is_an_error() {
+        let conn = test_db();
+        conn.execute_batch("UPDATE freshness SET region = 'usa'")
+            .unwrap();
+
+        assert!(matches!(
+            read_catalog(&conn),
+            Err(CatalogError::Region(region)) if region == "usa"
+        ));
+    }
+
+    #[test]
+    fn a_cache_of_another_format_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let sqlite = dir.path().join("catalog.sqlite");
+        let cache = dir.path().join("catalog.bin");
+        write_catalog(&sqlite, &test_catalog(), &HashMap::new()).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&sqlite)
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+        std::fs::write(
+            &cache,
+            postcard::to_stdvec(&(1_u32, &dollar_catalog())).unwrap(),
+        )
+        .unwrap();
+        assert!(read_cache(&cache, &sqlite).is_none());
+
+        write_cache(&cache, &dollar_catalog());
+        assert_eq!(
+            read_cache(&cache, &sqlite).unwrap().currency,
+            dollar_catalog().currency
+        );
     }
 
     #[test]

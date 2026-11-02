@@ -26,18 +26,14 @@ pub fn wanted_off_catalog(
     effective_hours: &BTreeMap<AppId, f64>,
     families: &Families,
     catalog: &Catalog,
-    min_hours: f64,
 ) -> Vec<AppId> {
-    let above_threshold = effective_hours
-        .iter()
-        .filter(|&(_, &hours)| hours >= min_hours)
-        .map(|(&id, _)| id);
+    let in_signals = effective_hours.keys().copied();
     let in_families = families
         .families
         .iter()
         .flat_map(|family| family.games.iter().copied());
 
-    above_threshold
+    in_signals
         .chain(in_families)
         .filter(|&id| catalog.game(id).is_none())
         .collect::<BTreeSet<AppId>>()
@@ -74,8 +70,10 @@ mod tests {
     use super::*;
     use crate::{
         catalog::Freshness,
+        currency::Currency,
         families::Family,
         game::{Game, Price, Reviews},
+        region::Region,
     };
 
     const NOW: Timestamp = Timestamp(1_793_638_800_000);
@@ -106,7 +104,9 @@ mod tests {
             Freshness {
                 prices_updated_at: NOW,
                 tags_updated_at: NOW,
+                region: Region::ITALY,
             },
+            Currency::italian(),
         )
     }
 
@@ -121,13 +121,8 @@ mod tests {
     }
 
     #[test]
-    fn wants_games_outside_the_catalog_above_the_threshold_or_in_a_family() {
-        let hours = BTreeMap::from([
-            (AppId(1), 5.0),
-            (AppId(2), 5.0),
-            (AppId(3), 1.0),
-            (AppId(4), 2.0),
-        ]);
+    fn wants_games_outside_the_catalog_in_the_signals_or_in_a_family() {
+        let hours = BTreeMap::from([(AppId(1), 5.0), (AppId(2), 5.0), (AppId(4), 0.0)]);
         let families = Families {
             families: vec![Family {
                 name: "Roguelike".to_string(),
@@ -136,7 +131,7 @@ mod tests {
             held_out: vec![AppId(6)],
         };
 
-        let wanted = wanted_off_catalog(&hours, &families, &catalog_with(&[1]), 2.0);
+        let wanted = wanted_off_catalog(&hours, &families, &catalog_with(&[1]));
 
         assert_eq!(wanted, [AppId(2), AppId(3), AppId(4), AppId(5)]);
     }

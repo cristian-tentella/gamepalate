@@ -4,16 +4,19 @@ use anyhow::bail;
 use clap::{Args, ValueEnum};
 use comfy_table::{CellAlignment, ContentArrangement, Table, presets::UTF8_FULL_CONDENSED};
 use gamepalate_core::{
+    catalog::Freshness,
+    currency::{Currency, parse_price},
     filters::FilterOptions,
     game::Reviews,
     game_vector::game_vectors,
+    region::Region,
     search::{RecommendedGame, SearchError, SearchOptions, SortBy, recommend},
     timestamp::Timestamp,
 };
 use gamepalate_store::data_files::DataFiles;
 
 use crate::{
-    format::{date, date_time, decimal, euros, integer, multiplier, parse_euros},
+    format::{date, date_time, decimal, integer, multiplier},
     names::{check_families, tag_name_error_text},
 };
 
@@ -37,12 +40,12 @@ pub struct RecommendArgs {
     #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
     min_positive: Option<u8>,
 
-    /// Minimum price in euros, such as 9.99 or 9,99
-    #[arg(long, value_parser = parse_euros)]
+    /// Minimum price in the store's currency, such as 9.99 or 9,99
+    #[arg(long, value_parser = parse_price)]
     min_price: Option<u32>,
 
-    /// Maximum price in euros, such as 9.99 or 9,99
-    #[arg(long, value_parser = parse_euros)]
+    /// Maximum price in the store's currency, such as 9.99 or 9,99
+    #[arg(long, value_parser = parse_price)]
     max_price: Option<u32>,
 
     /// Only discounted games
@@ -157,8 +160,8 @@ pub fn run(args: &RecommendArgs, files: &DataFiles, data_dir: &Path) -> anyhow::
 
     if recommendation.stale_prices {
         eprintln!(
-            "Prices last updated on {}: they may be out of date.",
-            date_time(recommendation.freshness.prices_updated_at)
+            "{}",
+            stale_prices_text(&recommendation.freshness, files.config.region)
         );
     }
     let no_bets = "No bets: they need at least 10 would_try votes and 10 not_for_me votes.";
@@ -199,7 +202,7 @@ pub fn run(args: &RecommendArgs, files: &DataFiles, data_dir: &Path) -> anyhow::
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(header);
     for game in &recommendation.games {
-        table.add_row(row(game, one_family));
+        table.add_row(row(game, one_family, &files.catalog.currency));
     }
     for column in right_aligned {
         if let Some(column) = table.column_mut(column) {
@@ -222,12 +225,25 @@ pub fn run(args: &RecommendArgs, files: &DataFiles, data_dir: &Path) -> anyhow::
     Ok(())
 }
 
-fn row(game: &RecommendedGame, one_family: bool) -> Vec<String> {
+fn stale_prices_text(freshness: &Freshness, region: Region) -> String {
+    if freshness.region != region {
+        return format!(
+            "The catalog has prices for {}, the config says {region}: run update.",
+            freshness.region
+        );
+    }
+    format!(
+        "Prices last updated on {}: they may be out of date.",
+        date_time(freshness.prices_updated_at)
+    )
+}
+
+fn row(game: &RecommendedGame, one_family: bool, currency: &Currency) -> Vec<String> {
     let discount = game.price.discount;
     let mut cells = vec![
         game.position.to_string(),
         game_cell(game),
-        euros(game.price.final_cents()),
+        currency.format(game.price.final_cents()),
         discount.map_or("-".to_string(), |discount| {
             format!("-{}%", discount.percent)
         }),
@@ -294,5 +310,36 @@ fn search_error_text(error: &SearchError) -> String {
             "the signals give an empty profile: no game above the hours threshold has tags"
                 .to_string()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const UPDATED_AT: Timestamp = Timestamp(1_793_638_800_000);
+
+    fn italian_freshness() -> Freshness {
+        Freshness {
+            prices_updated_at: UPDATED_AT,
+            tags_updated_at: UPDATED_AT,
+            region: Region::ITALY,
+        }
+    }
+
+    #[test]
+    fn a_catalog_of_another_region_says_to_run_update() {
+        assert_eq!(
+            stale_prices_text(&italian_freshness(), Region::new("US").unwrap()),
+            "The catalog has prices for IT, the config says US: run update."
+        );
+    }
+
+    #[test]
+    fn old_prices_of_the_same_region_say_when_they_were_updated() {
+        assert!(
+            stale_prices_text(&italian_freshness(), Region::ITALY)
+                .starts_with("Prices last updated on ")
+        );
     }
 }

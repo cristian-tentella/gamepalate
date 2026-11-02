@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 
 use crate::{
+    currency::Currency,
     game::Game,
     ids::{AppId, TagId},
+    region::Region,
     timestamp::Timestamp,
 };
 
@@ -13,6 +15,7 @@ pub struct Catalog {
     pub tags: BTreeMap<TagId, TagName>,
     pub idf: BTreeMap<TagId, f64>,
     pub freshness: Freshness,
+    pub currency: Currency,
 }
 
 impl Catalog {
@@ -21,6 +24,7 @@ impl Catalog {
         tags: BTreeMap<TagId, TagName>,
         idf: BTreeMap<TagId, f64>,
         freshness: Freshness,
+        currency: Currency,
     ) -> Catalog {
         games.sort_unstable_by_key(|game| game.id);
         Catalog {
@@ -28,6 +32,7 @@ impl Catalog {
             tags,
             idf,
             freshness,
+            currency,
         }
     }
 
@@ -70,11 +75,13 @@ pub struct TagName {
 pub struct Freshness {
     pub prices_updated_at: Timestamp,
     pub tags_updated_at: Timestamp,
+    pub region: Region,
 }
 
 impl Freshness {
-    pub fn prices_are_stale(&self, now: Timestamp, max_age_hours: u32) -> bool {
-        now.ms_since(self.prices_updated_at) > i64::from(max_age_hours) * 3_600_000
+    pub fn prices_are_stale(&self, now: Timestamp, max_age_hours: u32, region: Region) -> bool {
+        self.region != region
+            || now.ms_since(self.prices_updated_at) > i64::from(max_age_hours) * 3_600_000
     }
 }
 
@@ -90,6 +97,7 @@ mod tests {
         Freshness {
             prices_updated_at: UPDATED_AT,
             tags_updated_at: UPDATED_AT,
+            region: Region::ITALY,
         }
     }
 
@@ -152,16 +160,24 @@ mod tests {
     #[test]
     fn prices_are_stale_when_older_than_max_age() {
         let now = Timestamp(hours_after_update(24).0 + 1);
-        assert!(freshness().prices_are_stale(now, 24));
+        assert!(freshness().prices_are_stale(now, 24, Region::ITALY));
     }
 
     #[test]
     fn prices_are_not_stale_when_newer_than_max_age() {
-        assert!(!freshness().prices_are_stale(hours_after_update(23), 24));
+        assert!(!freshness().prices_are_stale(hours_after_update(23), 24, Region::ITALY));
     }
 
     #[test]
     fn prices_are_not_stale_at_exactly_max_age() {
-        assert!(!freshness().prices_are_stale(hours_after_update(24), 24));
+        assert!(!freshness().prices_are_stale(hours_after_update(24), 24, Region::ITALY));
+    }
+
+    #[test]
+    fn prices_of_another_region_are_stale_even_when_new() {
+        let us = Region::new("US").unwrap();
+
+        assert!(freshness().prices_are_stale(UPDATED_AT, 24, us));
+        assert!(!freshness().prices_are_stale(UPDATED_AT, 24, Region::ITALY));
     }
 }

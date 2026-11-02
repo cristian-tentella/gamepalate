@@ -160,6 +160,7 @@ fn correction_label(correction: &TagCorrection) -> String {
 fn kind_name(kind: SignalKind) -> &'static str {
     match kind {
         SignalKind::Library => "library",
+        SignalKind::Borrowed => "not owned",
         SignalKind::Recent => "recent",
         SignalKind::Wishlist => "wishlist",
         SignalKind::Followed => "followed",

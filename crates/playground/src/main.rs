@@ -8,6 +8,7 @@ use anyhow::Context;
 use gamepalate_core::{
     catalog::Catalog,
     config::{Config, RelevanceConfig},
+    currency::Currency,
     effective_hours::effective_hours,
     evaluation::{GroupSummary, evaluate},
     filters::{FilterContext, FilterOptions, active_filters, apply_filters},
@@ -411,14 +412,14 @@ fn print_recommendations(inputs: &SearchInputs) {
         match recommend(inputs, &options, now()) {
             Ok(recommendation) => {
                 println!("time: {:?}", start.elapsed());
-                print_recommendation(&recommendation);
+                print_recommendation(&recommendation, &inputs.catalog.currency);
             }
             Err(error) => println!("error: {error:?}"),
         }
     }
 }
 
-fn print_recommendation(recommendation: &Recommendation) {
+fn print_recommendation(recommendation: &Recommendation, currency: &Currency) {
     if recommendation.stale_prices {
         println!("prices are stale: {:?}", recommendation.freshness);
     }
@@ -439,11 +440,11 @@ fn print_recommendation(recommendation: &Recommendation) {
     for game in &recommendation.games {
         let price = match game.price.discount {
             Some(discount) => format!(
-                "{:.2} € (-{}%)",
-                f64::from(game.price.final_cents()) / 100.0,
+                "{} (-{}%)",
+                currency.format(game.price.final_cents()),
                 discount.percent
             ),
-            None => format!("{:.2} €", f64::from(game.price.final_cents()) / 100.0),
+            None => currency.format(game.price.final_cents()),
         };
         let from = game.from_family.as_deref().unwrap_or("signals");
         let bet = if game.bet { "  [bet]" } else { "" };

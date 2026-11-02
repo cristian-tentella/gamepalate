@@ -304,9 +304,7 @@ pub fn guardrail_group(
         .collect();
 
     let mut games: Vec<(AppId, f64)> = signals
-        .library
-        .iter()
-        .map(|game| game.id)
+        .played()
         .filter(|id| {
             catalog.game(*id).is_some()
                 && !family_games.contains(id)

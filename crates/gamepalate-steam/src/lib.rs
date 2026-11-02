@@ -1,5 +1,8 @@
 pub mod apps;
 pub mod archive;
+pub mod client;
+pub mod details;
+pub mod images;
 pub mod items;
 pub mod off_catalog;
 pub mod signals;

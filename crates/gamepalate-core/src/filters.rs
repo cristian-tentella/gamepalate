@@ -12,7 +12,12 @@ use crate::{
     votes::{VoteKind, Votes},
 };
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
 pub struct FilterOptions {
     pub min_reviews: Option<u32>,
     pub max_reviews: Option<u32>,
@@ -124,7 +129,10 @@ impl<'a> FilterContext<'a> {
         votes: &'a Votes,
         corrections: &'a Corrections,
     ) -> FilterContext<'a> {
-        let owned = signals.library.iter().map(|game| game.id).collect();
+        let owned = signals
+            .played()
+            .chain(signals.recent.iter().map(|game| game.id))
+            .collect();
         let family_games = families
             .families
             .iter()
@@ -312,5 +320,40 @@ pub fn apply_filters(
             filter: filters[index].name(),
             discarded,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::signals::{LibraryGame, RecentGame};
+
+    #[test]
+    fn owned_games_include_borrowed_and_recent_ones() {
+        let game = |id| LibraryGame {
+            id: AppId(id),
+            total_hours: 3.0,
+        };
+        let signals = Signals {
+            read_at: Timestamp(0),
+            library: vec![game(1)],
+            borrowed: vec![game(2)],
+            recent: vec![RecentGame {
+                id: AppId(3),
+                total_hours: 1.0,
+                recent_hours: 1.0,
+            }],
+            wishlist: vec![AppId(4)],
+            followed: vec![],
+        };
+        let votes = Votes::new();
+        let corrections = Corrections::default();
+
+        let context = FilterContext::new(&signals, &Families::default(), &votes, &corrections);
+
+        assert_eq!(
+            context.owned,
+            BTreeSet::from([AppId(1), AppId(2), AppId(3)])
+        );
     }
 }

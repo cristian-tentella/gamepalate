@@ -1,7 +1,9 @@
 pub mod affinity;
+pub mod best_match;
 pub mod catalog;
 pub mod config;
 pub mod corrections;
+pub mod currency;
 pub mod effective_hours;
 pub mod evaluation;
 pub mod explanation;
@@ -16,6 +18,7 @@ pub mod opinion;
 pub mod profile;
 pub mod quality;
 pub mod ranking;
+pub mod region;
 pub mod search;
 pub mod signals;
 pub mod store_item;
