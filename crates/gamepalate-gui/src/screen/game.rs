@@ -2,8 +2,8 @@ use std::process::Command;
 
 use gamepalate_app::{Currency, Price, Reviews, VoteKind};
 use iced::{
-    Center, Element, Fill, never,
-    widget::{button, container, rich_text, row, span, text},
+    Center, Element, Fill,
+    widget::{button, column, container, row, text},
 };
 
 use crate::{font, format, style};
@@ -16,6 +16,7 @@ pub const VOTES: [(&str, VoteKind); 4] = [
 ];
 pub const VOTE_HEIGHT: f32 = 36.0;
 const VOTE_WIDTH: f32 = 172.0;
+const STATS_SPACING: f32 = 32.0;
 const COMPACT_VOTE_SIZE: f32 = 14.0;
 const CHECK: char = '\u{E73E}';
 
@@ -89,13 +90,30 @@ pub fn bet_label<'a, Message: 'a>() -> Element<'a, Message> {
         .into()
 }
 
-pub fn reviews_line<'a, Message: 'a>(reviews: &Reviews) -> Element<'a, Message> {
-    let (percent, rest) = format::reviews(reviews);
+pub fn stats<'a, Message: 'a>(
+    reviews: Option<&Reviews>,
+    year: Option<String>,
+) -> Element<'a, Message> {
+    let reviews = reviews.map(|reviews| match format::reviews(reviews) {
+        (percent, label) if !percent.is_empty() => stat(percent, label),
+        (_, label) => text(label).size(font::INFO_SIZE).style(style::muted).into(),
+    });
 
-    rich_text![span(percent).font(font::SEMIBOLD), span(rest)]
-        .size(font::INFO_SIZE)
-        .on_link_click(never)
+    row![]
+        .push(reviews)
+        .push(year.map(|year| stat(year, "released".to_string())))
+        .spacing(STATS_SPACING)
+        .align_y(Center)
         .into()
+}
+
+fn stat<'a, Message: 'a>(value: String, label: String) -> Element<'a, Message> {
+    column![
+        text(value).size(font::PRICE_SIZE).font(font::SEMIBOLD),
+        text(label).size(font::NOTE_SIZE).style(style::muted),
+    ]
+    .spacing(2)
+    .into()
 }
 
 pub fn vote_button<'a, Message: Clone + 'a>(

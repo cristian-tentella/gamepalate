@@ -134,6 +134,10 @@ impl Showcase {
         self.pages.details(id).map(facts)
     }
 
+    pub fn year(&self, id: AppId) -> Option<String> {
+        format::year(self.pages.details(id)?.store.release_date)
+    }
+
     fn show_screenshot(&mut self, index: usize) {
         if index == self.screenshot {
             return;
@@ -361,9 +365,8 @@ fn facts(details: &GameDetails) -> Element<'_, Message> {
         store
             .steam_deck
             .map(|deck| format::steam_deck(deck).to_string()),
-        Some(format::italian(store.italian)),
         format::play(&details.modes, store.controller),
-        format::made_by(&store.developers, store.release_date),
+        format::developers(&store.developers),
     ];
 
     column(

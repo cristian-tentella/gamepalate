@@ -364,7 +364,10 @@ impl Votes {
             voted,
             price,
         ]
-        .push(game.reviews.as_ref().map(game::reviews_line))
+        .push(game::stats(
+            game.reviews.as_ref(),
+            self.showcase.year(game.id),
+        ))
         .spacing(10)
         .width(Fill);
         let top = row![

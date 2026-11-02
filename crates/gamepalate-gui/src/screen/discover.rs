@@ -499,12 +499,11 @@ impl Discover {
         size: Size,
     ) -> Element<'a, Message> {
         let (shot_width, shot_height) = screenshot_size(size);
-        let (position, total) = queue.position();
-        let progress = if queue.is_waiting() {
-            "Loading the next games…".to_string()
-        } else {
-            format!("{position} / {total}")
-        };
+        let waiting = queue.is_waiting().then(|| {
+            text("Loading the next games…")
+                .size(font::NOTE_SIZE)
+                .style(style::muted)
+        });
 
         let media = self
             .showcase
@@ -516,7 +515,7 @@ impl Discover {
                 .map(Message::Showcase),
             text(&game.name).size(font::TITLE_SIZE).font(font::SEMIBOLD),
             game::price_row(&game.price, game.bet, self.gamepalate.currency()),
-            game::reviews_line(&game.reviews),
+            game::stats(Some(&game.reviews), self.showcase.year(game.id)),
         ]
         .push(similar_lines(game))
         .push(self.why(game))
@@ -525,7 +524,7 @@ impl Discover {
                 .facts(game.id)
                 .map(|facts| facts.map(Message::Showcase)),
         )
-        .push(text(progress).size(font::NOTE_SIZE).style(style::muted))
+        .push(waiting)
         .spacing(14)
         .width(SIDE_WIDTH);
 

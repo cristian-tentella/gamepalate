@@ -1,6 +1,6 @@
 use gamepalate_app::{
-    Blame, Controller, Currency, Italian, Price, Reviews, SearchOptions, SortBy, SteamDeck,
-    Timestamp, VoteKind,
+    Blame, Controller, Currency, Price, Reviews, SearchOptions, SortBy, SteamDeck, Timestamp,
+    VoteKind,
 };
 use jiff::{civil::Date, tz::TimeZone};
 
@@ -179,7 +179,7 @@ pub fn reviews(reviews: &Reviews) -> (String, String) {
 
     (
         format!("{percent}%"),
-        format!(" positive of {} {noun}", count(reviews.total)),
+        format!("positive of {} {noun}", count(reviews.total)),
     )
 }
 
@@ -218,20 +218,6 @@ pub fn steam_deck(deck: SteamDeck) -> &'static str {
     }
 }
 
-pub fn italian(italian: Option<Italian>) -> String {
-    let Some(italian) = italian else {
-        return "No Italian".to_string();
-    };
-    let mut parts = vec!["interface"];
-    if italian.subtitles {
-        parts.push("subtitles");
-    }
-    if italian.audio {
-        parts.push("audio");
-    }
-    format!("Italian: {}", parts.join(", "))
-}
-
 pub fn play(modes: &[String], controller: Option<Controller>) -> Option<String> {
     let controller = controller.map(|controller| match controller {
         Controller::Full => "Full controller support",
@@ -242,17 +228,13 @@ pub fn play(modes: &[String], controller: Option<Controller>) -> Option<String> 
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
-pub fn made_by(developers: &[String], release: Option<Timestamp>) -> Option<String> {
-    let year = release
-        .and_then(|release| jiff::Timestamp::from_millisecond(release.0).ok())
-        .map(|release| release.to_zoned(TimeZone::UTC).year().to_string());
-    let parts: Vec<String> = (!developers.is_empty())
-        .then(|| developers.join(", "))
-        .into_iter()
-        .chain(year)
-        .collect();
+pub fn developers(developers: &[String]) -> Option<String> {
+    (!developers.is_empty()).then(|| developers.join(", "))
+}
 
-    (!parts.is_empty()).then(|| parts.join(" · "))
+pub fn year(release: Option<Timestamp>) -> Option<String> {
+    let release = jiff::Timestamp::from_millisecond(release?.0).ok()?;
+    Some(release.to_zoned(TimeZone::UTC).year().to_string())
 }
 
 pub fn vote(kind: VoteKind) -> &'static str {
@@ -544,7 +526,7 @@ mod tests {
 
         assert_eq!(
             super::reviews(&reviews),
-            ("93%".to_string(), " positive of 43,506 reviews".to_string())
+            ("93%".to_string(), "positive of 43,506 reviews".to_string())
         );
     }
 
@@ -596,25 +578,6 @@ mod tests {
     }
 
     #[test]
-    fn lists_what_is_in_italian() {
-        assert_eq!(italian(None), "No Italian");
-        assert_eq!(
-            italian(Some(Italian {
-                subtitles: false,
-                audio: false
-            })),
-            "Italian: interface"
-        );
-        assert_eq!(
-            italian(Some(Italian {
-                subtitles: true,
-                audio: true
-            })),
-            "Italian: interface, subtitles, audio"
-        );
-    }
-
-    #[test]
     fn joins_the_modes_and_the_controller() {
         let modes = ["Single-player".to_string(), "Online Co-op".to_string()];
 
@@ -630,19 +593,20 @@ mod tests {
     }
 
     #[test]
-    fn names_the_developers_and_the_year() {
+    fn names_the_developers() {
         let developers = ["Live Wire".to_string(), "Adglobe".to_string()];
 
         assert_eq!(
-            made_by(&developers, Some(Timestamp(1_624_233_600_000))).unwrap(),
-            "Live Wire, Adglobe · 2021"
+            super::developers(&developers).unwrap(),
+            "Live Wire, Adglobe"
         );
-        assert_eq!(made_by(&developers, None).unwrap(), "Live Wire, Adglobe");
-        assert_eq!(
-            made_by(&[], Some(Timestamp(1_624_233_600_000))).unwrap(),
-            "2021"
-        );
-        assert_eq!(made_by(&[], None), None);
+        assert_eq!(super::developers(&[]), None);
+    }
+
+    #[test]
+    fn takes_the_release_year() {
+        assert_eq!(year(Some(Timestamp(1_624_233_600_000))).unwrap(), "2021");
+        assert_eq!(year(None), None);
     }
 
     #[test]

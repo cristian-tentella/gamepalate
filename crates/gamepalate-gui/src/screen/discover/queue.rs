@@ -2,7 +2,6 @@ use gamepalate_app::{AppId, RecommendedGame};
 
 pub struct Queue {
     games: Vec<RecommendedGame>,
-    batch_starts: Vec<usize>,
     index: usize,
     next: Next,
 }
@@ -19,7 +18,6 @@ impl Queue {
     pub fn new(games: Vec<RecommendedGame>) -> Queue {
         Queue {
             games,
-            batch_starts: vec![0],
             index: 0,
             next: Next::Idle,
         }
@@ -37,24 +35,6 @@ impl Queue {
         let start = self.index.saturating_sub(behind).min(self.games.len());
         let end = (self.index + ahead + 1).min(self.games.len());
         &self.games[start..end]
-    }
-
-    pub fn position(&self) -> (usize, usize) {
-        let start = self
-            .batch_starts
-            .iter()
-            .rev()
-            .find(|&&start| start <= self.index)
-            .copied()
-            .unwrap_or(0);
-        let end = self
-            .batch_starts
-            .iter()
-            .find(|&&start| start > self.index)
-            .copied()
-            .unwrap_or(self.games.len());
-
-        (self.index - start + 1, end - start)
     }
 
     pub fn is_waiting(&self) -> bool {
@@ -104,7 +84,6 @@ impl Queue {
         }
 
         let waiting = self.next == Next::Waiting;
-        self.batch_starts.push(self.games.len());
         self.games.extend(games);
         self.next = Next::Idle;
         if waiting {
@@ -124,14 +103,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn counts_the_position_within_the_batch() {
-        let mut queue = Queue::new(games(1..=3));
-        queue.advance();
-
-        assert_eq!(queue.position(), (2, 3));
-    }
-
-    #[test]
     fn asks_for_the_next_batch_on_the_last_game() {
         let mut queue = Queue::new(games(1..=2));
 
@@ -149,7 +120,6 @@ mod tests {
         queue.receive(games(3..=5));
 
         assert_eq!(queue.current().map(|game| game.id), Some(AppId(3)));
-        assert_eq!(queue.position(), (1, 3));
     }
 
     #[test]
@@ -172,7 +142,6 @@ mod tests {
         queue.back();
 
         assert_eq!(queue.current().map(|game| game.id), Some(AppId(1)));
-        assert_eq!(queue.position(), (1, 1));
     }
 
     #[test]
