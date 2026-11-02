@@ -120,6 +120,10 @@ pub fn count(number: u32) -> String {
     grouped
 }
 
+pub fn currency_symbol(currency: &Currency) -> String {
+    format!("{}{}", currency.prefix.trim(), currency.suffix.trim())
+}
+
 pub fn price(price: &Price, currency: &Currency) -> String {
     match price.discount {
         Some(discount) => currency.format(discount.final_cents),
@@ -463,6 +467,12 @@ mod tests {
             filters(&options, &Currency::italian()),
             "From: azione · 4,99€–20,00€ · ≥ 1,000 reviews · Tags: Metroidvania, Souls-like · By price"
         );
+    }
+
+    #[test]
+    fn the_currency_symbol_drops_the_spaces() {
+        assert_eq!(currency_symbol(&Currency::italian()), "€");
+        assert_eq!(currency_symbol(&dollars()), "$");
     }
 
     #[test]

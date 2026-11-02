@@ -10,7 +10,7 @@ use gamepalate_core::{
     corrections::Corrections,
     currency::Currency,
     families::Families,
-    filters::TagNameError,
+    filters::{FilterOptions, TagNameError},
     game::{Price, Reviews},
     game_vector::{GameVector, game_vectors},
     ids::AppId,
@@ -372,6 +372,16 @@ impl Gamepalate {
 
     pub fn bet_every(&self) -> usize {
         self.files.config.results.bet_every
+    }
+
+    pub fn config_filters(&self) -> FilterOptions {
+        let config = &self.files.config;
+        FilterOptions {
+            min_reviews: Some(config.relevance.min_reviews),
+            min_positive_percent: Some(config.results.min_positive_percent),
+            without_early_access: Some(!config.results.early_access),
+            ..FilterOptions::default()
+        }
     }
 
     pub fn signals_read_at(&self) -> Timestamp {

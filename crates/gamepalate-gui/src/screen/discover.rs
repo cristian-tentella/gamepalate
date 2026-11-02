@@ -14,7 +14,7 @@ use gamepalate_app::{
     SearchOptions, VoteKind,
 };
 use iced::{
-    Center, Element, Fill, Size, Subscription, Task,
+    Center, Element, Event, Fill, Size, Subscription, Task, event,
     keyboard::{self, Key, key::Named},
     never, padding,
     widget::{
@@ -23,7 +23,10 @@ use iced::{
     },
 };
 
-use self::{filters::Panel, queue::Queue};
+use self::{
+    filters::{Action, Panel},
+    queue::Queue,
+};
 use super::{
     game::{self, Link, VOTE_HEIGHT, VOTES},
     showcase::{self, Showcase},
@@ -109,7 +112,13 @@ impl Discover {
             Some(family) => family_options(&saved, family),
             None => saved.clone(),
         };
-        let panel = Panel::new(gamepalate.family_names(), gamepalate.tag_names(), &options);
+        let panel = Panel::new(
+            gamepalate.family_names(),
+            gamepalate.tag_names(),
+            &gamepalate.config_filters(),
+            format::currency_symbol(gamepalate.currency()),
+            &options,
+        );
         let changed = options != saved;
         let mut discover = Discover {
             gamepalate: Arc::clone(gamepalate),
@@ -146,6 +155,9 @@ impl Discover {
                 | Message::ToggleFilters => return Task::none(),
                 _ => {}
             }
+        }
+        if self.panel_open && acts_on_the_game(&message) {
+            return Task::none();
         }
         let task = self.handle(message);
         self.showcase.follow(self.current().map(|game| game.id));
@@ -240,12 +252,12 @@ impl Discover {
                 }
             }
             Message::Filters(message) => return self.change_filters(message),
-            Message::ToggleFilters if self.panel_open => return self.close_filters(),
+            Message::ToggleFilters if self.panel_open => self.panel_open = false,
             Message::ToggleFilters => {
                 self.panel_open = true;
                 self.panel.show(&self.options);
             }
-            Message::CloseFilters => return self.close_filters(),
+            Message::CloseFilters => self.panel_open = false,
             Message::ResetFilters => {
                 let defaults = discover_options(SearchOptions::default());
                 if defaults != self.options {
@@ -280,7 +292,10 @@ impl Discover {
     }
 
     pub fn subscription() -> Subscription<Message> {
-        keyboard::listen().filter_map(key_message)
+        Subscription::batch([
+            keyboard::listen().filter_map(key_message),
+            event::listen_with(escape_message),
+        ])
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -311,7 +326,7 @@ impl Discover {
         .align_y(Center);
         let filters = container(line).padding([6, 20]).width(Fill);
         let popup = self.panel_open.then(|| {
-            let panel = container(self.panel.view(&self.options).map(Message::Filters))
+            let panel = container(scrollable(self.panel.view().map(Message::Filters)).spacing(8))
                 .padding(20)
                 .style(style::popup);
             stack![
@@ -422,17 +437,16 @@ impl Discover {
 
     fn change_filters(&mut self, message: filters::Message) -> Task<Message> {
         match self.panel.update(&self.options, message) {
-            Ok(Some(options)) => self.search(options),
-            Ok(None) => Task::none(),
-            Err(error) => self.show_toast(error),
+            Action::Stay => Task::none(),
+            Action::Close => {
+                self.panel_open = false;
+                Task::none()
+            }
+            Action::Search(options) => {
+                self.panel_open = false;
+                self.search(options)
+            }
         }
-    }
-
-    fn close_filters(&mut self) -> Task<Message> {
-        if !std::mem::take(&mut self.panel_open) {
-            return Task::none();
-        }
-        self.change_filters(filters::Message::Submit)
     }
 
     fn save_filters(&self) -> Task<Message> {
@@ -690,6 +704,30 @@ fn after(duration: Duration, message: Message) -> Task<Message> {
     Task::perform(tokio::time::sleep(duration), move |_| message)
 }
 
+fn acts_on_the_game(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::Next
+            | Message::Previous
+            | Message::Vote(_)
+            | Message::Open(_)
+            | Message::Showcase(
+                showcase::Message::NextScreenshot | showcase::Message::PreviousScreenshot
+            )
+    )
+}
+
+fn escape_message(event: Event, _: event::Status, _: iced::window::Id) -> Option<Message> {
+    matches!(
+        event,
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: Key::Named(Named::Escape),
+            ..
+        })
+    )
+    .then_some(Message::CloseFilters)
+}
+
 fn key_message(event: keyboard::Event) -> Option<Message> {
     let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
         return None;
@@ -700,7 +738,6 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
     }
 
     match key {
-        Key::Named(Named::Escape) => Some(Message::CloseFilters),
         Key::Named(Named::Space) => Some(Message::Next),
         Key::Named(Named::Backspace) => Some(Message::Previous),
         Key::Named(Named::ArrowRight) => Some(Message::Showcase(showcase::Message::NextScreenshot)),
@@ -785,11 +822,33 @@ mod tests {
             key_message(with_ctrl(Key::Character("f".into()))),
             Some(Message::ToggleFilters)
         ));
+        assert!(key_message(with_ctrl(Key::Character("1".into()))).is_none());
+        assert!(key_message(pressed(Key::Named(Named::Escape))).is_none());
+    }
+
+    #[test]
+    fn esc_closes_even_from_inside_a_field() {
+        let escape = Event::Keyboard(pressed(Key::Named(Named::Escape)));
+        let other = Event::Keyboard(pressed(Key::Named(Named::Space)));
+
         assert!(matches!(
-            key_message(pressed(Key::Named(Named::Escape))),
+            escape_message(escape, event::Status::Captured, iced::window::Id::unique()),
             Some(Message::CloseFilters)
         ));
-        assert!(key_message(with_ctrl(Key::Character("1".into()))).is_none());
+        assert!(
+            escape_message(other, event::Status::Ignored, iced::window::Id::unique()).is_none()
+        );
+    }
+
+    #[test]
+    fn the_open_filters_stop_the_keys_of_the_game() {
+        assert!(acts_on_the_game(&Message::Vote(VoteKind::WouldTry)));
+        assert!(acts_on_the_game(&Message::Next));
+        assert!(acts_on_the_game(&Message::Showcase(
+            showcase::Message::NextScreenshot
+        )));
+        assert!(!acts_on_the_game(&Message::CloseFilters));
+        assert!(!acts_on_the_game(&Message::ToggleFilters));
     }
 
     #[test]
