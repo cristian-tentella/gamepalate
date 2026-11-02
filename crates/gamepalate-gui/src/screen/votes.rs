@@ -1,4 +1,10 @@
-use std::{cmp::Reverse, collections::BTreeMap, fmt, sync::Arc, time::Duration};
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, HashMap},
+    fmt,
+    sync::Arc,
+    time::Duration,
+};
 
 use gamepalate_app::{AppId, Gamepalate, Vote, VoteKind, VotedGame};
 use iced::{
@@ -6,8 +12,8 @@ use iced::{
     keyboard::{self, Key, key::Named},
     never, padding,
     widget::{
-        Id, button, column, container, operation, pick_list, responsive, rich_text, row, rule,
-        scrollable,
+        Id, button, checkbox, column, container, operation, pick_list, responsive, rich_text, row,
+        rule, scrollable,
         scrollable::{AbsoluteOffset, Viewport},
         span, stack, text,
         text::Wrapping,
@@ -29,7 +35,12 @@ const FILTERS: [Filter; 6] = [
     Filter::Bets,
     Filter::All,
 ];
-const ORDERS: [Order; 3] = [Order::Newest, Order::Price, Order::Discount];
+const ORDERS: [Order; 4] = [
+    Order::Newest,
+    Order::Price,
+    Order::Discount,
+    Order::BestMatch,
+];
 const LIST: Id = Id::new("votes-list");
 const SEARCH: Id = Id::new("votes-search");
 const LIST_WIDTH: f32 = 340.0;
@@ -47,7 +58,10 @@ pub struct Votes {
     games: BTreeMap<AppId, VotedGame>,
     filter: Filter,
     order: Order,
+    on_sale: bool,
     search: String,
+    matches: Option<HashMap<AppId, f64>>,
+    matching: u64,
     rows: Vec<AppId>,
     selected: usize,
     viewport: Option<(f32, f32)>,
@@ -73,12 +87,14 @@ pub enum Order {
     Newest,
     Price,
     Discount,
+    BestMatch,
 }
 
 #[derive(Clone, Debug)]
 pub enum Message {
     Filter(Filter),
     Order(Order),
+    OnSale(bool),
     Search(String),
     FocusSearch,
     Select(usize),
@@ -87,6 +103,7 @@ pub enum Message {
     Scrolled(Viewport),
     Vote(VoteKind),
     VoteSaved(Result<(), String>),
+    Matched(u64, HashMap<AppId, f64>),
     Open(Link),
     HideToast(u64),
     Showcase(showcase::Message),
@@ -103,7 +120,10 @@ impl Votes {
             games: by_id(gamepalate.voted_games()),
             filter,
             order: Order::Newest,
+            on_sale: false,
             search: String::new(),
+            matches: None,
+            matching: 0,
             rows: Vec::new(),
             selected: 0,
             viewport: None,
@@ -111,8 +131,8 @@ impl Votes {
             toasts_shown: 0,
             showcase: Showcase::new(gamepalate),
         };
-        votes.rows = rows(&votes.games, votes.filter, votes.order, &votes.search);
-        let task = votes.load();
+        votes.rows = votes.shown_rows();
+        let task = Task::batch([votes.load(), votes.find_matches()]);
 
         (votes, task)
     }
@@ -144,6 +164,10 @@ impl Votes {
             }
             Message::Order(order) => {
                 self.order = order;
+                return self.restart();
+            }
+            Message::OnSale(on_sale) => {
+                self.on_sale = on_sale;
                 return self.refresh();
             }
             Message::Search(search) => {
@@ -176,8 +200,19 @@ impl Votes {
                     return Task::batch([save, self.show_toast(text), self.next()]);
                 }
             }
-            Message::VoteSaved(Ok(())) => self.games = by_id(self.gamepalate.voted_games()),
+            Message::VoteSaved(Ok(())) => {
+                self.games = by_id(self.gamepalate.voted_games());
+                return self.find_matches();
+            }
             Message::VoteSaved(Err(error)) => return self.show_toast(error),
+            Message::Matched(matching, matches) => {
+                if matching == self.matching {
+                    let first = self.matches.replace(matches).is_none();
+                    if first && self.order == Order::BestMatch {
+                        return self.restart();
+                    }
+                }
+            }
             Message::Open(link) => {
                 if let Some(game) = self.current() {
                     game::open(link, &game.name, &game.store_url);
@@ -234,8 +269,12 @@ impl Votes {
         let searching = !self.search.trim().is_empty();
         let filters = row(FILTERS.map(|filter| {
             button(
-                text!("{} {}", filter_label(filter), count(&self.games, filter))
-                    .size(font::NOTE_SIZE),
+                text!(
+                    "{} {}",
+                    filter_label(filter),
+                    count(&self.games, filter, self.on_sale)
+                )
+                .size(font::NOTE_SIZE),
             )
             .padding([3, 10])
             .style(style::choice(!searching && filter == self.filter))
@@ -251,7 +290,11 @@ impl Votes {
                 .padding([4, 8])
                 .style(style::dropdown)
                 .menu_style(style::menu),
-            text_input("Search by name (Ctrl+F)", &self.search)
+            checkbox(self.on_sale)
+                .label("On sale")
+                .text_size(font::NOTE_SIZE)
+                .on_toggle(Message::OnSale),
+            text_input("Search (Ctrl+F)", &self.search)
                 .style(style::field)
                 .id(SEARCH)
                 .on_input(Message::Search)
@@ -270,14 +313,21 @@ impl Votes {
                     .style(style::muted)
             });
 
-        let body: Element<'_, Message> = if self.rows.is_empty() {
-            container(
-                text(empty_text(self.games.is_empty(), self.filter, &self.search))
-                    .size(font::NOTE_SIZE)
-                    .style(style::muted),
-            )
-            .padding(16)
-            .into()
+        let sorting = self.order == Order::BestMatch && self.matches.is_none();
+        let body: Element<'_, Message> = if sorting || self.rows.is_empty() {
+            let note = if sorting {
+                "Sorting…".to_string()
+            } else {
+                empty_text(
+                    self.games.is_empty(),
+                    self.filter,
+                    self.on_sale,
+                    &self.search,
+                )
+            };
+            container(text(note).size(font::NOTE_SIZE).style(style::muted))
+                .padding(16)
+                .into()
         } else {
             scrollable(
                 container(column(self.rows.iter().enumerate().filter_map(
@@ -461,12 +511,46 @@ impl Votes {
 
     fn refresh(&mut self) -> Task<Message> {
         let selected = self.current().map(|game| game.id);
-        self.rows = rows(&self.games, self.filter, self.order, &self.search);
+        self.rows = self.shown_rows();
         self.selected = selected
             .and_then(|id| self.rows.iter().position(|&row| row == id))
             .unwrap_or(0);
 
         self.reveal()
+    }
+
+    fn restart(&mut self) -> Task<Message> {
+        self.rows = self.shown_rows();
+        self.selected = 0;
+
+        operation::scroll_to(
+            LIST,
+            AbsoluteOffset {
+                x: None,
+                y: Some(0.0),
+            },
+        )
+    }
+
+    fn shown_rows(&self) -> Vec<AppId> {
+        rows(
+            &self.games,
+            self.filter,
+            self.order,
+            self.on_sale,
+            &self.search,
+            self.matches.as_ref(),
+        )
+    }
+
+    fn find_matches(&mut self) -> Task<Message> {
+        self.matching += 1;
+        let matching = self.matching;
+        let gamepalate = Arc::clone(&self.gamepalate);
+
+        Task::perform(async move { gamepalate.best_matches() }, move |matches| {
+            Message::Matched(matching, matches)
+        })
     }
 
     fn reveal(&self) -> Task<Message> {
@@ -523,6 +607,7 @@ impl fmt::Display for Order {
             Order::Newest => "Newest",
             Order::Price => "Price",
             Order::Discount => "Discount",
+            Order::BestMatch => "Best match",
         })
     }
 }
@@ -540,10 +625,14 @@ fn filter_label(filter: Filter) -> &'static str {
     }
 }
 
-fn count(games: &BTreeMap<AppId, VotedGame>, filter: Filter) -> usize {
+fn on_sale(game: &VotedGame) -> bool {
+    game.price.is_some_and(|price| price.discount.is_some())
+}
+
+fn count(games: &BTreeMap<AppId, VotedGame>, filter: Filter, only_on_sale: bool) -> usize {
     games
         .values()
-        .filter(|game| filter.keeps(&game.vote))
+        .filter(|game| filter.keeps(&game.vote) && (!only_on_sale || on_sale(game)))
         .count()
 }
 
@@ -551,14 +640,16 @@ fn rows(
     games: &BTreeMap<AppId, VotedGame>,
     filter: Filter,
     order: Order,
+    only_on_sale: bool,
     search: &str,
+    matches: Option<&HashMap<AppId, f64>>,
 ) -> Vec<AppId> {
     let search = search.trim().to_lowercase();
     let mut rows: Vec<&VotedGame> = games
         .values()
         .filter(|game| {
             if search.is_empty() {
-                filter.keeps(&game.vote)
+                filter.keeps(&game.vote) && (!only_on_sale || on_sale(game))
             } else {
                 game.name.to_lowercase().contains(&search)
             }
@@ -569,6 +660,12 @@ fn rows(
         game.price
             .and_then(|price| price.discount)
             .map_or(0, |discount| discount.percent)
+    };
+    let score = |game: &VotedGame| {
+        matches
+            .and_then(|matches| matches.get(&game.id))
+            .copied()
+            .unwrap_or(f64::NEG_INFINITY)
     };
 
     match order {
@@ -581,6 +678,11 @@ fn rows(
                 price(game),
                 game.name.to_lowercase(),
             )
+        }),
+        Order::BestMatch => rows.sort_by(|a, b| {
+            score(b)
+                .total_cmp(&score(a))
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         }),
     }
 
@@ -612,12 +714,18 @@ pub(super) fn bets_summary(
     Some((would_try(&bets), bets.len(), others_share))
 }
 
-fn empty_text(no_votes: bool, filter: Filter, search: &str) -> String {
+fn empty_text(no_votes: bool, filter: Filter, only_on_sale: bool, search: &str) -> String {
     let search = search.trim();
     if no_votes {
         NO_VOTES.to_string()
     } else if !search.is_empty() {
         format!("No votes match \"{search}\"")
+    } else if only_on_sale {
+        match filter {
+            Filter::Bets => "No Bets on sale".to_string(),
+            Filter::All => "No votes on sale".to_string(),
+            Filter::Kind(_) => format!("No {} votes on sale", filter_label(filter)),
+        }
     } else if filter == Filter::Bets {
         "No votes on Bets".to_string()
     } else {
@@ -728,7 +836,9 @@ mod tests {
             &games(),
             Filter::Kind(VoteKind::WouldTry),
             Order::Newest,
+            false,
             "",
+            None,
         );
 
         assert_eq!(rows, ids(&[2, 1, 4]));
@@ -736,21 +846,21 @@ mod tests {
 
     #[test]
     fn sorts_by_price_with_the_games_out_of_the_store_last() {
-        let rows = rows(&games(), Filter::All, Order::Price, "");
+        let rows = rows(&games(), Filter::All, Order::Price, false, "", None);
 
         assert_eq!(rows, ids(&[1, 3, 2, 5, 4]));
     }
 
     #[test]
     fn sorts_by_discount_then_by_price() {
-        let rows = rows(&games(), Filter::All, Order::Discount, "");
+        let rows = rows(&games(), Filter::All, Order::Discount, false, "", None);
 
         assert_eq!(rows, ids(&[1, 3, 2, 5, 4]));
     }
 
     #[test]
     fn the_bets_filter_keeps_only_the_bets() {
-        let rows = rows(&games(), Filter::Bets, Order::Newest, "");
+        let rows = rows(&games(), Filter::Bets, Order::Newest, false, "", None);
 
         assert_eq!(rows, ids(&[5, 2]));
     }
@@ -761,7 +871,9 @@ mod tests {
             &games(),
             Filter::Kind(VoteKind::Maybe),
             Order::Newest,
+            false,
             " sat ",
+            None,
         );
 
         assert_eq!(rows, ids(&[2]));
@@ -771,10 +883,10 @@ mod tests {
     fn counts_the_votes_of_each_filter() {
         let games = games();
 
-        assert_eq!(count(&games, Filter::Kind(VoteKind::WouldTry)), 3);
-        assert_eq!(count(&games, Filter::Kind(VoteKind::Known)), 0);
-        assert_eq!(count(&games, Filter::Bets), 2);
-        assert_eq!(count(&games, Filter::All), 5);
+        assert_eq!(count(&games, Filter::Kind(VoteKind::WouldTry), false), 3);
+        assert_eq!(count(&games, Filter::Kind(VoteKind::Known), false), 0);
+        assert_eq!(count(&games, Filter::Bets, false), 2);
+        assert_eq!(count(&games, Filter::All, false), 5);
     }
 
     #[test]
@@ -787,17 +899,64 @@ mod tests {
     fn says_why_the_list_is_empty() {
         let maybe = Filter::Kind(VoteKind::Maybe);
 
-        assert_eq!(empty_text(true, maybe, ""), NO_VOTES);
-        assert_eq!(empty_text(false, maybe, ""), "No Maybe votes");
+        assert_eq!(empty_text(true, maybe, false, ""), NO_VOTES);
+        assert_eq!(empty_text(false, maybe, false, ""), "No Maybe votes");
         assert_eq!(
-            empty_text(false, Filter::Kind(VoteKind::Known), ""),
+            empty_text(false, Filter::Kind(VoteKind::Known), false, ""),
             "No Known votes"
         );
-        assert_eq!(empty_text(false, Filter::Bets, ""), "No votes on Bets");
         assert_eq!(
-            empty_text(false, maybe, " hades "),
+            empty_text(false, Filter::Bets, false, ""),
+            "No votes on Bets"
+        );
+        assert_eq!(
+            empty_text(false, maybe, false, " hades "),
             "No votes match \"hades\""
         );
+    }
+
+    #[test]
+    fn sorts_by_best_match_with_the_games_without_a_score_last() {
+        let matches = HashMap::from([(AppId(4), 2.0), (AppId(1), 1.5), (AppId(2), 1.5)]);
+
+        let rows = rows(
+            &games(),
+            Filter::All,
+            Order::BestMatch,
+            false,
+            "",
+            Some(&matches),
+        );
+
+        assert_eq!(rows, ids(&[4, 2, 1, 3, 5]));
+    }
+
+    #[test]
+    fn on_sale_keeps_only_the_discounted_games() {
+        let games = games();
+
+        let rows = rows(
+            &games,
+            Filter::Kind(VoteKind::WouldTry),
+            Order::Newest,
+            true,
+            "",
+            None,
+        );
+
+        assert_eq!(rows, ids(&[1]));
+        assert_eq!(count(&games, Filter::Kind(VoteKind::WouldTry), true), 1);
+        assert_eq!(count(&games, Filter::All, true), 2);
+    }
+
+    #[test]
+    fn says_when_nothing_is_on_sale() {
+        assert_eq!(
+            empty_text(false, Filter::Kind(VoteKind::Maybe), true, ""),
+            "No Maybe votes on sale"
+        );
+        assert_eq!(empty_text(false, Filter::Bets, true, ""), "No Bets on sale");
+        assert_eq!(empty_text(false, Filter::All, true, ""), "No votes on sale");
     }
 
     #[test]
