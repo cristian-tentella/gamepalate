@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use gamepalate_core::{ids::SteamId, region::Region};
+use gamepalate_core::{ids::SteamId, region::Region, timestamp::Timestamp};
 use gamepalate_store::config::{ConfigError, save_region};
 
 use crate::account::{CredentialManager, KEY_ENV_VAR, KeyStore};
@@ -21,6 +21,8 @@ pub struct Settings {
     pub image_cache_max_bytes: u64,
     pub steam_client_hours: Option<bool>,
     pub steam_client_file: Option<PathBuf>,
+    pub catalog_games: usize,
+    pub tags_updated_at: Timestamp,
 }
 
 pub fn change_region(data_dir: &Path, region: Region) -> Result<(), ConfigError> {

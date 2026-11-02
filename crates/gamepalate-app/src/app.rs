@@ -363,6 +363,8 @@ impl Gamepalate {
             image_cache_max_bytes: MAX_CACHE_BYTES,
             steam_client_hours: self.files.config.signals.steam_client_hours,
             steam_client_file: steam_client_file_of(&self.data_dir),
+            catalog_games: self.files.catalog.games().len(),
+            tags_updated_at: self.files.catalog.freshness.tags_updated_at,
         }
     }
 

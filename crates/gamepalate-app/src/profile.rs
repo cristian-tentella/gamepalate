@@ -9,7 +9,6 @@ use gamepalate_core::{
     profile::{ProfileTag, corrected_games, dominant_game, family_profiles, profile},
     search::SearchInputs,
     taste::game_name,
-    timestamp::Timestamp,
     votes::VoteKind,
 };
 
@@ -27,9 +26,6 @@ pub struct ProfileView {
     pub votes: VotesView,
     pub corrections: CorrectionsView,
     pub hours: SignalsConfig,
-    pub catalog_games: usize,
-    pub prices_updated_at: Timestamp,
-    pub tags_updated_at: Timestamp,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -105,6 +101,7 @@ impl CorrectionsView {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CorrectedGameView {
+    pub id: AppId,
     pub name: String,
     pub multiplier: f64,
     pub in_effect: bool,
@@ -192,9 +189,6 @@ pub(crate) fn profile_view(inputs: &SearchInputs) -> ProfileView {
         votes: votes_view(inputs),
         corrections: corrections_view(inputs),
         hours: inputs.config.signals,
-        catalog_games: catalog.games().len(),
-        prices_updated_at: catalog.freshness.prices_updated_at,
-        tags_updated_at: catalog.freshness.tags_updated_at,
     }
 }
 
@@ -254,6 +248,7 @@ fn corrections_view(inputs: &SearchInputs) -> CorrectionsView {
         game_multipliers: corrected_games(&hours, inputs)
             .into_iter()
             .map(|game| CorrectedGameView {
+                id: game.id,
                 name: name(game.id),
                 multiplier: game.multiplier,
                 in_effect: game.in_effect,
@@ -291,6 +286,7 @@ mod tests {
         off_catalog::OffCatalogGames,
         region::Region,
         signals::{LibraryGame, RecentGame, Signals},
+        timestamp::Timestamp,
         votes::{Vote, Votes},
     };
 
@@ -564,11 +560,13 @@ mod tests {
             corrections.game_multipliers,
             [
                 CorrectedGameView {
+                    id: AppId(99),
                     name: "#99".to_string(),
                     multiplier: 2.0,
                     in_effect: false,
                 },
                 CorrectedGameView {
+                    id: AppId(2),
                     name: "Aseprite".to_string(),
                     multiplier: 0.5,
                     in_effect: true,
@@ -592,9 +590,6 @@ mod tests {
 
         assert_eq!(view.taste, None);
         assert_eq!(view.families.len(), 1);
-        assert_eq!(view.catalog_games, 4);
-        assert_eq!(view.prices_updated_at, Timestamp(10));
-        assert_eq!(view.tags_updated_at, Timestamp(20));
         assert_eq!(view.hours.min_hours, 2.0);
     }
 }

@@ -1,7 +1,7 @@
 use std::{process::Command, sync::Arc};
 
 use gamepalate_app::{
-    Gamepalate, Region, SteamId, ThemeChoice,
+    Gamepalate, Region, SteamId, ThemeChoice, Timestamp,
     account::{Profile, connect, parse_profile},
     settings::{self, KeySource, change_region},
     setup::error_chain,
@@ -14,7 +14,7 @@ use iced::{
 
 use crate::{
     app::Page,
-    font,
+    font, format,
     screen::{
         setup::{
             KEY_DOMAIN_NOTE, PRIVACY_PAGE, PROFILE_PLACEHOLDER, connect_error_text, needs_privacy,
@@ -332,6 +332,17 @@ impl Settings {
                 ),
                 self.steam_client_line(),
                 setting(
+                    "Catalog",
+                    value(catalog_text(
+                        self.settings.catalog_games,
+                        &format::when(
+                            self.settings.tags_updated_at,
+                            Timestamp(jiff::Timestamp::now().as_millisecond()),
+                        ),
+                    )),
+                    None,
+                ),
+                setting(
                     "Advanced",
                     column![
                         link("Open config.toml", Message::OpenConfig),
@@ -605,6 +616,13 @@ fn setting<'a>(
     .into()
 }
 
+fn catalog_text(games: usize, tags_updated: &str) -> String {
+    format!(
+        "{} games · tags {tags_updated}",
+        format::count(games as u32)
+    )
+}
+
 fn value<'a>(shown: String) -> Element<'a, Message> {
     text(shown).size(font::BAR_SIZE).into()
 }
@@ -630,6 +648,14 @@ mod tests {
             saving: false,
             error: None,
         }
+    }
+
+    #[test]
+    fn the_catalog_says_how_many_games_and_when_its_tags_were_read() {
+        assert_eq!(
+            catalog_text(115_668, "28 Oct"),
+            "115,668 games · tags 28 Oct"
+        );
     }
 
     #[test]

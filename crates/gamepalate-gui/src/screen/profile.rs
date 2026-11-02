@@ -1,9 +1,9 @@
-use std::{collections::BTreeMap, path::PathBuf, process::Command, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use gamepalate_app::{
     AppId, Ban, CorrectedGameView, CorrectionsView, FamiliesChanged, FamiliesUndo, FamilyChange,
     FamilyGame, FamilyView, Gamepalate, HoursGame, HoursSource, ProfileView, SignalsConfig,
-    SourceView, TagView, TasteView, Timestamp, VoteKind, VotedGame, VotesView,
+    SourceView, TagView, TasteView, VoteKind, VotesView,
 };
 use iced::{
     Center, Color, Element, Fill, Length, Subscription, Task, Theme,
@@ -18,20 +18,13 @@ use iced::{
 use super::{
     Toasts, library, sentence,
     showcase::{self, Showcase},
-    votes::{Filter, bets_summary, by_id},
+    votes::Filter,
 };
-use crate::{font, format, style};
+use crate::{font, style};
 
 const FIRST_TAGS: usize = 12;
 const STACK_WIDTH: f32 = 1100.0;
-const VOTE_KINDS: [VoteKind; 4] = [
-    VoteKind::WouldTry,
-    VoteKind::Maybe,
-    VoteKind::NotForMe,
-    VoteKind::Known,
-];
 const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–4.";
-const OPINION_ON: &str = "Your votes count";
 const LABEL_BAR_WIDTH: f32 = 120.0;
 const NO_FAMILIES: &str = "No families yet. Add games to one from Library.";
 const COLUMN_WIDTH: f32 = 760.0;
@@ -65,7 +58,6 @@ pub struct Profile {
     gamepalate: Arc<Gamepalate>,
     data_dir: PathBuf,
     view: ProfileView,
-    voted: BTreeMap<AppId, VotedGame>,
     open_correction: Option<Correction>,
     all_tags: bool,
     showcase: Showcase,
@@ -89,7 +81,6 @@ pub enum Message {
     OpenLibrary(library::Filter, library::Sort),
     ToggleCorrection(Correction),
     OpenFamilies,
-    OpenDataFolder,
     Showcase(showcase::Message),
     EditFamily(String),
     EditName(String),
@@ -115,7 +106,6 @@ impl Profile {
             gamepalate: Arc::clone(gamepalate),
             data_dir: gamepalate.data_dir().to_path_buf(),
             view: gamepalate.profile_view(),
-            voted: by_id(gamepalate.voted_games()),
             open_correction: None,
             all_tags: false,
             showcase: Showcase::new(gamepalate),
@@ -146,9 +136,6 @@ impl Profile {
                     (self.open_correction != Some(correction)).then_some(correction);
             }
             Message::OpenFamilies => super::open_families(&self.data_dir),
-            Message::OpenDataFolder => {
-                let _ = Command::new("explorer").arg(&self.data_dir).spawn();
-            }
             Message::Showcase(message) => {
                 return self.showcase.update(message).map(Message::Showcase);
             }
@@ -306,7 +293,8 @@ impl Profile {
             .spacing(14)
             .max_width(COLUMN_WIDTH);
 
-        let side = column![self.families(), self.votes()]
+        let side = column![self.families()]
+            .push(self.votes())
             .push((!self.view.corrections.is_empty()).then(|| self.corrections()))
             .spacing(32);
 
@@ -322,16 +310,9 @@ impl Profile {
         };
 
         let page = scrollable(
-            column![
-                container(container(columns).width(Fill).max_width(PAGE_WIDTH))
-                    .padding(24)
-                    .center_x(Fill),
-                style::separator(),
-                container(container(self.data()).width(Fill).max_width(PAGE_WIDTH))
-                    .padding([12, 24])
-                    .center_x(Fill),
-            ]
-            .width(Fill),
+            container(container(columns).width(Fill).max_width(PAGE_WIDTH))
+                .padding(24)
+                .center_x(Fill),
         )
         .height(Fill);
 
@@ -613,29 +594,15 @@ impl Profile {
 }
 
 impl Profile {
-    fn votes(&self) -> Element<'_, Message> {
+    fn votes(&self) -> Option<Element<'_, Message>> {
         let votes = &self.view.votes;
-        let total = votes.would_try + votes.maybe + votes.not_for_me + votes.known;
-        let title = section_title("Votes");
-        if total == 0 {
-            return column![title, text(NO_VOTES).size(font::BAR_SIZE)]
-                .spacing(14)
-                .into();
+        if votes.labels.enough() {
+            return None;
         }
 
-        let counts = row(VOTE_KINDS.map(|kind| {
-            button(text!("{} {}", vote_count(votes, kind), format::vote(kind)).size(font::BAR_SIZE))
-                .padding(0)
-                .style(style::link)
-                .on_press(Message::OpenVotes(Filter::Kind(kind)))
-                .into()
-        }))
-        .spacing(14)
-        .wrap()
-        .vertical_spacing(6);
-
-        let opinion: Element<'_, Message> = if votes.labels.enough() {
-            text(OPINION_ON).size(font::BAR_SIZE).into()
+        let total = votes.would_try + votes.maybe + votes.not_for_me + votes.known;
+        let body: Element<'_, Message> = if total == 0 {
+            text(NO_VOTES).size(font::BAR_SIZE).into()
         } else {
             let needed = votes.min_labels;
             column![
@@ -649,17 +616,7 @@ impl Profile {
             .into()
         };
 
-        let bets = bets_summary(&self.voted).map(|(would_try, bets, others)| {
-            button(text(format::bets_summary(would_try, bets, others)).size(font::NOTE_SIZE))
-                .padding(0)
-                .style(style::link)
-                .on_press(Message::OpenVotes(Filter::Bets))
-        });
-
-        column![title, counts, opinion]
-            .push(bets)
-            .spacing(14)
-            .into()
+        Some(column![section_title("Votes"), body].spacing(14).into())
     }
 
     fn corrections(&self) -> Element<'_, Message> {
@@ -680,28 +637,38 @@ impl Profile {
                     corrections
                         .game_multipliers
                         .iter()
-                        .map(corrected_game_text)
+                        .map(|game| {
+                            (
+                                corrected_game_text(game),
+                                Some(Message::OpenInLibrary(game.id)),
+                            )
+                        })
                         .collect(),
                 ),
             );
         }
         if !corrections.hidden_games.is_empty() {
-            lines.push(self.expandable(
-                hidden_text(corrections.hidden_games.len()),
-                Correction::Hidden,
-                corrections.hidden_games.clone(),
-            ));
+            lines.push(
+                self.expandable(
+                    hidden_text(corrections.hidden_games.len()),
+                    Correction::Hidden,
+                    corrections
+                        .hidden_games
+                        .iter()
+                        .map(|name| (name.clone(), None))
+                        .collect(),
+                ),
+            );
         }
 
         column![
-            row![
+            column![
                 section_title("Corrections"),
                 text("Correct games in Library and tags with the CLI")
                     .size(font::NOTE_SIZE)
                     .style(style::muted),
             ]
-            .spacing(10)
-            .align_y(Center),
+            .spacing(4),
             column(lines).spacing(8),
         ]
         .spacing(14)
@@ -712,7 +679,7 @@ impl Profile {
         &self,
         summary: String,
         correction: Correction,
-        items: Vec<String>,
+        items: Vec<(String, Option<Message>)>,
     ) -> Element<'_, Message> {
         let open = self.open_correction == Some(correction);
         let header = button(
@@ -732,34 +699,23 @@ impl Profile {
         column![header]
             .push(open.then(|| {
                 container(
-                    column(
-                        items.into_iter().map(|item| {
-                            text(item).size(font::NOTE_SIZE).style(style::muted).into()
-                        }),
-                    )
+                    column(items.into_iter().map(|(item, message)| {
+                        let item = text(item).size(font::NOTE_SIZE);
+                        match message {
+                            Some(message) => button(item)
+                                .padding(0)
+                                .style(style::link)
+                                .on_press(message)
+                                .into(),
+                            None => item.style(style::muted).into(),
+                        }
+                    }))
                     .spacing(2),
                 )
                 .padding(padding::left(12))
             }))
             .spacing(6)
             .into()
-    }
-
-    fn data(&self) -> Element<'_, Message> {
-        let now = Timestamp(jiff::Timestamp::now().as_millisecond());
-
-        row![
-            text(data_text(&self.view, now))
-                .size(font::NOTE_SIZE)
-                .style(style::muted),
-            button(text("Open data folder").size(font::NOTE_SIZE))
-                .padding(0)
-                .style(style::link)
-                .on_press(Message::OpenDataFolder),
-        ]
-        .spacing(12)
-        .align_y(Center)
-        .into()
     }
 }
 
@@ -775,15 +731,6 @@ fn label_bar<'a>(label: &'a str, count: usize, needed: usize) -> Element<'a, Mes
     .spacing(8)
     .align_y(Center)
     .into()
-}
-
-fn vote_count(votes: &VotesView, kind: VoteKind) -> usize {
-    match kind {
-        VoteKind::WouldTry => votes.would_try,
-        VoteKind::Maybe => votes.maybe,
-        VoteKind::NotForMe => votes.not_for_me,
-        VoteKind::Known => votes.known,
-    }
 }
 
 fn opinion_progress(votes: &VotesView) -> String {
@@ -849,15 +796,6 @@ fn hidden_text(hidden: usize) -> String {
     } else {
         format!("{hidden} hidden games")
     }
-}
-
-fn data_text(view: &ProfileView, now: Timestamp) -> String {
-    format!(
-        "Data · Catalog {} games · prices {} · tags {}",
-        format::count(view.catalog_games as u32),
-        format::when(view.prices_updated_at, now),
-        format::when(view.tags_updated_at, now)
-    )
 }
 
 fn key_message(event: keyboard::Event) -> Option<Message> {
@@ -1691,6 +1629,7 @@ mod tests {
 
     fn corrected(name: &str, multiplier: f64, in_effect: bool) -> CorrectedGameView {
         CorrectedGameView {
+            id: AppId(431730),
             name: name.to_string(),
             multiplier,
             in_effect,
