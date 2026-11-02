@@ -349,6 +349,7 @@ mod tests {
                     total_hours: 30.0,
                 },
             ],
+            borrowed: vec![],
             recent: Vec::new(),
             wishlist: vec![AppId(3)],
             followed: Vec::new(),

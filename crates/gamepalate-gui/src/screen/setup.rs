@@ -22,7 +22,7 @@ use iced::{
     },
 };
 
-use super::library::hours;
+use super::{library::hours, steam_client::SteamClientQuestion};
 use crate::{
     font, format,
     progress::{Stage, Tracker, update_error_text},
@@ -58,6 +58,7 @@ pub struct Setup {
     ready: Option<Ready>,
     covers: Option<Arc<Covers>>,
     played: Vec<Played>,
+    question: Option<SteamClientQuestion>,
 }
 
 #[derive(Debug)]
@@ -141,6 +142,8 @@ pub enum Message {
     OpenLibrary,
     OpenPrivacy,
     Cover(AppId, Option<image::Handle>),
+    SteamClient(bool),
+    SteamClientAnswered(Result<(), String>),
 }
 
 pub enum Action {
@@ -180,6 +183,10 @@ impl Setup {
                 cover: Cover::Loading,
             })
             .collect();
+        let question = first_run
+            .data_dir
+            .as_deref()
+            .and_then(SteamClientQuestion::ask);
 
         Setup {
             first_run,
@@ -189,6 +196,7 @@ impl Setup {
             ready: None,
             covers: Covers::new().ok().map(Arc::new),
             played,
+            question,
         }
     }
 
@@ -283,6 +291,27 @@ impl Setup {
             Message::Cover(id, cover) => {
                 if let Some(game) = self.played.iter_mut().find(|game| game.id == id) {
                     game.cover = cover.map_or(Cover::Missing, Cover::Ready);
+                }
+                Action::None
+            }
+            Message::SteamClient(read) => {
+                let (Some(question), Some(dir)) = (&mut self.question, &self.first_run.data_dir)
+                else {
+                    return Action::None;
+                };
+                Action::Run(
+                    question
+                        .answer(dir.clone(), read)
+                        .map(Message::SteamClientAnswered),
+                )
+            }
+            Message::SteamClientAnswered(Ok(())) => {
+                self.question = None;
+                Action::None
+            }
+            Message::SteamClientAnswered(Err(error)) => {
+                if let Some(question) = &mut self.question {
+                    question.failed(error);
                 }
                 Action::None
             }
@@ -384,6 +413,12 @@ impl Setup {
                 column![]
                     .push(self.problems_view())
                     .push(steps_view(step, &self.download))
+                    .push(
+                        self.question
+                            .as_ref()
+                            .filter(|_| step == Step::Catalog)
+                            .map(|question| question.view(Message::SteamClient)),
+                    )
                     .push(card)
                     .push(self.most_played_view(step))
                     .spacing(28)

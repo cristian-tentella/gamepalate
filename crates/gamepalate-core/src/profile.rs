@@ -21,6 +21,7 @@ const DOMINANT_RATIO: f64 = 2.5;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignalKind {
     Library,
+    Borrowed,
     Recent,
     Wishlist,
     Followed,
@@ -146,6 +147,10 @@ pub fn signal_kinds(id: AppId, signals: &Signals, votes: &Votes) -> Vec<SignalKi
         (
             SignalKind::Library,
             signals.library.iter().any(|game| game.id == id),
+        ),
+        (
+            SignalKind::Borrowed,
+            signals.borrowed.iter().any(|game| game.id == id),
         ),
         (
             SignalKind::Recent,
@@ -430,6 +435,7 @@ mod tests {
                     total_hours: 1.0,
                 },
             ],
+            borrowed: vec![],
             recent: vec![RecentGame {
                 id: AppId(5),
                 total_hours: 2.0,

@@ -13,6 +13,7 @@ pub mod refresh;
 pub mod settings;
 pub mod setup;
 pub mod signals;
+pub mod steam_client;
 pub mod update;
 pub use app::{Gamepalate, OpenError, RecommendError, VoteError, VotedGame};
 pub use capsules::{CAPSULE_HEIGHT, CAPSULE_WIDTH, Capsule};

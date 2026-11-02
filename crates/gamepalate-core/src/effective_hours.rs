@@ -37,6 +37,12 @@ pub fn hours_by_source(
         .map(|g| (g.id, (g.total_hours, HoursSource::Played)))
         .collect();
 
+    for g in &signals.borrowed {
+        hours
+            .entry(g.id)
+            .or_insert((g.total_hours, HoursSource::Played));
+    }
+
     fn keep_max_hours(
         hours: &mut BTreeMap<AppId, (f64, HoursSource)>,
         game_id: AppId,
@@ -123,6 +129,7 @@ mod tests {
                     total_hours: 50.0,
                 },
             ],
+            borrowed: vec![],
             recent: vec![RecentGame {
                 id: AppId(1),
                 total_hours: 100.0,
@@ -188,5 +195,34 @@ mod tests {
         };
         let hours = hours_by_source(&signals, &Votes::new(), &config);
         assert_eq!(hours[&AppId(4)], (5.0, HoursSource::Followed));
+    }
+
+    #[test]
+    fn a_borrowed_game_counts_its_hours_unless_owned_or_recent() {
+        let signals = Signals {
+            borrowed: vec![
+                LibraryGame {
+                    id: AppId(1),
+                    total_hours: 7.0,
+                },
+                LibraryGame {
+                    id: AppId(3),
+                    total_hours: 80.0,
+                },
+                LibraryGame {
+                    id: AppId(8),
+                    total_hours: 40.0,
+                },
+            ],
+            library: vec![LibraryGame {
+                id: AppId(3),
+                total_hours: 50.0,
+            }],
+            ..signals()
+        };
+        let hours = hours_by_source(&signals, &Votes::new(), &SignalsConfig::default());
+        assert_eq!(hours[&AppId(8)], (40.0, HoursSource::Played));
+        assert_eq!(hours[&AppId(3)], (50.0, HoursSource::Played));
+        assert_eq!(hours[&AppId(1)], (110.0, HoursSource::Played));
     }
 }

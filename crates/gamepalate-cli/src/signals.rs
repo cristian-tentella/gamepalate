@@ -3,7 +3,11 @@ use std::path::Path;
 use anyhow::Context;
 use gamepalate_app::{
     account::steam_api_key,
-    signals::{OffCatalogInputs, SignalsWarning, off_catalog, read_signals, save_signals},
+    signals::{
+        OffCatalogInputs, SignalsWarning, off_catalog, read_signals, save_signals,
+        steam_client_hours,
+    },
+    steam_client::steam_client_question,
     update::wall_clock,
 };
 use gamepalate_core::config::Config;
@@ -42,10 +46,17 @@ pub fn load_for(
     let runtime = tokio::runtime::Runtime::new()?;
     let now = wall_clock();
 
-    let read = runtime.block_on(read_signals(data_dir, &transport, steam_id, now))?;
+    let client = steam_client_hours(&config, steam_id);
+    let read = runtime.block_on(read_signals(data_dir, &transport, steam_id, &client, now))?;
     save_signals(data_dir, &read)?;
     for warning in &read.warnings {
         eprintln!("warn: {}", warning_text(warning));
+    }
+    if let Some(file) = steam_client_question(data_dir) {
+        eprintln!(
+            "note: the hours of games you played but don't own are left out. To read them from {}, set steam_client_hours = true in [signals] of config.toml.",
+            file.display()
+        );
     }
 
     let mut files = load_data_files_with(data_dir, config, read.signals())?;
@@ -72,6 +83,9 @@ fn warning_text(warning: &SignalsWarning) -> String {
             date_time(*read_at)
         ),
         SignalsWarning::ListFailed(failed) => failed_warning(failed),
+        SignalsWarning::SteamClientFailed => {
+            "Hours from the Steam app unavailable: using the ones read before.".to_string()
+        }
     }
 }
 

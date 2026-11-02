@@ -15,9 +15,12 @@ use iced::{
 use crate::{
     app::Page,
     font,
-    screen::setup::{
-        KEY_DOMAIN_NOTE, PRIVACY_PAGE, PROFILE_PLACEHOLDER, connect_error_text, needs_privacy,
-        note_link, steam_id_note,
+    screen::{
+        setup::{
+            KEY_DOMAIN_NOTE, PRIVACY_PAGE, PROFILE_PLACEHOLDER, connect_error_text, needs_privacy,
+            note_link, steam_id_note,
+        },
+        steam_client::SteamClientQuestion,
     },
     style,
 };
@@ -34,6 +37,7 @@ pub struct Settings {
     cache_bytes: Option<u64>,
     editing: Option<Editing>,
     confirming: Option<Region>,
+    question: Option<SteamClientQuestion>,
     error: Option<String>,
 }
 
@@ -67,6 +71,9 @@ pub enum Message {
     OpenConfig,
     ClearCache,
     CacheMeasured(u64),
+    AskSteamClient,
+    SteamClient(bool),
+    SteamClientSaved(Result<(), String>),
     Escape,
 }
 
@@ -88,6 +95,7 @@ impl Settings {
             cache_bytes: None,
             editing: None,
             confirming: None,
+            question: None,
             error: None,
         };
         let task = settings.measure_cache();
@@ -186,7 +194,36 @@ impl Settings {
                 self.cache_bytes = Some(bytes);
                 Action::None
             }
+            Message::AskSteamClient => {
+                self.question = self
+                    .settings
+                    .steam_client_file
+                    .clone()
+                    .map(SteamClientQuestion::about);
+                Action::None
+            }
+            Message::SteamClient(read) => match &mut self.question {
+                Some(question) => Action::Run(
+                    question
+                        .answer(self.settings.data_dir.clone(), read)
+                        .map(Message::SteamClientSaved),
+                ),
+                None => Action::None,
+            },
+            Message::SteamClientSaved(Ok(())) => {
+                self.question = None;
+                Action::Reopen
+            }
+            Message::SteamClientSaved(Err(error)) => {
+                if let Some(question) = &mut self.question {
+                    question.failed(error);
+                }
+                Action::None
+            }
             Message::Escape => {
+                if self.question.take().is_some() {
+                    return Action::None;
+                }
                 if self.editing.is_none() {
                     return Action::Close(self.back);
                 }
@@ -293,6 +330,7 @@ impl Settings {
                         .is_some_and(|bytes| bytes > 0)
                         .then(|| link("Clear", Message::ClearCache)),
                 ),
+                self.steam_client_line(),
                 setting(
                     "Advanced",
                     column![
@@ -328,6 +366,20 @@ impl Settings {
         )
         .height(Fill)
         .into()
+    }
+
+    fn steam_client_line(&self) -> Element<'_, Message> {
+        if let Some(question) = &self.question {
+            return setting("Steam app", question.view(Message::SteamClient), None);
+        }
+        if self.settings.steam_client_file.is_none() {
+            return setting("Steam app", value("Not found on this PC".to_string()), None);
+        }
+        setting(
+            "Steam app",
+            value(steam_client_text(self.settings.steam_client_hours).to_string()),
+            Some(link("Change", Message::AskSteamClient)),
+        )
     }
 
     fn line(&self, field: Field) -> Element<'_, Message> {
@@ -504,6 +556,13 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
             ..
         } => Some(Message::Escape),
         _ => None,
+    }
+}
+
+fn steam_client_text(answer: Option<bool>) -> &'static str {
+    match answer {
+        Some(true) => "Reads the hours of games you don't own",
+        Some(false) | None => "Doesn't read the hours of games you don't own",
     }
 }
 

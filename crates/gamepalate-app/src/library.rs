@@ -32,6 +32,7 @@ pub struct LibraryGameView {
     pub id: AppId,
     pub name: String,
     pub owned_hours: Option<f64>,
+    pub borrowed: bool,
     pub recent: bool,
     pub wishlist: bool,
     pub followed: bool,
@@ -123,6 +124,7 @@ pub(crate) fn library_view(inputs: &SearchInputs) -> LibraryView {
                     .iter()
                     .find(|game| game.id == id)
                     .map(|game| game.total_hours),
+                borrowed: signals.borrowed.iter().any(|game| game.id == id),
                 recent: signals.recent.iter().any(|game| game.id == id),
                 wishlist: signals.wishlist.contains(&id),
                 followed: signals.followed.contains(&id),
@@ -161,7 +163,7 @@ pub(crate) fn library_view(inputs: &SearchInputs) -> LibraryView {
 
 fn in_signals(id: AppId, inputs: &SearchInputs) -> bool {
     let signals = inputs.signals;
-    signals.library.iter().any(|game| game.id == id)
+    signals.played().any(|played| played == id)
         || signals.recent.iter().any(|game| game.id == id)
         || signals.wishlist.contains(&id)
         || signals.followed.contains(&id)
@@ -334,6 +336,7 @@ mod tests {
                 owned(5, 0.5),
                 owned(80, 10.0),
             ],
+            borrowed: vec![],
             recent: vec![RecentGame {
                 id: AppId(90),
                 total_hours: 4.0,
@@ -452,6 +455,23 @@ mod tests {
         assert_eq!(borrowed.owned_hours, None);
         assert!(borrowed.recent);
         assert_eq!(borrowed.hours, 6.0);
+    }
+
+    #[test]
+    fn a_game_played_but_not_owned_is_borrowed() {
+        let mut fixture = Fixture::new();
+        fixture.signals.borrowed = vec![LibraryGame {
+            id: AppId(4),
+            total_hours: 12.0,
+        }];
+
+        let view = library_view(&fixture.inputs());
+
+        let game = find(&view, 4);
+        assert!(game.borrowed && game.followed);
+        assert_eq!(game.owned_hours, None);
+        assert_eq!((game.hours, game.source), (12.0, HoursSource::Played));
+        assert!(!find(&view, 1).borrowed);
     }
 
     #[test]

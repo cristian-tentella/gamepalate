@@ -22,15 +22,17 @@ use super::{
     profile::HELD_OUT_TIP,
     sentence,
     showcase::images::{Images, Picture},
+    steam_client::SteamClientQuestion,
 };
 use crate::{
     font,
     style::{self, Tone},
 };
 
-const FILTERS: [Filter; 4] = [
+const FILTERS: [Filter; 5] = [
     Filter::All,
     Filter::Owned,
+    Filter::NotOwned,
     Filter::Wishlist,
     Filter::Followed,
 ];
@@ -53,12 +55,15 @@ const POPUP_WIDTH: f32 = 320.0;
 const POPUP_HEIGHT: f32 = 360.0;
 const POPUP_GAP: f32 = 8.0;
 const POPUP_MARGIN: f32 = 8.0;
+const NOT_OWNED_TIP: &str =
+    "Played but not in your library: Family Sharing, free weekends, removed games";
 const PICKS: [Choice; 3] = [Choice::Fully, Choice::Half, Choice::Not];
 
 pub struct Library {
     gamepalate: Arc<Gamepalate>,
     data_dir: PathBuf,
     view: LibraryView,
+    question: Option<SteamClientQuestion>,
     open: Option<AppId>,
     selected: Option<AppId>,
     reveal_pending: bool,
@@ -99,6 +104,7 @@ pub enum Move {
 pub enum Filter {
     All,
     Owned,
+    NotOwned,
     Wishlist,
     Followed,
 }
@@ -136,6 +142,8 @@ pub enum Message {
     NewFamilyName(String),
     CreateFamily,
     OpenFamilies,
+    SteamClient(bool),
+    SteamClientAnswered(Result<(), String>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -150,6 +158,7 @@ impl Library {
             gamepalate: Arc::clone(gamepalate),
             data_dir: gamepalate.data_dir().to_path_buf(),
             view: gamepalate.library_view(),
+            question: SteamClientQuestion::ask(gamepalate.data_dir()),
             open: None,
             selected: None,
             reveal_pending: false,
@@ -365,6 +374,19 @@ impl Library {
                 }
             }
             Message::OpenFamilies => super::open_families(&self.data_dir),
+            Message::SteamClient(read) => {
+                if let Some(question) = &mut self.question {
+                    return question
+                        .answer(self.data_dir.clone(), read)
+                        .map(Message::SteamClientAnswered);
+                }
+            }
+            Message::SteamClientAnswered(Ok(())) => self.question = None,
+            Message::SteamClientAnswered(Err(error)) => {
+                if let Some(question) = &mut self.question {
+                    question.failed(error);
+                }
+            }
         }
 
         Task::none()
@@ -496,20 +518,33 @@ impl Library {
 
     pub fn view(&self) -> Element<'_, Message> {
         let searching = !self.search.trim().is_empty();
-        let filters = row(FILTERS.map(|filter| {
-            button(
-                text!(
-                    "{} {}",
-                    filter_label(filter),
-                    count(&self.view.games, filter)
+        let filters = row(FILTERS
+            .into_iter()
+            .filter(|&filter| filter != Filter::NotOwned || count(&self.view.games, filter) > 0)
+            .map(|filter| {
+                let chip = button(
+                    text!(
+                        "{} {}",
+                        filter_label(filter),
+                        count(&self.view.games, filter)
+                    )
+                    .size(font::NOTE_SIZE),
                 )
-                .size(font::NOTE_SIZE),
-            )
-            .padding([3, 10])
-            .style(style::choice(!searching && filter == self.filter))
-            .on_press(Message::Filter(filter))
-            .into()
-        }))
+                .padding([3, 10])
+                .style(style::choice(!searching && filter == self.filter))
+                .on_press(Message::Filter(filter));
+                if filter != Filter::NotOwned {
+                    return chip.into();
+                }
+                tooltip(
+                    chip,
+                    container(text(NOT_OWNED_TIP).size(font::NOTE_SIZE))
+                        .padding([6, 10])
+                        .style(style::popup),
+                    tooltip::Position::Bottom,
+                )
+                .into()
+            }))
         .spacing(6);
         let tools = row![
             filters,
@@ -553,11 +588,19 @@ impl Library {
         });
         let toast = self.toasts.view(Message::Undo);
 
+        let question = self.question.as_ref().map(|question| {
+            container(question.view(Message::SteamClient))
+                .padding([16, GRID_PADDING as u16])
+                .center_x(Fill)
+                .max_width(800)
+        });
+
         column![
             container(tools).padding([12, GRID_PADDING as u16]),
             style::separator(),
-            stack![body].push(popup).push(toast),
         ]
+        .push(question)
+        .push(stack![body].push(popup).push(toast))
         .into()
     }
 
@@ -729,7 +772,7 @@ impl Library {
             .into()
         }))
         .spacing(6);
-        let hide = game.owned_hours.is_none().then(|| {
+        let hide = (game.owned_hours.is_none() && !game.borrowed && !game.recent).then(|| {
             let id = game.id;
             let correction = game.correction;
             checkbox(correction.hidden)
@@ -945,6 +988,7 @@ impl Filter {
         match self {
             Filter::All => true,
             Filter::Owned => game.owned_hours.is_some(),
+            Filter::NotOwned => game.borrowed,
             Filter::Wishlist => game.wishlist,
             Filter::Followed => game.followed,
         }
@@ -965,6 +1009,7 @@ fn filter_label(filter: Filter) -> &'static str {
     match filter {
         Filter::All => "All",
         Filter::Owned => "Owned",
+        Filter::NotOwned => "Not owned",
         Filter::Wishlist => "Wishlist",
         Filter::Followed => "Followed",
     }
@@ -1234,6 +1279,7 @@ fn counts_as(hours: f64) -> String {
 fn source_line(game: &LibraryGameView, view: &LibraryView) -> String {
     let signals: Vec<&str> = [
         (game.owned_hours.is_some(), "Owned"),
+        (game.borrowed, "Not owned"),
         (game.wishlist, "Wishlist"),
         (game.followed, "Followed"),
     ]
@@ -1331,6 +1377,7 @@ fn empty_text(no_games: bool, filter: Filter, search: &str) -> String {
     } else {
         match filter {
             Filter::All | Filter::Owned => "No games in your library".to_string(),
+            Filter::NotOwned => "No games played without owning them".to_string(),
             Filter::Wishlist => "No games in your wishlist".to_string(),
             Filter::Followed => "No followed games".to_string(),
         }
@@ -1346,6 +1393,7 @@ mod tests {
             id: AppId(id),
             name: name.to_string(),
             owned_hours: None,
+            borrowed: false,
             recent: false,
             wishlist: false,
             followed: false,
@@ -1636,6 +1684,33 @@ mod tests {
         assert_eq!(
             line(&borrowed),
             "Played · 6.0 h · played in the last two weeks"
+        );
+        let shared = LibraryGameView {
+            borrowed: true,
+            hours: 147.8,
+            ..game(8, "Baldur's Gate 3")
+        };
+        assert_eq!(line(&shared), "Not owned · 148 h");
+    }
+
+    #[test]
+    fn not_owned_keeps_the_games_played_without_owning_them() {
+        let mut games = games();
+        games.push(LibraryGameView {
+            borrowed: true,
+            hours: 40.0,
+            ..game(7, "Baldur's Gate 3")
+        });
+
+        assert_eq!(
+            ids(&games, &shown(&games, Filter::NotOwned, Sort::Name, "")),
+            [7]
+        );
+        assert_eq!(count(&games, Filter::Owned), 4);
+        assert_eq!(count(&games, Filter::All), 7);
+        assert_eq!(
+            empty_text(false, Filter::NotOwned, ""),
+            "No games played without owning them"
         );
     }
 

@@ -6,6 +6,7 @@ use crate::{ids::AppId, timestamp::Timestamp};
 pub struct Signals {
     pub read_at: Timestamp,
     pub library: Vec<LibraryGame>,
+    pub borrowed: Vec<LibraryGame>,
     pub recent: Vec<RecentGame>,
     pub wishlist: Vec<AppId>,
     pub followed: Vec<AppId>,
@@ -15,6 +16,7 @@ pub struct Signals {
 pub struct SignalsReading {
     pub read_at: Timestamp,
     pub library: Vec<LibraryGame>,
+    pub borrowed: Vec<LibraryGame>,
     pub recent: Vec<RecentGame>,
     pub wishlist: Option<Vec<AppId>>,
     pub followed: Option<Vec<AppId>>,
@@ -24,15 +26,20 @@ pub struct SignalsReading {
 
 impl Signals {
     pub fn ids(&self) -> Vec<AppId> {
-        self.library
-            .iter()
-            .map(|game| game.id)
+        self.played()
             .chain(self.recent.iter().map(|game| game.id))
             .chain(self.wishlist.iter().copied())
             .chain(self.followed.iter().copied())
             .collect::<BTreeSet<AppId>>()
             .into_iter()
             .collect()
+    }
+
+    pub fn played(&self) -> impl Iterator<Item = AppId> + '_ {
+        self.library
+            .iter()
+            .chain(&self.borrowed)
+            .map(|game| game.id)
     }
 }
 
@@ -41,6 +48,7 @@ impl SignalsReading {
         Signals {
             read_at: self.read_at,
             library: self.library,
+            borrowed: self.borrowed,
             recent: self.recent,
             wishlist: self.wishlist.unwrap_or_default(),
             followed: self.followed.unwrap_or_default(),
@@ -73,6 +81,10 @@ mod tests {
                 id: AppId(3),
                 total_hours: 1.0,
             }],
+            borrowed: vec![LibraryGame {
+                id: AppId(7),
+                total_hours: 4.0,
+            }],
             recent: vec![RecentGame {
                 id: AppId(9),
                 total_hours: 2.0,
@@ -82,6 +94,9 @@ mod tests {
             followed: vec![AppId(3)],
         };
 
-        assert_eq!(signals.ids(), [AppId(1), AppId(3), AppId(5), AppId(9)]);
+        assert_eq!(
+            signals.ids(),
+            [AppId(1), AppId(3), AppId(5), AppId(7), AppId(9)]
+        );
     }
 }

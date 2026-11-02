@@ -406,6 +406,7 @@ mod tests {
                 id: AppId(1),
                 total_hours: 20.0,
             }],
+            borrowed: vec![],
             recent: Vec::new(),
             wishlist: Vec::new(),
             followed: Vec::new(),

@@ -165,6 +165,7 @@ impl App {
                     Task::none()
                 }
             }
+            Message::Library(library::Message::SteamClientAnswered(Ok(()))) => self.reopen(),
             Message::Library(message) => {
                 if let Screen::Library(screen) = &mut self.screen {
                     screen.update(message).map(Message::Library)

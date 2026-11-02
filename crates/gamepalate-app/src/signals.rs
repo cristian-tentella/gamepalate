@@ -10,11 +10,12 @@ use gamepalate_core::{
     families::Families,
     ids::SteamId,
     off_catalog::{OffCatalogGames, off_catalog_games, stale_off_catalog, wanted_off_catalog},
-    signals::{Signals, SignalsReading},
+    signals::{LibraryGame, Signals, SignalsReading},
     timestamp::Timestamp,
     votes::Votes,
 };
 use gamepalate_steam::{
+    client::{read_played_hours, steam_client_file},
     off_catalog::renew_off_catalog,
     signals::{self as steam_signals, FailedList},
     transport::{Get, SteamError},
@@ -33,6 +34,14 @@ const OFF_CATALOG_FILE: &str = "off-catalog-tags.json";
 pub enum SignalsWarning {
     SteamDown { read_at: Timestamp },
     ListFailed(FailedList),
+    SteamClientFailed,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SteamClientHours {
+    Off,
+    Found(PathBuf),
+    Missing,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -95,15 +104,27 @@ impl ReadSignalsError {
     }
 }
 
+pub fn steam_client_hours(config: &Config, steam_id: SteamId) -> SteamClientHours {
+    if config.signals.steam_client_hours != Some(true) {
+        return SteamClientHours::Off;
+    }
+    steam_client_file(steam_id).map_or(SteamClientHours::Missing, SteamClientHours::Found)
+}
+
 pub async fn read_signals<S: Get>(
     data_dir: &Path,
     steam: &S,
     steam_id: SteamId,
+    client: &SteamClientHours,
     now: Timestamp,
 ) -> Result<ReadSignals, ReadSignalsError> {
     let path = data_dir.join(SIGNALS_FILE);
     let saved = load_reading(&path).ok();
     let had_saved = saved.is_some();
+    let saved_borrowed = saved
+        .as_ref()
+        .map(|saved| saved.borrowed.clone())
+        .unwrap_or_default();
 
     let read = steam_signals::read_signals(steam, steam_id, saved, now)
         .await
@@ -122,11 +143,35 @@ pub async fn read_signals<S: Get>(
         .collect();
     warnings.extend(read.failed.into_iter().map(SignalsWarning::ListFailed));
 
+    let fresh = read.saved_from.is_none();
+    let mut reading = read.reading;
+    if fresh {
+        let played = match client {
+            SteamClientHours::Off => Ok(Vec::new()),
+            SteamClientHours::Found(path) => read_played_hours(path).map_err(|_| ()),
+            SteamClientHours::Missing => Err(()),
+        };
+        reading.borrowed = match played {
+            Ok(played) => not_owned(played, &reading.library),
+            Err(()) => {
+                warnings.push(SignalsWarning::SteamClientFailed);
+                saved_borrowed
+            }
+        };
+    }
+
     Ok(ReadSignals {
-        reading: read.reading,
+        reading,
         warnings,
-        fresh: read.saved_from.is_none(),
+        fresh,
     })
+}
+
+pub(crate) fn not_owned(played: Vec<LibraryGame>, library: &[LibraryGame]) -> Vec<LibraryGame> {
+    played
+        .into_iter()
+        .filter(|game| !library.iter().any(|owned| owned.id == game.id))
+        .collect()
 }
 
 pub fn save_signals(data_dir: &Path, read: &ReadSignals) -> Result<(), SignalsError> {
@@ -265,6 +310,7 @@ mod tests {
                 id: AppId(10),
                 total_hours: 0.5,
             }],
+            borrowed: vec![],
             recent: Vec::new(),
             wishlist: Vec::new(),
             followed: Vec::new(),
@@ -300,7 +346,17 @@ mod tests {
     }
 
     async fn read_and_save(dir: &Path, steam: &FakeSteam) -> ReadSignals {
-        let read = read_signals(dir, steam, STEAM_ID, NOW).await.unwrap();
+        read_and_save_with(dir, steam, &SteamClientHours::Off).await
+    }
+
+    async fn read_and_save_with(
+        dir: &Path,
+        steam: &FakeSteam,
+        client: &SteamClientHours,
+    ) -> ReadSignals {
+        let read = read_signals(dir, steam, STEAM_ID, client, NOW)
+            .await
+            .unwrap();
         save_signals(dir, &read).unwrap();
         read
     }
@@ -363,7 +419,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(SIGNALS_FILE);
 
-        let read = read_signals(dir.path(), &steam(), STEAM_ID, NOW)
+        let read = read_signals(dir.path(), &steam(), STEAM_ID, &SteamClientHours::Off, NOW)
             .await
             .unwrap();
 
@@ -404,7 +460,7 @@ mod tests {
             ..steam()
         };
 
-        let error = read_signals(dir.path(), &steam, STEAM_ID, NOW)
+        let error = read_signals(dir.path(), &steam, STEAM_ID, &SteamClientHours::Off, NOW)
             .await
             .unwrap_err();
 
@@ -422,7 +478,7 @@ mod tests {
             ..steam()
         };
 
-        let error = read_signals(dir.path(), &steam, STEAM_ID, NOW)
+        let error = read_signals(dir.path(), &steam, STEAM_ID, &SteamClientHours::Off, NOW)
             .await
             .unwrap_err();
 
@@ -460,5 +516,72 @@ mod tests {
         let saved = load_reading(&path).unwrap();
         assert_eq!(saved.read_at, NOW);
         assert_eq!(saved.wishlist_read_at, Some(Timestamp(1_793_000_000_000)));
+    }
+
+    const LOCAL_CONFIG: &str = r#""UserLocalConfigStore" { "Software" { "Valve" { "Steam" { "apps" {
+        "10" { "Playtime" "600" }
+        "70" { "Playtime" "90" }
+    } } } } }"#;
+
+    #[tokio::test]
+    async fn the_hours_from_the_steam_app_add_the_games_not_owned() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("localconfig.vdf");
+        fs::write(&file, LOCAL_CONFIG).unwrap();
+
+        let read = read_and_save_with(dir.path(), &steam(), &SteamClientHours::Found(file)).await;
+
+        assert!(read.warnings.is_empty());
+        let saved = load_reading(&dir.path().join(SIGNALS_FILE)).unwrap();
+        assert_eq!(
+            saved.borrowed,
+            [LibraryGame {
+                id: AppId(70),
+                total_hours: 1.5,
+            }]
+        );
+        assert_eq!(saved.library[0].total_hours, 2.0);
+    }
+
+    #[tokio::test]
+    async fn without_the_answer_the_borrowed_games_are_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(SIGNALS_FILE),
+            r#"{"readAt":1,"library":[],"borrowed":[{"appid":70,"totalHours":1.5}],"recent":[],"wishlist":null,"followed":null}"#,
+        )
+        .unwrap();
+
+        let read = read_and_save(dir.path(), &steam()).await;
+
+        assert!(read.reading.borrowed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_steam_app_file_that_fails_keeps_the_saved_games() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(SIGNALS_FILE),
+            r#"{"readAt":1,"library":[],"borrowed":[{"appid":70,"totalHours":1.5}],"recent":[],"wishlist":null,"followed":null}"#,
+        )
+        .unwrap();
+        let broken = dir.path().join("missing.vdf");
+
+        for client in [SteamClientHours::Found(broken), SteamClientHours::Missing] {
+            let read = read_and_save_with(dir.path(), &steam(), &client).await;
+
+            assert_eq!(read.warnings, [SignalsWarning::SteamClientFailed]);
+            assert_eq!(read.reading.borrowed[0].id, AppId(70));
+        }
+    }
+
+    #[test]
+    fn the_steam_app_is_read_only_after_a_yes() {
+        for answer in [None, Some(false)] {
+            let mut config = config();
+            config.signals.steam_client_hours = answer;
+
+            assert_eq!(steam_client_hours(&config, STEAM_ID), SteamClientHours::Off);
+        }
     }
 }

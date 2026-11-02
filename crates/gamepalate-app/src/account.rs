@@ -6,12 +6,12 @@ use gamepalate_steam::{
     transport::{Get, SteamError, Transport},
 };
 use gamepalate_store::{
-    config::{ConfigError, save_steam_id},
+    config::{ConfigError, load_config, save_steam_id},
     signals::SignalsError,
 };
 
 use crate::{
-    signals::{ReadSignalsError, read_signals, save_signals},
+    signals::{ReadSignalsError, SteamClientHours, read_signals, save_signals, steam_client_hours},
     update::wall_clock,
 };
 
@@ -193,7 +193,11 @@ async fn connect_with<S: Get>(
             .await?
             .ok_or(ConnectError::NoProfile(name))?,
     };
-    let read = read_signals(data_dir, steam, steam_id, now).await?;
+    let client = load_config(&data_dir.join("config.toml"))
+        .map_or(SteamClientHours::Off, |config| {
+            steam_client_hours(&config, steam_id)
+        });
+    let read = read_signals(data_dir, steam, steam_id, &client, now).await?;
     if !read.fresh {
         return Err(ConnectError::SteamDown);
     }
@@ -210,7 +214,7 @@ async fn connect_with<S: Get>(
 mod tests {
     use std::{fs, sync::Mutex};
 
-    use gamepalate_store::{config::load_config, signals::load_reading};
+    use gamepalate_store::signals::load_reading;
     use serde_json::{Value, json};
 
     use super::*;

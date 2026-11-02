@@ -33,6 +33,8 @@ pub enum SignalsError {
 struct SignalsFile {
     read_at: i64,
     library: Vec<LibraryEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    borrowed: Vec<LibraryEntry>,
     recent: Vec<RecentEntry>,
     wishlist: Option<Vec<u32>>,
     followed: Option<Vec<u32>>,
@@ -85,14 +87,8 @@ fn parse_reading(text: &str) -> Result<SignalsReading, SignalsError> {
 
     Ok(SignalsReading {
         read_at: Timestamp(file.read_at),
-        library: file
-            .library
-            .into_iter()
-            .map(|entry| LibraryGame {
-                id: AppId(entry.appid),
-                total_hours: entry.total_hours,
-            })
-            .collect(),
+        library: library_games(file.library),
+        borrowed: library_games(file.borrowed),
         recent: file
             .recent
             .into_iter()
@@ -112,14 +108,8 @@ fn parse_reading(text: &str) -> Result<SignalsReading, SignalsError> {
 fn signals_file(reading: &SignalsReading) -> SignalsFile {
     SignalsFile {
         read_at: reading.read_at.0,
-        library: reading
-            .library
-            .iter()
-            .map(|game| LibraryEntry {
-                appid: game.id.0,
-                total_hours: game.total_hours,
-            })
-            .collect(),
+        library: library_entries(&reading.library),
+        borrowed: library_entries(&reading.borrowed),
         recent: reading
             .recent
             .iter()
@@ -134,6 +124,26 @@ fn signals_file(reading: &SignalsReading) -> SignalsFile {
         wishlist_read_at: reading.wishlist_read_at.map(|at| at.0),
         followed_read_at: reading.followed_read_at.map(|at| at.0),
     }
+}
+
+fn library_games(entries: Vec<LibraryEntry>) -> Vec<LibraryGame> {
+    entries
+        .into_iter()
+        .map(|entry| LibraryGame {
+            id: AppId(entry.appid),
+            total_hours: entry.total_hours,
+        })
+        .collect()
+}
+
+fn library_entries(games: &[LibraryGame]) -> Vec<LibraryEntry> {
+    games
+        .iter()
+        .map(|game| LibraryEntry {
+            appid: game.id.0,
+            total_hours: game.total_hours,
+        })
+        .collect()
 }
 
 fn app_ids(ids: Option<Vec<u32>>) -> Option<Vec<AppId>> {
@@ -154,6 +164,7 @@ mod tests {
             r#"{
                 "readAt": 1759835069734,
                 "library": [{ "appid": 10, "totalHours": 12.5 }],
+                "borrowed": [{ "appid": 20, "totalHours": 3.0 }],
                 "recent": [{ "appid": 10, "recentHours": 1.5, "totalHours": 12.5 }],
                 "wishlist": [400],
                 "followed": [500, 600],
@@ -170,6 +181,10 @@ mod tests {
                 library: vec![LibraryGame {
                     id: AppId(10),
                     total_hours: 12.5,
+                }],
+                borrowed: vec![LibraryGame {
+                    id: AppId(20),
+                    total_hours: 3.0,
                 }],
                 recent: vec![RecentGame {
                     id: AppId(10),
@@ -194,6 +209,7 @@ mod tests {
 
         assert!(signals.wishlist.is_empty());
         assert!(signals.followed.is_empty());
+        assert!(signals.borrowed.is_empty());
     }
 
     #[test]
@@ -224,6 +240,10 @@ mod tests {
                 id: AppId(10),
                 total_hours: 1.5,
             }],
+            borrowed: vec![LibraryGame {
+                id: AppId(30),
+                total_hours: 4.5,
+            }],
             recent: vec![RecentGame {
                 id: AppId(10),
                 total_hours: 1.5,
@@ -252,6 +272,7 @@ mod tests {
         let reading = SignalsReading {
             read_at: Timestamp(3_000),
             library: vec![],
+            borrowed: vec![],
             recent: vec![],
             wishlist: Some(vec![]),
             followed: Some(vec![AppId(500)]),
@@ -262,6 +283,7 @@ mod tests {
         save_reading(&path, &reading).unwrap();
 
         assert_eq!(load_reading(&path).unwrap(), reading);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("borrowed"));
     }
 
     #[test]

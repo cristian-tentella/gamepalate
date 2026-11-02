@@ -50,6 +50,7 @@ use crate::{
     },
     profile::{ProfileView, profile_view},
     settings::{self, Settings},
+    steam_client::steam_client_file_of,
     update,
 };
 
@@ -356,6 +357,8 @@ impl Gamepalate {
             region: self.files.config.region,
             data_dir: self.data_dir.clone(),
             image_cache_max_bytes: MAX_CACHE_BYTES,
+            steam_client_hours: self.files.config.signals.steam_client_hours,
+            steam_client_file: steam_client_file_of(&self.data_dir),
         }
     }
 

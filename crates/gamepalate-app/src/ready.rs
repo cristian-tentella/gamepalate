@@ -12,7 +12,7 @@ use crate::{
     account::steam_api_key,
     signals::{
         OffCatalogError, OffCatalogInputs, ReadSignalsError, off_catalog, read_signals,
-        save_signals,
+        save_signals, steam_client_hours,
     },
     update::wall_clock,
 };
@@ -61,11 +61,10 @@ pub(crate) async fn check_ready_with<S: Get>(
     now: Timestamp,
 ) -> Result<ReadyCheck, ReadyError> {
     if read_signals_again {
-        let steam_id = load_config(&data_dir.join("config.toml"))
-            .map_err(DataFilesError::from)?
-            .steam_id
-            .ok_or(ReadyError::NoSteamId)?;
-        let read = read_signals(data_dir, steam, steam_id, now).await?;
+        let config = load_config(&data_dir.join("config.toml")).map_err(DataFilesError::from)?;
+        let steam_id = config.steam_id.ok_or(ReadyError::NoSteamId)?;
+        let client = steam_client_hours(&config, steam_id);
+        let read = read_signals(data_dir, steam, steam_id, &client, now).await?;
         save_signals(data_dir, &read)?;
     }
 

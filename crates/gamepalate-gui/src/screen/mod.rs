@@ -21,6 +21,7 @@ pub mod profile;
 pub mod settings;
 pub mod setup;
 mod showcase;
+mod steam_client;
 pub mod votes;
 
 pub use discover::Discover;

@@ -62,6 +62,7 @@ struct SignalsSection {
     wishlist_hours: Option<f64>,
     followed_hours: Option<f64>,
     would_try_hours: Option<f64>,
+    steam_client_hours: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -107,21 +108,41 @@ pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
 }
 
 pub fn save_steam_id(path: &Path, steam_id: SteamId) -> Result<(), ConfigError> {
-    save_value(path, "steam_id", steam_id.0.to_string())
+    save_value(
+        path,
+        &["steam_id"],
+        toml_edit::value(steam_id.0.to_string()),
+    )
 }
 
 pub fn save_region(path: &Path, region: Region) -> Result<(), ConfigError> {
-    save_value(path, "region", region.as_str().to_string())
+    save_value(path, &["region"], toml_edit::value(region.as_str()))
 }
 
-fn save_value(path: &Path, key: &str, value: String) -> Result<(), ConfigError> {
+pub fn save_steam_client_hours(path: &Path, read: bool) -> Result<(), ConfigError> {
+    save_value(
+        path,
+        &["signals", "steam_client_hours"],
+        toml_edit::value(read),
+    )
+}
+
+fn save_value(path: &Path, keys: &[&str], value: toml_edit::Item) -> Result<(), ConfigError> {
     let text = if path.is_file() {
         std::fs::read_to_string(path)?
     } else {
         String::new()
     };
     let mut document: DocumentMut = text.parse()?;
-    document[key] = toml_edit::value(value);
+    let (last, tables) = keys.split_last().expect("at least one key");
+    let mut item = document.as_item_mut();
+    for key in tables {
+        item = &mut item[*key];
+        if item.is_none() {
+            *item = toml_edit::table();
+        }
+    }
+    item[*last] = value;
 
     let write_error = |source| ConfigError::Write {
         path: path.to_path_buf(),
@@ -183,6 +204,7 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
             base.signals.would_try_hours,
             Range::AtLeast(0.0),
         )?,
+        steam_client_hours: file.signals.steam_client_hours,
     };
 
     let relevance = RelevanceConfig {
@@ -450,6 +472,68 @@ mod tests {
         let config = load_config(&path).unwrap();
         assert_eq!(config.region, Region::new("US").unwrap());
         assert_eq!(config.signals.min_hours, 3.0);
+    }
+
+    #[test]
+    fn saving_the_steam_client_answer_keeps_the_signals_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "# my settings
+steam_id = \"76561198000000000\"
+
+[signals]
+# hours
+min_hours = 3.0
+",
+        )
+        .unwrap();
+
+        save_steam_client_hours(&path, true).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# my settings
+steam_id = \"76561198000000000\"
+
+[signals]
+# hours
+min_hours = 3.0
+steam_client_hours = true
+"
+        );
+        save_steam_client_hours(&path, false).unwrap();
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.signals.steam_client_hours, Some(false));
+        assert_eq!(config.signals.min_hours, 3.0);
+    }
+
+    #[test]
+    fn the_steam_client_answer_creates_the_signals_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "steam_id = \"76561198000000000\"
+",
+        )
+        .unwrap();
+
+        save_steam_client_hours(&path, true).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "steam_id = \"76561198000000000\"
+
+[signals]
+steam_client_hours = true
+"
+        );
+        assert_eq!(
+            load_config(&path).unwrap().signals.steam_client_hours,
+            Some(true)
+        );
     }
 
     const STEAM_ID: &str = r#"steam_id = "76561198000000000""#;

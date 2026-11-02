@@ -19,6 +19,8 @@ pub struct Settings {
     pub region: Region,
     pub data_dir: PathBuf,
     pub image_cache_max_bytes: u64,
+    pub steam_client_hours: Option<bool>,
+    pub steam_client_file: Option<PathBuf>,
 }
 
 pub fn change_region(data_dir: &Path, region: Region) -> Result<(), ConfigError> {

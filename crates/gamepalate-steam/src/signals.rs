@@ -132,6 +132,7 @@ pub async fn read_signals<S: Get>(
         reading: SignalsReading {
             read_at: now,
             library,
+            borrowed: Vec::new(),
             recent,
             wishlist,
             followed,
@@ -477,6 +478,7 @@ mod tests {
                 id: AppId(1),
                 total_hours: 10.0,
             }],
+            borrowed: vec![],
             recent: vec![],
             wishlist: Some(vec![AppId(4)]),
             followed: Some(vec![AppId(5)]),
@@ -500,6 +502,7 @@ mod tests {
                         id: AppId(10),
                         total_hours: 1.5,
                     }],
+                    borrowed: vec![],
                     recent: vec![RecentGame {
                         id: AppId(30),
                         total_hours: 2.0,
