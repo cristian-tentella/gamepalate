@@ -4,6 +4,8 @@ use gamepalate_app::{
 };
 use jiff::{civil::Date, tz::TimeZone};
 
+const FEW_REVIEWS_GAP: f64 = 5.0;
+
 pub fn when(at: Timestamp, now: Timestamp) -> String {
     when_in(at, now, &TimeZone::system())
 }
@@ -185,21 +187,27 @@ pub fn reviews(reviews: &Reviews) -> (String, String) {
 
 pub fn affinity(affinity: f64) -> String {
     let times = format!("{affinity:.1}");
-    format!("{}× the average game", times.trim_end_matches(".0"))
+    format!("{}×", times.trim_end_matches(".0"))
 }
 
-pub fn affinity_share(affinity: f64) -> f32 {
-    (affinity.max(1.0).log10() as f32).clamp(0.0, 1.0)
-}
-
-pub fn quality(quality: f64) -> &'static str {
-    match quality {
-        q if q >= 0.9 => "excellent",
-        q if q >= 0.8 => "very good",
-        q if q >= 0.7 => "good",
-        q if q >= 0.5 => "mixed",
-        _ => "poor",
+pub fn few_reviews(reviews: &Reviews, quality: f64) -> Option<String> {
+    if reviews.total == 0 {
+        return None;
     }
+    let percent = (f64::from(reviews.positive) * 100.0 / f64::from(reviews.total)).round();
+    let counted = (quality * 100.0).round();
+    let (noun, verb) = if reviews.total == 1 {
+        ("review", "it counts")
+    } else {
+        ("reviews", "they count")
+    };
+
+    (percent - counted >= FEW_REVIEWS_GAP).then(|| {
+        format!(
+            "Only {} {noun}, so {verb} as {counted}%",
+            count(reviews.total)
+        )
+    })
 }
 
 pub fn bet(every: usize) -> String {
@@ -541,21 +549,37 @@ mod tests {
     }
 
     #[test]
-    fn fills_the_affinity_bar_on_a_log_scale() {
-        assert_eq!(affinity(6.5), "6.5× the average game");
-        assert_eq!(affinity(4.0), "4× the average game");
-        assert_eq!(affinity_share(0.5), 0.0);
-        assert!((affinity_share(6.5) - 0.81).abs() < 0.01);
-        assert_eq!(affinity_share(40.0), 1.0);
+    fn writes_the_affinity_as_times() {
+        assert_eq!(affinity(6.5), "6.5×");
+        assert_eq!(affinity(4.0), "4×");
     }
 
     #[test]
-    fn names_the_quality() {
-        assert_eq!(quality(0.95), "excellent");
-        assert_eq!(quality(0.85), "very good");
-        assert_eq!(quality(0.75), "good");
-        assert_eq!(quality(0.6), "mixed");
-        assert_eq!(quality(0.3), "poor");
+    fn warns_only_when_few_reviews_count_less() {
+        let few = Reviews {
+            total: 20,
+            positive: 19,
+        };
+        let many = Reviews {
+            total: 43_506,
+            positive: 40_461,
+        };
+
+        assert_eq!(
+            few_reviews(&few, 0.764).unwrap(),
+            "Only 20 reviews, so they count as 76%"
+        );
+        assert_eq!(few_reviews(&many, 0.927), None);
+        assert_eq!(
+            few_reviews(
+                &Reviews {
+                    total: 0,
+                    positive: 0
+                },
+                0.0
+            ),
+            None
+        );
     }
 
     #[test]

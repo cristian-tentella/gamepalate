@@ -18,8 +18,8 @@ use iced::{
     keyboard::{self, Key, key::Named},
     never, padding,
     widget::{
-        button, column, container, mouse_area, opaque, progress_bar, responsive, rich_text, row,
-        scrollable, space, span, stack, text, tooltip,
+        button, column, container, mouse_area, opaque, responsive, rich_text, row, scrollable,
+        space, span, stack, text,
     },
 };
 
@@ -34,11 +34,6 @@ static SEARCHES: AtomicU64 = AtomicU64::new(0);
 const COMPACT_WIDTH: f32 = 1100.0;
 const TOAST_DURATION: Duration = Duration::from_secs(4);
 const FLASH_DURATION: Duration = Duration::from_millis(600);
-const METER_LABEL_WIDTH: f32 = 96.0;
-const METER_VALUE_WIDTH: f32 = 136.0;
-const AFFINITY_TIP: &str =
-    "Compared with an average game in the catalog, from the tags of the games you play and vote";
-const QUALITY_TIP: &str = "How good the Steam reviews are. With few reviews it counts less";
 const SIDE_WIDTH: f32 = 360.0;
 const HEADER_HEIGHT: f32 = SIDE_WIDTH * 215.0 / 460.0;
 const MIN_SHOT_WIDTH: f32 = 480.0;
@@ -56,7 +51,6 @@ pub struct Discover {
     empty_because: Option<Blame>,
     votes_this_session: usize,
     bet_every: usize,
-    why_open: bool,
     toast: Option<Toast>,
     flash: Option<Flash>,
     timers_started: u64,
@@ -89,7 +83,6 @@ pub enum Message {
     Vote(VoteKind),
     VoteSaved(Result<(), String>),
     Open(Link),
-    ToggleWhy,
     HideToast(u64),
     EndFlash(u64),
     Showcase(showcase::Message),
@@ -129,7 +122,6 @@ impl Discover {
             empty_because: None,
             votes_this_session: 0,
             bet_every: gamepalate.bet_every(),
-            why_open: true,
             toast: None,
             flash: None,
             timers_started: 0,
@@ -234,7 +226,6 @@ impl Discover {
                     game::open(link, &game.name, &game.store_url);
                 }
             }
-            Message::ToggleWhy => self.why_open = !self.why_open,
             Message::Filters(message) => return self.change_filters(message),
             Message::ToggleFilters if self.panel_open => return self.close_filters(),
             Message::ToggleFilters => {
@@ -584,13 +575,15 @@ impl Discover {
 
 impl Discover {
     fn why<'a>(&self, game: &'a RecommendedGame) -> Element<'a, Message> {
-        if !self.why_open {
-            return text("Why this game (W) \u{25B8}")
-                .size(font::NOTE_SIZE)
-                .style(style::muted)
-                .into();
-        }
-
+        let taste = rich_text![
+            span("Fits your taste "),
+            span(format::affinity(game.affinity)).font(font::SEMIBOLD),
+            span(" better than the average game"),
+        ]
+        .size(font::BAR_SIZE)
+        .on_link_click(never);
+        let reviews = format::few_reviews(&game.reviews, game.quality)
+            .map(|line| text(line).size(font::BAR_SIZE));
         let bet = game.bet.then(|| {
             text(format::bet(self.bet_every))
                 .size(font::NOTE_SIZE)
@@ -599,24 +592,14 @@ impl Discover {
 
         container(
             column![
-                text("Why this game (W)")
+                text("Why this game")
                     .size(font::NOTE_SIZE)
                     .style(style::muted),
-                meter(
-                    "Fits your taste",
-                    AFFINITY_TIP,
-                    format::affinity_share(game.affinity),
-                    format::affinity(game.affinity),
-                ),
-                meter(
-                    "Reviews",
-                    QUALITY_TIP,
-                    game.quality as f32,
-                    format::quality(game.quality).to_string(),
-                ),
+                taste,
             ]
+            .push(reviews)
             .push(bet)
-            .spacing(6),
+            .spacing(4),
         )
         .padding([10, 14])
         .width(Fill)
@@ -688,29 +671,6 @@ fn screenshot_size(size: Size) -> (f32, f32) {
     (shot_width, shot_width * 9.0 / 16.0)
 }
 
-fn meter<'a>(label: &'a str, tip: &'a str, share: f32, value: String) -> Element<'a, Message> {
-    let line = row![
-        text(label).size(font::BAR_SIZE).width(METER_LABEL_WIDTH),
-        progress_bar(0.0..=1.0, share)
-            .girth(4)
-            .length(Fill)
-            .style(style::meter),
-        container(text(value).size(font::BAR_SIZE).font(font::SEMIBOLD))
-            .align_right(METER_VALUE_WIDTH),
-    ]
-    .spacing(8)
-    .align_y(Center);
-
-    tooltip(
-        line,
-        container(text(tip).size(font::NOTE_SIZE))
-            .padding([6, 10])
-            .style(style::popup),
-        tooltip::Position::Bottom,
-    )
-    .into()
-}
-
 fn after(duration: Duration, message: Message) -> Task<Message> {
     Task::perform(tokio::time::sleep(duration), move |_| message)
 }
@@ -732,12 +692,9 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         Key::Named(Named::ArrowLeft) => {
             Some(Message::Showcase(showcase::Message::PreviousScreenshot))
         }
-        Key::Character(character) => match character.as_str() {
-            "w" | "W" => Some(Message::ToggleWhy),
-            key => game::vote_key(key)
-                .map(Message::Vote)
-                .or_else(|| game::link_key(key).map(Message::Open)),
-        },
+        Key::Character(key) => game::vote_key(key.as_str())
+            .map(Message::Vote)
+            .or_else(|| game::link_key(key.as_str()).map(Message::Open)),
         Key::Named(_) | Key::Unidentified => None,
     }
 }
@@ -769,14 +726,6 @@ mod tests {
         assert!(matches!(
             key_message(pressed(Key::Character("7".into()))),
             Some(Message::Open(Link::Hltb))
-        ));
-    }
-
-    #[test]
-    fn toggles_the_reasons_with_w() {
-        assert!(matches!(
-            key_message(pressed(Key::Character("w".into()))),
-            Some(Message::ToggleWhy)
         ));
     }
 
