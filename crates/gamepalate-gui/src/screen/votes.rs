@@ -216,9 +216,10 @@ impl Votes {
             .width(Fill)
             .height(Fill)
             .clip(true);
-        let votes = container(container(self.vote_row()).height(VOTE_HEIGHT))
-            .padding([10, 20])
-            .width(Fill);
+        let votes =
+            container(container(responsive(|size| self.vote_row(size.width))).height(VOTE_HEIGHT))
+                .padding([10, 20])
+                .width(Fill);
 
         stack![row![
             container(self.list()).width(LIST_WIDTH).height(Fill),
@@ -417,13 +418,15 @@ impl Votes {
         .into()
     }
 
-    fn vote_row(&self) -> Element<'_, Message> {
+    fn vote_row(&self, width: f32) -> Element<'_, Message> {
         let game = self.current();
+        let vote_width = game::vote_width(width, 0.0);
         let votes = row(VOTES.map(|(key, kind)| {
             game::vote_button(
                 key,
                 kind,
                 true,
+                vote_width,
                 game.is_some().then_some(Message::Vote(kind)),
                 game.is_some_and(|game| game.vote.kind == kind),
             )

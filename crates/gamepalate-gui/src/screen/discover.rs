@@ -42,6 +42,12 @@ const MIN_SHOT_WIDTH: f32 = 480.0;
 const CARD_SPACING: f32 = 32.0;
 const INFO_SPACING: f32 = 14.0;
 const SCROLLBAR_GAP: f32 = 12.0;
+const GAME_PADDING: f32 = 16.0;
+const BAR_PADDING: f32 = 20.0;
+const FILTERS_HEIGHT: f32 = 34.0;
+const VOTES_PADDING: f32 = 10.0;
+const SEPARATOR: f32 = 1.0;
+const HINT_WIDTH: f32 = 240.0;
 const MEDIA_BELOW: f32 = 80.0;
 const SIDE_HEIGHT: f32 = 560.0;
 const STACKED_BELOW: f32 = 440.0;
@@ -316,6 +322,23 @@ impl Discover {
     }
 
     pub fn view(&self, scale: f32) -> Element<'_, Message> {
+        stack![responsive(move |size| self.screen(size, scale))]
+            .push(self.showcase.zoom().map(|zoom| zoom.map(Message::Showcase)))
+            .into()
+    }
+
+    fn screen(&self, size: Size, scale: f32) -> Element<'_, Message> {
+        let game_size = Size::new(
+            size.width - 2.0 * GAME_PADDING,
+            size.height
+                - FILTERS_HEIGHT
+                - VOTE_HEIGHT
+                - 2.0 * VOTES_PADDING
+                - 2.0 * SEPARATOR
+                - 2.0 * GAME_PADDING,
+        );
+        let layout = Layout::new(game_size, showcase::max_screenshot_width(scale));
+        let (left, right) = bar_edges(size.width, layout.width());
         let summary = if self.updating {
             Some("Updating…".to_string())
         } else {
@@ -355,7 +378,11 @@ impl Discover {
         )
         .spacing(8)
         .align_y(Center);
-        let filters = container(line).padding([6, 20]).width(Fill);
+        let filters = container(line)
+            .padding(padding::left(left).right(right))
+            .width(Fill)
+            .height(FILTERS_HEIGHT)
+            .align_y(Center);
         let popup = self.panel_open.then(|| {
             let panel = container(scrollable(self.panel.view().map(Message::Filters)).spacing(8))
                 .padding(20)
@@ -364,7 +391,7 @@ impl Discover {
                 opaque(
                     mouse_area(space().width(Fill).height(Fill)).on_press(Message::CloseFilters)
                 ),
-                container(opaque(panel)).padding([8, 20]),
+                container(opaque(panel)).padding(padding::top(8).left(left)),
             ]
         });
         let toast = self.toast.as_ref().map(|toast| {
@@ -377,8 +404,8 @@ impl Discover {
             .align_bottom(Fill)
             .padding(16)
         });
-        let game = container(self.game(scale))
-            .padding(16)
+        let game = container(self.game(layout, game_size.height))
+            .padding(GAME_PADDING)
             .width(Fill)
             .height(Fill)
             .clip(true);
@@ -388,21 +415,24 @@ impl Discover {
                 .style(style::veil)
         });
         let main = stack![game].push(veil).push(toast);
-        let votes = container(
-            container(responsive(|size| self.vote_row(size.width < COMPACT_WIDTH)))
-                .height(VOTE_HEIGHT),
-        )
-        .padding([10, 20])
-        .width(Fill);
+        let votes =
+            container(container(self.vote_row(size.width - left - right)).height(VOTE_HEIGHT))
+                .padding(
+                    padding::top(VOTES_PADDING)
+                        .bottom(VOTES_PADDING)
+                        .left(left)
+                        .right(right),
+                )
+                .width(Fill);
 
         let below = stack![column![main, style::separator(), votes]].push(popup);
 
-        stack![column![filters, style::separator(), below]]
-            .push(self.showcase.zoom().map(|zoom| zoom.map(Message::Showcase)))
-            .into()
+        column![filters, style::separator(), below].into()
     }
 
-    fn vote_row(&self, compact: bool) -> Element<'_, Message> {
+    fn vote_row(&self, width: f32) -> Element<'_, Message> {
+        let compact = width < COMPACT_WIDTH;
+        let vote_width = game::vote_width(width, if compact { 0.0 } else { HINT_WIDTH });
         let game = self.current();
         let hint = (!compact).then(|| {
             container(
@@ -418,6 +448,7 @@ impl Discover {
                 key,
                 kind,
                 compact,
+                vote_width,
                 game.is_some().then_some(Message::Vote(kind)),
                 flashed == Some(kind),
             )
@@ -555,10 +586,9 @@ impl Discover {
         &'a self,
         queue: &'a Queue,
         game: &'a RecommendedGame,
-        size: Size,
-        scale: f32,
+        layout: Layout,
+        height: f32,
     ) -> Element<'a, Message> {
-        let layout = Layout::new(size, showcase::max_screenshot_width(scale));
         let (shot_width, shot_height) = layout.shot_size();
         let media = self
             .showcase
@@ -592,7 +622,7 @@ impl Discover {
         scrollable(
             container(content)
                 .center_x(Fill)
-                .padding(padding::right(SCROLLBAR_GAP).top(layout.top_space(size.height))),
+                .padding(padding::right(SCROLLBAR_GAP).top(layout.top_space(height))),
         )
         .height(Fill)
         .into()
@@ -636,7 +666,7 @@ impl Discover {
         }
     }
 
-    fn game(&self, scale: f32) -> Element<'_, Message> {
+    fn game(&self, layout: Layout, height: f32) -> Element<'_, Message> {
         let content: Element<'_, Message> = match &self.state {
             State::Loading => text("Loading…").style(style::muted).into(),
             State::Failed(error) => column![
@@ -648,7 +678,7 @@ impl Discover {
             .into(),
             State::Ready(queue) => match queue.current() {
                 None => self.empty(),
-                Some(game) => responsive(move |size| self.card(queue, game, size, scale)).into(),
+                Some(game) => self.card(queue, game, layout, height),
             },
         };
 
@@ -786,6 +816,13 @@ impl Layout {
         }
     }
 
+    fn width(self) -> f32 {
+        match self {
+            Self::Beside(shot_width) => shot_width + CARD_SPACING + SIDE_WIDTH,
+            Self::Stacked(shot_width) => shot_width,
+        }
+    }
+
     fn shot_size(self) -> (f32, f32) {
         let (Self::Beside(width) | Self::Stacked(width)) = self;
 
@@ -801,6 +838,13 @@ impl Layout {
 
         ((height - content) / 2.0).max(0.0)
     }
+}
+
+fn bar_edges(width: f32, content_width: f32) -> (f32, f32) {
+    let start = GAME_PADDING + (width - 2.0 * GAME_PADDING - SCROLLBAR_GAP - content_width) / 2.0;
+    let left = start.max(BAR_PADDING);
+
+    (left, (width - left - content_width).max(BAR_PADDING))
 }
 
 fn after(duration: Duration, message: Message) -> Task<Message> {
@@ -958,6 +1002,13 @@ mod tests {
             Layout::new(Size::new(2528.0, 1272.0), 1920.0),
             Layout::Beside(1920.0)
         );
+    }
+
+    #[test]
+    fn the_bars_line_up_with_the_game() {
+        assert_eq!(bar_edges(2560.0, 2312.0), (118.0, 130.0));
+        assert_eq!(bar_edges(1280.0, 1236.0), (BAR_PADDING, 24.0));
+        assert_eq!(bar_edges(960.0, 916.0), (BAR_PADDING, 24.0));
     }
 
     #[test]

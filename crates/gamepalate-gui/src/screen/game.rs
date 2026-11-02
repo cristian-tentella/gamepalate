@@ -2,7 +2,7 @@ use std::process::Command;
 
 use gamepalate_app::{Currency, Price, Reviews, VoteKind};
 use iced::{
-    Center, Element, Fill,
+    Center, Element, Fill, Length,
     widget::{button, column, container, row, text},
 };
 
@@ -16,6 +16,8 @@ pub const VOTES: [(&str, VoteKind); 4] = [
 ];
 pub const VOTE_HEIGHT: f32 = 36.0;
 const VOTE_WIDTH: f32 = 172.0;
+const VOTE_SPACING: f32 = 8.0;
+const LINKS_WIDTH: f32 = 240.0;
 const STATS_SPACING: f32 = 32.0;
 const COMPACT_VOTE_SIZE: f32 = 14.0;
 const CHECK: char = '\u{E73E}';
@@ -120,6 +122,7 @@ pub fn vote_button<'a, Message: Clone + 'a>(
     key: &'a str,
     kind: VoteKind,
     compact: bool,
+    width: Length,
     on_press: Option<Message>,
     flashed: bool,
 ) -> Element<'a, Message> {
@@ -152,9 +155,18 @@ pub fn vote_button<'a, Message: Clone + 'a>(
         .style(style::vote(flashed))
         .on_press_maybe(on_press),
     )
-    .width(Fill)
-    .max_width(VOTE_WIDTH)
+    .width(width)
     .into()
+}
+
+pub fn vote_width(row_width: f32, beside: f32) -> Length {
+    let needed = 4.0 * (VOTE_WIDTH + VOTE_SPACING) + LINKS_WIDTH + beside;
+
+    if row_width >= needed {
+        Length::Fixed(VOTE_WIDTH)
+    } else {
+        Length::Fill
+    }
 }
 
 pub fn link_button<'a, Message: Clone + 'a>(
@@ -183,6 +195,14 @@ pub fn links<'a, Message: Clone + 'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_vote_buttons_stop_growing_once_there_is_room() {
+        assert_eq!(vote_width(960.0, 0.0), Length::Fixed(VOTE_WIDTH));
+        assert_eq!(vote_width(900.0, 0.0), Length::Fill);
+        assert_eq!(vote_width(1200.0, 240.0), Length::Fixed(VOTE_WIDTH));
+        assert_eq!(vote_width(1100.0, 240.0), Length::Fill);
+    }
 
     #[test]
     fn the_keys_from_one_to_four_are_the_votes() {
