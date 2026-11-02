@@ -5,7 +5,10 @@ use gamepalate_store::config::{
     ConfigError, ConfigValue, remove_config_value, save_config_value, save_region,
 };
 
-use crate::account::{CredentialManager, KEY_ENV_VAR, KeyStore};
+use crate::{
+    account::{CredentialManager, KEY_ENV_VAR, KeyStore},
+    log::failed,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeySource {
@@ -104,14 +107,17 @@ pub fn change_config(
     value: ConfigValue,
 ) -> Result<(), ConfigError> {
     save_config_value(&data_dir.join("config.toml"), &key.keys(), value)
+        .inspect_err(failed("could not save config.toml"))
 }
 
 pub fn reset_config(data_dir: &Path, key: ConfigKey) -> Result<(), ConfigError> {
     remove_config_value(&data_dir.join("config.toml"), &key.keys())
+        .inspect_err(failed("could not save config.toml"))
 }
 
 pub fn change_region(data_dir: &Path, region: Region) -> Result<(), ConfigError> {
     save_region(&data_dir.join("config.toml"), region)
+        .inspect_err(failed("could not save config.toml"))
 }
 
 pub(crate) fn key_source() -> KeySource {

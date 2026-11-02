@@ -27,7 +27,7 @@ use gamepalate_store::{
     config::{ConfigError, load_config},
 };
 
-use crate::account::steam_api_key;
+use crate::{account::steam_api_key, log::failed};
 
 const CONCURRENCY: usize = 4;
 const HOUR_MS: i64 = 3_600_000;
@@ -127,6 +127,24 @@ pub fn wall_clock() -> Timestamp {
 }
 
 pub async fn update_catalog<S: Get + Sync>(
+    data_dir: &Path,
+    steam: &S,
+    config: &Config,
+    progress: impl FnMut(Progress),
+) -> Result<Updated, UpdateError> {
+    tracing::info!("update started");
+    let updated = update_with(data_dir, steam, config, progress)
+        .await
+        .inspect_err(failed("update stopped"))?;
+    if let Some(error) = &updated.rotate_error {
+        failed("could not remove the old updates")(error);
+    }
+    tracing::info!("update done, {} games", updated.games);
+
+    Ok(updated)
+}
+
+async fn update_with<S: Get + Sync>(
     data_dir: &Path,
     steam: &S,
     config: &Config,

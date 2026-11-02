@@ -50,6 +50,7 @@ use crate::{
         GameCorrection, GameCorrectionError, LibraryView, corrected_game, game_correction,
         library_view,
     },
+    log::failed,
     profile::{ProfileView, profile_view},
     settings::{self, Settings},
     steam_client::steam_client_file_of,
@@ -88,7 +89,7 @@ impl Gamepalate {
         let dir = data_dir
             .or_else(data_dir::resolve)
             .ok_or(OpenError::DataDirNotFound)?;
-        let files = load_data_files(&dir)?;
+        let files = load_data_files(&dir).inspect_err(failed("could not read the data files"))?;
         let vectors = game_vectors(&files.catalog);
         let images = ImageCache::new(cache_dir(), ImageDownloader::new()?);
 
@@ -125,6 +126,7 @@ impl Gamepalate {
             )
         })
         .map_err(RecommendError)
+        .inspect_err(failed("could not recommend"))
     }
 
     pub fn recommend_after(
@@ -158,7 +160,8 @@ impl Gamepalate {
             date,
             bet,
             name,
-        )?;
+        )
+        .inspect_err(failed("could not save the vote"))?;
         Ok(())
     }
 
@@ -218,7 +221,10 @@ impl Gamepalate {
     }
 
     pub async fn details(&self, id: AppId) -> Result<Option<GameDetails>, SteamError> {
-        self.store.details(id).await
+        self.store
+            .details(id)
+            .await
+            .inspect_err(failed("could not read the store details"))
     }
 
     pub fn gui_settings(&self) -> GuiSettings {
@@ -234,6 +240,7 @@ impl Gamepalate {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         change_settings(&self.data_dir.join(GUI_FILE), change)
+            .inspect_err(failed("could not save gui.toml"))
     }
 
     pub fn profile_view(&self) -> ProfileView {
@@ -263,7 +270,8 @@ impl Gamepalate {
                 families: &families,
                 ..self.files.search_inputs(&self.vectors)
             },
-        )?;
+        )
+        .inspect_err(failed("could not save the correction"))?;
         Ok(before)
     }
 
@@ -280,7 +288,8 @@ impl Gamepalate {
                 let name = game_name(id, &self.files.catalog, &self.files.off_catalog);
                 (name != format!("#{}", id.0)).then_some(name)
             },
-        )?;
+        )
+        .inspect_err(failed("could not save the families"))?;
         *families = changed.families;
 
         let mut discover_family = None;
@@ -310,7 +319,8 @@ impl Gamepalate {
     pub fn undo_families(&self, undo: &FamiliesUndo) -> Result<(), FamilyChangeError> {
         let mut families = self.lock_families();
         *families = restore_families(&self.data_dir.join(FAMILIES_FILE), &undo.snapshot)
-            .map_err(FamilyChangeError::Save)?;
+            .map_err(FamilyChangeError::Save)
+            .inspect_err(failed("could not undo the families"))?;
         if let Some(family) = &undo.discover_family {
             let _ = self.change_gui_settings(|settings| settings.search.family = family.clone());
         }
