@@ -311,7 +311,7 @@ impl Panel {
 
         column![price, reviews, tags, choices, actions]
             .spacing(14)
-            .max_width(PANEL_WIDTH)
+            .width(PANEL_WIDTH)
             .into()
     }
 
