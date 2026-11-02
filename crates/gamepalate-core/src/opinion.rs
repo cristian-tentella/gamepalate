@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use rayon::prelude::*;
 
 use crate::{
     catalog::Catalog,
     game::Game,
-    ids::TagId,
+    ids::{AppId, TagId},
     votes::{VoteKind, Votes},
 };
 
@@ -14,6 +14,7 @@ pub const MIN_LABELS: usize = 10;
 const STEPS: usize = 400;
 const LEARNING_RATE: f64 = 0.5;
 const L2: f64 = 0.1;
+const FOLDS: usize = 10;
 
 #[derive(Debug, Clone)]
 struct TrainingRow<'a> {
@@ -187,15 +188,64 @@ pub fn labels(votes: &Votes, catalog: &Catalog) -> Labels {
 }
 
 pub fn opinion_model(votes: &Votes, catalog: &Catalog) -> Option<OpinionModel> {
-    let training_rows = training_rows(votes, catalog);
+    model(&training_rows(votes, catalog))
+}
 
+pub fn held_out_opinions(votes: &Votes, catalog: &Catalog) -> HashMap<AppId, f64> {
+    let training_rows = training_rows(votes, catalog);
+    let Some(full_model) = model(&training_rows) else {
+        return HashMap::new();
+    };
+
+    let mut opinions: HashMap<AppId, f64> = votes
+        .keys()
+        .filter_map(|&id| catalog.game(id))
+        .map(|game| (game.id, full_model.opinion(game)))
+        .collect();
+
+    let folds: Vec<Vec<(AppId, Option<f64>)>> = (0..FOLDS)
+        .into_par_iter()
+        .map(|fold| {
+            let kept: Vec<TrainingRow> = training_rows
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| i % FOLDS != fold)
+                .map(|(_, row)| row.clone())
+                .collect();
+            let fold_model = model(&kept);
+
+            training_rows
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| i % FOLDS == fold)
+                .map(|(_, row)| {
+                    (
+                        row.game.id,
+                        fold_model.as_ref().map(|model| model.opinion(row.game)),
+                    )
+                })
+                .collect()
+        })
+        .collect();
+
+    for (id, opinion) in folds.into_iter().flatten() {
+        match opinion {
+            Some(opinion) => opinions.insert(id, opinion),
+            None => opinions.remove(&id),
+        };
+    }
+
+    opinions
+}
+
+fn model(training_rows: &[TrainingRow]) -> Option<OpinionModel> {
     let positive_labels = training_rows.iter().filter(|row| row.label == 1.0).count();
     let negative_labels = training_rows.len() - positive_labels;
     if positive_labels < MIN_LABELS || negative_labels < MIN_LABELS {
         return None;
     }
 
-    let tags = used_tags(&training_rows);
+    let tags = used_tags(training_rows);
     let features = training_rows
         .iter()
         .map(|row| features(row.game, &tags))
@@ -235,7 +285,7 @@ mod tests {
     use crate::{
         catalog::Freshness,
         currency::Currency,
-        game::{Price, Reviews},
+        game::{GameTag, Price, Reviews},
         ids::AppId,
         region::Region,
         timestamp::Timestamp,
@@ -312,5 +362,94 @@ mod tests {
         assert!(enough(10, 10));
         assert!(!enough(10, 9));
         assert!(!enough(9, 30));
+    }
+
+    fn tagged_catalog(count: u32) -> Catalog {
+        let games = (1..=count)
+            .map(|id| Game {
+                tags: vec![GameTag {
+                    id: TagId(id % 3),
+                    weight: 1.0,
+                }],
+                reviews: Reviews {
+                    total: 100 * id,
+                    positive: 90 * id - id % 7,
+                },
+                ..game(id)
+            })
+            .collect();
+
+        Catalog::new(
+            games,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            Freshness {
+                prices_updated_at: Timestamp(0),
+                tags_updated_at: Timestamp(0),
+                region: Region::ITALY,
+            },
+            Currency::italian(),
+        )
+    }
+
+    fn alternate_votes(count: u32) -> Votes {
+        (1..=count)
+            .map(|id| {
+                let kind = if id % 2 == 0 || id % 3 == 0 {
+                    VoteKind::WouldTry
+                } else {
+                    VoteKind::NotForMe
+                };
+                (AppId(id), vote(kind))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_held_out_opinion_does_not_depend_on_the_vote_of_its_game() {
+        let catalog = tagged_catalog(40);
+        let votes = alternate_votes(40);
+        let mut changed = votes.clone();
+        changed.insert(AppId(12), vote(VoteKind::NotForMe));
+
+        let before = held_out_opinions(&votes, &catalog);
+        let after = held_out_opinions(&changed, &catalog);
+
+        assert_eq!(before.len(), 40);
+        assert_eq!(before[&AppId(12)], after[&AppId(12)]);
+        assert_ne!(before[&AppId(13)], after[&AppId(13)]);
+    }
+
+    #[test]
+    fn the_held_out_opinions_are_the_same_at_every_call() {
+        let catalog = tagged_catalog(40);
+        let votes = alternate_votes(40);
+
+        assert_eq!(
+            held_out_opinions(&votes, &catalog),
+            held_out_opinions(&votes, &catalog)
+        );
+    }
+
+    #[test]
+    fn a_vote_that_is_not_a_label_takes_the_opinion_of_the_whole_model() {
+        let catalog = tagged_catalog(41);
+        let mut votes = alternate_votes(40);
+        votes.insert(AppId(41), vote(VoteKind::Maybe));
+
+        let opinions = held_out_opinions(&votes, &catalog);
+        let model = opinion_model(&votes, &catalog).unwrap();
+
+        assert_eq!(
+            opinions[&AppId(41)],
+            model.opinion(catalog.game(AppId(41)).unwrap())
+        );
+    }
+
+    #[test]
+    fn without_enough_labels_there_are_no_held_out_opinions() {
+        let catalog = tagged_catalog(10);
+
+        assert!(held_out_opinions(&alternate_votes(10), &catalog).is_empty());
     }
 }

@@ -166,7 +166,14 @@ pub fn scale(values: &[f64]) -> f64 {
     values.len() as f64 / sum
 }
 
-pub fn affinities(game_vectors: &[GameVector], taste: &Taste) -> Option<Vec<GameAffinity>> {
+#[derive(Debug, Clone)]
+pub struct Halves {
+    pub profile: Vec<f64>,
+    pub references: Vec<f64>,
+    pub matches: Vec<Vec<ReferenceMatch>>,
+}
+
+pub fn halves(game_vectors: &[GameVector], taste: &Taste) -> Option<Halves> {
     let profile = taste.profile();
     let profile_norm = norm(&profile);
     if profile_norm == 0.0 {
@@ -190,21 +197,35 @@ pub fn affinities(game_vectors: &[GameVector], taste: &Taste) -> Option<Vec<Game
         )
         .collect();
 
-    let profile_halves: Vec<f64> = halves.iter().map(|half| half.0).collect();
-    let references_halves: Vec<f64> = halves.iter().map(|half| half.1).collect();
-    let affinity_values = affinity_values(&profile_halves, &references_halves);
+    let mut profile_halves = Vec::with_capacity(halves.len());
+    let mut references_halves = Vec::with_capacity(halves.len());
+    let mut matches = Vec::with_capacity(halves.len());
+    for (profile_half, references_half, reference_matches) in halves {
+        profile_halves.push(profile_half);
+        references_halves.push(references_half);
+        matches.push(reference_matches);
+    }
+
+    Some(Halves {
+        profile: profile_halves,
+        references: references_halves,
+        matches,
+    })
+}
+
+pub fn affinities(game_vectors: &[GameVector], taste: &Taste) -> Option<Vec<GameAffinity>> {
+    let halves = halves(game_vectors, taste)?;
+    let affinity_values = affinity_values(&halves.profile, &halves.references);
 
     let affinities = game_vectors
         .iter()
-        .zip(halves)
+        .zip(halves.matches)
         .zip(affinity_values)
-        .map(
-            |((game_vector, (_, _, references)), affinity)| GameAffinity {
-                id: game_vector.id,
-                affinity,
-                references,
-            },
-        )
+        .map(|((game_vector, references), affinity)| GameAffinity {
+            id: game_vector.id,
+            affinity,
+            references,
+        })
         .collect();
 
     Some(affinities)

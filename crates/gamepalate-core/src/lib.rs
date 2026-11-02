@@ -1,4 +1,5 @@
 pub mod affinity;
+pub mod best_match;
 pub mod catalog;
 pub mod config;
 pub mod corrections;

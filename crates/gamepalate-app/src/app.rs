@@ -1,11 +1,13 @@
 use std::{
     cmp::Reverse,
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
     time::Duration,
 };
 
 use gamepalate_core::{
+    best_match::best_matches,
     catalog::Catalog,
     corrections::Corrections,
     currency::Currency,
@@ -167,6 +169,10 @@ impl Gamepalate {
             &self.files.off_catalog,
             Timestamp(jiff::Timestamp::now().as_millisecond()),
         )
+    }
+
+    pub fn best_matches(&self) -> HashMap<AppId, f64> {
+        self.with_inputs(best_matches)
     }
 
     fn lock_votes(&self) -> MutexGuard<'_, Votes> {
