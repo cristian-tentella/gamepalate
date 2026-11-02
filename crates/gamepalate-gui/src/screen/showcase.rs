@@ -7,7 +7,7 @@ use gamepalate_app::{AppId, GameDetails, Gamepalate, ImageKind};
 use iced::{
     Center, ContentFit, Element, Fill, Task, mouse, padding,
     widget::{
-        button, column, container, image, keyed_column, mouse_area, opaque, row, space, text,
+        button, column, container, image, keyed_column, mouse_area, opaque, row, space, stack, text,
     },
 };
 
@@ -382,17 +382,20 @@ impl Showcase {
         };
         let close = button(text(CLOSE).font(font::ICONS).size(12))
             .padding([8, 12])
-            .style(style::window_button)
+            .style(style::secondary)
             .on_press(Message::CloseZoom);
 
         Some(opaque(
             container(
-                column![row![space().width(Fill), close], screenshot]
-                    .push(
-                        self.dots(self.screenshot_count())
-                            .map(|dots| container(dots).center_x(Fill)),
-                    )
-                    .spacing(8),
+                column![stack![
+                    screenshot,
+                    container(close).align_right(Fill).padding(8)
+                ]]
+                .push(
+                    self.dots(self.screenshot_count())
+                        .map(|dots| container(dots).center_x(Fill)),
+                )
+                .spacing(8),
             )
             .padding(16)
             .width(Fill)
