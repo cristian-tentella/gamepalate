@@ -6,7 +6,7 @@ use gamepalate_store::{
     signals::{SignalsError, load_reading, save_reading},
 };
 
-use crate::signals::not_owned;
+use crate::{log::failed, signals::not_owned};
 
 const CONFIG_FILE: &str = "config.toml";
 const SIGNALS_FILE: &str = "signals.json";
@@ -38,6 +38,7 @@ pub fn steam_client_file_of(data_dir: &Path) -> Option<PathBuf> {
 pub fn answer_steam_client(data_dir: &Path, read: bool) -> Result<(), SteamClientAnswerError> {
     let file = read.then(|| steam_client_file_of(data_dir)).flatten();
     answer_with(data_dir, read, file.as_deref())
+        .inspect_err(failed("could not save the Steam app answer"))
 }
 
 fn answer_with(

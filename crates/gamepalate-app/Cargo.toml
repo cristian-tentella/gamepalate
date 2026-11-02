@@ -17,6 +17,8 @@ keyring-core = "1.0.1"
 windows-native-keyring-store = "1.1.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 tokio = { version = "1", features = ["sync"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
+tracing = "0.1.44"
 
 [dev-dependencies]
 http = "1.5.0"

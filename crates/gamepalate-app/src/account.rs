@@ -11,6 +11,7 @@ use gamepalate_store::{
 };
 
 use crate::{
+    log::failed,
     signals::{ReadSignalsError, SteamClientHours, read_signals, save_signals, steam_client_hours},
     update::wall_clock,
 };
@@ -172,6 +173,7 @@ pub async fn connect(
         wall_clock(),
     )
     .await
+    .inspect_err(failed("could not connect to Steam"))
 }
 
 fn api_key(env: Option<String>, store: &dyn KeyStore) -> Option<String> {

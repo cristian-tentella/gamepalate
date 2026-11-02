@@ -6,6 +6,7 @@ use gamepalate_steam::transport::{Get, Transport};
 use crate::{
     account::steam_api_key,
     app::{Gamepalate, OpenError},
+    log::failed,
     ready::{ReadyError, check_ready_with},
     update::{Progress, UpdateError, Updated, update_catalog, update_config, wall_clock},
 };
@@ -63,7 +64,10 @@ async fn refresh_with<S: Get + Sync>(
     })
     .await?;
     progress(Step::Signals);
-    let signals_error = check_ready_with(data_dir, steam, true, now).await.err();
+    let signals_error = check_ready_with(data_dir, steam, true, now)
+        .await
+        .inspect_err(failed("could not read the Signals"))
+        .err();
 
     Ok((updated, signals_error))
 }

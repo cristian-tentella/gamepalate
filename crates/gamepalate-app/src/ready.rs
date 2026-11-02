@@ -10,6 +10,7 @@ use gamepalate_store::{
 
 use crate::{
     account::steam_api_key,
+    log::failed,
     signals::{
         OffCatalogError, OffCatalogInputs, ReadSignalsError, off_catalog, read_signals,
         save_signals, steam_client_hours,
@@ -51,7 +52,9 @@ pub async fn check_ready(
     read_signals_again: bool,
 ) -> Result<ReadyCheck, ReadyError> {
     let transport = Transport::new(steam_api_key())?;
-    check_ready_with(data_dir, &transport, read_signals_again, wall_clock()).await
+    check_ready_with(data_dir, &transport, read_signals_again, wall_clock())
+        .await
+        .inspect_err(failed("could not get the data ready"))
 }
 
 pub(crate) async fn check_ready_with<S: Get>(
