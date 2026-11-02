@@ -36,9 +36,16 @@ pub struct ProfileView {
 pub struct TasteView {
     pub game_count: usize,
     pub recent_games: usize,
-    pub sources: Vec<(HoursSource, f64)>,
+    pub sources: Vec<SourceView>,
     pub shaping_games: Vec<HoursGame>,
     pub tags: Vec<TagView>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SourceView {
+    pub source: HoursSource,
+    pub share: f64,
+    pub games: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -128,7 +135,19 @@ pub(crate) fn profile_view(inputs: &SearchInputs) -> ProfileView {
         TasteView {
             game_count: profile.games.len(),
             recent_games: profile.recent_games,
-            sources: profile.source_shares(),
+            sources: profile
+                .source_shares()
+                .into_iter()
+                .map(|(source, share)| SourceView {
+                    source,
+                    share,
+                    games: profile
+                        .games
+                        .iter()
+                        .filter(|game| game.source == source)
+                        .count(),
+                })
+                .collect(),
             shaping_games: profile
                 .games
                 .iter()
@@ -429,8 +448,25 @@ mod tests {
             .find(|game| game.name == "Portal 2")
             .unwrap();
         assert_eq!((portal.hours, portal.source), (5.0, HoursSource::Wishlist));
+    }
+
+    #[test]
+    fn every_source_counts_its_games() {
+        let taste = view().taste.unwrap();
+        let games = |source| {
+            taste
+                .sources
+                .iter()
+                .find(|view| view.source == source)
+                .unwrap()
+                .games
+        };
+
         assert_eq!(taste.sources.len(), 4);
-        assert_eq!(taste.sources[0].0, HoursSource::Played);
+        assert_eq!(games(HoursSource::Played), 2);
+        assert_eq!(games(HoursSource::Wishlist), 1);
+        assert_eq!(games(HoursSource::WouldTry), 1);
+        assert_eq!(games(HoursSource::Followed), 0);
     }
 
     #[test]

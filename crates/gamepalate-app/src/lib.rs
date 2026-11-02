@@ -42,6 +42,6 @@ pub use gamepalate_store::gui::{GuiSettings, SavedWindow, ThemeChoice};
 pub use images::{ImageKind, LoadImageError};
 pub use library::{GameCorrection, GameCorrectionError, LibraryGameView, LibraryView};
 pub use profile::{
-    CorrectedGameView, CorrectionsView, FamilyView, HoursGame, ProfileView, TagView, TasteView,
-    VotesView,
+    CorrectedGameView, CorrectionsView, FamilyView, HoursGame, ProfileView, SourceView, TagView,
+    TasteView, VotesView,
 };

@@ -192,7 +192,14 @@ impl App {
                 self.screen = Screen::Library(Box::new(library));
                 task.map(Message::Library)
             }
-            Message::Profile(profile::Message::OpenLibrary) => self.open(Page::Library),
+            Message::Profile(profile::Message::OpenLibrary(filter, sort)) => {
+                let Some(gamepalate) = &self.gamepalate else {
+                    return Task::none();
+                };
+                let (library, task) = Library::filtered(gamepalate, filter, sort);
+                self.screen = Screen::Library(Box::new(library));
+                task.map(Message::Library)
+            }
             Message::Profile(profile::Message::OpenVotes(filter)) => {
                 let Some(gamepalate) = &self.gamepalate else {
                     return Task::none();

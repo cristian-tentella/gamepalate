@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::PathBuf, process::Command, sync::Arc};
 use gamepalate_app::{
     AppId, Ban, CorrectedGameView, CorrectionsView, FamiliesChanged, FamiliesUndo, FamilyChange,
     FamilyGame, FamilyView, Gamepalate, HoursGame, HoursSource, ProfileView, SignalsConfig,
-    TagView, TasteView, Timestamp, VoteKind, VotedGame, VotesView,
+    SourceView, TagView, TasteView, Timestamp, VoteKind, VotedGame, VotesView,
 };
 use iced::{
     Center, Color, Element, Fill, Length, Subscription, Task, Theme,
@@ -16,18 +16,12 @@ use iced::{
 };
 
 use super::{
-    Toasts, sentence,
+    Toasts, library, sentence,
     showcase::{self, Showcase},
     votes::{Filter, bets_summary, by_id},
 };
 use crate::{font, format, style};
 
-const SOURCES: [HoursSource; 4] = [
-    HoursSource::Played,
-    HoursSource::Wishlist,
-    HoursSource::Followed,
-    HoursSource::WouldTry,
-];
 const FIRST_TAGS: usize = 12;
 const STACK_WIDTH: f32 = 1100.0;
 const VOTE_KINDS: [VoteKind; 4] = [
@@ -62,6 +56,8 @@ const PORTIONS: u16 = 1000;
 const WARNING: char = '\u{E7BA}';
 const CLOSED: char = '\u{E76C}';
 const OPENED: char = '\u{E70D}';
+const SOURCE_BAR_WIDTH: f32 = 220.0;
+const PERCENT_WIDTH: f32 = 40.0;
 
 pub struct Profile {
     gamepalate: Arc<Gamepalate>,
@@ -94,7 +90,7 @@ pub enum Message {
     DiscoverFamily(String),
     OpenVotes(Filter),
     OpenInLibrary(AppId),
-    OpenLibrary,
+    OpenLibrary(library::Filter, library::Sort),
     ToggleCorrection(Correction),
     OpenFamilies,
     OpenDataFolder,
@@ -171,7 +167,7 @@ impl Profile {
             Message::DiscoverFamily(_)
             | Message::OpenVotes(_)
             | Message::OpenInLibrary(_)
-            | Message::OpenLibrary => {}
+            | Message::OpenLibrary(..) => {}
             Message::ToggleCorrection(correction) => {
                 self.open_correction =
                     (self.open_correction != Some(correction)).then_some(correction);
@@ -549,7 +545,10 @@ impl Profile {
                 button(text("Open Library ›").size(font::BAR_SIZE))
                     .padding(0)
                     .style(style::link)
-                    .on_press(Message::OpenLibrary),
+                    .on_press(Message::OpenLibrary(
+                        library::Filter::All,
+                        library::Sort::TasteWeight,
+                    )),
                 button(text("Open families.toml").size(font::NOTE_SIZE))
                     .padding(0)
                     .style(style::link)
@@ -965,53 +964,40 @@ fn section_title(title: &str) -> Element<'_, Message> {
 }
 
 fn sources<'a>(taste: &TasteView, hours: &SignalsConfig) -> Element<'a, Message> {
-    let shares: Vec<(HoursSource, f64)> = SOURCES
-        .into_iter()
-        .filter_map(|source| {
-            let share = taste
-                .sources
-                .iter()
-                .find(|&&(kind, _)| kind == source)
-                .map_or(0.0, |&(_, share)| share);
-            (share > 0.0).then_some((source, share))
-        })
-        .collect();
-
-    let bar = row(shares.iter().map(|&(source, share)| {
-        container(space())
-            .width(Length::FillPortion(portion(share)))
-            .height(BAR_HEIGHT)
-            .style(move |theme: &Theme| filled(source_color(theme, source)))
-            .into()
-    }))
-    .spacing(2)
-    .width(Fill);
-
-    let legend = row(shares.iter().map(|&(source, share)| {
-        let label = row![
-            container(space())
-                .width(10)
-                .height(10)
-                .style(move |theme: &Theme| filled(source_color(theme, source))),
-            text!("{} {}", source_label(source), percent(share)).size(font::NOTE_SIZE),
+    column(shown_sources(&taste.sources).into_iter().map(|source| {
+        let line = row![
+            text(source_label(source.source))
+                .size(font::BAR_SIZE)
+                .width(TAG_NAME_WIDTH),
+            progress_bar(0.0..=1.0, source.share as f32)
+                .girth(BAR_HEIGHT)
+                .length(SOURCE_BAR_WIDTH)
+                .style(style::meter),
+            container(text(percent(source.share)).size(font::BAR_SIZE)).align_right(PERCENT_WIDTH),
+            text(source_text(&source, hours))
+                .size(font::NOTE_SIZE)
+                .style(style::muted)
+                .width(Fill),
+            text(CLOSED).font(font::ICONS).size(10),
         ]
-        .spacing(6)
+        .spacing(10)
         .align_y(Center);
 
         tooltip(
-            label,
-            container(text(source_tooltip(source, hours)).size(font::NOTE_SIZE))
+            button(line)
+                .width(Fill)
+                .padding([6, 8])
+                .style(style::list_row(false))
+                .on_press(source_message(source.source)),
+            container(text(source_tooltip(source.source, hours)).size(font::NOTE_SIZE))
                 .padding([6, 10])
                 .style(style::popup),
             tooltip::Position::Bottom,
         )
         .into()
     }))
-    .spacing(16)
-    .wrap()
-    .vertical_spacing(6);
-
-    column![bar, legend].spacing(8).into()
+    .spacing(2)
+    .into()
 }
 
 fn tag_row(
@@ -1118,16 +1104,6 @@ fn filled(color: Color) -> container::Style {
     }
 }
 
-fn source_color(theme: &Theme, source: HoursSource) -> Color {
-    let palette = theme.extended_palette();
-    match source {
-        HoursSource::Played => palette.primary.base.color,
-        HoursSource::Wishlist => palette.success.base.color,
-        HoursSource::Followed => palette.warning.base.color,
-        HoursSource::WouldTry => palette.secondary.strong.color,
-    }
-}
-
 fn warning_text(theme: &Theme) -> text::Style {
     text::Style {
         color: Some(theme.extended_palette().warning.strong.color),
@@ -1186,24 +1162,74 @@ fn source_label(source: HoursSource) -> &'static str {
     }
 }
 
+fn shown_sources(sources: &[SourceView]) -> Vec<SourceView> {
+    let mut shown: Vec<SourceView> = sources
+        .iter()
+        .filter(|source| source.share > 0.0)
+        .copied()
+        .collect();
+    shown.sort_by(|a, b| b.share.total_cmp(&a.share));
+    shown
+}
+
+fn source_text(source: &SourceView, hours: &SignalsConfig) -> String {
+    let each = |hours: f64| format!("{} each", hours_text(hours));
+    match source.source {
+        HoursSource::Played => format!("{}, by hours played", games_count(source.games)),
+        HoursSource::Wishlist => {
+            format!(
+                "{}, {}",
+                games_count(source.games),
+                each(hours.wishlist_hours)
+            )
+        }
+        HoursSource::Followed => {
+            format!(
+                "{}, {}",
+                games_count(source.games),
+                each(hours.followed_hours)
+            )
+        }
+        HoursSource::WouldTry => {
+            format!(
+                "{}, {}",
+                votes_count(source.games),
+                each(hours.would_try_hours)
+            )
+        }
+    }
+}
+
 fn source_tooltip(source: HoursSource, hours: &SignalsConfig) -> String {
     match source {
         HoursSource::Played => format!(
-            "Games you played for at least {}, by the hours you played",
+            "Games with at least {} of play, set by signals.min_hours in config.toml",
             hours_text(hours.min_hours)
         ),
-        HoursSource::Wishlist => format!(
-            "A game in your wishlist counts as {} of play",
-            hours_text(hours.wishlist_hours)
-        ),
-        HoursSource::Followed => format!(
-            "A game you follow counts as {} of play",
-            hours_text(hours.followed_hours)
-        ),
-        HoursSource::WouldTry => format!(
-            "A game you voted Would try counts as {} of play",
-            hours_text(hours.would_try_hours)
-        ),
+        HoursSource::Wishlist => "Set by signals.wishlist_hours in config.toml".to_string(),
+        HoursSource::Followed => "Set by signals.followed_hours in config.toml".to_string(),
+        HoursSource::WouldTry => "Set by signals.would_try_hours in config.toml".to_string(),
+    }
+}
+
+fn source_message(source: HoursSource) -> Message {
+    match source {
+        HoursSource::Played => Message::OpenLibrary(library::Filter::All, library::Sort::Hours),
+        HoursSource::Wishlist => {
+            Message::OpenLibrary(library::Filter::Wishlist, library::Sort::TasteWeight)
+        }
+        HoursSource::Followed => {
+            Message::OpenLibrary(library::Filter::Followed, library::Sort::TasteWeight)
+        }
+        HoursSource::WouldTry => Message::OpenVotes(Filter::Kind(VoteKind::WouldTry)),
+    }
+}
+
+fn votes_count(votes: usize) -> String {
+    if votes == 1 {
+        "1 vote".to_string()
+    } else {
+        format!("{votes} votes")
     }
 }
 
@@ -1393,18 +1419,65 @@ mod tests {
         );
     }
 
+    fn source(source: HoursSource, share: f64, games: usize) -> SourceView {
+        SourceView {
+            source,
+            share,
+            games,
+        }
+    }
+
     #[test]
-    fn the_sources_tell_how_many_hours_a_signal_is_worth() {
+    fn the_sources_go_from_the_biggest_and_leave_out_the_empty_ones() {
+        let shown = shown_sources(&[
+            source(HoursSource::Played, 0.3, 161),
+            source(HoursSource::Followed, 0.0, 0),
+            source(HoursSource::Wishlist, 0.18, 135),
+            source(HoursSource::WouldTry, 0.46, 407),
+        ]);
+
+        assert_eq!(
+            shown.iter().map(|view| view.source).collect::<Vec<_>>(),
+            [
+                HoursSource::WouldTry,
+                HoursSource::Played,
+                HoursSource::Wishlist
+            ]
+        );
+    }
+
+    #[test]
+    fn the_sources_tell_how_many_games_and_how_many_hours_each() {
         let hours = SignalsConfig::default();
 
         assert_eq!(
-            source_tooltip(HoursSource::Wishlist, &hours),
-            "A game in your wishlist counts as 5 hours of play"
+            source_text(&source(HoursSource::Played, 0.3, 161), &hours),
+            "161 games, by hours played"
         );
         assert_eq!(
-            source_tooltip(HoursSource::Played, &hours),
-            "Games you played for at least 2 hours, by the hours you played"
+            source_text(&source(HoursSource::WouldTry, 0.46, 407), &hours),
+            "407 votes, 5 hours each"
         );
+        assert_eq!(
+            source_text(&source(HoursSource::Followed, 0.06, 1), &hours),
+            "1 game, 3 hours each"
+        );
+    }
+
+    #[test]
+    fn a_source_opens_where_its_games_are() {
+        assert!(matches!(
+            source_message(HoursSource::Played),
+            Message::OpenLibrary(library::Filter::All, library::Sort::Hours)
+        ));
+        assert!(matches!(
+            source_message(HoursSource::Wishlist),
+            Message::OpenLibrary(library::Filter::Wishlist, library::Sort::TasteWeight)
+        ));
+        assert!(matches!(
+            source_message(HoursSource::WouldTry),
+            Message::OpenVotes(Filter::Kind(VoteKind::WouldTry))
+        ));
     }
 
     #[test]

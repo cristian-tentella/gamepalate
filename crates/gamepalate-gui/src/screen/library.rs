@@ -154,6 +154,14 @@ enum Row {
 
 impl Library {
     pub fn new(gamepalate: &Arc<Gamepalate>) -> (Library, Task<Message>) {
+        Library::filtered(gamepalate, Filter::All, Sort::TasteWeight)
+    }
+
+    pub fn filtered(
+        gamepalate: &Arc<Gamepalate>,
+        filter: Filter,
+        sort: Sort,
+    ) -> (Library, Task<Message>) {
         let mut library = Library {
             gamepalate: Arc::clone(gamepalate),
             data_dir: gamepalate.data_dir().to_path_buf(),
@@ -165,8 +173,8 @@ impl Library {
             undo: None,
             new_family: None,
             toasts: Toasts::default(),
-            filter: Filter::All,
-            sort: Sort::TasteWeight,
+            filter,
+            sort,
             search: String::new(),
             shown: Vec::new(),
             offset: 0.0,
