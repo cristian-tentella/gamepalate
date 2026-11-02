@@ -1,15 +1,15 @@
 use std::{process::Command, sync::Arc};
 
 use gamepalate_app::{
-    Gamepalate, Region, SteamId, ThemeChoice, Timestamp,
+    Config, ConfigError, ConfigValue, Gamepalate, Region, SteamId, ThemeChoice, Timestamp,
     account::{Profile, connect, parse_profile},
-    settings::{self, KeySource, change_region},
+    settings::{self, ConfigKey, KeySource, change_config, change_region, reset_config},
     setup::error_chain,
 };
 use iced::{
     Center, Element, Fill, Subscription, Task,
     keyboard::{self, Key, key::Named},
-    widget::{button, column, container, radio, row, scrollable, text, text_input},
+    widget::{Id, button, column, container, operation, radio, row, scrollable, text, text_input},
 };
 
 use crate::{
@@ -28,7 +28,26 @@ use crate::{
 const COLUMN_WIDTH: f32 = 760.0;
 const LABEL_WIDTH: f32 = 120.0;
 const MEGABYTE: u64 = 1024 * 1024;
-const CONFIG_NOTE: &str = "Changes to config.toml apply after the next update or restart";
+const CONFIG_NOTE: &str = "Changes made in the file apply after the next update or restart";
+const CONFIG_FIELD: Id = Id::new("settings-config-field");
+const TASTE: [ConfigKey; 6] = [
+    ConfigKey::WishlistHours,
+    ConfigKey::FollowedHours,
+    ConfigKey::WouldTryHours,
+    ConfigKey::MinHours,
+    ConfigKey::MaxHours,
+    ConfigKey::RecentHoursMultiplier,
+];
+const DISCOVER: [ConfigKey; 7] = [
+    ConfigKey::Count,
+    ConfigKey::EarlyAccess,
+    ConfigKey::MinReviews,
+    ConfigKey::MinPositivePercent,
+    ConfigKey::BetEvery,
+    ConfigKey::QualityWeight,
+    ConfigKey::VotesWeight,
+];
+const CORRECTIONS: [ConfigKey; 2] = [ConfigKey::Boost, ConfigKey::Dampen];
 
 pub struct Settings {
     gamepalate: Arc<Gamepalate>,
@@ -37,7 +56,16 @@ pub struct Settings {
     cache_bytes: Option<u64>,
     editing: Option<Editing>,
     confirming: Option<Region>,
+    tuning: Option<Tuning>,
     question: Option<SteamClientQuestion>,
+    error: Option<String>,
+}
+
+#[derive(Debug)]
+struct Tuning {
+    key: ConfigKey,
+    text: String,
+    saving: bool,
     error: Option<String>,
 }
 
@@ -74,6 +102,12 @@ pub enum Message {
     AskSteamClient,
     SteamClient(bool),
     SteamClientSaved(Result<(), String>),
+    EditConfig(ConfigKey),
+    ConfigInput(String),
+    SaveConfig,
+    ResetConfig,
+    SetConfig(ConfigKey, ConfigValue),
+    ConfigSaved(Result<(), String>),
     Escape,
 }
 
@@ -95,6 +129,7 @@ impl Settings {
             cache_bytes: None,
             editing: None,
             confirming: None,
+            tuning: None,
             question: None,
             error: None,
         };
@@ -108,7 +143,15 @@ impl Settings {
     }
 
     pub fn failed(&mut self, error: String) {
+        self.tuning = None;
         self.error = Some(error);
+    }
+
+    pub fn reopened(&mut self, gamepalate: &Arc<Gamepalate>) {
+        self.gamepalate = Arc::clone(gamepalate);
+        self.settings = gamepalate.settings();
+        self.tuning = None;
+        self.error = None;
     }
 
     pub fn subscription() -> Subscription<Message> {
@@ -119,6 +162,7 @@ impl Settings {
         match message {
             Message::Edit(field) => {
                 self.confirming = None;
+                self.tuning = None;
                 self.editing = Some(Editing {
                     field,
                     text: String::new(),
@@ -220,8 +264,65 @@ impl Settings {
                 }
                 Action::None
             }
+            Message::EditConfig(key) => {
+                self.editing = None;
+                self.confirming = None;
+                self.tuning = Some(Tuning {
+                    key,
+                    text: value_input(key.value(&self.settings.config)),
+                    saving: false,
+                    error: None,
+                });
+                Action::Run(Task::batch([
+                    operation::focus(CONFIG_FIELD),
+                    operation::select_all(CONFIG_FIELD),
+                ]))
+            }
+            Message::ConfigInput(input) => {
+                if let Some(tuning) = &mut self.tuning
+                    && !tuning.saving
+                {
+                    tuning.text = input;
+                    tuning.error = None;
+                }
+                Action::None
+            }
+            Message::SaveConfig => {
+                let change = self.tuning.as_ref().and_then(|tuning| {
+                    config_change(tuning, &self.settings.config).map(|value| (tuning.key, value))
+                });
+                match change {
+                    Some((key, value)) => self.write_config(key, Some(value)),
+                    None => Action::None,
+                }
+            }
+            Message::ResetConfig => match &self.tuning {
+                Some(tuning) if !tuning.saving => self.write_config(tuning.key, None),
+                _ => Action::None,
+            },
+            Message::SetConfig(key, value) => {
+                if self.tuning.is_some() || key.value(&self.settings.config) == value {
+                    return Action::None;
+                }
+                self.write_config(key, Some(value))
+            }
+            Message::ConfigSaved(Ok(())) => Action::Reopen,
+            Message::ConfigSaved(Err(error)) => {
+                match &mut self.tuning {
+                    Some(tuning) => {
+                        tuning.saving = false;
+                        tuning.error = Some(error);
+                    }
+                    None => self.error = Some(error),
+                }
+                Action::None
+            }
             Message::Escape => {
                 if self.question.take().is_some() {
+                    return Action::None;
+                }
+                if self.tuning.is_some() {
+                    self.step_back();
                     return Action::None;
                 }
                 if self.editing.is_none() {
@@ -234,6 +335,12 @@ impl Settings {
     }
 
     fn step_back(&mut self) {
+        if let Some(tuning) = &self.tuning {
+            if !tuning.saving {
+                self.tuning = None;
+            }
+            return;
+        }
         if self.editing.as_ref().is_some_and(|editing| editing.saving) {
             return;
         }
@@ -275,6 +382,26 @@ impl Settings {
         ))
     }
 
+    fn write_config(&mut self, key: ConfigKey, value: Option<ConfigValue>) -> Action {
+        if let Some(tuning) = &mut self.tuning {
+            tuning.saving = true;
+            tuning.error = None;
+        }
+        self.error = None;
+        let dir = self.settings.data_dir.clone();
+
+        Action::Run(Task::perform(
+            async move {
+                match value {
+                    Some(value) => change_config(&dir, key, value),
+                    None => reset_config(&dir, key),
+                }
+                .map_err(|error| config_error_text(&error))
+            },
+            Message::ConfigSaved,
+        ))
+    }
+
     fn save_region(&mut self) -> Action {
         let (Some(editing), Some(region)) = (&mut self.editing, self.confirming) else {
             return Action::None;
@@ -312,6 +439,9 @@ impl Settings {
                 None,
             ),
         );
+        let taste = group("Taste", self.config_lines(&TASTE));
+        let discover = group("Discover", self.config_lines(&DISCOVER));
+        let corrections = group("Corrections", self.config_lines(&CORRECTIONS));
         let data = group(
             "Data",
             column![
@@ -367,6 +497,9 @@ impl Settings {
                     .push(account)
                     .push(country)
                     .push(appearance)
+                    .push(taste)
+                    .push(discover)
+                    .push(corrections)
                     .push(data)
                     .spacing(32)
                     .width(Fill)
@@ -377,6 +510,91 @@ impl Settings {
         )
         .height(Fill)
         .into()
+    }
+
+    fn config_lines(&self, keys: &[ConfigKey]) -> Element<'_, Message> {
+        column(keys.iter().map(|&key| self.config_line(key)))
+            .spacing(12)
+            .into()
+    }
+
+    fn config_line(&self, key: ConfigKey) -> Element<'_, Message> {
+        let current = key.value(&self.settings.config);
+        let note = text(config_note(key))
+            .size(font::NOTE_SIZE)
+            .style(style::muted);
+
+        if let ConfigValue::Flag(shown) = current {
+            let choice = |label, flag| {
+                radio(label, flag, Some(shown), move |flag| {
+                    Message::SetConfig(key, ConfigValue::Flag(flag))
+                })
+                .size(16)
+                .text_size(font::BAR_SIZE)
+            };
+            return setting(
+                config_label(key),
+                column![
+                    row![choice("Shown", true), choice("Hidden", false)].spacing(24),
+                    note,
+                ]
+                .spacing(4)
+                .into(),
+                None,
+            );
+        }
+
+        let Some(tuning) = self.tuning.as_ref().filter(|tuning| tuning.key == key) else {
+            let open = self.editing.is_none() && self.tuning.is_none();
+            return setting(
+                config_label(key),
+                column![value(value_text(key, current)), note]
+                    .spacing(2)
+                    .into(),
+                open.then(|| link("Change", Message::EditConfig(key))),
+            );
+        };
+
+        let input = text_input("", &tuning.text)
+            .id(CONFIG_FIELD)
+            .style(style::field)
+            .on_input_maybe((!tuning.saving).then_some(Message::ConfigInput))
+            .on_submit(Message::SaveConfig)
+            .padding(8)
+            .size(font::BAR_SIZE);
+        let can_save = !tuning.saving && config_change(tuning, &self.settings.config).is_some();
+        let default = key.default_value();
+        let reset = (!tuning.saving && current != default).then(|| {
+            link_owned(
+                format!("Reset to {}", value_text(key, default)),
+                Message::ResetConfig,
+            )
+        });
+        let buttons = row![
+            button(text(if tuning.saving { "Saving…" } else { "Save" }).size(font::BAR_SIZE))
+                .style(style::primary)
+                .padding([8, 20])
+                .on_press_maybe(can_save.then_some(Message::SaveConfig)),
+        ]
+        .push((!tuning.saving).then(|| link("Cancel", Message::Cancel)))
+        .push(reset)
+        .spacing(16)
+        .align_y(Center);
+        let message = match &tuning.error {
+            Some(error) => text(error.clone())
+                .size(font::NOTE_SIZE)
+                .style(text::danger),
+            None => match input_note(key, &tuning.text) {
+                Some(problem) => text(problem).size(font::NOTE_SIZE).style(text::danger),
+                None => note,
+            },
+        };
+
+        setting(
+            config_label(key),
+            column![input, message, buttons].spacing(8).into(),
+            None,
+        )
     }
 
     fn steam_client_line(&self) -> Element<'_, Message> {
@@ -534,6 +752,127 @@ fn region_change(editing: &Editing, saved: Region) -> Option<Region> {
     parse_region(&editing.text).filter(|region| *region != saved)
 }
 
+fn config_label(key: ConfigKey) -> &'static str {
+    match key {
+        ConfigKey::WishlistHours => "Wishlist",
+        ConfigKey::FollowedHours => "Followed",
+        ConfigKey::WouldTryHours => "Would try",
+        ConfigKey::MinHours => "Fewest hours",
+        ConfigKey::MaxHours => "Most hours",
+        ConfigKey::RecentHoursMultiplier => "Recent play",
+        ConfigKey::Count => "Games at a time",
+        ConfigKey::EarlyAccess => "Early access",
+        ConfigKey::MinReviews => "Fewest reviews",
+        ConfigKey::MinPositivePercent => "Lowest score",
+        ConfigKey::BetEvery => "Bets",
+        ConfigKey::QualityWeight => "Quality",
+        ConfigKey::VotesWeight => "Your votes",
+        ConfigKey::Boost => "Count more",
+        ConfigKey::Dampen => "Count less",
+    }
+}
+
+fn config_note(key: ConfigKey) -> &'static str {
+    match key {
+        ConfigKey::WishlistHours => "Each game in your wishlist counts as this much play",
+        ConfigKey::FollowedHours => "Each game you follow counts as this much play",
+        ConfigKey::WouldTryHours => "Each Would try vote counts as this much play",
+        ConfigKey::MinHours => "Games played less are left out",
+        ConfigKey::MaxHours => "Play past this counts no more",
+        ConfigKey::RecentHoursMultiplier => "Hours from the last two weeks count this many times",
+        ConfigKey::Count => "How many games Discover brings at once",
+        ConfigKey::EarlyAccess | ConfigKey::MinReviews | ConfigKey::MinPositivePercent => {
+            "What the Discover filter starts from"
+        }
+        ConfigKey::BetEvery => {
+            "One game in this many is one your votes would skip, 0 turns them off"
+        }
+        ConfigKey::QualityWeight => "How much review scores count next to your taste, from 0 to 1",
+        ConfigKey::VotesWeight => "How much your votes move the order, 0 turns it off",
+        ConfigKey::Boost => "Used by gamepalate correct --boost",
+        ConfigKey::Dampen => "Used by Half in Library and by gamepalate correct --dampen",
+    }
+}
+
+fn value_text(key: ConfigKey, value: ConfigValue) -> String {
+    match (key, value) {
+        (_, ConfigValue::Flag(true)) => "Shown".to_string(),
+        (_, ConfigValue::Flag(false)) => "Hidden".to_string(),
+        (ConfigKey::BetEvery, ConfigValue::Integer(0)) => "Off".to_string(),
+        (ConfigKey::BetEvery, ConfigValue::Integer(every)) => format!("1 in {every}"),
+        (ConfigKey::MinReviews, ConfigValue::Integer(reviews)) => {
+            format::count(u32::try_from(reviews).unwrap_or(u32::MAX))
+        }
+        (ConfigKey::MinPositivePercent, ConfigValue::Integer(percent)) => format!("{percent}%"),
+        (_, ConfigValue::Integer(integer)) => integer.to_string(),
+        (
+            ConfigKey::RecentHoursMultiplier | ConfigKey::Boost | ConfigKey::Dampen,
+            ConfigValue::Number(times),
+        ) => format!("×{times}"),
+        (
+            ConfigKey::WishlistHours
+            | ConfigKey::FollowedHours
+            | ConfigKey::WouldTryHours
+            | ConfigKey::MinHours
+            | ConfigKey::MaxHours,
+            ConfigValue::Number(1.0),
+        ) => "1 hour".to_string(),
+        (
+            ConfigKey::WishlistHours
+            | ConfigKey::FollowedHours
+            | ConfigKey::WouldTryHours
+            | ConfigKey::MinHours
+            | ConfigKey::MaxHours,
+            ConfigValue::Number(hours),
+        ) => format!("{hours} hours"),
+        (_, ConfigValue::Number(number)) => number.to_string(),
+    }
+}
+
+fn value_input(value: ConfigValue) -> String {
+    match value {
+        ConfigValue::Number(number) => number.to_string(),
+        ConfigValue::Integer(integer) => integer.to_string(),
+        ConfigValue::Flag(flag) => flag.to_string(),
+    }
+}
+
+fn parse_value(key: ConfigKey, text: &str) -> Option<ConfigValue> {
+    let text = text.trim();
+    match key.default_value() {
+        ConfigValue::Number(_) => text
+            .replace(',', ".")
+            .parse()
+            .ok()
+            .filter(|number: &f64| number.is_finite())
+            .map(ConfigValue::Number),
+        ConfigValue::Integer(_) => text.replace(',', "").parse().ok().map(ConfigValue::Integer),
+        ConfigValue::Flag(_) => None,
+    }
+}
+
+fn config_change(tuning: &Tuning, config: &Config) -> Option<ConfigValue> {
+    parse_value(tuning.key, &tuning.text).filter(|value| *value != tuning.key.value(config))
+}
+
+fn input_note(key: ConfigKey, text: &str) -> Option<String> {
+    if text.trim().is_empty() || parse_value(key, text).is_some() {
+        return None;
+    }
+    let example = value_input(key.default_value());
+    Some(match key.default_value() {
+        ConfigValue::Integer(_) => format!("A whole number, such as {example}"),
+        ConfigValue::Number(_) | ConfigValue::Flag(_) => format!("A number, such as {example}"),
+    })
+}
+
+fn config_error_text(error: &ConfigError) -> String {
+    match error {
+        ConfigError::Invalid { expected, .. } => format!("Must be {expected}"),
+        error => error_chain(error),
+    }
+}
+
 fn region_note(text: &str) -> Option<&'static str> {
     (!text.trim().is_empty() && parse_region(text).is_none()).then_some("Two letters, such as IT")
 }
@@ -627,6 +966,14 @@ fn value<'a>(shown: String) -> Element<'a, Message> {
     text(shown).size(font::BAR_SIZE).into()
 }
 
+fn link_owned<'a>(label: String, message: Message) -> Element<'a, Message> {
+    button(text(label).size(font::BAR_SIZE))
+        .padding(0)
+        .style(style::link)
+        .on_press(message)
+        .into()
+}
+
 fn link(label: &str, message: Message) -> Element<'_, Message> {
     button(text(label).size(font::BAR_SIZE))
         .padding(0)
@@ -656,6 +1003,101 @@ mod tests {
             catalog_text(115_668, "28 Oct"),
             "115,668 games · tags 28 Oct"
         );
+    }
+
+    fn tuning(key: ConfigKey, text: &str) -> Tuning {
+        Tuning {
+            key,
+            text: text.to_string(),
+            saving: false,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn every_value_reads_as_it_is_used() {
+        let config = Config::default();
+        let shown = |key: ConfigKey| value_text(key, key.value(&config));
+
+        assert_eq!(shown(ConfigKey::WouldTryHours), "5 hours");
+        assert_eq!(shown(ConfigKey::MaxHours), "200 hours");
+        assert_eq!(shown(ConfigKey::RecentHoursMultiplier), "×3");
+        assert_eq!(shown(ConfigKey::Dampen), "×0.5");
+        assert_eq!(shown(ConfigKey::Count), "20");
+        assert_eq!(shown(ConfigKey::EarlyAccess), "Shown");
+        assert_eq!(shown(ConfigKey::MinReviews), "1,000");
+        assert_eq!(shown(ConfigKey::MinPositivePercent), "0%");
+        assert_eq!(shown(ConfigKey::BetEvery), "1 in 5");
+        assert_eq!(shown(ConfigKey::QualityWeight), "0.5");
+        assert_eq!(
+            value_text(ConfigKey::BetEvery, ConfigValue::Integer(0)),
+            "Off"
+        );
+        assert_eq!(
+            value_text(ConfigKey::MinHours, ConfigValue::Number(1.0)),
+            "1 hour"
+        );
+    }
+
+    #[test]
+    fn the_field_starts_from_the_value_of_today() {
+        assert_eq!(value_input(ConfigValue::Number(5.0)), "5");
+        assert_eq!(value_input(ConfigValue::Number(0.25)), "0.25");
+        assert_eq!(value_input(ConfigValue::Integer(1000)), "1000");
+    }
+
+    #[test]
+    fn only_a_new_number_can_be_saved() {
+        let config = Config::default();
+
+        assert_eq!(
+            config_change(&tuning(ConfigKey::WouldTryHours, " 3 "), &config),
+            Some(ConfigValue::Number(3.0))
+        );
+        assert_eq!(
+            config_change(&tuning(ConfigKey::QualityWeight, "0,3"), &config),
+            Some(ConfigValue::Number(0.3))
+        );
+        assert_eq!(
+            config_change(&tuning(ConfigKey::MinReviews, "2,000"), &config),
+            Some(ConfigValue::Integer(2000))
+        );
+        assert_eq!(
+            config_change(&tuning(ConfigKey::WouldTryHours, "5"), &config),
+            None
+        );
+        assert_eq!(
+            config_change(&tuning(ConfigKey::Count, "10.5"), &config),
+            None
+        );
+        assert_eq!(
+            config_change(&tuning(ConfigKey::WouldTryHours, "five"), &config),
+            None
+        );
+    }
+
+    #[test]
+    fn a_text_that_is_not_a_number_says_what_is_expected() {
+        assert_eq!(
+            input_note(ConfigKey::WouldTryHours, "five").as_deref(),
+            Some("A number, such as 5")
+        );
+        assert_eq!(
+            input_note(ConfigKey::Count, "10.5").as_deref(),
+            Some("A whole number, such as 20")
+        );
+        assert_eq!(input_note(ConfigKey::Count, ""), None);
+        assert_eq!(input_note(ConfigKey::Count, "30"), None);
+    }
+
+    #[test]
+    fn a_value_out_of_range_says_what_it_must_be() {
+        let error = ConfigError::Invalid {
+            field: "relevance.quality_weight",
+            expected: "a number from 0 to 1".to_string(),
+        };
+
+        assert_eq!(config_error_text(&error), "Must be a number from 0 to 1");
     }
 
     #[test]

@@ -231,8 +231,14 @@ impl App {
                 }
             }
             Message::Reopened(Ok(gamepalate)) => {
+                if let Screen::Settings(screen) = &mut self.screen {
+                    screen.reopened(&gamepalate);
+                }
                 self.gamepalate = Some(gamepalate);
                 self.find_pending();
+                if matches!(self.screen, Screen::Settings(_)) {
+                    return Task::none();
+                }
                 match self.page() {
                     Some(page) => self.open(page),
                     None => Task::none(),

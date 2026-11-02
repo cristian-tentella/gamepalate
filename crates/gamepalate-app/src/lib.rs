@@ -20,7 +20,7 @@ pub use capsules::{CAPSULE_HEIGHT, CAPSULE_WIDTH, Capsule};
 pub use details::GameDetails;
 pub use families::{FamiliesChanged, FamiliesUndo, FamilyChange, FamilyChangeError, FamilyGame};
 pub use gamepalate_core::{
-    config::SignalsConfig,
+    config::{Config, SignalsConfig},
     corrections::Ban,
     currency::{Currency, parse_price},
     effective_hours::HoursSource,
@@ -37,7 +37,7 @@ pub use gamepalate_steam::details::{
     Controller, Italian, ItemDetails, SteamDeck, original_screenshot, thumbnail_screenshot,
 };
 pub use gamepalate_steam::{archive::PendingUpdate, transport::SteamError};
-pub use gamepalate_store::config::ConfigValue;
+pub use gamepalate_store::config::{ConfigError, ConfigValue};
 pub use gamepalate_store::families_edit::NEW_FILE as NEW_FAMILIES_FILE;
 pub use gamepalate_store::gui::{GuiSettings, SavedWindow, ThemeChoice};
 pub use images::{ImageKind, LoadImageError};
