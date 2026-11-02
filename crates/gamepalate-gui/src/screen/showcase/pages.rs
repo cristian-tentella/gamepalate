@@ -11,7 +11,7 @@ pub enum Page {
     Loading,
     Ready(Arc<GameDetails>),
     Missing,
-    Failed,
+    Failed(String),
 }
 
 #[derive(Default)]
@@ -27,7 +27,7 @@ impl Pages {
     pub fn details(&self, id: AppId) -> Option<&GameDetails> {
         match self.pages.get(&id) {
             Some(Page::Ready(details)) => Some(details),
-            Some(Page::Loading | Page::Missing | Page::Failed) | None => None,
+            Some(Page::Loading | Page::Missing | Page::Failed(_)) | None => None,
         }
     }
 
@@ -47,13 +47,13 @@ impl Pages {
             *page = match result {
                 Ok(Some(details)) => Page::Ready(details),
                 Ok(None) => Page::Missing,
-                Err(_) => Page::Failed,
+                Err(reason) => Page::Failed(reason),
             };
         }
     }
 
     pub fn retry(&mut self, id: AppId) {
-        if matches!(self.pages.get(&id), Some(Page::Failed)) {
+        if matches!(self.pages.get(&id), Some(Page::Failed(_))) {
             self.pages.remove(&id);
         }
     }
@@ -116,7 +116,7 @@ mod tests {
             1
         );
         assert!(matches!(pages.get(AppId(2)), Some(Page::Missing)));
-        assert!(matches!(pages.get(AppId(3)), Some(Page::Failed)));
+        assert!(matches!(pages.get(AppId(3)), Some(Page::Failed(reason)) if reason == "down"));
         assert!(pages.want(&[AppId(2), AppId(3)]).is_empty());
     }
 

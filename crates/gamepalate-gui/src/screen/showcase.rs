@@ -300,8 +300,12 @@ impl Showcase {
                 }
             }
             Some(Page::Missing) => note("Not on the Steam store"),
-            Some(Page::Failed) => column![
+            Some(Page::Failed(reason)) => column![
                 note("The Steam store didn't answer, so only catalog data is shown"),
+                text(reason.clone())
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted)
+                    .center(),
                 button(text("Retry").size(font::NOTE_SIZE))
                     .style(style::primary)
                     .padding([4, 12])
@@ -462,7 +466,7 @@ mod tests {
         let loading = Some(&Picture::<u8>::Loading);
 
         assert!(is_loaded(Some(&Page::Missing), ready, None));
-        assert!(is_loaded(Some(&Page::Failed), failed, None));
+        assert!(is_loaded(Some(&Page::Failed(String::new())), failed, None));
         assert!(is_loaded(Some(&Page::Missing), ready, Some(failed)));
         assert!(!is_loaded(None, ready, None));
         assert!(!is_loaded(Some(&Page::Loading), ready, None));

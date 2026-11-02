@@ -13,7 +13,7 @@ use crate::{
 const ITEMS_ENDPOINT: &str = "IStoreBrowseService/GetItems/v1";
 const CATEGORIES_ENDPOINT: &str = "IStoreBrowseService/GetStoreCategories/v1";
 const SUCCESS: u32 = 1;
-const ITALIAN: u32 = 3;
+const ITALIAN: i32 = 3;
 const FULL_CONTROLLER: u32 = 28;
 const PARTIAL_CONTROLLER: u32 = 18;
 const SCREENSHOT_SIZE: &str = ".1920x1080";
@@ -142,7 +142,7 @@ struct Categories {
 
 #[derive(Deserialize)]
 struct Language {
-    elanguage: u32,
+    elanguage: i32,
     #[serde(default)]
     supported: bool,
     #[serde(default)]
@@ -494,6 +494,26 @@ mod tests {
 
         assert_eq!(details.italian, None);
         assert_eq!(details.steam_deck, None);
+    }
+
+    #[test]
+    fn an_additional_language_does_not_break_the_page() {
+        let details = one(json!({
+            "success": 1,
+            "supported_languages": [
+                { "elanguage": 3, "eadditionallanguage": -1, "supported": true, "subtitles": true },
+                { "elanguage": -1, "eadditionallanguage": 22, "supported": true },
+            ],
+        }))
+        .unwrap();
+
+        assert_eq!(
+            details.italian,
+            Some(Italian {
+                subtitles: true,
+                audio: false,
+            })
+        );
     }
 
     #[test]
