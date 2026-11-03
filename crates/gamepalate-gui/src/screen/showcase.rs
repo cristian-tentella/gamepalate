@@ -13,7 +13,7 @@ use iced::{
     Center, ContentFit, Element, Fill, Task, mouse, padding,
     widget::{
         Column, button, column, container, image, keyed_column, mouse_area, opaque, rich_text, row,
-        space, span, stack, text,
+        scrollable, space, span, stack, text,
     },
 };
 
@@ -29,9 +29,17 @@ pub const AHEAD: usize = 5;
 pub const BEHIND: usize = 5;
 const DETAILS_AHEAD: usize = 3;
 const SCREENSHOTS_AHEAD: usize = 2;
-const DESCRIPTIONS_AHEAD: usize = 2;
-const ABOUT_SPACING: f32 = 12.0;
-const ITEM_SPACING: f32 = 6.0;
+const MEASURE: f32 = 680.0;
+const SHEET_INSET: f32 = 40.0;
+const SHEET_MARGIN: f32 = 32.0;
+const BODY_SIZE: f32 = 16.0;
+const BODY_LINE_HEIGHT: f32 = 1.5;
+const HEADING_SIZE: f32 = 20.0;
+const HEADING_SPACE: f32 = 12.0;
+const BLOCK_SPACING: f32 = 16.0;
+const ITEM_SPACING: f32 = 8.0;
+const BULLET_WIDTH: f32 = 18.0;
+const EXTRA_RADIUS: f32 = 4.0;
 const DESCRIPTION_WIDTH: f32 = 760.0;
 const DOT_SIZE: f32 = 8.0;
 const MEDIA_SPACING: f32 = 14.0;
@@ -64,6 +72,7 @@ pub struct Showcase {
     shown: Option<AppId>,
     browsing: bool,
     zoomed: bool,
+    about_open: bool,
     features_open: bool,
     hovered: bool,
     originals: HashMap<String, Picture>,
@@ -99,6 +108,9 @@ pub enum Message {
     RetryDetails,
     Zoom,
     CloseZoom,
+    ToggleAbout,
+    CloseAbout,
+    Close,
     ToggleFeatures,
     Hover(bool),
 }
@@ -116,6 +128,7 @@ impl Showcase {
             shown: None,
             browsing: false,
             zoomed: false,
+            about_open: false,
             features_open: false,
             hovered: false,
             originals: HashMap::new(),
@@ -149,6 +162,7 @@ impl Showcase {
             }
             Message::ExtraAllocated(url, allocation) => self.extras.loaded(url, allocation),
             Message::OpenLink(url) => game::open_url(&url),
+            Message::PreviousScreenshot | Message::NextScreenshot if self.about_open => {}
             Message::PreviousScreenshot => self.show_screenshot(self.screenshot.saturating_sub(1)),
             Message::NextScreenshot => {
                 self.show_screenshot(next_index(self.screenshot, self.screenshot_count()));
@@ -161,11 +175,25 @@ impl Showcase {
             }
             Message::Zoom => self.zoomed = self.current_screenshot().is_some(),
             Message::CloseZoom => self.zoomed = false,
+            Message::ToggleAbout => {
+                if !self.zoomed && self.shown.is_some() {
+                    self.about_open = !self.about_open;
+                }
+            }
+            Message::CloseAbout => self.about_open = false,
+            Message::Close => {
+                self.zoomed = false;
+                self.about_open = false;
+            }
             Message::ToggleFeatures => self.features_open = !self.features_open,
             Message::Hover(hovered) => self.hovered = hovered,
         }
 
-        Task::batch([self.load_versions(), self.load_extras()])
+        Task::batch([
+            self.load_versions(),
+            self.load_description(),
+            self.load_extras(),
+        ])
     }
 
     fn load_versions(&mut self) -> Task<Message> {
@@ -233,18 +261,17 @@ impl Showcase {
         }
     }
 
-    pub fn follow(&mut self, current: Option<AppId>) -> bool {
-        if current == self.shown {
-            return false;
+    pub fn follow(&mut self, current: Option<AppId>) {
+        if current != self.shown {
+            self.shown = current;
+            self.screenshot = 0;
+            self.last_screenshot = None;
+            self.browsing = false;
+            self.zoomed = false;
+            self.about_open = false;
+            self.originals.clear();
+            self.thumbnails.clear();
         }
-        self.shown = current;
-        self.screenshot = 0;
-        self.last_screenshot = None;
-        self.browsing = false;
-        self.zoomed = false;
-        self.originals.clear();
-        self.thumbnails.clear();
-        true
     }
 
     pub fn load(
@@ -257,16 +284,10 @@ impl Showcase {
             return Task::none();
         }
         let details = self.load_details(upcoming, nearby);
-        let descriptions = self.load_descriptions(upcoming, nearby);
         let images = self.load_images(upcoming, nearby, similar);
+        self.descriptions.keep_only(nearby);
 
-        Task::batch([
-            details,
-            descriptions,
-            images,
-            self.load_versions(),
-            self.load_extras(),
-        ])
+        Task::batch([details, images, self.load_versions()])
     }
 
     pub fn load_headers(&mut self, ids: &[AppId]) -> Task<Message> {
@@ -315,86 +336,132 @@ impl Showcase {
             })
     }
 
-    pub fn about<'a>(&'a self, id: AppId, width: f32) -> Option<Element<'a, Message>> {
-        let width = width.min(DESCRIPTION_WIDTH);
-        let content: Element<'a, Message> = match self.descriptions.get(id)? {
-            Description::Ready(blocks) => {
-                column(blocks.iter().map(|block| self.block(block, width)))
-                    .spacing(ABOUT_SPACING)
-                    .into()
+    pub fn about<'a>(&'a self, name: &'a str) -> Option<Element<'a, Message>> {
+        if !self.about_open {
+            return None;
+        }
+        let body: Element<'a, Message> = match self.descriptions.get(self.shown?) {
+            Some(Description::Ready(blocks)) => column(
+                blocks
+                    .iter()
+                    .enumerate()
+                    .map(|(index, block)| self.block(block, index == 0)),
+            )
+            .spacing(BLOCK_SPACING)
+            .into(),
+            Some(Description::Missing) => {
+                about_note("The Steam store has no description for this game.")
             }
-            Description::Loading => text("Loading…")
-                .size(font::NOTE_SIZE)
-                .style(style::muted)
-                .into(),
-            Description::Failed => text("Couldn't load the description.")
-                .size(font::NOTE_SIZE)
-                .style(style::muted)
-                .into(),
-            Description::Missing => return None,
+            Some(Description::Failed) => about_note("Couldn't load the description."),
+            Some(Description::Loading) | None => about_note("Loading…"),
         };
-
-        Some(
+        let close = button(text(CLOSE).font(font::ICONS).size(12))
+            .padding([8, 12])
+            .style(style::secondary)
+            .on_press(Message::CloseAbout);
+        let header = row![
             column![
                 text("About this game")
-                    .size(font::PRICE_SIZE)
-                    .font(font::SEMIBOLD),
-                content,
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted),
+                text(name).size(font::PRICE_SIZE).font(font::SEMIBOLD),
             ]
-            .spacing(ABOUT_SPACING)
-            .width(width)
+            .spacing(4)
+            .width(Fill),
+            close,
+        ];
+        let sheet = column![
+            container(header).padding(padding::top(24).bottom(20).left(SHEET_INSET).right(20)),
+            style::separator(),
+            scrollable(
+                container(body).padding(
+                    padding::top(24)
+                        .bottom(SHEET_INSET)
+                        .left(SHEET_INSET)
+                        .right(SHEET_INSET)
+                )
+            ),
+        ];
+
+        Some(
+            stack![
+                opaque(
+                    mouse_area(
+                        container(space())
+                            .width(Fill)
+                            .height(Fill)
+                            .style(style::veil)
+                    )
+                    .on_press(Message::CloseAbout)
+                ),
+                container(opaque(
+                    container(sheet)
+                        .max_width(MEASURE + 2.0 * SHEET_INSET)
+                        .style(style::popup)
+                ))
+                .center(Fill)
+                .padding(SHEET_MARGIN),
+            ]
             .into(),
         )
     }
 
-    fn block<'a>(&'a self, block: &'a Block, width: f32) -> Element<'a, Message> {
+    fn block<'a>(&'a self, block: &'a Block, first: bool) -> Element<'a, Message> {
         match block {
-            Block::Heading(heading) => text(heading)
-                .size(font::INFO_SIZE)
-                .font(font::SEMIBOLD)
-                .into(),
+            Block::Heading(heading) => container(
+                text(heading)
+                    .size(HEADING_SIZE)
+                    .font(font::SEMIBOLD)
+                    .line_height(1.3),
+            )
+            .padding(padding::top(if first { 0.0 } else { HEADING_SPACE }))
+            .into(),
             Block::Paragraph(spans) => paragraph(spans),
             Block::List(items) => column(items.iter().map(|item| {
-                row![text(BULLET).size(font::BAR_SIZE), paragraph(item)]
-                    .spacing(8)
-                    .into()
+                row![
+                    container(text(BULLET).size(BODY_SIZE).line_height(BODY_LINE_HEIGHT))
+                        .width(BULLET_WIDTH),
+                    paragraph(item),
+                ]
+                .into()
             }))
             .spacing(ITEM_SPACING)
             .into(),
-            Block::Image {
-                url,
-                width: natural,
-                height,
-            } => self.extra(url, extra_size(*natural, *height, width), width),
+            Block::Image { url, width, height } => {
+                self.extra(url, extra_size(*width, *height, MEASURE))
+            }
             Block::Video { url } => button(
                 row![
                     text(PLAY).font(font::ICONS).size(12),
-                    text("Play video").size(font::BAR_SIZE),
+                    text("Play video").size(BODY_SIZE),
                 ]
                 .spacing(8)
                 .align_y(Center),
             )
             .padding(0)
-            .style(style::list_row(false))
+            .style(style::link)
             .on_press(Message::OpenLink(url.clone()))
             .into(),
         }
     }
 
-    fn extra<'a>(&self, url: &str, size: Option<(f32, f32)>, width: f32) -> Element<'a, Message> {
+    fn extra<'a>(&self, url: &str, size: Option<(f32, f32)>) -> Element<'a, Message> {
         let picture = self.extras.get(url);
         match (picture, size) {
             (Some(Picture::Ready(allocation)), Some((width, height))) => {
                 image(allocation.handle().clone())
                     .width(width)
                     .height(height)
+                    .border_radius(EXTRA_RADIUS)
                     .into()
             }
-            (Some(Picture::Ready(allocation)), None) => {
-                container(image(allocation.handle().clone()).content_fit(ContentFit::ScaleDown))
-                    .max_width(width)
-                    .into()
-            }
+            (Some(Picture::Ready(allocation)), None) => container(
+                image(allocation.handle().clone())
+                    .content_fit(ContentFit::ScaleDown)
+                    .border_radius(EXTRA_RADIUS),
+            )
+            .max_width(MEASURE)
+            .into(),
             (_, Some((width, height))) => container(space())
                 .width(width)
                 .height(height)
@@ -475,13 +542,12 @@ impl Showcase {
         }))
     }
 
-    fn load_descriptions(&mut self, upcoming: &[AppId], nearby: &[AppId]) -> Task<Message> {
-        let wanted = &upcoming[..upcoming.len().min(DESCRIPTIONS_AHEAD + 1)];
+    fn load_description(&mut self) -> Task<Message> {
+        let Some(id) = self.shown.filter(|_| self.about_open) else {
+            return Task::none();
+        };
 
-        self.descriptions.keep_only(nearby);
-        let started = self.descriptions.want(wanted);
-
-        Task::batch(started.into_iter().map(|id| {
+        Task::batch(self.descriptions.want(&[id]).into_iter().map(|id| {
             let gamepalate = Arc::clone(&self.gamepalate);
             Task::perform(
                 async move {
@@ -497,12 +563,9 @@ impl Showcase {
     }
 
     fn load_extras(&mut self) -> Task<Message> {
-        let Some(id) = self.shown else {
+        let Some(id) = self.shown.filter(|_| self.about_open) else {
             return Task::none();
         };
-        if !self.current_is_loaded() {
-            return Task::none();
-        }
         let urls = self.descriptions.image_urls(id);
         self.extras.keep_only(&urls);
         let started = self.extras.want(urls);
@@ -725,8 +788,8 @@ impl Showcase {
         )
     }
 
-    pub fn is_zoomed(&self) -> bool {
-        self.zoomed
+    pub fn is_open(&self) -> bool {
+        self.zoomed || self.about_open
     }
 
     pub fn zoom(&self) -> Option<Element<'_, Message>> {
@@ -955,9 +1018,14 @@ fn paragraph(spans: &[Span]) -> Element<'_, Message> {
         .collect();
 
     rich_text(pieces)
-        .size(font::BAR_SIZE)
+        .size(BODY_SIZE)
+        .line_height(BODY_LINE_HEIGHT)
         .on_link_click(Message::OpenLink)
         .into()
+}
+
+fn about_note<'a>(label: &'static str) -> Element<'a, Message> {
+    text(label).size(BODY_SIZE).style(style::muted).into()
 }
 
 fn extra_size(width: u32, height: u32, column: f32) -> Option<(f32, f32)> {

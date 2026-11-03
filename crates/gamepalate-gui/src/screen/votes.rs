@@ -14,7 +14,7 @@ use iced::{
     widget::{
         Id, button, checkbox, column, container, operation, pick_list, responsive, rich_text, row,
         rule, scrollable,
-        scrollable::{AbsoluteOffset, RelativeOffset, Viewport},
+        scrollable::{AbsoluteOffset, Viewport},
         span, stack, text,
         text::Wrapping,
         text_input,
@@ -43,7 +43,6 @@ const ORDERS: [Order; 4] = [
 ];
 const LIST: Id = Id::new("votes-list");
 const SEARCH: Id = Id::new("votes-search");
-const GAME: Id = Id::new("votes-game");
 const LIST_WIDTH: f32 = 340.0;
 const ROW_HEIGHT: f32 = 32.0;
 const HEADER_WIDTH: f32 = 230.0;
@@ -159,7 +158,7 @@ impl Votes {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
-        if self.showcase.is_zoomed()
+        if self.showcase.is_open()
             && matches!(
                 message,
                 Message::Previous
@@ -283,6 +282,11 @@ impl Votes {
             column![stack![card].push(toast), style::separator(), votes],
         ]]
         .push(self.showcase.zoom().map(|zoom| zoom.map(Message::Showcase)))
+        .push(
+            self.current()
+                .and_then(|game| self.showcase.about(&game.name))
+                .map(|about| about.map(Message::Showcase)),
+        )
         .into()
     }
 
@@ -470,11 +474,6 @@ impl Votes {
                 .facts(game.id, &[])
                 .map(|facts| facts.map(Message::Showcase)),
         )
-        .push(
-            self.showcase
-                .about(game.id, shot_width)
-                .map(|about| about.map(Message::Showcase)),
-        )
         .spacing(CONTENT_SPACING)
         .max_width(shot_width);
 
@@ -483,7 +482,6 @@ impl Votes {
                 .center_x(Fill)
                 .padding(padding::right(SCROLLBAR_GAP)),
         )
-        .id(GAME)
         .height(Fill)
         .into()
     }
@@ -505,7 +503,11 @@ impl Votes {
 
         row![
             votes,
-            game::links(|link| game.is_some().then_some(Message::Open(link))),
+            game::links(
+                |link| game.is_some().then_some(Message::Open(link)),
+                game.is_some()
+                    .then_some(Message::Showcase(showcase::Message::ToggleAbout)),
+            ),
         ]
         .spacing(8)
         .height(Fill)
@@ -588,22 +590,15 @@ impl Votes {
     }
 
     fn load(&mut self) -> Task<Message> {
-        let top = if self.showcase.follow(self.current().map(|game| game.id)) {
-            operation::snap_to(GAME, RelativeOffset::START)
-        } else {
-            Task::none()
-        };
+        self.showcase.follow(self.current().map(|game| game.id));
         let end = (self.selected + showcase::AHEAD + 1).min(self.rows.len());
         let start = self.selected.saturating_sub(showcase::BEHIND).min(end);
         let upcoming = &self.rows[self.selected.min(end)..end];
         let nearby = &self.rows[start..end];
 
-        Task::batch([
-            top,
-            self.showcase
-                .load(upcoming, nearby, &[])
-                .map(Message::Showcase),
-        ])
+        self.showcase
+            .load(upcoming, nearby, &[])
+            .map(Message::Showcase)
     }
 
     fn show_toast(&mut self, text: String) -> Task<Message> {
@@ -782,12 +777,15 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
     }
 
     match key {
-        Key::Named(Named::Escape) => Some(Message::Showcase(showcase::Message::CloseZoom)),
+        Key::Named(Named::Escape) => Some(Message::Showcase(showcase::Message::Close)),
         Key::Named(Named::ArrowUp) => Some(Message::Previous),
         Key::Named(Named::ArrowDown) => Some(Message::Next),
         Key::Named(Named::ArrowRight) => Some(Message::Showcase(showcase::Message::NextScreenshot)),
         Key::Named(Named::ArrowLeft) => {
             Some(Message::Showcase(showcase::Message::PreviousScreenshot))
+        }
+        Key::Character(character) if character.eq_ignore_ascii_case("d") => {
+            Some(Message::Showcase(showcase::Message::ToggleAbout))
         }
         Key::Character(character) => game::vote_key(&character)
             .map(Message::Vote)
@@ -1017,11 +1015,21 @@ mod tests {
     }
 
     #[test]
-    fn closes_the_zoomed_screenshot_with_escape() {
+    fn closes_the_zoom_and_the_description_with_escape() {
         assert!(matches!(
             key_message(pressed(Key::Named(Named::Escape))),
-            Some(Message::Showcase(showcase::Message::CloseZoom))
+            Some(Message::Showcase(showcase::Message::Close))
         ));
+    }
+
+    #[test]
+    fn opens_the_description_with_d() {
+        for key in ["d", "D"] {
+            assert!(matches!(
+                key_message(pressed(Key::Character(key.into()))),
+                Some(Message::Showcase(showcase::Message::ToggleAbout))
+            ));
+        }
     }
 
     #[test]
