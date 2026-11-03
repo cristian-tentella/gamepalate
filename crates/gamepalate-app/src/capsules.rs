@@ -7,14 +7,15 @@ use gamepalate_steam::{
     images::{ImageError, capsule_url},
     transport::{Fetch, Get, SteamError, Transport},
 };
-use image::imageops::FilterType;
+use image::{codecs::jpeg::JpegEncoder, imageops::FilterType};
 use reqwest::StatusCode;
 
 use crate::images::{ImageCache, ImageKind, LoadImageError};
 
 const LANGUAGE: &str = "english";
-pub const CAPSULE_WIDTH: u32 = 300;
-pub const CAPSULE_HEIGHT: u32 = 450;
+pub const CAPSULE_WIDTH: u32 = 150;
+pub const CAPSULE_HEIGHT: u32 = 225;
+const CAPSULE_QUALITY: u8 = 90;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Capsule {
@@ -79,25 +80,27 @@ pub(crate) async fn capsule<F: Fetch, S: Get + Sync>(
     finder: &CapsuleFinder<S>,
 ) -> Result<Capsule, LoadImageError> {
     let bytes = match finder.known(id).await {
-        Some(url) => images.image(&url, ImageKind::Cover).await?,
-        None => match images.image(&capsule_url(id), ImageKind::Cover).await {
+        Some(url) => shrunk(images, &url).await?,
+        None => match shrunk(images, &capsule_url(id)).await {
             Err(error) if is_not_found(&error) => match finder.find(id).await? {
-                Some(url) => images.image(&url, ImageKind::Cover).await?,
+                Some(url) => shrunk(images, &url).await?,
                 None => return Err(error),
             },
             result => result?,
         },
     };
-    Ok(downscale(&bytes)?)
+    Ok(decode(&bytes)?)
 }
 
 pub(crate) async fn classic_capsule<F: Fetch>(
     id: AppId,
     images: &ImageCache<F>,
 ) -> Result<Capsule, LoadImageError> {
-    Ok(downscale(
-        &images.image(&capsule_url(id), ImageKind::Cover).await?,
-    )?)
+    Ok(decode(&shrunk(images, &capsule_url(id)).await?)?)
+}
+
+async fn shrunk<F: Fetch>(images: &ImageCache<F>, url: &str) -> Result<Vec<u8>, LoadImageError> {
+    images.prepared(url, ImageKind::Capsule, shrink).await
 }
 
 fn is_not_found(error: &LoadImageError) -> bool {
@@ -110,20 +113,27 @@ fn is_not_found(error: &LoadImageError) -> bool {
     )
 }
 
-fn downscale(bytes: &[u8]) -> Result<Capsule, image::ImageError> {
-    let image = image::load_from_memory(bytes)?.to_rgba8();
+fn shrink(bytes: Vec<u8>) -> Result<Vec<u8>, LoadImageError> {
+    let image = image::load_from_memory(&bytes)?.to_rgb8();
     let small =
-        image::imageops::resize(&image, CAPSULE_WIDTH, CAPSULE_HEIGHT, FilterType::Triangle);
+        image::imageops::resize(&image, CAPSULE_WIDTH, CAPSULE_HEIGHT, FilterType::Lanczos3);
+    let mut jpeg = Vec::new();
+    JpegEncoder::new_with_quality(&mut jpeg, CAPSULE_QUALITY).encode_image(&small)?;
+    Ok(jpeg)
+}
+
+fn decode(bytes: &[u8]) -> Result<Capsule, image::ImageError> {
+    let image = image::load_from_memory(bytes)?.to_rgba8();
     Ok(Capsule {
-        width: small.width(),
-        height: small.height(),
-        rgba: small.into_raw(),
+        width: image.width(),
+        height: image.height(),
+        rgba: image.into_raw(),
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Cursor, sync::Mutex as StdMutex};
+    use std::{fs, io::Cursor, sync::Mutex as StdMutex};
 
     use gamepalate_steam::images::ImageDownloader;
     use reqwest::{Request, Response};
@@ -198,7 +208,7 @@ mod tests {
     }
 
     struct Setup {
-        _dir: tempfile::TempDir,
+        dir: tempfile::TempDir,
         images: ImageCache<FakeCdn>,
         finder: CapsuleFinder<FakeSteam>,
         cdn_asked: Arc<StdMutex<Vec<String>>>,
@@ -223,7 +233,7 @@ mod tests {
             vec![AppId(1), AppId(2), AppId(3)],
         );
         Setup {
-            _dir: dir,
+            dir,
             images,
             finder,
             cdn_asked,
@@ -245,7 +255,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_plain_capsule_is_reduced_to_half() {
+    async fn the_plain_capsule_is_reduced_to_the_tile() {
         let setup = setup(
             vec![(asset("steam/apps/1/library_600x900.jpg"), png(600, 900))],
             Vec::new(),
@@ -253,10 +263,35 @@ mod tests {
 
         let capsule = setup.capsule(1).await.unwrap();
 
-        assert_eq!((capsule.width, capsule.height), (300, 450));
-        assert_eq!(capsule.rgba.len(), 300 * 450 * 4);
-        assert_eq!(&capsule.rgba[..4], [200, 30, 30, 255]);
+        assert_eq!((capsule.width, capsule.height), (150, 225));
+        assert_eq!(capsule.rgba.len(), 150 * 225 * 4);
+        assert!(
+            capsule.rgba[..3]
+                .iter()
+                .zip([200, 30, 30])
+                .all(|(&got, wanted)| got.abs_diff(wanted) <= 2)
+        );
+        assert_eq!(capsule.rgba[3], 255);
         assert_eq!(setup.steam_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn only_the_reduced_capsule_is_kept_on_disk() {
+        let setup = setup(
+            vec![(asset("steam/apps/1/library_600x900.jpg"), png(600, 900))],
+            Vec::new(),
+        );
+
+        setup.capsule(1).await.unwrap();
+        let saved: Vec<_> = fs::read_dir(setup.dir.path().join("images").join("capsules"))
+            .unwrap()
+            .map(|entry| image::open(entry.unwrap().path()).unwrap())
+            .collect();
+        setup.capsule(1).await.unwrap();
+
+        assert_eq!(saved.len(), 1);
+        assert_eq!((saved[0].width(), saved[0].height()), (150, 225));
+        assert_eq!(setup.cdn_calls(), 1);
     }
 
     #[tokio::test]
@@ -272,9 +307,9 @@ mod tests {
             vec![(2, "7a0f/library_capsule.jpg"), (3, "portrait.png")],
         );
 
-        assert_eq!(setup.capsule(2).await.unwrap().width, 300);
-        assert_eq!(setup.capsule(3).await.unwrap().width, 300);
-        assert_eq!(setup.capsule(2).await.unwrap().width, 300);
+        assert_eq!(setup.capsule(2).await.unwrap().width, 150);
+        assert_eq!(setup.capsule(3).await.unwrap().width, 150);
+        assert_eq!(setup.capsule(2).await.unwrap().width, 150);
 
         assert_eq!(setup.steam_calls(), 1);
         assert_eq!(setup.cdn_calls(), 3);
@@ -302,7 +337,7 @@ mod tests {
                 .await
                 .unwrap()
                 .width,
-            300
+            150
         );
         assert!(is_not_found(
             &classic_capsule(AppId(2), &setup.images).await.unwrap_err()

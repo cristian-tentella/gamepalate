@@ -45,15 +45,17 @@ pub enum LoadImageError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ImageKind {
+    Capsule,
     Cover,
     Screenshot,
 }
 
 impl ImageKind {
-    const ALL: [ImageKind; 2] = [ImageKind::Cover, ImageKind::Screenshot];
+    const ALL: [ImageKind; 3] = [ImageKind::Capsule, ImageKind::Cover, ImageKind::Screenshot];
 
     fn folder(self) -> &'static str {
         match self {
+            ImageKind::Capsule => "capsules",
             ImageKind::Cover => "covers",
             ImageKind::Screenshot => "screenshots",
         }
@@ -89,6 +91,15 @@ impl<F: Fetch> ImageCache<F> {
     }
 
     pub async fn image(&self, url: &str, kind: ImageKind) -> Result<Vec<u8>, LoadImageError> {
+        self.prepared(url, kind, Ok).await
+    }
+
+    pub(crate) async fn prepared(
+        &self,
+        url: &str,
+        kind: ImageKind,
+        prepare: impl FnOnce(Vec<u8>) -> Result<Vec<u8>, LoadImageError>,
+    ) -> Result<Vec<u8>, LoadImageError> {
         let dir = self
             .dir
             .as_deref()
@@ -111,6 +122,7 @@ impl<F: Fetch> ImageCache<F> {
             let _download = self.downloads.acquire().await;
             self.downloader.download(url).await?
         };
+        let bytes = prepare(bytes)?;
         write(&dir, &path, &bytes)?;
         if (self.written.fetch_add(1, Ordering::Relaxed) + 1).is_multiple_of(PRUNE_EVERY) {
             self.prune();
