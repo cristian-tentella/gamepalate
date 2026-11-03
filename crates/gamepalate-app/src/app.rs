@@ -27,6 +27,7 @@ use gamepalate_core::{
 };
 use gamepalate_steam::{
     archive::PendingUpdate,
+    description::Block,
     images::{ImageDownloader, ImageError, header_url},
     transport::{SteamError, Transport},
 };
@@ -45,7 +46,7 @@ use crate::{
         FamiliesChanged, FamiliesUndo, FamilyChange, FamilyChangeError, FamilyGame,
         changed_families, family_games, renamed_choice,
     },
-    images::{ImageCache, ImageKind, LoadImageError, MAX_CACHE_BYTES, cache_dir},
+    images::{DecodedImage, ImageCache, ImageKind, LoadImageError, MAX_CACHE_BYTES, cache_dir},
     library::{
         GameCorrection, GameCorrectionError, LibraryView, corrected_game, game_correction,
         library_view,
@@ -216,6 +217,10 @@ impl Gamepalate {
         self.images.download(url).await
     }
 
+    pub async fn extra_image(&self, url: &str) -> Result<DecodedImage, LoadImageError> {
+        self.images.extra(url).await
+    }
+
     pub async fn capsule(&self, id: AppId) -> Result<Capsule, LoadImageError> {
         capsule(id, &self.images, &self.capsules).await
     }
@@ -225,6 +230,13 @@ impl Gamepalate {
             .details(id)
             .await
             .inspect_err(failed("could not read the store details"))
+    }
+
+    pub async fn description(&self, id: AppId) -> Result<Option<Vec<Block>>, SteamError> {
+        self.store
+            .description(id)
+            .await
+            .inspect_err(failed("could not read the store description"))
     }
 
     pub fn gui_settings(&self) -> GuiSettings {

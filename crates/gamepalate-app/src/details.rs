@@ -7,6 +7,7 @@ use std::{
 use futures::future::join;
 use gamepalate_core::{ids::AppId, region::Region};
 use gamepalate_steam::{
+    description::{Block, get_description},
     details::{ItemDetails, get_item_details, get_store_categories},
     transport::{Get, SteamError, Transport},
 };
@@ -51,6 +52,10 @@ impl<S: Get + Sync> StoreDetails<S> {
         let store = store?;
 
         Ok(store.map(|store| game_details(store, &names)))
+    }
+
+    pub async fn description(&self, id: AppId) -> Result<Option<Vec<Block>>, SteamError> {
+        get_description(&self.transport, id, LANGUAGE).await
     }
 
     async fn categories(&self) -> Arc<HashMap<u32, String>> {

@@ -54,6 +54,8 @@ The API key is stored in Windows Credential Manager, or read from `STEAM_API_KEY
 
 ## Build
 
+Building needs [NASM](https://nasm.us) on the `PATH`, for the AVIF decoder.
+
 ```
 cargo build --release -p gamepalate-gui
 ```

@@ -1,19 +1,22 @@
 use std::{
+    fmt,
     fs::{self, File},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::SystemTime,
 };
 
+use avif_decode::Decoder;
 use gamepalate_steam::{
     images::{ImageDownloader, ImageError},
     transport::{Fetch, SteamError},
 };
+use image::{DynamicImage, ImageBuffer, ImageFormat, RgbaImage};
 use reqwest::Client;
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
-const EXTENSIONS: [&str; 3] = ["jpg", "png", "webp"];
+const EXTENSIONS: [&str; 4] = ["jpg", "png", "webp", "avif"];
 pub(crate) const MAX_CACHE_BYTES: u64 = 300 * 1024 * 1024;
 const PRUNE_EVERY: u64 = 20;
 const MAX_DOWNLOADS: usize = 4;
@@ -35,6 +38,9 @@ pub enum LoadImageError {
     #[error("could not read the image")]
     Decode(#[from] image::ImageError),
 
+    #[error("could not read the AVIF image")]
+    Avif(#[from] avif_decode::Error),
+
     #[error("could not use the cached image {}", path.display())]
     Disk {
         path: PathBuf,
@@ -43,21 +49,45 @@ pub enum LoadImageError {
     },
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct DecodedImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl fmt::Debug for DecodedImage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DecodedImage")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ImageKind {
     Capsule,
     Cover,
     Screenshot,
+    Extra,
 }
 
 impl ImageKind {
-    const ALL: [ImageKind; 3] = [ImageKind::Capsule, ImageKind::Cover, ImageKind::Screenshot];
+    const ALL: [ImageKind; 4] = [
+        ImageKind::Capsule,
+        ImageKind::Cover,
+        ImageKind::Screenshot,
+        ImageKind::Extra,
+    ];
 
     fn folder(self) -> &'static str {
         match self {
             ImageKind::Capsule => "capsules",
             ImageKind::Cover => "covers",
             ImageKind::Screenshot => "screenshots",
+            ImageKind::Extra => "extras",
         }
     }
 }
@@ -92,6 +122,16 @@ impl<F: Fetch> ImageCache<F> {
 
     pub async fn image(&self, url: &str, kind: ImageKind) -> Result<Vec<u8>, LoadImageError> {
         self.prepared(url, kind, Ok).await
+    }
+
+    pub async fn extra(&self, url: &str) -> Result<DecodedImage, LoadImageError> {
+        let bytes = self
+            .prepared(url, ImageKind::Extra, |bytes| {
+                decode_extra(&bytes)?;
+                Ok(bytes)
+            })
+            .await?;
+        decode_extra(&bytes)
     }
 
     pub(crate) async fn prepared(
@@ -249,6 +289,65 @@ fn file_name(url: &str) -> String {
     }
 }
 
+fn decode_extra(bytes: &[u8]) -> Result<DecodedImage, LoadImageError> {
+    let image = match image::guess_format(bytes) {
+        Ok(ImageFormat::Avif) => std::panic::catch_unwind(|| avif(bytes)).unwrap_or(Err(
+            LoadImageError::Avif(avif_decode::Error::InternalError("the decoder stopped")),
+        ))?,
+        _ => image::load_from_memory(bytes)?.to_rgba8(),
+    };
+    Ok(DecodedImage {
+        width: image.width(),
+        height: image.height(),
+        rgba: image.into_raw(),
+    })
+}
+
+fn avif(bytes: &[u8]) -> Result<RgbaImage, LoadImageError> {
+    let unsupported = || avif_decode::Error::Unsupported("the image size");
+    let image = match Decoder::from_avif(bytes)?.to_image()? {
+        avif_decode::Image::Rgb8(image) => {
+            let (pixels, width, height) = image.into_contiguous_buf();
+            let raw = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
+            DynamicImage::ImageRgb8(sized(width, height, raw).ok_or_else(unsupported)?)
+        }
+        avif_decode::Image::Rgba8(image) => {
+            let (pixels, width, height) = image.into_contiguous_buf();
+            let raw = pixels.iter().flat_map(|p| [p.r, p.g, p.b, p.a]).collect();
+            DynamicImage::ImageRgba8(sized(width, height, raw).ok_or_else(unsupported)?)
+        }
+        avif_decode::Image::Gray8(image) => {
+            let (pixels, width, height) = image.into_contiguous_buf();
+            let raw = pixels.iter().map(|p| p.value()).collect();
+            DynamicImage::ImageLuma8(sized(width, height, raw).ok_or_else(unsupported)?)
+        }
+        avif_decode::Image::Rgb16(image) => {
+            let (pixels, width, height) = image.into_contiguous_buf();
+            let raw = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
+            DynamicImage::ImageRgb16(sized(width, height, raw).ok_or_else(unsupported)?)
+        }
+        avif_decode::Image::Rgba16(image) => {
+            let (pixels, width, height) = image.into_contiguous_buf();
+            let raw = pixels.iter().flat_map(|p| [p.r, p.g, p.b, p.a]).collect();
+            DynamicImage::ImageRgba16(sized(width, height, raw).ok_or_else(unsupported)?)
+        }
+        avif_decode::Image::Gray16(image) => {
+            let (pixels, width, height) = image.into_contiguous_buf();
+            let raw = pixels.iter().map(|p| p.value()).collect();
+            DynamicImage::ImageLuma16(sized(width, height, raw).ok_or_else(unsupported)?)
+        }
+    };
+    Ok(image.to_rgba8())
+}
+
+fn sized<P: image::Pixel>(
+    width: usize,
+    height: usize,
+    raw: Vec<P::Subpixel>,
+) -> Option<ImageBuffer<P, Vec<P::Subpixel>>> {
+    ImageBuffer::from_raw(width.try_into().ok()?, height.try_into().ok()?, raw)
+}
+
 fn touch(path: &Path) {
     let _ = File::options()
         .write(true)
@@ -297,6 +396,16 @@ mod tests {
 
     const URL: &str =
         "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/620/header.jpg";
+    const RED_AVIF: &str = concat!(
+        "00000020667479706176696600000000617669666d6966316d6961664d413142000000f96d657461",
+        "000000000000002f68646c7200000000000000007069637400000000000000000000000050696374",
+        "75726548616e646c6572000000000e7069746d0000000000010000001e696c6f6300000000440000",
+        "01000100000001000001210000001a0000002869696e660000000000010000001a696e6665020000",
+        "000001000061763031436f6c6f72000000006a697072700000004b6970636f000000146973706500",
+        "0000000000000800000008000000107069786900000000030808080000000c6176314381000c0000",
+        "000013636f6c726e636c78000200020002000000001769706d610000000000000001000104010283",
+        "04000000226d6461740a051808bf6c023211180000005000000000b013a89c0f03ac80",
+    );
 
     struct FakeCdn {
         status: u16,
@@ -660,5 +769,110 @@ mod tests {
         assert_eq!(file_name("https://example.com/image").len(), 64);
         assert_eq!(file_name("https://example.com/v1.2/image").len(), 64);
         assert_eq!(file_name("https://example.com/page.html").len(), 64);
+    }
+
+    fn bytes(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn close_to(pixel: &[u8], expected: [u8; 4]) -> bool {
+        pixel
+            .iter()
+            .zip(expected)
+            .all(|(&got, wanted)| got.abs_diff(wanted) <= 8)
+    }
+
+    #[test]
+    fn decodes_an_avif() {
+        let image = decode_extra(&bytes(RED_AVIF)).unwrap();
+
+        assert_eq!((image.width, image.height), (8, 8));
+        let pixel = &image.rgba[(5 * 8 + 3) * 4..][..4];
+        assert!(close_to(pixel, [0xc8, 0x32, 0x14, 0xff]));
+    }
+
+    #[test]
+    fn decodes_a_webp() {
+        let original = RgbaImage::from_fn(3, 2, |x, y| {
+            image::Rgba([x as u8 * 80, y as u8 * 90, 7, 255])
+        });
+        let mut webp = Vec::new();
+        DynamicImage::ImageRgba8(original.clone())
+            .write_to(&mut std::io::Cursor::new(&mut webp), ImageFormat::WebP)
+            .unwrap();
+
+        let image = decode_extra(&webp).unwrap();
+
+        assert_eq!((image.width, image.height), (3, 2));
+        assert_eq!(image.rgba, original.into_raw());
+    }
+
+    #[test]
+    fn an_image_that_does_not_decode_is_an_error() {
+        let mut broken = bytes(RED_AVIF);
+        broken.truncate(64);
+
+        assert!(matches!(
+            decode_extra(&broken),
+            Err(LoadImageError::Avif(_))
+        ));
+        assert!(matches!(
+            decode_extra(b"<html>not found</html>"),
+            Err(LoadImageError::Decode(_))
+        ));
+    }
+
+    struct Cdn(Vec<u8>);
+
+    impl Fetch for Cdn {
+        fn fetch(
+            &self,
+            _request: Request,
+        ) -> impl Future<Output = reqwest::Result<Response>> + Send {
+            let response = http::Response::builder()
+                .status(200)
+                .header("content-type", "image/avif")
+                .body(self.0.clone())
+                .unwrap();
+
+            async move { Ok(response.into()) }
+        }
+    }
+
+    #[tokio::test]
+    async fn keeps_an_extra_as_it_came_and_gives_its_pixels() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ImageCache::new(
+            Some(dir.path().join("images")),
+            ImageDownloader::with_fetch(Cdn(bytes(RED_AVIF))),
+        );
+        let url = "https://cdn.test/extras/red.avif?t=1";
+
+        let image = cache.extra(url).await.unwrap();
+
+        assert_eq!((image.width, image.height), (8, 8));
+        let saved = dir
+            .path()
+            .join("images")
+            .join("extras")
+            .join(file_name(url));
+        assert!(saved.to_string_lossy().ends_with(".avif"));
+        assert_eq!(fs::read(saved).unwrap(), bytes(RED_AVIF));
+        assert_eq!(cache.extra(url).await.unwrap(), image);
+    }
+
+    #[tokio::test]
+    async fn does_not_keep_an_extra_that_does_not_decode() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ImageCache::new(
+            Some(dir.path().join("images")),
+            ImageDownloader::with_fetch(Cdn(b"<html>not found</html>".to_vec())),
+        );
+
+        assert!(cache.extra("https://cdn.test/extras/x.avif").await.is_err());
+        assert_eq!(cache.bytes(), 0);
     }
 }
