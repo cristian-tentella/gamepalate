@@ -38,6 +38,12 @@ The recommendation system runs locally. The only network calls go to Steam.
 - Windows 10 or 11 (Linux and macOS are planned)
 - A [Steam Web API key](https://steamcommunity.com/dev/apikey)
 
+## Download
+
+Download `gamepalate.exe` from the [latest release](https://github.com/cristian-tentella/gamepalate/releases/latest) and run it. No installation needed. `SHA256SUMS.txt` lists the checksums of the files.
+
+The executable is not signed yet, so on the first run Windows SmartScreen shows "Windows protected your PC". Click **More info**, then **Run anyway**.
+
 ## Data
 
 Data lives in `%APPDATA%\gamepalate` (config, votes, corrections, `catalog.sqlite`). Override with `GAMEPALATE_DATA_DIR`.
