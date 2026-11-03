@@ -26,6 +26,10 @@ jobs:
         run: |
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item target/release/gamepalate.exe, target/release/gamepalate-cli.exe dist/
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc /Q "/O$PWD\dist" crates/gamepalate-gui/gamepalate.iss
+          if ($LASTEXITCODE) { throw "ISCC failed with $LASTEXITCODE" }
           Get-ChildItem dist -File |
             ForEach-Object { "{0}  {1}`n" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } |
             Set-Content dist/SHA256SUMS.txt -Encoding ascii -NoNewline
