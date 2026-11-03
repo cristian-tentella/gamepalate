@@ -21,7 +21,7 @@ use gamepalate_store::data_files::load_data_files;
 
 /// Recommends Steam games from your library, playtime and votes
 #[derive(Parser)]
-#[command(name = "gamepalate", bin_name = "gamepalate", version, long_about = None)]
+#[command(name = "gamepalate-cli", bin_name = "gamepalate-cli", version, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

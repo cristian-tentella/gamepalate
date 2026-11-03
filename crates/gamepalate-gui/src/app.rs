@@ -15,7 +15,8 @@ use iced::{
     mouse, padding, stream, task,
     theme::Palette,
     widget::{
-        button, column, container, mouse_area, progress_bar, row, space, stack, text, tooltip,
+        button, column, container, image, mouse_area, progress_bar, row, space, stack, text,
+        tooltip,
     },
     window::{self, Direction},
 };
@@ -28,10 +29,13 @@ use crate::{
         setup, votes,
     },
     smooth::smooth,
-    style,
+    style, window_icon,
 };
 
 const UNDERLINE_HEIGHT: f32 = 2.0;
+const LOGO_BYTES: &[u8] = include_bytes!("../gamepalate-24.png");
+const LOGO_SIZE: f32 = 24.0;
+const LOGO_SPACING: f32 = 8.0;
 const RESIZE_BORDER: f32 = 5.0;
 const DOUBLE_CLICK: Duration = Duration::from_millis(500);
 const MINIMIZE: char = '\u{E921}';
@@ -68,6 +72,7 @@ pub struct App {
     last_bar_press: Option<Instant>,
     refresh: Refresh,
     pending: Option<PendingUpdate>,
+    logo: image::Handle,
 }
 
 #[derive(Debug, Default)]
@@ -140,6 +145,7 @@ impl App {
             last_bar_press: None,
             refresh: Refresh::Idle,
             pending: None,
+            logo: image::Handle::from_bytes(LOGO_BYTES),
         };
         let task = match setup::start(FirstRun::check(None)) {
             Ok(gamepalate) => app.opened(gamepalate),
@@ -271,7 +277,10 @@ impl App {
             Message::WindowFound(id) => {
                 self.window = id;
                 match id {
-                    Some(id) => window::scale_factor(id).map(Message::Rescaled),
+                    Some(id) => Task::batch([
+                        window::scale_factor(id).map(Message::Rescaled),
+                        window::run(id, window_icon::use_exe_icon).discard(),
+                    ]),
                     None => Task::none(),
                 }
             }
@@ -401,9 +410,19 @@ impl App {
         let bar = container(
             row![
                 column![
-                    container(text("gamepalate").font(font::BOLD).size(font::BAR_SIZE))
-                        .height(Fill)
-                        .align_y(Center),
+                    container(
+                        row![
+                            image(self.logo.clone())
+                                .width(LOGO_SIZE)
+                                .height(LOGO_SIZE)
+                                .filter_method(image::FilterMethod::Nearest),
+                            text("gamepalate").font(font::BOLD).size(font::BAR_SIZE),
+                        ]
+                        .spacing(LOGO_SPACING)
+                        .align_y(Center)
+                    )
+                    .height(Fill)
+                    .align_y(Center),
                     space().height(UNDERLINE_HEIGHT),
                 ]
                 .height(Fill),

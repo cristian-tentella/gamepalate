@@ -1,4 +1,6 @@
-# gamepalate
+<p align="center"><img src=".github/logo.png" width="128" height="128" alt="gamepalate logo"></p>
+
+<h1 align="center">gamepalate</h1>
 
 gamepalate is a Steam game recommender. It builds a tag profile from your library and playtime, then ranks the Steam catalog against it to produce a list of suggestions. You vote on them, and your votes feed back into the ranking.
 
@@ -34,9 +36,9 @@ The API key is stored in Windows Credential Manager, or read from `STEAM_API_KEY
 cargo build --release -p gamepalate-gui
 ```
 
-Output: `target/release/gamepalate-gui.exe`. The first run asks for the API key and your Steam profile, then downloads the catalog (this takes a while).
+Output: `target/release/gamepalate.exe`. The first run asks for the API key and your Steam profile, then downloads the catalog (this takes a while).
 
-`gamepalate-cli` covers the same features from the terminal. Run it with `--help` for the commands.
+`gamepalate-cli` covers the same features from the terminal. Build it with `cargo build --release -p gamepalate-cli` and run `gamepalate-cli --help` for the commands.
 
 ## License
 
