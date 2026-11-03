@@ -4,7 +4,7 @@ use std::{
 };
 
 use gamepalate_app::{
-    Gamepalate, GuiSettings, PendingUpdate, Region, SavedWindow, ThemeChoice, Timestamp,
+    AppId, Gamepalate, GuiSettings, PendingUpdate, Region, SavedWindow, ThemeChoice, Timestamp,
     refresh::{Step, refresh},
     setup::{FirstRun, error_chain},
 };
@@ -161,6 +161,7 @@ impl App {
         match message {
             Message::Navigate(page) if self.page() == Some(page) => Task::none(),
             Message::Navigate(page) => self.open(page),
+            Message::Discover(discover::Message::OpenSimilar(id)) => self.show_game(id),
             Message::Discover(message) => {
                 if let Screen::Discover(screen) = &mut self.screen {
                     screen.update(message).map(Message::Discover)
@@ -648,6 +649,20 @@ impl App {
                 task.map(Message::Settings)
             }
         }
+    }
+
+    fn show_game(&mut self, id: AppId) -> Task<Message> {
+        let Some(gamepalate) = &self.gamepalate else {
+            return Task::none();
+        };
+        let (library, task) = Library::showing(gamepalate, id);
+        if library.contains(id) {
+            self.screen = Screen::Library(Box::new(library));
+            return task.map(Message::Library);
+        }
+        let (votes, task) = Votes::showing(gamepalate, id);
+        self.screen = Screen::Votes(Box::new(votes));
+        task.map(Message::Votes)
     }
 
     fn tab(&self, label: &'static str, page: Page) -> Element<'_, Message> {
@@ -1195,7 +1210,7 @@ mod tests {
         let contrast = |theme: &Theme| {
             let background = theme.palette().background;
             let link = style::link(theme, button::Status::Active).text_color;
-            let discount = style::discount(theme).color.unwrap();
+            let discount = style::accent(theme).color.unwrap();
 
             (
                 link.relative_contrast(background),

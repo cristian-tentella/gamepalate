@@ -92,6 +92,7 @@ pub struct RecommendedGame {
     pub affinity: f64,
     pub top_tags: Vec<String>,
     pub similar_to: Option<String>,
+    pub similar_to_id: Option<AppId>,
     pub similar_to_multiplier: Option<f64>,
     pub quality: f64,
     pub reviews: Reviews,
@@ -234,6 +235,7 @@ pub fn recommended_game(
         top_tags: top_tags(game, &taste.taste.profile(), inputs.catalog),
         similar_to: similar
             .map(|reference| game_name(reference.id, inputs.catalog, inputs.off_catalog)),
+        similar_to_id: similar.map(|reference| reference.id),
         // Only signals use game multipliers
         similar_to_multiplier: similar
             .filter(|_| taste.family.is_none())

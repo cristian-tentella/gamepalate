@@ -22,7 +22,7 @@ use iced::{
 };
 
 use super::{
-    game::{self, Link, VOTE_HEIGHT, VOTES},
+    game::{self, Link, VOTE_HEIGHT},
     showcase::{self, Showcase},
 };
 use crate::{font, format, style};
@@ -135,6 +135,26 @@ impl Votes {
         let task = Task::batch([votes.load(), votes.find_matches()]);
 
         (votes, task)
+    }
+
+    pub fn showing(gamepalate: &Arc<Gamepalate>, id: AppId) -> (Votes, Task<Message>) {
+        let (mut votes, task) = Votes::new(gamepalate);
+        let Some(kind) = votes.games.get(&id).map(|game| game.vote.kind) else {
+            return (votes, task);
+        };
+        votes.filter = Filter::Kind(kind);
+        votes.rows = votes.shown_rows();
+        votes.selected = votes.rows.iter().position(|&row| row == id).unwrap_or(0);
+        let scroll = operation::scroll_to(
+            LIST,
+            AbsoluteOffset {
+                x: None,
+                y: Some(votes.selected as f32 * ROW_HEIGHT),
+            },
+        );
+        let load = votes.load();
+
+        (votes, Task::batch([task, load, scroll]))
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -359,7 +379,7 @@ impl Votes {
                 .push(price.discount.map(|discount| {
                     text(format::discount(discount.percent))
                         .size(font::NOTE_SIZE)
-                        .style(style::discount)
+                        .style(style::accent)
                 }))
                 .spacing(6)
         });
@@ -407,16 +427,11 @@ impl Votes {
         );
         let today = jiff::Zoned::now().date();
         let price = match &game.price {
-            Some(price) => game::price_row(price, game.vote.bet, self.gamepalate.currency()),
-            None => row![
-                text("Not on sale on Steam")
-                    .size(font::INFO_SIZE)
-                    .style(style::muted)
-            ]
-            .push(game.vote.bet.then(game::bet_label))
-            .spacing(12)
-            .align_y(Center)
-            .into(),
+            Some(price) => game::price_row(price, self.gamepalate.currency(), game::PRICE_GAP),
+            None => text("Not on sale on Steam")
+                .size(font::INFO_SIZE)
+                .style(style::muted)
+                .into(),
         };
         let voted = rich_text![
             span("Voted "),
@@ -426,21 +441,18 @@ impl Votes {
         .size(font::BAR_SIZE)
         .style(style::muted)
         .on_link_click(never);
-        let info = column![
-            text(&game.name).size(font::TITLE_SIZE).font(font::SEMIBOLD),
-            voted,
-            price,
-        ]
-        .push(game::stats(
-            game.reviews.as_ref(),
-            self.showcase.year(game.id),
-        ))
-        .spacing(10)
-        .width(Fill);
+        let info = column![game::title(&game.name), voted]
+            .push(game.reviews.as_ref().map(game::reviews))
+            .push(price)
+            .spacing(10)
+            .width(Fill);
         let top = row![
-            self.showcase
-                .header(game.id, HEADER_WIDTH, HEADER_HEIGHT)
-                .map(Message::Showcase),
+            game::with_bet(
+                self.showcase
+                    .header(game.id, HEADER_WIDTH, HEADER_HEIGHT)
+                    .map(Message::Showcase),
+                game.vote.bet.then(|| self.gamepalate.bet_every()),
+            ),
             info,
         ]
         .spacing(20)
@@ -454,7 +466,7 @@ impl Votes {
         ]
         .push(
             self.showcase
-                .facts(game.id)
+                .facts(game.id, &[])
                 .map(|facts| facts.map(Message::Showcase)),
         )
         .spacing(CONTENT_SPACING)
@@ -471,8 +483,8 @@ impl Votes {
 
     fn vote_row(&self, width: f32) -> Element<'_, Message> {
         let game = self.current();
-        let vote_width = game::vote_width(width, 0.0);
-        let votes = row(VOTES.map(|(key, kind)| {
+        let vote_width = game::vote_width(width - game::LINKS_WIDTH, 0.0);
+        let votes = game::vote_buttons(|key, kind| {
             game::vote_button(
                 key,
                 kind,
@@ -481,10 +493,8 @@ impl Votes {
                 game.is_some().then_some(Message::Vote(kind)),
                 game.is_some_and(|game| game.vote.kind == kind),
             )
-        }))
-        .spacing(8)
-        .width(Fill)
-        .align_y(Center);
+        })
+        .width(Fill);
 
         row![
             votes,
@@ -577,7 +587,9 @@ impl Votes {
         let upcoming = &self.rows[self.selected.min(end)..end];
         let nearby = &self.rows[start..end];
 
-        self.showcase.load(upcoming, nearby).map(Message::Showcase)
+        self.showcase
+            .load(upcoming, nearby, &[])
+            .map(Message::Showcase)
     }
 
     fn show_toast(&mut self, text: String) -> Task<Message> {

@@ -418,6 +418,10 @@ impl Library {
         ])
     }
 
+    pub fn contains(&self, id: AppId) -> bool {
+        self.game(id).is_some()
+    }
+
     fn game(&self, id: AppId) -> Option<&LibraryGameView> {
         self.view.games.iter().find(|game| game.id == id)
     }
