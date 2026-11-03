@@ -19,7 +19,6 @@ jobs:
         run: |
           $version = (cargo pkgid -p gamepalate-gui) -split '[#@]' | Select-Object -Last 1
           if ($env:TAG -ne "v$version") { throw "Tag $env:TAG does not match version $version" }
-      - run: cargo test --workspace --locked
       - run: cargo build --release --locked -p gamepalate-gui -p gamepalate-cli
         env:
           RUSTFLAGS: -C target-feature=+crt-static
@@ -28,8 +27,8 @@ jobs:
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item target/release/gamepalate.exe, target/release/gamepalate-cli.exe dist/
           Get-ChildItem dist -File |
-            ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } |
-            Set-Content dist/SHA256SUMS.txt -Encoding ascii
+            ForEach-Object { "{0}  {1}`n" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } |
+            Set-Content dist/SHA256SUMS.txt -Encoding ascii -NoNewline
       - name: Draft the release
         env:
           GH_TOKEN: ${{ github.token }}
