@@ -7,6 +7,7 @@ mod progress;
 mod screen;
 mod smooth;
 mod style;
+mod window_icon;
 
 use gamepalate_app::{log::start_log, setup::saved_gui_settings};
 use iced::{Pixels, Settings};
