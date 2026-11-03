@@ -16,10 +16,10 @@ use gamepalate_app::{
 use iced::{
     Center, Element, Event, Fill, Size, Subscription, Task, event,
     keyboard::{self, Key, key::Named},
-    never, padding,
+    mouse, padding,
     widget::{
-        Column, button, column, container, mouse_area, opaque, pick_list, responsive, rich_text,
-        row, scrollable, space, span, stack, text,
+        Column, button, column, container, mouse_area, opaque, pick_list, responsive, row,
+        scrollable, space, stack, text,
     },
 };
 
@@ -28,7 +28,7 @@ use self::{
     queue::Queue,
 };
 use super::{
-    game::{self, Link, VOTE_HEIGHT, VOTES},
+    game::{self, Link, VOTE_HEIGHT},
     showcase::{self, Showcase},
 };
 use crate::{font, format, style};
@@ -41,13 +41,20 @@ const SIDE_WIDTH: f32 = 360.0;
 const MIN_SHOT_WIDTH: f32 = 480.0;
 const CARD_SPACING: f32 = 32.0;
 const INFO_SPACING: f32 = 14.0;
+const TITLE_SPACING: f32 = 12.0;
+const HEADER_SPACING: f32 = 16.0;
+const SIMILAR_SIZE: f32 = 17.0;
+const GROUP_SPACING: f32 = 32.0;
+const THUMBNAIL_WIDTH: f32 = 144.0;
+const SIMILAR_LINE_HEIGHT: f32 = 1.1;
+const SIMILAR_GAP: f32 = 12.0;
 const SCROLLBAR_GAP: f32 = 12.0;
 const GAME_PADDING: f32 = 16.0;
-const BAR_PADDING: f32 = 20.0;
 const FILTERS_HEIGHT: f32 = 34.0;
 const VOTES_PADDING: f32 = 10.0;
 const SEPARATOR: f32 = 1.0;
-const HINT_WIDTH: f32 = 240.0;
+const HINT_WIDTH: f32 = 180.0;
+const HINT_SPACING: f32 = 12.0;
 const MEDIA_BELOW: f32 = 80.0;
 const SIDE_HEIGHT: f32 = 560.0;
 const STACKED_BELOW: f32 = 440.0;
@@ -102,6 +109,7 @@ pub enum Message {
     HideToast(u64),
     EndFlash(u64),
     Showcase(showcase::Message),
+    OpenSimilar(AppId),
 }
 
 enum State {
@@ -264,6 +272,7 @@ impl Discover {
                     game::open(link, &game.name, &game.store_url);
                 }
             }
+            Message::OpenSimilar(_) => {}
             Message::Source(source) => {
                 let options = filters::with_source(&self.options, source);
                 return self.search_if_changed(options);
@@ -418,35 +427,40 @@ impl Discover {
                 .style(style::veil)
         });
         let main = stack![game].push(veil).push(toast);
-        let votes =
-            container(container(self.vote_row(size.width - left - right)).height(VOTE_HEIGHT))
-                .padding(
-                    padding::top(VOTES_PADDING)
-                        .bottom(VOTES_PADDING)
-                        .left(left)
-                        .right(right),
-                )
-                .width(Fill);
+        let votes = container(
+            container(self.vote_row(size.width - left - right, layout)).height(VOTE_HEIGHT),
+        )
+        .padding(
+            padding::top(VOTES_PADDING)
+                .bottom(VOTES_PADDING)
+                .left(left)
+                .right(right),
+        )
+        .width(Fill);
 
         let below = stack![column![main, style::separator(), votes]].push(popup);
 
         column![filters, style::separator(), below].into()
     }
 
-    fn vote_row(&self, width: f32) -> Element<'_, Message> {
+    fn vote_row(&self, width: f32, layout: Layout) -> Element<'_, Message> {
         let compact = width < COMPACT_WIDTH;
-        let vote_width = game::vote_width(width, if compact { 0.0 } else { HINT_WIDTH });
+        let available = match layout {
+            Layout::Beside(shot_width) => shot_width,
+            Layout::Stacked(_) => width - game::LINKS_WIDTH,
+        };
+        let vote_width = game::vote_width(available, if compact { 0.0 } else { HINT_WIDTH });
         let game = self.current();
-        let hint = (!compact).then(|| {
-            container(
-                text("Space skip · ⌫ back · ← → screenshots")
-                    .size(font::NOTE_SIZE)
-                    .style(style::muted),
-            )
-            .padding(padding::left(4))
+        let hints = (!compact).then(|| {
+            row![
+                style::divider(),
+                row![game::hint("Space", "Skip"), game::hint("⌫", "Back")].spacing(HINT_SPACING),
+            ]
+            .spacing(8)
+            .align_y(Center)
         });
         let flashed = self.flash.as_ref().map(|flash| flash.kind);
-        let votes = row(VOTES.map(|(key, kind)| {
+        let votes = game::vote_buttons(|key, kind| {
             game::vote_button(
                 key,
                 kind,
@@ -455,15 +469,16 @@ impl Discover {
                 game.is_some().then_some(Message::Vote(kind)),
                 flashed == Some(kind),
             )
-        }))
-        .push(hint)
-        .spacing(8)
-        .width(Fill)
-        .align_y(Center);
+        })
+        .push(hints);
         let links = game::links(|link| game.is_some().then_some(Message::Open(link)));
+        let (votes, spacing) = match layout {
+            Layout::Beside(shot_width) => (votes.width(shot_width), CARD_SPACING),
+            Layout::Stacked(_) => (votes.width(Fill), 8.0),
+        };
 
         row![votes, links]
-            .spacing(8)
+            .spacing(spacing)
             .height(Fill)
             .align_y(Center)
             .into()
@@ -579,9 +594,14 @@ impl Discover {
         };
         let upcoming = ids(queue.upcoming(showcase::AHEAD));
         let nearby = ids(queue.around(showcase::BEHIND, showcase::AHEAD));
+        let similar: Vec<AppId> = queue
+            .upcoming(showcase::AHEAD)
+            .iter()
+            .filter_map(|game| game.similar_to_id)
+            .collect();
 
         self.showcase
-            .load(&upcoming, &nearby)
+            .load(&upcoming, &nearby, &similar)
             .map(Message::Showcase)
     }
 
@@ -599,10 +619,10 @@ impl Discover {
                     .media(game.id, shot_width, shot_height)
                     .map(Message::Showcase),
                 column![
-                    self.summary(game, SIDE_WIDTH),
+                    self.summary(game, SIDE_WIDTH, true),
                     self.reasons(queue, game, false)
                 ]
-                .spacing(INFO_SPACING)
+                .spacing(GROUP_SPACING)
                 .width(SIDE_WIDTH),
             ]
             .spacing(CARD_SPACING)
@@ -611,7 +631,7 @@ impl Discover {
                 let header_width = ((shot_width - CARD_SPACING) / 2.0).min(SIDE_WIDTH);
                 column![
                     row![
-                        self.summary(game, header_width).width(header_width),
+                        self.summary(game, header_width, false).width(header_width),
                         self.reasons(queue, game, true).width(Fill),
                     ]
                     .spacing(CARD_SPACING),
@@ -634,16 +654,39 @@ impl Discover {
         .into()
     }
 
-    fn summary<'a>(&'a self, game: &'a RecommendedGame, header_width: f32) -> Column<'a, Message> {
+    fn summary<'a>(
+        &'a self,
+        game: &'a RecommendedGame,
+        header_width: f32,
+        beside: bool,
+    ) -> Column<'a, Message> {
+        let reviews = game::reviews(&game.reviews);
+        let currency = self.gamepalate.currency();
+        let figures: Element<'a, Message> = if beside {
+            let (shift, gap) = game::beside_reviews();
+            let price = game::price_row(&game.price, currency, gap);
+
+            row![
+                container(reviews).width(THUMBNAIL_WIDTH + SIMILAR_GAP),
+                container(price).padding(padding::top(shift)),
+            ]
+            .into()
+        } else {
+            let price = game::price_row(&game.price, currency, game::PRICE_GAP);
+
+            column![reviews, price].spacing(INFO_SPACING).into()
+        };
+
         column![
-            self.showcase
-                .header(game.id, header_width, header_width * 215.0 / 460.0)
-                .map(Message::Showcase),
-            text(&game.name).size(font::TITLE_SIZE).font(font::SEMIBOLD),
-            game::price_row(&game.price, game.bet, self.gamepalate.currency()),
-            game::stats(Some(&game.reviews), self.showcase.year(game.id)),
+            game::with_bet(
+                self.showcase
+                    .header(game.id, header_width, header_width * 215.0 / 460.0)
+                    .map(Message::Showcase),
+                game.bet.then_some(self.bet_every),
+            ),
+            column![game::title(&game.name), figures].spacing(TITLE_SPACING),
         ]
-        .spacing(INFO_SPACING)
+        .spacing(HEADER_SPACING)
     }
 
     fn reasons<'a>(
@@ -659,7 +702,7 @@ impl Discover {
         });
 
         column![]
-            .push(similar_lines(game))
+            .push(self.similar(game))
             .push(self.why(game))
             .push(
                 with_description
@@ -669,11 +712,11 @@ impl Discover {
             )
             .push(
                 self.showcase
-                    .facts(game.id)
+                    .facts(game.id, &game.top_tags)
                     .map(|facts| facts.map(Message::Showcase)),
             )
             .push(waiting)
-            .spacing(INFO_SPACING)
+            .spacing(GROUP_SPACING)
     }
 
     fn current(&self) -> Option<&RecommendedGame> {
@@ -722,67 +765,56 @@ impl Discover {
 }
 
 impl Discover {
-    fn why<'a>(&self, game: &'a RecommendedGame) -> Element<'a, Message> {
-        let taste = rich_text![
-            span("Fits your taste "),
-            span(format::affinity(game.affinity)).font(font::SEMIBOLD),
-            span(" better than the average game"),
-        ]
-        .size(font::BAR_SIZE)
-        .on_link_click(never);
-        let reviews = format::few_reviews(&game.reviews, game.quality)
-            .map(|line| text(line).size(font::BAR_SIZE));
-        let bet = game.bet.then(|| {
-            text(format::bet(self.bet_every))
-                .size(font::NOTE_SIZE)
-                .style(style::muted)
-        });
-
-        container(
-            column![
-                text("Why this game")
-                    .size(font::NOTE_SIZE)
-                    .style(style::muted),
-                taste,
+    fn similar<'a>(&self, game: &'a RecommendedGame) -> Option<Element<'a, Message>> {
+        game.similar_to.as_deref().map(|name| {
+            let label = column![
+                text("Similar to").size(font::NOTE_SIZE).style(style::muted),
+                text(name)
+                    .size(SIMILAR_SIZE)
+                    .font(font::SEMIBOLD)
+                    .line_height(SIMILAR_LINE_HEIGHT),
             ]
-            .push(reviews)
-            .push(bet)
-            .spacing(4),
+            .spacing(2);
+
+            let similar = row![]
+                .push(game.similar_to_id.map(|id| {
+                    self.showcase
+                        .thumbnail(id, THUMBNAIL_WIDTH, THUMBNAIL_WIDTH * 215.0 / 460.0)
+                        .map(Message::Showcase)
+                }))
+                .push(label)
+                .spacing(SIMILAR_GAP)
+                .align_y(Center);
+
+            match game.similar_to_id {
+                Some(id) => mouse_area(similar)
+                    .interaction(mouse::Interaction::Pointer)
+                    .on_press(Message::OpenSimilar(id))
+                    .into(),
+                None => similar.into(),
+            }
+        })
+    }
+
+    fn why<'a>(&self, game: &'a RecommendedGame) -> Option<Element<'a, Message>> {
+        let reviews = format::few_reviews(&game.reviews, game.quality)?;
+
+        Some(
+            container(
+                column![
+                    text("Why this game")
+                        .size(font::NOTE_SIZE)
+                        .style(style::muted),
+                    text(reviews).size(font::BAR_SIZE),
+                ]
+                .spacing(4),
+            )
+            .padding([10, 14])
+            .width(Fill)
+            .style(style::card)
+            .into(),
         )
-        .padding([10, 14])
-        .width(Fill)
-        .style(style::card)
-        .into()
     }
-}
-
-fn similar_lines(game: &RecommendedGame) -> Option<Element<'_, Message>> {
-    let similar = game.similar_to.as_deref().map(|name| {
-        rich_text![span("Similar to "), span(name).font(font::SEMIBOLD)]
-            .size(font::INFO_SIZE)
-            .on_link_click(never)
-    });
-
-    let mut spans = Vec::new();
-    if let Some(family) = &game.from_family {
-        spans.push(span("from your family "));
-        spans.push(span(family.as_str()).font(font::SEMIBOLD));
-    }
-    for tag in &game.top_tags {
-        if !spans.is_empty() {
-            spans.push(span(" \u{b7} "));
-        }
-        spans.push(span(tag.as_str()));
-    }
-    let tags = (!spans.is_empty()).then(|| {
-        rich_text(spans)
-            .size(font::BAR_SIZE)
-            .style(style::muted)
-            .on_link_click(never)
-    });
-
-    (similar.is_some() || tags.is_some())
-        .then(|| column![].push(similar).push(tags).spacing(4).into())
 }
 
 fn small_button(label: &str, message: Message) -> Element<'_, Message> {
@@ -860,9 +892,9 @@ impl Layout {
 
 fn bar_edges(width: f32, content_width: f32) -> (f32, f32) {
     let start = GAME_PADDING + (width - 2.0 * GAME_PADDING - SCROLLBAR_GAP - content_width) / 2.0;
-    let left = start.max(BAR_PADDING);
+    let left = start.max(GAME_PADDING);
 
-    (left, (width - left - content_width).max(BAR_PADDING))
+    (left, (width - left - content_width).max(GAME_PADDING))
 }
 
 fn after(duration: Duration, message: Message) -> Task<Message> {
@@ -1025,8 +1057,8 @@ mod tests {
     #[test]
     fn the_bars_line_up_with_the_game() {
         assert_eq!(bar_edges(2560.0, 2312.0), (118.0, 130.0));
-        assert_eq!(bar_edges(1280.0, 1236.0), (BAR_PADDING, 24.0));
-        assert_eq!(bar_edges(960.0, 916.0), (BAR_PADDING, 24.0));
+        assert_eq!(bar_edges(1280.0, 1236.0), (16.0, 28.0));
+        assert_eq!(bar_edges(960.0, 916.0), (16.0, 28.0));
     }
 
     #[test]

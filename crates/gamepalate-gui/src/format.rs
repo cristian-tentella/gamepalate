@@ -110,6 +110,24 @@ pub fn count(number: u32) -> String {
     grouped
 }
 
+pub fn short_count(number: u32) -> String {
+    if number < 1_000 {
+        return number.to_string();
+    }
+    let (value, unit) = if number < 999_500 {
+        (f64::from(number) / 1e3, "k")
+    } else {
+        (f64::from(number) / 1e6, "M")
+    };
+
+    if value < 9.95 {
+        let short = format!("{value:.1}");
+        format!("{}{unit}", short.trim_end_matches(".0"))
+    } else {
+        format!("{}{unit}", value.round())
+    }
+}
+
 pub fn currency_symbol(currency: &Currency) -> String {
     format!("{}{}", currency.prefix.trim(), currency.suffix.trim())
 }
@@ -148,18 +166,25 @@ pub fn time_left(left: std::time::Duration) -> String {
     }
 }
 
-pub fn until(end: Timestamp) -> String {
-    until_in(end, &TimeZone::system())
+pub fn original_price(price: &Price, currency: &Currency) -> String {
+    currency.format(price.original_cents)
 }
 
-fn until_in(end: Timestamp, zone: &TimeZone) -> String {
-    match jiff::Timestamp::from_millisecond(end.0) {
-        Ok(end) => end
-            .to_zoned(zone.clone())
-            .strftime("until %-d %b")
-            .to_string(),
-        Err(_) => String::new(),
-    }
+pub fn ends(end: Timestamp) -> Option<String> {
+    ends_in(end, &TimeZone::system(), jiff::Zoned::now().date())
+}
+
+fn ends_in(end: Timestamp, zone: &TimeZone, today: Date) -> Option<String> {
+    let end = jiff::Timestamp::from_millisecond(end.0)
+        .ok()?
+        .to_zoned(zone.clone());
+    let days = today.until(end.date()).ok()?.get_days();
+    Some(match days {
+        ..=0 => "Ends today".to_string(),
+        1 => "Ends tomorrow".to_string(),
+        2..=7 => format!("Ends in {days} days"),
+        _ => end.strftime("Ends %-d %b").to_string(),
+    })
 }
 
 pub fn reviews(reviews: &Reviews) -> (String, String) {
@@ -175,7 +200,7 @@ pub fn reviews(reviews: &Reviews) -> (String, String) {
 
     (
         format!("{percent}%"),
-        format!("positive of {} {noun}", count(reviews.total)),
+        format!("positive of {} {noun}", short_count(reviews.total)),
     )
 }
 
@@ -214,24 +239,38 @@ pub fn screenshot_position(index: usize, count: usize) -> String {
 
 pub fn steam_deck(deck: SteamDeck) -> &'static str {
     match deck {
-        SteamDeck::Verified => "Steam Deck: Verified",
-        SteamDeck::Playable => "Steam Deck: Playable",
-        SteamDeck::Unsupported => "Steam Deck: Unsupported",
+        SteamDeck::Verified => "Deck Verified",
+        SteamDeck::Playable => "Deck Playable",
+        SteamDeck::Unsupported => "Deck Unsupported",
     }
 }
 
-pub fn play(modes: &[String], controller: Option<Controller>) -> Option<String> {
+pub fn features(
+    deck: Option<SteamDeck>,
+    modes: &[String],
+    controller: Option<Controller>,
+) -> Vec<&str> {
     let controller = controller.map(|controller| match controller {
-        Controller::Full => "Full controller support",
-        Controller::Partial => "Partial controller support",
+        Controller::Full => "Full controller",
+        Controller::Partial => "Partial controller",
     });
-    let parts: Vec<&str> = modes.iter().map(String::as_str).chain(controller).collect();
 
-    (!parts.is_empty()).then(|| parts.join(" · "))
+    deck.map(steam_deck)
+        .into_iter()
+        .chain(modes.iter().map(String::as_str))
+        .chain(controller)
+        .collect()
 }
 
 pub fn developers(developers: &[String]) -> Option<String> {
     (!developers.is_empty()).then(|| developers.join(", "))
+}
+
+pub fn byline(year: Option<String>, developers: Option<String>) -> Option<String> {
+    match (year, developers) {
+        (Some(year), Some(developers)) => Some(format!("{year} · {developers}")),
+        (year, developers) => year.or(developers),
+    }
 }
 
 pub fn year(release: Option<Timestamp>) -> Option<String> {
@@ -507,8 +546,45 @@ mod tests {
     }
 
     #[test]
-    fn shows_when_the_discount_ends() {
-        assert_eq!(until_in(NOW, &TimeZone::UTC), "until 2 Nov");
+    fn says_when_the_discount_ends() {
+        let today = Date::constant(2026, 11, 2);
+        let ends = |days: i64| ends_in(Timestamp(NOW.0 + days * 24 * HOUR), &TimeZone::UTC, today);
+
+        assert_eq!(ends(0), Some("Ends today".to_string()));
+        assert_eq!(ends(1), Some("Ends tomorrow".to_string()));
+        assert_eq!(ends(2), Some("Ends in 2 days".to_string()));
+        assert_eq!(ends(7), Some("Ends in 7 days".to_string()));
+        assert_eq!(ends(8), Some("Ends 10 Nov".to_string()));
+        assert_eq!(ends(-1), Some("Ends today".to_string()));
+    }
+
+    #[test]
+    fn the_original_price_ignores_the_discount() {
+        let price = Price {
+            original_cents: 1999,
+            discount: Some(Discount {
+                percent: 85,
+                final_cents: 299,
+                end: None,
+            }),
+        };
+
+        let currency = Currency::italian();
+
+        assert_eq!(original_price(&price, &currency), currency.format(1999));
+    }
+
+    #[test]
+    fn shortens_counts_over_a_thousand() {
+        assert_eq!(short_count(999), "999");
+        assert_eq!(short_count(1_000), "1k");
+        assert_eq!(short_count(1_540), "1.5k");
+        assert_eq!(short_count(9_949), "9.9k");
+        assert_eq!(short_count(9_950), "10k");
+        assert_eq!(short_count(11_039), "11k");
+        assert_eq!(short_count(999_499), "999k");
+        assert_eq!(short_count(999_500), "1M");
+        assert_eq!(short_count(2_345_678), "2.3M");
     }
 
     #[test]
@@ -520,7 +596,7 @@ mod tests {
 
         assert_eq!(
             super::reviews(&reviews),
-            ("93%".to_string(), "positive of 43,506 reviews".to_string())
+            ("93%".to_string(), "positive of 44k reviews".to_string())
         );
     }
 
@@ -580,26 +656,28 @@ mod tests {
 
     #[test]
     fn names_the_steam_deck_support() {
-        assert_eq!(steam_deck(SteamDeck::Verified), "Steam Deck: Verified");
-        assert_eq!(
-            steam_deck(SteamDeck::Unsupported),
-            "Steam Deck: Unsupported"
-        );
+        assert_eq!(steam_deck(SteamDeck::Verified), "Deck Verified");
+        assert_eq!(steam_deck(SteamDeck::Unsupported), "Deck Unsupported");
     }
 
     #[test]
-    fn joins_the_modes_and_the_controller() {
+    fn lists_deck_modes_and_controller_in_order() {
         let modes = ["Single-player".to_string(), "Online Co-op".to_string()];
 
         assert_eq!(
-            play(&modes, Some(Controller::Full)).unwrap(),
-            "Single-player · Online Co-op · Full controller support"
+            features(Some(SteamDeck::Verified), &modes, Some(Controller::Full)),
+            [
+                "Deck Verified",
+                "Single-player",
+                "Online Co-op",
+                "Full controller"
+            ]
         );
         assert_eq!(
-            play(&[], Some(Controller::Partial)).unwrap(),
-            "Partial controller support"
+            features(None, &[], Some(Controller::Partial)),
+            ["Partial controller"]
         );
-        assert_eq!(play(&[], None), None);
+        assert!(features(None, &[], None).is_empty());
     }
 
     #[test]
@@ -611,6 +689,19 @@ mod tests {
             "Live Wire, Adglobe"
         );
         assert_eq!(super::developers(&[]), None);
+    }
+
+    #[test]
+    fn the_byline_joins_year_and_developers() {
+        let developers = || Some("Cyanide Studio".to_string());
+
+        assert_eq!(
+            byline(Some("2018".to_string()), developers()).unwrap(),
+            "2018 · Cyanide Studio"
+        );
+        assert_eq!(byline(None, developers()).unwrap(), "Cyanide Studio");
+        assert_eq!(byline(Some("2018".to_string()), None).unwrap(), "2018");
+        assert_eq!(byline(None, None), None);
     }
 
     #[test]

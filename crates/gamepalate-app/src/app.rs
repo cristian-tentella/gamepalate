@@ -721,6 +721,7 @@ mod tests {
             affinity: 1.0,
             top_tags: Vec::new(),
             similar_to: None,
+            similar_to_id: None,
             similar_to_multiplier: None,
             quality: 1.0,
             reviews: Reviews {

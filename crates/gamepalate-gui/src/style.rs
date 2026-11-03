@@ -1,9 +1,15 @@
 use iced::{
     Border, Color, Element, Shadow, Theme, Vector,
     overlay::menu,
+    padding,
     theme::palette,
     widget::{button, container, pick_list, progress_bar, rule, text, text_input},
 };
+
+const BADGE_TINT: f32 = 0.14;
+const KEYCAP_BORDER: f32 = 0.3;
+const DIVIDER_HEIGHT: f32 = 20.0;
+pub const DIVIDER_INSET: f32 = 8.0;
 
 pub fn top_bar(theme: &Theme) -> container::Style {
     let background = theme.extended_palette().background.base;
@@ -17,6 +23,13 @@ pub fn top_bar(theme: &Theme) -> container::Style {
 
 pub fn separator<'a, Message: 'a>() -> Element<'a, Message> {
     rule::horizontal(1).style(rule::weak).into()
+}
+
+pub fn divider<'a, Message: 'a>() -> Element<'a, Message> {
+    container(rule::vertical(1).style(rule::weak))
+        .height(DIVIDER_HEIGHT)
+        .padding(padding::left(DIVIDER_INSET).right(DIVIDER_INSET))
+        .into()
 }
 
 fn faded(theme: &Theme, alpha: f32) -> Color {
@@ -148,12 +161,16 @@ pub fn keycap(flashed: bool) -> impl Fn(&Theme) -> container::Style {
         let palette = theme.extended_palette();
 
         container::Style {
-            text_color: flashed.then_some(palette.primary.base.text),
+            text_color: Some(if flashed {
+                palette.primary.base.text
+            } else {
+                palette.background.base.text
+            }),
             border: Border {
                 color: if flashed {
                     palette.primary.base.text.scale_alpha(0.6)
                 } else {
-                    palette.background.strong.color
+                    palette.background.base.text.scale_alpha(KEYCAP_BORDER)
                 },
                 width: 1.0,
                 radius: 4.0.into(),
@@ -182,9 +199,37 @@ pub fn toast(theme: &Theme) -> container::Style {
     }
 }
 
-pub fn discount(theme: &Theme) -> text::Style {
+pub fn accent(theme: &Theme) -> text::Style {
     text::Style {
         color: Some(theme.extended_palette().success.base.color),
+    }
+}
+
+pub fn tag(theme: &Theme) -> container::Style {
+    let background = theme.extended_palette().background;
+
+    container::Style {
+        text_color: Some(background.base.text),
+        border: Border {
+            color: background.strong.color,
+            width: 1.0,
+            radius: 10.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+pub fn discount_badge(theme: &Theme) -> container::Style {
+    let accent = theme.extended_palette().success.base.color;
+
+    container::Style {
+        background: Some(accent.scale_alpha(BADGE_TINT).into()),
+        text_color: Some(accent),
+        border: Border {
+            radius: 4.0.into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
     }
 }
 
@@ -314,6 +359,24 @@ pub fn veil(theme: &Theme) -> container::Style {
                 .into(),
         ),
         ..container::Style::default()
+    }
+}
+
+pub fn arrow(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+    let alpha = match status {
+        button::Status::Hovered | button::Status::Pressed => 1.0,
+        button::Status::Active | button::Status::Disabled => 0.8,
+    };
+
+    button::Style {
+        background: Some(palette.background.base.color.scale_alpha(alpha).into()),
+        text_color: palette.background.base.text,
+        border: Border {
+            radius: 999.0.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
     }
 }
 

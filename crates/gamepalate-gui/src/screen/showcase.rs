@@ -36,6 +36,11 @@ const WAITING_OPACITY: f32 = 0.5;
 const MAX_ZOOM: f32 = 4.0;
 const ZOOM_STEP: f32 = 0.25;
 const CLOSE: char = '\u{E8BB}';
+const CLOSED: char = '\u{E76C}';
+const OPENED: char = '\u{E70D}';
+const LEFT: char = '\u{E76B}';
+const RIGHT: char = '\u{E76C}';
+const ARROW_INSET: f32 = 12.0;
 const BLURRED_WIDTH: u32 = 320;
 const BLUR_SIGMA: f32 = 5.0;
 
@@ -48,6 +53,8 @@ pub struct Showcase {
     shown: Option<AppId>,
     browsing: bool,
     zoomed: bool,
+    features_open: bool,
+    hovered: bool,
     originals: HashMap<String, Picture>,
     thumbnails: HashMap<String, Picture>,
 }
@@ -77,6 +84,8 @@ pub enum Message {
     RetryDetails,
     Zoom,
     CloseZoom,
+    ToggleFeatures,
+    Hover(bool),
 }
 
 impl Showcase {
@@ -90,6 +99,8 @@ impl Showcase {
             shown: None,
             browsing: false,
             zoomed: false,
+            features_open: false,
+            hovered: false,
             originals: HashMap::new(),
             thumbnails: HashMap::new(),
         }
@@ -125,6 +136,8 @@ impl Showcase {
             }
             Message::Zoom => self.zoomed = self.current_screenshot().is_some(),
             Message::CloseZoom => self.zoomed = false,
+            Message::ToggleFeatures => self.features_open = !self.features_open,
+            Message::Hover(hovered) => self.hovered = hovered,
         }
 
         self.load_versions()
@@ -207,12 +220,17 @@ impl Showcase {
         }
     }
 
-    pub fn load(&mut self, upcoming: &[AppId], nearby: &[AppId]) -> Task<Message> {
+    pub fn load(
+        &mut self,
+        upcoming: &[AppId],
+        nearby: &[AppId],
+        similar: &[AppId],
+    ) -> Task<Message> {
         if upcoming.is_empty() {
             return Task::none();
         }
         let details = self.load_details(upcoming, nearby);
-        let images = self.load_images(upcoming, nearby);
+        let images = self.load_images(upcoming, nearby, similar);
 
         Task::batch([details, images, self.load_versions()])
     }
@@ -227,6 +245,17 @@ impl Showcase {
 
     pub fn header<'a>(&self, id: AppId, width: f32, height: f32) -> Element<'a, Message> {
         self.picture(&self.header_url(id), width, height)
+    }
+
+    pub fn thumbnail<'a>(&self, id: AppId, width: f32, height: f32) -> Element<'a, Message> {
+        match self.images.get(&self.gamepalate.header_url(id)) {
+            Some(Picture::Ready(_)) => self.header(id, width, height),
+            _ => container(space())
+                .width(width)
+                .height(height)
+                .style(style::picture)
+                .into(),
+        }
     }
 
     pub fn media<'a>(&'a self, id: AppId, width: f32, height: f32) -> Element<'a, Message> {
@@ -263,12 +292,12 @@ impl Showcase {
             .width(width)
     }
 
-    pub fn facts<'a>(&'a self, id: AppId) -> Option<Element<'a, Message>> {
-        self.pages.details(id).map(facts)
-    }
+    pub fn facts<'a>(&'a self, id: AppId, tags: &[String]) -> Option<Element<'a, Message>> {
+        let open = self.features_open;
 
-    pub fn year(&self, id: AppId) -> Option<String> {
-        format::year(self.pages.details(id)?.store.release_date)
+        self.pages
+            .details(id)
+            .map(|details| facts(details, tags, open))
     }
 
     fn show_screenshot(&mut self, index: usize) {
@@ -323,14 +352,23 @@ impl Showcase {
         }))
     }
 
-    fn load_images(&mut self, upcoming: &[AppId], nearby: &[AppId]) -> Task<Message> {
+    fn load_images(
+        &mut self,
+        upcoming: &[AppId],
+        nearby: &[AppId],
+        similar: &[AppId],
+    ) -> Task<Message> {
         let Some((&current, next)) = upcoming.split_first() else {
             return Task::none();
         };
 
         let screenshots = self.screenshots(current);
         let soon = next_screenshots(screenshots, self.screenshot);
-        let wanted = if self.current_is_loaded() {
+        let similar: Vec<String> = similar
+            .iter()
+            .map(|&id| self.gamepalate.header_url(id))
+            .collect();
+        let mut wanted = if self.current_is_loaded() {
             let later = if self.browsing {
                 other_screenshots(screenshots, self.screenshot)
             } else {
@@ -361,6 +399,10 @@ impl Showcase {
             kept.extend(self.first_screenshot(id));
         }
         kept.extend(self.screenshots(current).iter().cloned());
+        kept.extend(similar.iter().cloned());
+        let mut similar = similar.into_iter();
+        wanted.splice(1..1, similar.next());
+        wanted.extend(similar);
 
         self.images.keep_only(&kept);
         let started = self.images.want(wanted);
@@ -449,12 +491,19 @@ impl Showcase {
                         };
                         let ready = matches!(picture, Some(Picture::Ready(_)));
                         let picture = framed(picture, width, height, opacity);
-                        if !ready {
-                            return picture;
-                        }
-                        return mouse_area(picture)
-                            .on_press(Message::Zoom)
-                            .interaction(mouse::Interaction::ZoomIn)
+                        let picture = if ready {
+                            mouse_area(picture)
+                                .on_press(Message::Zoom)
+                                .interaction(mouse::Interaction::ZoomIn)
+                                .into()
+                        } else {
+                            picture
+                        };
+                        let count = details.store.screenshot_urls.len();
+
+                        return mouse_area(stack![picture].push(self.arrows(count)))
+                            .on_enter(Message::Hover(true))
+                            .on_exit(Message::Hover(false))
                             .into();
                     }
                     None => note("No screenshots"),
@@ -483,6 +532,28 @@ impl Showcase {
             .center_y(height)
             .style(style::picture)
             .into()
+    }
+
+    fn arrows<'a>(&self, count: usize) -> Option<Element<'a, Message>> {
+        if !self.hovered || count < 2 {
+            return None;
+        }
+        let previous = (self.screenshot > 0).then(|| arrow(LEFT, Message::PreviousScreenshot));
+        let next = (self.screenshot + 1 < count).then(|| arrow(RIGHT, Message::NextScreenshot));
+
+        Some(
+            container(
+                row![]
+                    .push(previous)
+                    .push(space::horizontal())
+                    .push(next)
+                    .align_y(Center),
+            )
+            .padding(ARROW_INSET)
+            .center_y(Fill)
+            .width(Fill)
+            .into(),
+        )
     }
 
     pub fn is_zoomed(&self) -> bool {
@@ -641,24 +712,62 @@ fn blurred(bytes: &[u8]) -> Option<image::Handle> {
     ))
 }
 
-fn facts(details: &GameDetails) -> Element<'_, Message> {
+fn facts<'a>(details: &'a GameDetails, tags: &[String], open: bool) -> Element<'a, Message> {
     let store = &details.store;
-    let lines = [
-        store
-            .steam_deck
-            .map(|deck| format::steam_deck(deck).to_string()),
-        format::play(&details.modes, store.controller),
+    let byline = format::byline(
+        format::year(store.release_date),
         format::developers(&store.developers),
-    ];
-
-    column(
-        lines
-            .into_iter()
-            .flatten()
-            .map(|line| text(line).size(font::BAR_SIZE).into()),
     )
-    .spacing(4)
-    .into()
+    .map(|byline| text(byline).size(font::NOTE_SIZE).style(style::muted));
+    let tags = (!tags.is_empty()).then(|| {
+        text(tags.join(" · "))
+            .size(font::NOTE_SIZE)
+            .style(style::muted)
+    });
+    let features = format::features(store.steam_deck, &details.modes, store.controller);
+    let menu = (!features.is_empty()).then(|| {
+        let header = button(
+            row![
+                text("Features").size(font::BAR_SIZE),
+                text(if open { OPENED } else { CLOSED })
+                    .font(font::ICONS)
+                    .size(10),
+            ]
+            .spacing(8)
+            .align_y(Center),
+        )
+        .padding(0)
+        .style(style::list_row(false))
+        .on_press(Message::ToggleFeatures);
+        let chips = open.then(|| {
+            row(features.into_iter().map(|feature| {
+                container(text(feature).size(font::NOTE_SIZE))
+                    .padding([2, 8])
+                    .style(style::tag)
+                    .into()
+            }))
+            .spacing(6)
+            .wrap()
+            .vertical_spacing(6)
+        });
+
+        column![header].push(chips).spacing(8)
+    });
+
+    column![]
+        .push(byline)
+        .push(tags)
+        .push(menu)
+        .spacing(8)
+        .into()
+}
+
+fn arrow<'a>(icon: char, message: Message) -> Element<'a, Message> {
+    button(text(icon).font(font::ICONS).size(14))
+        .padding(10)
+        .style(style::arrow)
+        .on_press(message)
+        .into()
 }
 
 fn note<'a>(label: &'static str) -> Element<'a, Message> {

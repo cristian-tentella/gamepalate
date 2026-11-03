@@ -2,8 +2,10 @@ use std::process::Command;
 
 use gamepalate_app::{Currency, Price, Reviews, VoteKind};
 use iced::{
-    Center, Element, Fill, Length,
-    widget::{button, column, container, row, text},
+    Center, Element, Fill, Length, never, padding,
+    widget::{
+        Container, Row, button, column, container, rich_text, row, span, stack, text, tooltip,
+    },
 };
 
 use crate::{font, format, style};
@@ -17,8 +19,14 @@ pub const VOTES: [(&str, VoteKind); 4] = [
 pub const VOTE_HEIGHT: f32 = 36.0;
 const VOTE_WIDTH: f32 = 172.0;
 const VOTE_SPACING: f32 = 8.0;
-const LINKS_WIDTH: f32 = 240.0;
-const STATS_SPACING: f32 = 32.0;
+pub const LINKS_WIDTH: f32 = 280.0;
+const KEYCAP_SIZE: f32 = 18.0;
+const KEYCAP_PADDING: f32 = 5.0;
+const KEY_SPACING: f32 = 6.0;
+const TITLE_LINE_HEIGHT: f32 = 1.1;
+const BET_INSET: f32 = 8.0;
+const BADGE_PADDING: f32 = 2.0;
+pub const PRICE_GAP: f32 = 4.0;
 const COMPACT_VOTE_SIZE: f32 = 14.0;
 const CHECK: char = '\u{E73E}';
 
@@ -56,32 +64,89 @@ pub fn open(link: Link, name: &str, store_url: &str) {
         .spawn();
 }
 
+pub fn title<'a, Message: 'a>(name: &'a str) -> Element<'a, Message> {
+    text(name)
+        .size(font::TITLE_SIZE)
+        .font(font::SEMIBOLD)
+        .line_height(TITLE_LINE_HEIGHT)
+        .into()
+}
+
+pub fn with_bet<'a, Message: 'a>(
+    header: Element<'a, Message>,
+    bet_every: Option<usize>,
+) -> Element<'a, Message> {
+    match bet_every {
+        Some(every) => {
+            let label = tooltip(
+                bet_label(),
+                container(text(format::bet(every)).size(font::NOTE_SIZE))
+                    .padding([6, 10])
+                    .style(style::popup),
+                tooltip::Position::Bottom,
+            );
+
+            stack![header, container(label).padding(BET_INSET)].into()
+        }
+        None => header,
+    }
+}
+
+pub fn beside_reviews() -> (f32, f32) {
+    let shift = font::baseline(font::STAT_SIZE, font::STAT_LINE_HEIGHT)
+        - font::baseline(font::AMOUNT_SIZE, font::PRICE_LINE_HEIGHT);
+    let gap = font::STAT_SIZE * font::STAT_LINE_HEIGHT
+        - shift
+        - font::AMOUNT_SIZE * font::PRICE_LINE_HEIGHT;
+
+    (shift, gap)
+}
+
 pub fn price_row<'a, Message: 'a>(
     price: &Price,
-    bet: bool,
     currency: &Currency,
+    gap: f32,
 ) -> Element<'a, Message> {
     let discount = price.discount;
-
-    row![
+    let main = row![
         text(format::price(price, currency))
-            .size(font::PRICE_SIZE)
+            .size(font::AMOUNT_SIZE)
             .font(font::SEMIBOLD)
+            .line_height(font::PRICE_LINE_HEIGHT)
     ]
-    .push(discount.map(|discount| {
-        text(format::discount(discount.percent))
-            .size(font::INFO_SIZE)
-            .font(font::SEMIBOLD)
-            .style(style::discount)
-    }))
-    .push(discount.and_then(|discount| discount.end).map(|end| {
-        text(format::until(end))
-            .size(font::NOTE_SIZE)
-            .style(style::muted)
-    }))
-    .push(bet.then(bet_label))
+    .push(discount.map(|discount| discount_badge(discount.percent)))
     .spacing(12)
-    .align_y(Center)
+    .align_y(Center);
+    let context = discount.map(|discount| {
+        let ends = discount.end.and_then(format::ends).map(|ends| {
+            row![
+                text("·").size(font::NOTE_SIZE).style(style::muted),
+                text(ends).size(font::NOTE_SIZE).style(style::muted),
+            ]
+            .spacing(6)
+        });
+
+        row![
+            rich_text![span(format::original_price(price, currency)).strikethrough(true)]
+                .size(font::NOTE_SIZE)
+                .style(style::muted)
+                .on_link_click(never)
+        ]
+        .push(ends)
+        .spacing(6)
+    });
+
+    column![main].push(context).spacing(gap).into()
+}
+
+fn discount_badge<'a, Message: 'a>(percent: u8) -> Element<'a, Message> {
+    container(
+        text(format::discount(percent))
+            .size(font::NOTE_SIZE)
+            .font(font::SEMIBOLD),
+    )
+    .padding([BADGE_PADDING, 8.0])
+    .style(style::discount_badge)
     .into()
 }
 
@@ -92,30 +157,19 @@ pub fn bet_label<'a, Message: 'a>() -> Element<'a, Message> {
         .into()
 }
 
-pub fn stats<'a, Message: 'a>(
-    reviews: Option<&Reviews>,
-    year: Option<String>,
-) -> Element<'a, Message> {
-    let reviews = reviews.map(|reviews| match format::reviews(reviews) {
-        (percent, label) if !percent.is_empty() => stat(percent, label),
+pub fn reviews<'a, Message: 'a>(reviews: &Reviews) -> Element<'a, Message> {
+    match format::reviews(reviews) {
+        (percent, label) if !percent.is_empty() => column![
+            text(percent)
+                .size(font::STAT_SIZE)
+                .font(font::BOLD)
+                .line_height(font::STAT_LINE_HEIGHT)
+                .style(style::accent),
+            text(label).size(font::NOTE_SIZE).style(style::muted),
+        ]
+        .into(),
         (_, label) => text(label).size(font::INFO_SIZE).style(style::muted).into(),
-    });
-
-    row![]
-        .push(reviews)
-        .push(year.map(|year| stat(year, "released".to_string())))
-        .spacing(STATS_SPACING)
-        .align_y(Center)
-        .into()
-}
-
-fn stat<'a, Message: 'a>(value: String, label: String) -> Element<'a, Message> {
-    column![
-        text(value).size(font::PRICE_SIZE).font(font::SEMIBOLD),
-        text(label).size(font::NOTE_SIZE).style(style::muted),
-    ]
-    .spacing(2)
-    .into()
+    }
 }
 
 pub fn vote_button<'a, Message: Clone + 'a>(
@@ -126,15 +180,14 @@ pub fn vote_button<'a, Message: Clone + 'a>(
     on_press: Option<Message>,
     flashed: bool,
 ) -> Element<'a, Message> {
-    let mark = if flashed {
-        text(CHECK).font(font::ICONS).size(10)
+    let keycap = if flashed {
+        container(text(CHECK).font(font::ICONS).size(10))
+            .center_x(KEYCAP_SIZE)
+            .center_y(KEYCAP_SIZE)
+            .style(style::keycap(true))
     } else {
-        text(key).size(font::NOTE_SIZE).style(style::muted)
+        keycap(key)
     };
-    let keycap = container(mark)
-        .center_x(18)
-        .center_y(18)
-        .style(style::keycap(flashed));
     let label = text(format::vote(kind))
         .size(if compact {
             COMPACT_VOTE_SIZE
@@ -159,10 +212,43 @@ pub fn vote_button<'a, Message: Clone + 'a>(
     .into()
 }
 
-pub fn vote_width(row_width: f32, beside: f32) -> Length {
-    let needed = 4.0 * (VOTE_WIDTH + VOTE_SPACING) + LINKS_WIDTH + beside;
+pub fn keycap<'a, Message: 'a>(key: &'a str) -> Container<'a, Message> {
+    let keycap = container(text(key).size(font::NOTE_SIZE))
+        .center_y(KEYCAP_SIZE)
+        .style(style::keycap(false));
 
-    if row_width >= needed {
+    if key.chars().count() == 1 {
+        keycap.center_x(KEYCAP_SIZE)
+    } else {
+        keycap.padding(padding::left(KEYCAP_PADDING).right(KEYCAP_PADDING))
+    }
+}
+
+pub fn hint<'a, Message: 'a>(key: &'a str, label: &'a str) -> Element<'a, Message> {
+    row![
+        keycap(key),
+        text(label).size(font::NOTE_SIZE).style(style::muted)
+    ]
+    .spacing(KEY_SPACING)
+    .align_y(Center)
+    .into()
+}
+
+pub fn vote_buttons<'a, Message: 'a>(
+    button: impl Fn(&'a str, VoteKind) -> Element<'a, Message>,
+) -> Row<'a, Message> {
+    let [would_try, maybe, not_for_me, known] = VOTES.map(|(key, kind)| button(key, kind));
+
+    row![would_try, maybe, not_for_me, style::divider(), known]
+        .spacing(VOTE_SPACING)
+        .align_y(Center)
+}
+
+pub fn vote_width(available: f32, beside: f32) -> Length {
+    let divider = 1.0 + 2.0 * style::DIVIDER_INSET + VOTE_SPACING;
+    let needed = 4.0 * (VOTE_WIDTH + VOTE_SPACING) + divider + beside;
+
+    if available >= needed {
         Length::Fixed(VOTE_WIDTH)
     } else {
         Length::Fill
@@ -170,23 +256,28 @@ pub fn vote_width(row_width: f32, beside: f32) -> Length {
 }
 
 pub fn link_button<'a, Message: Clone + 'a>(
+    key: &'a str,
     label: &'a str,
     on_press: Option<Message>,
 ) -> Element<'a, Message> {
-    button(text(label).size(font::BAR_SIZE))
-        .padding(0)
-        .style(style::link)
-        .on_press_maybe(on_press)
-        .into()
+    button(
+        row![keycap(key), text(label).size(font::BAR_SIZE)]
+            .spacing(KEY_SPACING)
+            .align_y(Center),
+    )
+    .padding(0)
+    .style(style::link)
+    .on_press_maybe(on_press)
+    .into()
 }
 
 pub fn links<'a, Message: Clone + 'a>(
     on_press: impl Fn(Link) -> Option<Message>,
 ) -> Element<'a, Message> {
     row![
-        link_button("5 Steam ↗", on_press(Link::Steam)),
-        link_button("6 Eneba ↗", on_press(Link::Eneba)),
-        link_button("7 HLTB ↗", on_press(Link::Hltb)),
+        link_button("5", "Steam ↗", on_press(Link::Steam)),
+        link_button("6", "Eneba ↗", on_press(Link::Eneba)),
+        link_button("7", "HLTB ↗", on_press(Link::Hltb)),
     ]
     .spacing(20)
     .into()
@@ -197,11 +288,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn beside_the_reviews_the_price_lines_up_with_them() {
+        let (shift, gap) = beside_reviews();
+        let price_height = font::AMOUNT_SIZE * font::PRICE_LINE_HEIGHT;
+        let price_baseline = shift + font::baseline(font::AMOUNT_SIZE, font::PRICE_LINE_HEIGHT);
+
+        assert!(
+            (price_baseline - font::baseline(font::STAT_SIZE, font::STAT_LINE_HEIGHT)).abs() < 1e-4
+        );
+        assert!(
+            (shift + price_height + gap - font::STAT_SIZE * font::STAT_LINE_HEIGHT).abs() < 1e-4
+        );
+        assert!(gap >= 0.0);
+        assert!(font::NOTE_SIZE * 1.3 + 2.0 * BADGE_PADDING <= price_height);
+    }
+
+    #[test]
     fn the_vote_buttons_stop_growing_once_there_is_room() {
-        assert_eq!(vote_width(960.0, 0.0), Length::Fixed(VOTE_WIDTH));
-        assert_eq!(vote_width(900.0, 0.0), Length::Fill);
-        assert_eq!(vote_width(1200.0, 240.0), Length::Fixed(VOTE_WIDTH));
-        assert_eq!(vote_width(1100.0, 240.0), Length::Fill);
+        assert_eq!(vote_width(760.0, 0.0), Length::Fixed(VOTE_WIDTH));
+        assert_eq!(vote_width(720.0, 0.0), Length::Fill);
+        assert_eq!(vote_width(956.0, 180.0), Length::Fixed(VOTE_WIDTH));
+        assert_eq!(vote_width(900.0, 180.0), Length::Fill);
     }
 
     #[test]
