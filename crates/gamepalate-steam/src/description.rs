@@ -100,7 +100,10 @@ fn tokens(html: &str) -> Vec<Token> {
             rest = after;
             continue;
         }
-        let end = rest[1..].find('<').map_or(rest.len(), |index| index + 1);
+        let first = rest.chars().next().map_or(0, char::len_utf8);
+        let end = rest[first..]
+            .find('<')
+            .map_or(rest.len(), |index| index + first);
         tokens.push(Token::Text(decode(&rest[..end])));
         rest = &rest[end..];
     }
@@ -591,6 +594,18 @@ mod tests {
                 paragraph("allows you to team up."),
                 paragraph("Next."),
             ]
+        );
+    }
+
+    #[test]
+    fn keeps_text_that_starts_with_a_wide_character() {
+        assert_eq!(
+            blocks(
+                "<p class=\"bb_paragraph\" >\u{2022} Solve puzzles <br>\u{2022} Land\u{2019}s End</p>"
+            ),
+            [paragraph(
+                "\u{2022} Solve puzzles\n\u{2022} Land\u{2019}s End"
+            )]
         );
     }
 
