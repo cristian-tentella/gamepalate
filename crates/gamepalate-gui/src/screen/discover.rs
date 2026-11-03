@@ -18,8 +18,8 @@ use iced::{
     keyboard::{self, Key, key::Named},
     mouse, padding,
     widget::{
-        Column, button, column, container, mouse_area, opaque, pick_list, responsive, row,
-        scrollable, space, stack, text,
+        Column, Id, button, column, container, mouse_area, opaque, operation, pick_list,
+        responsive, row, scrollable, scrollable::RelativeOffset, space, stack, text,
     },
 };
 
@@ -34,6 +34,7 @@ use super::{
 use crate::{font, format, style};
 
 static SEARCHES: AtomicU64 = AtomicU64::new(0);
+const CARD: Id = Id::new("discover-card");
 const COMPACT_WIDTH: f32 = 1100.0;
 const TOAST_DURATION: Duration = Duration::from_secs(4);
 const FLASH_DURATION: Duration = Duration::from_millis(600);
@@ -181,9 +182,13 @@ impl Discover {
             return Task::none();
         }
         let task = self.handle(message);
-        self.showcase.follow(self.current().map(|game| game.id));
+        let top = if self.showcase.follow(self.current().map(|game| game.id)) {
+            operation::snap_to(CARD, RelativeOffset::START)
+        } else {
+            Task::none()
+        };
 
-        Task::batch([task, self.load()])
+        Task::batch([task, top, self.load()])
     }
 
     fn handle(&mut self, message: Message) -> Task<Message> {
@@ -615,9 +620,18 @@ impl Discover {
         let (shot_width, shot_height) = layout.shot_size();
         let content: Element<'a, Message> = match layout {
             Layout::Beside(_) => row![
-                self.showcase
-                    .media(game.id, shot_width, shot_height)
-                    .map(Message::Showcase),
+                column![
+                    self.showcase
+                        .media(game.id, shot_width, shot_height)
+                        .map(Message::Showcase)
+                ]
+                .push(
+                    self.showcase
+                        .about(game.id, shot_width)
+                        .map(|about| about.map(Message::Showcase)),
+                )
+                .spacing(GROUP_SPACING)
+                .width(shot_width),
                 column![
                     self.summary(game, SIDE_WIDTH, true),
                     self.reasons(queue, game, false)
@@ -639,6 +653,11 @@ impl Discover {
                         .gallery(game.id, shot_width, shot_height)
                         .map(Message::Showcase),
                 ]
+                .push(
+                    self.showcase
+                        .about(game.id, shot_width)
+                        .map(|about| about.map(Message::Showcase)),
+                )
                 .spacing(CARD_SPACING)
                 .width(shot_width)
                 .into()
@@ -650,6 +669,7 @@ impl Discover {
                 .center_x(Fill)
                 .padding(padding::right(SCROLLBAR_GAP).top(layout.top_space(height))),
         )
+        .id(CARD)
         .height(Fill)
         .into()
     }

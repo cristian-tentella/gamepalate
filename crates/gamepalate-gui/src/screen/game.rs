@@ -59,8 +59,12 @@ pub fn open(link: Link, name: &str, store_url: &str) {
         Link::Eneba => format::eneba_url(name),
         Link::Hltb => format::hltb_url(name),
     };
+    open_url(&url);
+}
+
+pub fn open_url(url: &str) {
     let _ = Command::new("rundll32")
-        .args(["url.dll,FileProtocolHandler", &url])
+        .args(["url.dll,FileProtocolHandler", url])
         .spawn();
 }
 

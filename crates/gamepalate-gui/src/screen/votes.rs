@@ -14,7 +14,7 @@ use iced::{
     widget::{
         Id, button, checkbox, column, container, operation, pick_list, responsive, rich_text, row,
         rule, scrollable,
-        scrollable::{AbsoluteOffset, Viewport},
+        scrollable::{AbsoluteOffset, RelativeOffset, Viewport},
         span, stack, text,
         text::Wrapping,
         text_input,
@@ -43,6 +43,7 @@ const ORDERS: [Order; 4] = [
 ];
 const LIST: Id = Id::new("votes-list");
 const SEARCH: Id = Id::new("votes-search");
+const GAME: Id = Id::new("votes-game");
 const LIST_WIDTH: f32 = 340.0;
 const ROW_HEIGHT: f32 = 32.0;
 const HEADER_WIDTH: f32 = 230.0;
@@ -469,6 +470,11 @@ impl Votes {
                 .facts(game.id, &[])
                 .map(|facts| facts.map(Message::Showcase)),
         )
+        .push(
+            self.showcase
+                .about(game.id, shot_width)
+                .map(|about| about.map(Message::Showcase)),
+        )
         .spacing(CONTENT_SPACING)
         .max_width(shot_width);
 
@@ -477,6 +483,7 @@ impl Votes {
                 .center_x(Fill)
                 .padding(padding::right(SCROLLBAR_GAP)),
         )
+        .id(GAME)
         .height(Fill)
         .into()
     }
@@ -581,15 +588,22 @@ impl Votes {
     }
 
     fn load(&mut self) -> Task<Message> {
-        self.showcase.follow(self.current().map(|game| game.id));
+        let top = if self.showcase.follow(self.current().map(|game| game.id)) {
+            operation::snap_to(GAME, RelativeOffset::START)
+        } else {
+            Task::none()
+        };
         let end = (self.selected + showcase::AHEAD + 1).min(self.rows.len());
         let start = self.selected.saturating_sub(showcase::BEHIND).min(end);
         let upcoming = &self.rows[self.selected.min(end)..end];
         let nearby = &self.rows[start..end];
 
-        self.showcase
-            .load(upcoming, nearby, &[])
-            .map(Message::Showcase)
+        Task::batch([
+            top,
+            self.showcase
+                .load(upcoming, nearby, &[])
+                .map(Message::Showcase),
+        ])
     }
 
     fn show_toast(&mut self, text: String) -> Task<Message> {
