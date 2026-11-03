@@ -6,7 +6,10 @@ gamepalate is a Steam game recommender. It builds a tag profile from your librar
 
 The recommendation system runs locally. The only network calls go to Steam.
 
-![Discover](.github/screenshots/discover.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/discover-dark.png">
+  <img src=".github/screenshots/discover-light.png" alt="Discover">
+</picture>
 
 ## Screens
 
@@ -15,9 +18,20 @@ The recommendation system runs locally. The only network calls go to Steam.
 - **Library**: games list with covers, where you can adjust how each game counts
 - **Profile**: top tags and families
 
-![Votes](.github/screenshots/votes.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/votes-dark.png">
+  <img src=".github/screenshots/votes-light.png" alt="Votes">
+</picture>
 
-![Profile](.github/screenshots/profile.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/library-dark.png">
+  <img src=".github/screenshots/library-light.png" alt="Library">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/profile-dark.png">
+  <img src=".github/screenshots/profile-light.png" alt="Profile">
+</picture>
 
 ## Requirements
 
