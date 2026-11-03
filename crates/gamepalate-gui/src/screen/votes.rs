@@ -158,6 +158,15 @@ impl Votes {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let message = match message {
+            Message::Previous if self.showcase.is_about_open() => {
+                Message::Showcase(showcase::Message::ScrollUp)
+            }
+            Message::Next if self.showcase.is_about_open() => {
+                Message::Showcase(showcase::Message::ScrollDown)
+            }
+            message => message,
+        };
         if self.showcase.is_open()
             && matches!(
                 message,
@@ -787,6 +796,12 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         Key::Character(character) if character.eq_ignore_ascii_case("d") => {
             Some(Message::Showcase(showcase::Message::ToggleAbout))
         }
+        Key::Character(character) if character.eq_ignore_ascii_case("k") => {
+            Some(Message::Showcase(showcase::Message::ScrollUp))
+        }
+        Key::Character(character) if character.eq_ignore_ascii_case("j") => {
+            Some(Message::Showcase(showcase::Message::ScrollDown))
+        }
         Key::Character(character) => game::vote_key(&character)
             .map(Message::Vote)
             .or_else(|| game::link_key(&character).map(Message::Open)),
@@ -1019,6 +1034,18 @@ mod tests {
         assert!(matches!(
             key_message(pressed(Key::Named(Named::Escape))),
             Some(Message::Showcase(showcase::Message::Close))
+        ));
+    }
+
+    #[test]
+    fn scrolls_the_description_with_j_and_k() {
+        assert!(matches!(
+            key_message(pressed(Key::Character("k".into()))),
+            Some(Message::Showcase(showcase::Message::ScrollUp))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("j".into()))),
+            Some(Message::Showcase(showcase::Message::ScrollDown))
         ));
     }
 

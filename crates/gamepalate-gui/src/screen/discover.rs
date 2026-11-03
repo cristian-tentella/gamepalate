@@ -948,12 +948,20 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
     match key {
         Key::Named(Named::Space) => Some(Message::Next),
         Key::Named(Named::Backspace) => Some(Message::Previous),
+        Key::Named(Named::ArrowUp) => Some(Message::Showcase(showcase::Message::ScrollUp)),
+        Key::Named(Named::ArrowDown) => Some(Message::Showcase(showcase::Message::ScrollDown)),
         Key::Named(Named::ArrowRight) => Some(Message::Showcase(showcase::Message::NextScreenshot)),
         Key::Named(Named::ArrowLeft) => {
             Some(Message::Showcase(showcase::Message::PreviousScreenshot))
         }
         Key::Character(key) if key.eq_ignore_ascii_case("d") => {
             Some(Message::Showcase(showcase::Message::ToggleAbout))
+        }
+        Key::Character(key) if key.eq_ignore_ascii_case("k") => {
+            Some(Message::Showcase(showcase::Message::ScrollUp))
+        }
+        Key::Character(key) if key.eq_ignore_ascii_case("j") => {
+            Some(Message::Showcase(showcase::Message::ScrollDown))
         }
         Key::Character(key) => game::vote_key(key.as_str())
             .map(Message::Vote)
@@ -990,6 +998,29 @@ mod tests {
             key_message(pressed(Key::Character("7".into()))),
             Some(Message::Open(Link::Hltb))
         ));
+    }
+
+    #[test]
+    fn scrolls_the_description_with_the_arrows_and_j_k() {
+        for (key, up) in [
+            (Key::Named(Named::ArrowUp), true),
+            (Key::Character("k".into()), true),
+            (Key::Named(Named::ArrowDown), false),
+            (Key::Character("j".into()), false),
+        ] {
+            let message = key_message(pressed(key));
+            if up {
+                assert!(matches!(
+                    message,
+                    Some(Message::Showcase(showcase::Message::ScrollUp))
+                ));
+            } else {
+                assert!(matches!(
+                    message,
+                    Some(Message::Showcase(showcase::Message::ScrollDown))
+                ));
+            }
+        }
     }
 
     #[test]

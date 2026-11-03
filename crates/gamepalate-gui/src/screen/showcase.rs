@@ -12,8 +12,8 @@ use gamepalate_app::{
 use iced::{
     Center, ContentFit, Element, Fill, Task, mouse, padding,
     widget::{
-        Column, button, column, container, image, keyed_column, mouse_area, opaque, rich_text, row,
-        scrollable, space, span, stack, text,
+        Column, Id, button, column, container, image, keyed_column, mouse_area, opaque, operation,
+        rich_text, row, scrollable, scrollable::AbsoluteOffset, space, span, stack, text,
     },
 };
 
@@ -29,6 +29,8 @@ pub const AHEAD: usize = 5;
 pub const BEHIND: usize = 5;
 const DETAILS_AHEAD: usize = 3;
 const SCREENSHOTS_AHEAD: usize = 2;
+const ABOUT: Id = Id::new("showcase-about");
+const SCROLL_STEP: f32 = 60.0;
 const MEASURE: f32 = 680.0;
 const SHEET_INSET: f32 = 40.0;
 const SHEET_MARGIN: f32 = 32.0;
@@ -110,6 +112,8 @@ pub enum Message {
     CloseZoom,
     ToggleAbout,
     CloseAbout,
+    ScrollUp,
+    ScrollDown,
     Close,
     ToggleFeatures,
     Hover(bool),
@@ -138,6 +142,9 @@ impl Showcase {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::ScrollUp | Message::ScrollDown if !self.about_open => {}
+            Message::ScrollUp => return scroll_about(-SCROLL_STEP),
+            Message::ScrollDown => return scroll_about(SCROLL_STEP),
             Message::ImageLoaded(url, None) => self.images.loaded(url, None),
             Message::ImageLoaded(url, Some(handle)) => {
                 return image::allocate(handle)
@@ -380,7 +387,8 @@ impl Showcase {
                         .left(SHEET_INSET)
                         .right(SHEET_INSET)
                 )
-            ),
+            )
+            .id(ABOUT),
         ];
 
         Some(
@@ -792,6 +800,10 @@ impl Showcase {
         self.zoomed || self.about_open
     }
 
+    pub fn is_about_open(&self) -> bool {
+        self.about_open
+    }
+
     pub fn zoom(&self) -> Option<Element<'_, Message>> {
         if !self.zoomed {
             return None;
@@ -1022,6 +1034,10 @@ fn paragraph(spans: &[Span]) -> Element<'_, Message> {
         .line_height(BODY_LINE_HEIGHT)
         .on_link_click(Message::OpenLink)
         .into()
+}
+
+fn scroll_about(y: f32) -> Task<Message> {
+    operation::scroll_by(ABOUT, AbsoluteOffset { x: 0.0, y })
 }
 
 fn about_note<'a>(label: &'static str) -> Element<'a, Message> {
