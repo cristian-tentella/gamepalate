@@ -40,9 +40,11 @@ The recommendation system runs locally. The only network calls go to Steam.
 
 ## Download
 
-Download `gamepalate.exe` from the [latest release](https://github.com/cristian-tentella/gamepalate/releases/latest) and run it. No installation needed. `SHA256SUMS.txt` lists the checksums of the files.
+Download `gamepalate-setup.exe` from the [latest release](https://github.com/cristian-tentella/gamepalate/releases/latest) and run it. It installs gamepalate for your user only, with no administrator rights, and adds it to the Start menu. Uninstalling keeps your data.
 
-The executable is not signed yet, so on the first run Windows SmartScreen shows "Windows protected your PC". Click **More info**, then **Run anyway**.
+To skip the installer, download `gamepalate.exe` and run it from any folder. `SHA256SUMS.txt` lists the checksums of the files.
+
+The files are not signed yet, so on the first run Windows SmartScreen shows "Windows protected your PC". Click **More info**, then **Run anyway**.
 
 ## Data
 
@@ -59,6 +61,8 @@ cargo build --release -p gamepalate-gui
 Output: `target/release/gamepalate.exe`. The first run asks for the API key and your Steam profile, then downloads the catalog (this takes a while).
 
 `gamepalate-cli` covers the same features from the terminal. Build it with `cargo build --release -p gamepalate-cli` and run `gamepalate-cli --help` for the commands.
+
+To build the installer, build both executables, then compile `crates/gamepalate-gui/gamepalate.iss` with [Inno Setup](https://jrsoftware.org/isinfo.php) 6. Output: `target/installer/gamepalate-setup.exe`.
 
 ## License
 
