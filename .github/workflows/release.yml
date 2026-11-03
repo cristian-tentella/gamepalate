@@ -21,6 +21,8 @@ jobs:
           if ($env:TAG -ne "v$version") { throw "Tag $env:TAG does not match version $version" }
       - run: cargo test --workspace --locked
       - run: cargo build --release --locked -p gamepalate-gui -p gamepalate-cli
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
       - name: Package
         run: |
           New-Item -ItemType Directory dist | Out-Null
