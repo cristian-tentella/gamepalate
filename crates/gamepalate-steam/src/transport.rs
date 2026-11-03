@@ -224,8 +224,13 @@ impl<F: Fetch> Transport<F> {
         params: &[(&str, &str)],
         key: Option<&str>,
     ) -> Result<Attempt, SteamError> {
+        let base = if endpoint.starts_with("https://") {
+            format!("{endpoint}/")
+        } else {
+            format!("{BASE_URL}{endpoint}/")
+        };
         let url = Url::parse_with_params(
-            &format!("{BASE_URL}{endpoint}/"),
+            &base,
             params.iter().copied().chain(key.map(|key| ("key", key))),
         )
         .expect("the endpoint makes a valid URL");
@@ -647,6 +652,33 @@ mod tests {
             })
             .collect();
         assert_eq!(keys, [None, Some("secret".to_string())]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_full_url_goes_to_its_own_host() {
+        let transport = fake_transport(vec![ok(), ok()], None);
+
+        assert!(get_tags(&transport).await.is_ok());
+        assert!(
+            transport
+                .get(
+                    "https://store.steampowered.com/api/appdetails",
+                    &[("appids", "620")],
+                    false
+                )
+                .await
+                .is_ok()
+        );
+
+        let requests = transport.fetch.requests.lock().unwrap();
+        let urls: Vec<&str> = requests.iter().map(|(_, url)| url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://api.steampowered.com/IStoreService/GetTagList/v1/?language=english",
+                "https://store.steampowered.com/api/appdetails/?appids=620",
+            ]
+        );
     }
 
     #[tokio::test(start_paused = true)]
