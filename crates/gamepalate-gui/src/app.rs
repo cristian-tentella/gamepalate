@@ -38,15 +38,15 @@ const LOGO_SIZE: f32 = 24.0;
 const LOGO_SPACING: f32 = 8.0;
 const RESIZE_BORDER: f32 = 5.0;
 const DOUBLE_CLICK: Duration = Duration::from_millis(500);
-const MINIMIZE: char = '\u{E921}';
-const MAXIMIZE: char = '\u{E922}';
-const RESTORE: char = '\u{E923}';
-const CLOSE: char = '\u{E8BB}';
-const SUN: char = '\u{E706}';
-const MOON: char = '\u{E708}';
-const REFRESH: char = '\u{E72C}';
-const CANCEL: char = '\u{E711}';
-const GEAR: char = '\u{E713}';
+const MINIMIZE: char = '\u{E15B}';
+const MAXIMIZE: char = '\u{E3C6}';
+const RESTORE: char = '\u{E3E0}';
+const CLOSE: char = '\u{E5CD}';
+const SUN: char = '\u{E518}';
+const MOON: char = '\u{E51C}';
+const REFRESH: char = '\u{E5D5}';
+const CANCEL: char = '\u{E5CD}';
+const GEAR: char = '\u{E8B8}';
 const DEFAULT_SIZE: Size = Size::new(1280.0, 800.0);
 const MIN_SIZE: Size = Size::new(960.0, 600.0);
 const LIGHT_BACKGROUND: Color = Color::from_rgb8(0xff, 0xff, 0xff);
@@ -750,11 +750,14 @@ fn prices_text(when: String, other_region: Option<Region>) -> String {
 }
 
 fn window_button<'a>(icon: char, action: WindowAction) -> Element<'a, Message> {
+    // The dash and the cross of Material Symbols are thinner than the square.
+    let thin = !cfg!(windows) && (icon == MINIMIZE || icon == CLOSE);
+    let size = font::icon(10.0) * if thin { 1.4 } else { 1.0 };
     button(
         container(
             text(icon)
                 .font(font::ICONS)
-                .size(10)
+                .size(size)
                 .width(Fill)
                 .height(Fill)
                 .center(),
@@ -781,20 +784,25 @@ fn rescaled((_, event): (window::Id, window::Event)) -> Option<Message> {
 }
 
 pub fn window_settings(saved: Option<SavedWindow>) -> window::Settings {
-    window::Settings {
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut settings = window::Settings {
         size: saved_size(saved),
         maximized: saved.is_some_and(|saved| saved.maximized),
         position: window::Position::Centered,
         min_size: Some(MIN_SIZE),
         decorations: false,
         exit_on_close_request: false,
-        platform_specific: window::settings::PlatformSpecific {
+        ..window::Settings::default()
+    };
+    #[cfg(windows)]
+    {
+        settings.platform_specific = window::settings::PlatformSpecific {
             undecorated_shadow: true,
             corner_preference: window::settings::platform::CornerPreference::Round,
             ..window::settings::PlatformSpecific::default()
-        },
-        ..window::Settings::default()
+        };
     }
+    settings
 }
 
 fn saved_size(saved: Option<SavedWindow>) -> Size {
@@ -936,7 +944,7 @@ fn refresh_failed<'a>(error: &str) -> Element<'a, Message> {
                 .style(style::popup),
             tooltip::Position::Bottom,
         ),
-        button(text(CLOSE).font(font::ICONS).size(9))
+        button(text(CLOSE).font(font::ICONS).size(font::icon(9.0)))
             .padding(0)
             .style(style::link)
             .on_press(Message::DismissRefreshError),
@@ -978,7 +986,7 @@ fn bar_icon<'a>(icon: char, message: Option<Message>) -> button::Button<'a, Mess
         container(
             text(icon)
                 .font(font::ICONS)
-                .size(14)
+                .size(font::icon(14.0))
                 .width(Fill)
                 .height(Fill)
                 .center(),

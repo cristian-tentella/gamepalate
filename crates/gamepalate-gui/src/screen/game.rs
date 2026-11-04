@@ -28,7 +28,7 @@ const BET_INSET: f32 = 8.0;
 const BADGE_PADDING: f32 = 2.0;
 pub const PRICE_GAP: f32 = 4.0;
 const COMPACT_VOTE_SIZE: f32 = 14.0;
-const CHECK: char = '\u{E73E}';
+const CHECK: char = '\u{E668}';
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Link {
@@ -185,7 +185,7 @@ pub fn vote_button<'a, Message: Clone + 'a>(
     flashed: bool,
 ) -> Element<'a, Message> {
     let keycap = if flashed {
-        container(text(CHECK).font(font::ICONS).size(10))
+        container(text(CHECK).font(font::ICONS).size(font::icon(10.0)))
             .center_x(KEYCAP_SIZE)
             .center_y(KEYCAP_SIZE)
             .style(style::keycap(true))

@@ -3,6 +3,7 @@ use iced::{Font, font::Weight};
 pub const REGULAR_BYTES: &[u8] = include_bytes!("../fonts/AtkinsonHyperlegibleNext-Regular.ttf");
 pub const SEMIBOLD_BYTES: &[u8] = include_bytes!("../fonts/AtkinsonHyperlegibleNext-SemiBold.ttf");
 pub const BOLD_BYTES: &[u8] = include_bytes!("../fonts/AtkinsonHyperlegibleNext-Bold.ttf");
+pub const ICONS_BYTES: &[u8] = include_bytes!("../fonts/MaterialSymbolsOutlined-subset.ttf");
 
 pub const BAR_SIZE: f32 = 14.0;
 pub const NOTE_SIZE: f32 = 13.0;
@@ -17,7 +18,7 @@ pub const STAT_LINE_HEIGHT: f32 = 1.0;
 const ASCENT: f32 = 0.984;
 const DESCENT: f32 = 0.316;
 
-pub const ICONS: Font = Font::with_name("Segoe Fluent Icons");
+pub const ICONS: Font = Font::with_name("Material Symbols Outlined");
 
 pub const REGULAR: Font = Font::with_name("Atkinson Hyperlegible Next");
 pub const SEMIBOLD: Font = Font {
@@ -28,6 +29,12 @@ pub const BOLD: Font = Font {
     weight: Weight::Bold,
     ..REGULAR
 };
+
+/// Material Symbols draws its glyphs smaller in the em box than Segoe Fluent Icons,
+/// so the sizes tuned on Windows are scaled up on the other systems.
+pub fn icon(size: f32) -> f32 {
+    if cfg!(windows) { size } else { size * 1.45 }
+}
 
 pub fn baseline(size: f32, line_height: f32) -> f32 {
     size * (line_height + ASCENT - DESCENT) / 2.0

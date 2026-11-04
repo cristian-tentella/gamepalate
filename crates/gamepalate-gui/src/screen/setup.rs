@@ -29,7 +29,7 @@ use crate::{
     style,
 };
 
-const CHECK: char = '\u{E73E}';
+const CHECK: char = '\u{E668}';
 const WIDTH: f32 = 760.0;
 const LABEL_WIDTH: f32 = 96.0;
 const STEP_MARK: f32 = 28.0;
@@ -898,7 +898,7 @@ fn change_account(label: Element<'_, Message>) -> Element<'_, Message> {
 
 fn step_label<'a>(number: usize, step: Step, state: StepState) -> Element<'a, Message> {
     let mark = match state {
-        StepState::Done => text(CHECK).font(font::ICONS).size(12),
+        StepState::Done => text(CHECK).font(font::ICONS).size(font::icon(12.0)),
         StepState::Current | StepState::Next => text(number.to_string())
             .size(font::BAR_SIZE)
             .font(font::SEMIBOLD),

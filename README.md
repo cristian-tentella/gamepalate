@@ -70,4 +70,4 @@ To build the installer, build both executables, then compile `crates/gamepalate-
 
 Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
 
-The bundled Atkinson Hyperlegible Next font is under the SIL Open Font License (`crates/gamepalate-gui/fonts`).
+The bundled Atkinson Hyperlegible Next font is under the SIL Open Font License, and the bundled Material Symbols icons are under Apache-2.0 (`crates/gamepalate-gui/fonts`).

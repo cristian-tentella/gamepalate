@@ -16,7 +16,7 @@ const RANGE_WIDTH: f32 = 196.0;
 const TAG_WIDTH: f32 = 196.0;
 const SPACING: f32 = 12.0;
 const PANEL_WIDTH: f32 = 520.0;
-const INFO: char = '\u{E946}';
+const INFO: char = '\u{E88E}';
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Source {
@@ -275,7 +275,9 @@ impl Panel {
             .without_early_access
             .unwrap_or(self.without_early_access);
         let bets = tooltip(
-            text(INFO).font(font::ICONS).size(font::NOTE_SIZE),
+            text(INFO)
+                .font(font::ICONS)
+                .size(font::icon(font::NOTE_SIZE)),
             container(text("Games your votes would skip").size(font::NOTE_SIZE))
                 .padding([6, 10])
                 .style(style::popup),

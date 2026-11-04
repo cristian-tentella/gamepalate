@@ -918,7 +918,8 @@ fn steam_client_text(answer: Option<bool>) -> &'static str {
 
 fn key_text(key: KeySource) -> &'static str {
     match key {
-        KeySource::Saved => "Saved in Windows",
+        KeySource::Saved if cfg!(windows) => "Saved in Windows",
+        KeySource::Saved => "Saved in the system keyring",
         KeySource::Environment => "From STEAM_API_KEY",
         KeySource::Missing => "Missing",
     }
@@ -1100,9 +1101,20 @@ mod tests {
         assert_eq!(config_error_text(&error), "Must be a number from 0 to 1");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn the_saved_key_is_in_windows() {
+        assert_eq!(key_text(KeySource::Saved), "Saved in Windows");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_saved_key_is_in_the_system_keyring() {
+        assert_eq!(key_text(KeySource::Saved), "Saved in the system keyring");
+    }
+
     #[test]
     fn each_key_source_has_its_text() {
-        assert_eq!(key_text(KeySource::Saved), "Saved in Windows");
         assert_eq!(key_text(KeySource::Environment), "From STEAM_API_KEY");
         assert_eq!(key_text(KeySource::Missing), "Missing");
     }

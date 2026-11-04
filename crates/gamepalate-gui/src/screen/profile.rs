@@ -39,7 +39,7 @@ const FAMILY_HEADER_HEIGHT: f32 = FAMILY_HEADER_WIDTH * 215.0 / 460.0;
 const FAMILY_TAGS: usize = 3;
 const EDITOR_WIDTH: f32 = 460.0;
 const EDITOR_GAMES_HEIGHT: f32 = 320.0;
-const REMOVE: char = '\u{E711}';
+const REMOVE: char = '\u{E5CD}';
 pub(crate) const HELD_OUT_TIP: &str =
     "Games you like, kept out of families on purpose to see if Discover finds them";
 const TAG_NAME_WIDTH: f32 = 150.0;
@@ -48,9 +48,9 @@ const SHAPING_NOTE: &str =
     "Hours count less as they grow, and games with more uncommon tags count more";
 const BAR_HEIGHT: f32 = 8.0;
 const PORTIONS: u16 = 1000;
-const WARNING: char = '\u{E7BA}';
-const CLOSED: char = '\u{E76C}';
-const OPENED: char = '\u{E70D}';
+const WARNING: char = '\u{F083}';
+const CLOSED: char = '\u{E5CC}';
+const OPENED: char = '\u{E5CF}';
 const SETTINGS_HINT: &str = "Change it in Settings, under Taste";
 const SOURCE_BAR_WIDTH: f32 = 220.0;
 const PERCENT_WIDTH: f32 = 40.0;
@@ -334,10 +334,14 @@ impl Profile {
                     .header(game.id, FAMILY_HEADER_WIDTH, FAMILY_HEADER_HEIGHT)
                     .map(Message::Showcase),
                 text(&game.name).size(font::BAR_SIZE).width(Fill),
-                button(text(REMOVE).font(font::ICONS).size(font::NOTE_SIZE))
-                    .padding([6, 8])
-                    .style(style::window_button)
-                    .on_press(Message::ChangeFamilies(remove)),
+                button(
+                    text(REMOVE)
+                        .font(font::ICONS)
+                        .size(font::icon(font::NOTE_SIZE))
+                )
+                .padding([6, 8])
+                .style(style::window_button)
+                .on_press(Message::ChangeFamilies(remove)),
             ]
             .spacing(10)
             .align_y(Center)
@@ -688,7 +692,7 @@ impl Profile {
                 text(summary).size(font::BAR_SIZE),
                 text(if open { OPENED } else { CLOSED })
                     .font(font::ICONS)
-                    .size(10),
+                    .size(font::icon(10.0)),
             ]
             .spacing(8)
             .align_y(Center),
@@ -880,7 +884,7 @@ fn sources<'a>(taste: &TasteView, hours: &SignalsConfig) -> Element<'a, Message>
                 .size(font::NOTE_SIZE)
                 .style(style::muted)
                 .width(Fill),
-            text(CLOSED).font(font::ICONS).size(10),
+            text(CLOSED).font(font::ICONS).size(font::icon(10.0)),
         ]
         .spacing(10)
         .align_y(Center);
@@ -960,7 +964,7 @@ fn dominant(taste: &TasteView) -> Option<Element<'_, Message>> {
     let title = row![
         text(WARNING)
             .font(font::ICONS)
-            .size(font::NOTE_SIZE)
+            .size(font::icon(font::NOTE_SIZE))
             .style(warning_text),
         text("Mostly from one game")
             .size(font::BAR_SIZE)

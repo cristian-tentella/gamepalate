@@ -17,19 +17,35 @@ env:
 
 jobs:
   check:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: ilammy/setup-nasm@v1
+        if: runner.os == 'Windows'
+      - name: Install system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm pkg-config libdbus-1-dev libxkbcommon-dev libwayland-dev libx11-dev
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - name: Skip optimizations
-        run: >
-          Set-Content $env:RUNNER_TEMP/ci.toml
-          '[profile.dev.package."*"]', 'opt-level = 0',
-          '[profile.dev.package.gamepalate-core]', 'opt-level = 0'
-      - run: cargo clippy --config $env:RUNNER_TEMP/ci.toml --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --config $env:RUNNER_TEMP/ci.toml --workspace --locked
+        run: |
+          cat > "$RUNNER_TEMP/ci.toml" <<'EOF2'
+          [profile.dev.package."*"]
+          opt-level = 0
+          [profile.dev.package.gamepalate-core]
+          opt-level = 0
+          EOF2
+      - run: cargo clippy --config "$RUNNER_TEMP/ci.toml" --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --config "$RUNNER_TEMP/ci.toml" --workspace --locked

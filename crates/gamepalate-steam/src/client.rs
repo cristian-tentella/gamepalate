@@ -8,7 +8,6 @@ use gamepalate_core::{
     signals::LibraryGame,
 };
 use keyvalues_parser::Value;
-use steamlocate::SteamDir;
 
 const ACCOUNT_ID_BASE: u64 = 76_561_197_960_265_728;
 const APPS: [&str; 4] = ["Software", "Valve", "Steam", "apps"];
@@ -27,9 +26,22 @@ pub enum SteamClientError {
 }
 
 pub fn steam_client_file(steam_id: SteamId) -> Option<PathBuf> {
-    let steam = SteamDir::locate().ok()?;
-    let path = local_config_path(steam.path(), steam_id)?;
-    path.is_file().then_some(path)
+    let installs = steamlocate::locate_all().ok()?;
+    newest_file(
+        installs
+            .iter()
+            .filter_map(|steam| local_config_path(steam.path(), steam_id)),
+    )
+}
+
+fn newest_file(paths: impl Iterator<Item = PathBuf>) -> Option<PathBuf> {
+    paths
+        .filter_map(|path| {
+            let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path)
 }
 
 pub fn read_played_hours(path: &Path) -> Result<Vec<LibraryGame>, SteamClientError> {
@@ -171,6 +183,28 @@ mod tests {
         let error = read_played_hours(Path::new("does-not-exist/localconfig.vdf")).unwrap_err();
 
         assert!(matches!(error, SteamClientError::Io { .. }));
+    }
+
+    #[test]
+    fn with_two_installs_the_newest_file_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old.vdf");
+        let new = dir.path().join("new.vdf");
+        std::fs::write(&old, "").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+            .unwrap();
+        std::fs::write(&new, "").unwrap();
+        let missing = dir.path().join("missing.vdf");
+
+        assert_eq!(
+            newest_file([old, missing.clone(), new.clone()].into_iter()),
+            Some(new)
+        );
+        assert_eq!(newest_file([missing].into_iter()), None);
     }
 
     #[test]
