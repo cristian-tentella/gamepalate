@@ -6,7 +6,7 @@ use gamepalate_store::config::{
 };
 
 use crate::{
-    account::{CredentialManager, KEY_ENV_VAR, KeyStore},
+    account::{KEY_ENV_VAR, KeyStore, SystemKeyring},
     log::failed,
 };
 
@@ -121,7 +121,7 @@ pub fn change_region(data_dir: &Path, region: Region) -> Result<(), ConfigError>
 }
 
 pub(crate) fn key_source() -> KeySource {
-    key_source_with(std::env::var(KEY_ENV_VAR).ok(), &CredentialManager)
+    key_source_with(std::env::var(KEY_ENV_VAR).ok(), &SystemKeyring)
 }
 
 fn key_source_with(env: Option<String>, store: &dyn KeyStore) -> KeySource {

@@ -19,6 +19,30 @@ use crate::{
 pub(crate) const KEY_ENV_VAR: &str = "STEAM_API_KEY";
 const KEY_SERVICE: &str = "gamepalate";
 const KEY_USER: &str = "steam-api-key";
+
+#[cfg(windows)]
+const KEY_STORE_NAME: &str = "the Windows Credential Manager";
+#[cfg(not(windows))]
+const KEY_STORE_NAME: &str = "the system keyring";
+
+#[cfg(windows)]
+fn open_system_store() -> Result<(), String> {
+    windows_native_keyring_store::Store::new()
+        .map(|store| keyring_core::set_default_store(store))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn open_system_store() -> Result<(), String> {
+    dbus_secret_service_keyring_store::Store::new()
+        .map(|store| keyring_core::set_default_store(store))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn open_system_store() -> Result<(), String> {
+    Err("this system has no supported keyring".to_string())
+}
 const PROFILES: &str = "steamcommunity.com/profiles/";
 const VANITY: &str = "steamcommunity.com/id/";
 
@@ -33,10 +57,10 @@ pub enum SteamIdError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeyError {
-    #[error("could not open the Windows Credential Manager: {0}")]
+    #[error("could not open {name}: {0}", name = KEY_STORE_NAME)]
     Store(String),
 
-    #[error("could not use the Windows Credential Manager")]
+    #[error("could not use {name}", name = KEY_STORE_NAME)]
     Entry(#[source] keyring_core::Error),
 }
 
@@ -75,7 +99,7 @@ pub trait KeyStore: Sync {
     fn save(&self, key: &str) -> Result<(), KeyError>;
 }
 
-pub struct CredentialManager;
+pub struct SystemKeyring;
 
 impl ConnectError {
     pub fn steam_error(&self) -> Option<&SteamError> {
@@ -87,14 +111,10 @@ impl ConnectError {
     }
 }
 
-impl CredentialManager {
+impl SystemKeyring {
     fn entry() -> Result<keyring_core::Entry, KeyError> {
         static STORE: OnceLock<Result<(), String>> = OnceLock::new();
-        let store = STORE.get_or_init(|| {
-            windows_native_keyring_store::Store::new()
-                .map(|store| keyring_core::set_default_store(store))
-                .map_err(|error| error.to_string())
-        });
+        let store = STORE.get_or_init(open_system_store);
         if let Err(reason) = store {
             return Err(KeyError::Store(reason.clone()));
         }
@@ -102,9 +122,9 @@ impl CredentialManager {
     }
 }
 
-impl KeyStore for CredentialManager {
+impl KeyStore for SystemKeyring {
     fn load(&self) -> Result<Option<String>, KeyError> {
-        match CredentialManager::entry()?.get_password() {
+        match SystemKeyring::entry()?.get_password() {
             Ok(key) => Ok(Some(key)),
             Err(keyring_core::Error::NoEntry) => Ok(None),
             Err(error) => Err(KeyError::Entry(error)),
@@ -112,7 +132,7 @@ impl KeyStore for CredentialManager {
     }
 
     fn save(&self, key: &str) -> Result<(), KeyError> {
-        CredentialManager::entry()?
+        SystemKeyring::entry()?
             .set_password(key)
             .map_err(KeyError::Entry)
     }
@@ -155,7 +175,7 @@ fn profile_path(text: &str) -> &str {
 }
 
 pub fn steam_api_key() -> Option<String> {
-    api_key(std::env::var(KEY_ENV_VAR).ok(), &CredentialManager)
+    api_key(std::env::var(KEY_ENV_VAR).ok(), &SystemKeyring)
 }
 
 pub async fn connect(
@@ -169,7 +189,7 @@ pub async fn connect(
         &transport,
         profile,
         key.as_deref(),
-        &CredentialManager,
+        &SystemKeyring,
         wall_clock(),
     )
     .await
