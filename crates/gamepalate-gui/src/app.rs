@@ -751,7 +751,7 @@ fn prices_text(when: String, other_region: Option<Region>) -> String {
 
 fn window_button<'a>(icon: char, action: WindowAction) -> Element<'a, Message> {
     // The dash and the cross of Material Symbols are thinner than the square.
-    let thin = !cfg!(windows) && (icon == MINIMIZE || icon == CLOSE);
+    let thin = icon == MINIMIZE || icon == CLOSE;
     let size = font::icon(10.0) * if thin { 1.4 } else { 1.0 };
     button(
         container(

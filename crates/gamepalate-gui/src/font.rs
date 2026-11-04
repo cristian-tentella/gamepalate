@@ -31,9 +31,9 @@ pub const BOLD: Font = Font {
 };
 
 /// Material Symbols draws its glyphs smaller in the em box than Segoe Fluent Icons,
-/// so the sizes tuned on Windows are scaled up on the other systems.
+/// so the sizes tuned for Segoe are scaled up.
 pub fn icon(size: f32) -> f32 {
-    if cfg!(windows) { size } else { size * 1.45 }
+    size * 1.45
 }
 
 pub fn baseline(size: f32, line_height: f32) -> f32 {
