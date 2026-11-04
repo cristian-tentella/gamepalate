@@ -29,6 +29,7 @@ fn main() -> anyhow::Result<()> {
                 font::REGULAR_BYTES.into(),
                 font::SEMIBOLD_BYTES.into(),
                 font::BOLD_BYTES.into(),
+                font::ICONS_BYTES.into(),
             ],
             default_font: font::REGULAR,
             default_text_size: Pixels(14.0),

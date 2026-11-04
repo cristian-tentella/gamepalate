@@ -52,12 +52,12 @@ const IMAGE_RADIUS: f32 = 8.0;
 const WAITING_OPACITY: f32 = 0.5;
 const MAX_ZOOM: f32 = 4.0;
 const ZOOM_STEP: f32 = 0.25;
-const CLOSE: char = '\u{E8BB}';
-const CLOSED: char = '\u{E76C}';
-const OPENED: char = '\u{E70D}';
-const LEFT: char = '\u{E76B}';
-const RIGHT: char = '\u{E76C}';
-const PLAY: char = '\u{E768}';
+const CLOSE: char = '\u{E5CD}';
+const CLOSED: char = '\u{E5CC}';
+const OPENED: char = '\u{E5CF}';
+const LEFT: char = '\u{E5CB}';
+const RIGHT: char = '\u{E5CC}';
+const PLAY: char = '\u{E037}';
 const BULLET: &str = "•";
 const ARROW_INSET: f32 = 12.0;
 const BLURRED_WIDTH: u32 = 320;
@@ -362,7 +362,7 @@ impl Showcase {
             Some(Description::Failed) => about_note("Couldn't load the description."),
             Some(Description::Loading) | None => about_note("Loading…"),
         };
-        let close = button(text(CLOSE).font(font::ICONS).size(12))
+        let close = button(text(CLOSE).font(font::ICONS).size(font::icon(12.0)))
             .padding([8, 12])
             .style(style::secondary)
             .on_press(Message::CloseAbout);
@@ -440,7 +440,7 @@ impl Showcase {
             }
             Block::Video { url } => button(
                 row![
-                    text(PLAY).font(font::ICONS).size(12),
+                    text(PLAY).font(font::ICONS).size(font::icon(12.0)),
                     text("Play video").size(BODY_SIZE),
                 ]
                 .spacing(8)
@@ -831,7 +831,7 @@ impl Showcase {
             Some(Picture::Failed) => container(note("Image unavailable")).center(Fill).into(),
             Some(Picture::Loading) | None => space().height(Fill).into(),
         };
-        let close = button(text(CLOSE).font(font::ICONS).size(12))
+        let close = button(text(CLOSE).font(font::ICONS).size(font::icon(12.0)))
             .padding([8, 12])
             .style(style::secondary)
             .on_press(Message::CloseZoom);
@@ -975,7 +975,7 @@ fn facts<'a>(details: &'a GameDetails, tags: &[String], open: bool) -> Element<'
                 text("Features").size(font::BAR_SIZE),
                 text(if open { OPENED } else { CLOSED })
                     .font(font::ICONS)
-                    .size(10),
+                    .size(font::icon(10.0)),
             ]
             .spacing(8)
             .align_y(Center),
@@ -1007,7 +1007,7 @@ fn facts<'a>(details: &'a GameDetails, tags: &[String], open: bool) -> Element<'
 }
 
 fn arrow<'a>(icon: char, message: Message) -> Element<'a, Message> {
-    button(text(icon).font(font::ICONS).size(14))
+    button(text(icon).font(font::ICONS).size(font::icon(14.0)))
         .padding(10)
         .style(style::arrow)
         .on_press(message)
