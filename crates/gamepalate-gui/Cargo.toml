@@ -1,6 +1,6 @@
 [package]
 name = "gamepalate-gui"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
-gamepalate-app = { version = "0.2.0", path = "../gamepalate-app" }
+gamepalate-app = { version = "0.3.0", path = "../gamepalate-app" }
 iced = { version = "0.14.0", features = ["advanced", "image", "tokio"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 jiff = "0.2.38"

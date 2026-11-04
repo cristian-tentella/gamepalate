@@ -1766,7 +1766,7 @@ dependencies = [
 
 [[package]]
 name = "gamepalate-app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "avif-decode",
  "dirs",
@@ -1791,7 +1791,7 @@ dependencies = [
 
 [[package]]
 name = "gamepalate-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1812,7 +1812,7 @@ dependencies = [
 
 [[package]]
 name = "gamepalate-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rayon",
  "serde",
@@ -1820,7 +1820,7 @@ dependencies = [
 
 [[package]]
 name = "gamepalate-gui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "gamepalate-app",
@@ -1836,7 +1836,7 @@ dependencies = [
 
 [[package]]
 name = "gamepalate-steam"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
  "futures",
@@ -1857,7 +1857,7 @@ dependencies = [
 
 [[package]]
 name = "gamepalate-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "gamepalate-core",
  "postcard",
@@ -3887,7 +3887,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "playground"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "gamepalate-core",
