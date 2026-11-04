@@ -62,6 +62,11 @@ pub enum KeyError {
 
     #[error("could not use {name}", name = KEY_STORE_NAME)]
     Entry(#[source] keyring_core::Error),
+
+    #[error(
+        "the system keyring has no default keyring: create or unlock one (for example with          Passwords and Keys), or give the key with the {KEY_ENV_VAR} variable"
+    )]
+    NoDefaultKeyring,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -118,7 +123,18 @@ impl SystemKeyring {
         if let Err(reason) = store {
             return Err(KeyError::Store(reason.clone()));
         }
-        keyring_core::Entry::new(KEY_SERVICE, KEY_USER).map_err(KeyError::Entry)
+        keyring_core::Entry::new(KEY_SERVICE, KEY_USER).map_err(entry_error)
+    }
+}
+
+fn entry_error(error: keyring_core::Error) -> KeyError {
+    match &error {
+        keyring_core::Error::NoStorageAccess(cause)
+            if cause.to_string().contains("no result found") =>
+        {
+            KeyError::NoDefaultKeyring
+        }
+        _ => KeyError::Entry(error),
     }
 }
 
@@ -127,14 +143,14 @@ impl KeyStore for SystemKeyring {
         match SystemKeyring::entry()?.get_password() {
             Ok(key) => Ok(Some(key)),
             Err(keyring_core::Error::NoEntry) => Ok(None),
-            Err(error) => Err(KeyError::Entry(error)),
+            Err(error) => Err(entry_error(error)),
         }
     }
 
     fn save(&self, key: &str) -> Result<(), KeyError> {
         SystemKeyring::entry()?
             .set_password(key)
-            .map_err(KeyError::Entry)
+            .map_err(entry_error)
     }
 }
 
@@ -234,6 +250,22 @@ async fn connect_with<S: Get>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_secret_service_without_a_default_keyring_says_so() {
+        let cause = std::io::Error::other("Secret Service: no result found");
+        let error = entry_error(keyring_core::Error::NoStorageAccess(Box::new(cause)));
+
+        assert!(matches!(error, KeyError::NoDefaultKeyring));
+        assert!(error.to_string().contains("no default keyring"));
+    }
+
+    #[test]
+    fn other_keyring_errors_stay_as_they_are() {
+        let error = entry_error(keyring_core::Error::NoEntry);
+
+        assert!(matches!(error, KeyError::Entry(_)));
+    }
+
     use std::{fs, sync::Mutex};
 
     use gamepalate_store::signals::load_reading;
