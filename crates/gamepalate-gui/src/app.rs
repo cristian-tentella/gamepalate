@@ -38,6 +38,7 @@ const LOGO_SIZE: f32 = 24.0;
 const LOGO_SPACING: f32 = 8.0;
 const RESIZE_BORDER: f32 = 5.0;
 const DOUBLE_CLICK: Duration = Duration::from_millis(500);
+const BAR_ICON_SCALE: f32 = 0.85;
 const MINIMIZE: char = '\u{E15B}';
 const MAXIMIZE: char = '\u{E3C6}';
 const RESTORE: char = '\u{E3E0}';
@@ -751,8 +752,8 @@ fn prices_text(when: String, other_region: Option<Region>) -> String {
 
 fn window_button<'a>(icon: char, action: WindowAction) -> Element<'a, Message> {
     // The dash and the cross of Material Symbols are thinner than the square.
-    let thin = !cfg!(windows) && (icon == MINIMIZE || icon == CLOSE);
-    let size = font::icon(10.0) * if thin { 1.4 } else { 1.0 };
+    let thin = icon == MINIMIZE || icon == CLOSE;
+    let size = font::icon(10.0) * BAR_ICON_SCALE * if thin { 1.4 } else { 1.0 };
     button(
         container(
             text(icon)
@@ -944,10 +945,14 @@ fn refresh_failed<'a>(error: &str) -> Element<'a, Message> {
                 .style(style::popup),
             tooltip::Position::Bottom,
         ),
-        button(text(CLOSE).font(font::ICONS).size(font::icon(9.0)))
-            .padding(0)
-            .style(style::link)
-            .on_press(Message::DismissRefreshError),
+        button(
+            text(CLOSE)
+                .font(font::ICONS)
+                .size(font::icon(9.0) * BAR_ICON_SCALE)
+        )
+        .padding(0)
+        .style(style::link)
+        .on_press(Message::DismissRefreshError),
     ]
     .spacing(8)
     .align_y(Center)
@@ -986,7 +991,7 @@ fn bar_icon<'a>(icon: char, message: Option<Message>) -> button::Button<'a, Mess
         container(
             text(icon)
                 .font(font::ICONS)
-                .size(font::icon(14.0))
+                .size(font::icon(14.0) * BAR_ICON_SCALE)
                 .width(Fill)
                 .height(Fill)
                 .center(),
