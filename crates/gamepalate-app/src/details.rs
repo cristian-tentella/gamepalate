@@ -1,17 +1,20 @@
 use std::{
     collections::HashMap,
     fmt,
+    panic::AssertUnwindSafe,
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use futures::future::join;
+use futures::{FutureExt, future::join};
 use gamepalate_core::{ids::AppId, region::Region};
 use gamepalate_steam::{
+    description::{Block, get_description},
     details::{ItemDetails, get_item_details, get_store_categories},
     transport::{Get, SteamError, Transport},
 };
 
 const LANGUAGE: &str = "english";
+const DESCRIPTION: &str = "the store description";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameDetails {
@@ -51,6 +54,18 @@ impl<S: Get + Sync> StoreDetails<S> {
         let store = store?;
 
         Ok(store.map(|store| game_details(store, &names)))
+    }
+
+    pub async fn description(&self, id: AppId) -> Result<Option<Vec<Block>>, SteamError> {
+        AssertUnwindSafe(get_description(&self.transport, id, LANGUAGE))
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| {
+                Err(SteamError::Shape {
+                    endpoint: DESCRIPTION.to_string(),
+                    reason: "the reader stopped".to_string(),
+                })
+            })
     }
 
     async fn categories(&self) -> Arc<HashMap<u32, String>> {
@@ -180,6 +195,16 @@ mod tests {
             endpoint: CATEGORIES.to_string(),
             reason: "down".to_string(),
         })
+    }
+
+    #[tokio::test]
+    async fn a_description_that_breaks_the_reader_is_an_error() {
+        let store = store(Vec::new());
+
+        assert!(matches!(
+            store.description(AppId(620)).await,
+            Err(SteamError::Shape { .. })
+        ));
     }
 
     #[tokio::test]

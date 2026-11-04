@@ -19,7 +19,7 @@ pub const VOTES: [(&str, VoteKind); 4] = [
 pub const VOTE_HEIGHT: f32 = 36.0;
 const VOTE_WIDTH: f32 = 172.0;
 const VOTE_SPACING: f32 = 8.0;
-pub const LINKS_WIDTH: f32 = 280.0;
+pub const LINKS_WIDTH: f32 = 380.0;
 const KEYCAP_SIZE: f32 = 18.0;
 const KEYCAP_PADDING: f32 = 5.0;
 const KEY_SPACING: f32 = 6.0;
@@ -59,8 +59,12 @@ pub fn open(link: Link, name: &str, store_url: &str) {
         Link::Eneba => format::eneba_url(name),
         Link::Hltb => format::hltb_url(name),
     };
+    open_url(&url);
+}
+
+pub fn open_url(url: &str) {
     let _ = Command::new("rundll32")
-        .args(["url.dll,FileProtocolHandler", &url])
+        .args(["url.dll,FileProtocolHandler", url])
         .spawn();
 }
 
@@ -273,8 +277,10 @@ pub fn link_button<'a, Message: Clone + 'a>(
 
 pub fn links<'a, Message: Clone + 'a>(
     on_press: impl Fn(Link) -> Option<Message>,
+    about: Option<Message>,
 ) -> Element<'a, Message> {
     row![
+        link_button("D", "About", about),
         link_button("5", "Steam ↗", on_press(Link::Steam)),
         link_button("6", "Eneba ↗", on_press(Link::Eneba)),
         link_button("7", "HLTB ↗", on_press(Link::Hltb)),

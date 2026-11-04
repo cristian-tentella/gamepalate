@@ -15,6 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: ilammy/setup-nasm@v1
       - name: Check the tag matches the version
         run: |
           $version = (cargo pkgid -p gamepalate-gui) -split '[#@]' | Select-Object -Last 1

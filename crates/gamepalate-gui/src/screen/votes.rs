@@ -158,7 +158,16 @@ impl Votes {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
-        if self.showcase.is_zoomed()
+        let message = match message {
+            Message::Previous if self.showcase.is_about_open() => {
+                Message::Showcase(showcase::Message::ScrollUp)
+            }
+            Message::Next if self.showcase.is_about_open() => {
+                Message::Showcase(showcase::Message::ScrollDown)
+            }
+            message => message,
+        };
+        if self.showcase.is_open()
             && matches!(
                 message,
                 Message::Previous
@@ -282,6 +291,11 @@ impl Votes {
             column![stack![card].push(toast), style::separator(), votes],
         ]]
         .push(self.showcase.zoom().map(|zoom| zoom.map(Message::Showcase)))
+        .push(
+            self.current()
+                .and_then(|game| self.showcase.about(&game.name))
+                .map(|about| about.map(Message::Showcase)),
+        )
         .into()
     }
 
@@ -498,7 +512,11 @@ impl Votes {
 
         row![
             votes,
-            game::links(|link| game.is_some().then_some(Message::Open(link))),
+            game::links(
+                |link| game.is_some().then_some(Message::Open(link)),
+                game.is_some()
+                    .then_some(Message::Showcase(showcase::Message::ToggleAbout)),
+            ),
         ]
         .spacing(8)
         .height(Fill)
@@ -768,12 +786,21 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
     }
 
     match key {
-        Key::Named(Named::Escape) => Some(Message::Showcase(showcase::Message::CloseZoom)),
+        Key::Named(Named::Escape) => Some(Message::Showcase(showcase::Message::Close)),
         Key::Named(Named::ArrowUp) => Some(Message::Previous),
         Key::Named(Named::ArrowDown) => Some(Message::Next),
         Key::Named(Named::ArrowRight) => Some(Message::Showcase(showcase::Message::NextScreenshot)),
         Key::Named(Named::ArrowLeft) => {
             Some(Message::Showcase(showcase::Message::PreviousScreenshot))
+        }
+        Key::Character(character) if character.eq_ignore_ascii_case("d") => {
+            Some(Message::Showcase(showcase::Message::ToggleAbout))
+        }
+        Key::Character(character) if character.eq_ignore_ascii_case("k") => {
+            Some(Message::Showcase(showcase::Message::ScrollUp))
+        }
+        Key::Character(character) if character.eq_ignore_ascii_case("j") => {
+            Some(Message::Showcase(showcase::Message::ScrollDown))
         }
         Key::Character(character) => game::vote_key(&character)
             .map(Message::Vote)
@@ -1003,11 +1030,33 @@ mod tests {
     }
 
     #[test]
-    fn closes_the_zoomed_screenshot_with_escape() {
+    fn closes_the_zoom_and_the_description_with_escape() {
         assert!(matches!(
             key_message(pressed(Key::Named(Named::Escape))),
-            Some(Message::Showcase(showcase::Message::CloseZoom))
+            Some(Message::Showcase(showcase::Message::Close))
         ));
+    }
+
+    #[test]
+    fn scrolls_the_description_with_j_and_k() {
+        assert!(matches!(
+            key_message(pressed(Key::Character("k".into()))),
+            Some(Message::Showcase(showcase::Message::ScrollUp))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("j".into()))),
+            Some(Message::Showcase(showcase::Message::ScrollDown))
+        ));
+    }
+
+    #[test]
+    fn opens_the_description_with_d() {
+        for key in ["d", "D"] {
+            assert!(matches!(
+                key_message(pressed(Key::Character(key.into()))),
+                Some(Message::Showcase(showcase::Message::ToggleAbout))
+            ));
+        }
     }
 
     #[test]

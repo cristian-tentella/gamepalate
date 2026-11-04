@@ -164,10 +164,10 @@ impl Discover {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
-        if self.showcase.is_zoomed() {
+        if self.showcase.is_open() {
             match message {
                 Message::CloseFilters => {
-                    return self.update(Message::Showcase(showcase::Message::CloseZoom));
+                    return self.update(Message::Showcase(showcase::Message::Close));
                 }
                 Message::Next
                 | Message::Previous
@@ -334,6 +334,11 @@ impl Discover {
     pub fn view(&self, scale: f32) -> Element<'_, Message> {
         stack![responsive(move |size| self.screen(size, scale))]
             .push(self.showcase.zoom().map(|zoom| zoom.map(Message::Showcase)))
+            .push(
+                self.current()
+                    .and_then(|game| self.showcase.about(&game.name))
+                    .map(|about| about.map(Message::Showcase)),
+            )
             .into()
     }
 
@@ -471,7 +476,11 @@ impl Discover {
             )
         })
         .push(hints);
-        let links = game::links(|link| game.is_some().then_some(Message::Open(link)));
+        let links = game::links(
+            |link| game.is_some().then_some(Message::Open(link)),
+            game.is_some()
+                .then_some(Message::Showcase(showcase::Message::ToggleAbout)),
+        );
         let (votes, spacing) = match layout {
             Layout::Beside(shot_width) => (votes.width(shot_width), CARD_SPACING),
             Layout::Stacked(_) => (votes.width(Fill), 8.0),
@@ -909,7 +918,9 @@ fn acts_on_the_game(message: &Message) -> bool {
             | Message::Vote(_)
             | Message::Open(_)
             | Message::Showcase(
-                showcase::Message::NextScreenshot | showcase::Message::PreviousScreenshot
+                showcase::Message::NextScreenshot
+                    | showcase::Message::PreviousScreenshot
+                    | showcase::Message::ToggleAbout
             )
     )
 }
@@ -937,9 +948,20 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
     match key {
         Key::Named(Named::Space) => Some(Message::Next),
         Key::Named(Named::Backspace) => Some(Message::Previous),
+        Key::Named(Named::ArrowUp) => Some(Message::Showcase(showcase::Message::ScrollUp)),
+        Key::Named(Named::ArrowDown) => Some(Message::Showcase(showcase::Message::ScrollDown)),
         Key::Named(Named::ArrowRight) => Some(Message::Showcase(showcase::Message::NextScreenshot)),
         Key::Named(Named::ArrowLeft) => {
             Some(Message::Showcase(showcase::Message::PreviousScreenshot))
+        }
+        Key::Character(key) if key.eq_ignore_ascii_case("d") => {
+            Some(Message::Showcase(showcase::Message::ToggleAbout))
+        }
+        Key::Character(key) if key.eq_ignore_ascii_case("k") => {
+            Some(Message::Showcase(showcase::Message::ScrollUp))
+        }
+        Key::Character(key) if key.eq_ignore_ascii_case("j") => {
+            Some(Message::Showcase(showcase::Message::ScrollDown))
         }
         Key::Character(key) => game::vote_key(key.as_str())
             .map(Message::Vote)
@@ -976,6 +998,39 @@ mod tests {
             key_message(pressed(Key::Character("7".into()))),
             Some(Message::Open(Link::Hltb))
         ));
+    }
+
+    #[test]
+    fn scrolls_the_description_with_the_arrows_and_j_k() {
+        for (key, up) in [
+            (Key::Named(Named::ArrowUp), true),
+            (Key::Character("k".into()), true),
+            (Key::Named(Named::ArrowDown), false),
+            (Key::Character("j".into()), false),
+        ] {
+            let message = key_message(pressed(key));
+            if up {
+                assert!(matches!(
+                    message,
+                    Some(Message::Showcase(showcase::Message::ScrollUp))
+                ));
+            } else {
+                assert!(matches!(
+                    message,
+                    Some(Message::Showcase(showcase::Message::ScrollDown))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn opens_the_description_with_d() {
+        for key in ["d", "D"] {
+            assert!(matches!(
+                key_message(pressed(Key::Character(key.into()))),
+                Some(Message::Showcase(showcase::Message::ToggleAbout))
+            ));
+        }
     }
 
     #[test]
