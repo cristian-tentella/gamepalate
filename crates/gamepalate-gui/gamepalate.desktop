@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=gamepalate
+Comment=Game recommendations from your Steam library
+Exec=gamepalate
+Icon=gamepalate
+Categories=Game;Utility;
+Terminal=false
