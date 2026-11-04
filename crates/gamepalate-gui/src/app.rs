@@ -781,20 +781,25 @@ fn rescaled((_, event): (window::Id, window::Event)) -> Option<Message> {
 }
 
 pub fn window_settings(saved: Option<SavedWindow>) -> window::Settings {
-    window::Settings {
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut settings = window::Settings {
         size: saved_size(saved),
         maximized: saved.is_some_and(|saved| saved.maximized),
         position: window::Position::Centered,
         min_size: Some(MIN_SIZE),
         decorations: false,
         exit_on_close_request: false,
-        platform_specific: window::settings::PlatformSpecific {
+        ..window::Settings::default()
+    };
+    #[cfg(windows)]
+    {
+        settings.platform_specific = window::settings::PlatformSpecific {
             undecorated_shadow: true,
             corner_preference: window::settings::platform::CornerPreference::Round,
             ..window::settings::PlatformSpecific::default()
-        },
-        ..window::Settings::default()
+        };
     }
+    settings
 }
 
 fn saved_size(saved: Option<SavedWindow>) -> Size {
