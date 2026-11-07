@@ -18,6 +18,7 @@ use gamepalate_core::{
 use gamepalate_steam::{
     apps::get_app_list,
     archive::{Archive, ArchivedUpdate, PendingUpdate},
+    chain::{ChainError, chain, rotate},
     items::{archived_batches, batch_count, item_batches},
     tags::get_tags,
     transport::{Get, SteamError, Transport},
@@ -53,7 +54,7 @@ pub struct Updated {
     pub apps: usize,
     pub asked: usize,
     pub prices_at: Timestamp,
-    pub rotate_error: Option<io::Error>,
+    pub rotate_error: Option<ChainError>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -76,10 +77,10 @@ pub enum UpdateError {
     NoCompletedUpdate,
 
     #[error(
-        "the archive no longer has the full update that {} builds on: remove that folder and run update again",
-        .dir.display()
+        "app {} has no response in the archive: remove the archive folder and run update again",
+        .app.0
     )]
-    MissingBase { dir: PathBuf },
+    Uncovered { app: AppId },
 
     #[error("the Catalog was not changed: run update again to resume")]
     Stopped {
@@ -109,6 +110,16 @@ pub enum UpdateError {
 
     #[error("could not mark the update as completed in the archive")]
     Complete(#[source] io::Error),
+}
+
+impl From<ChainError> for UpdateError {
+    fn from(error: ChainError) -> UpdateError {
+        match error {
+            ChainError::Archive(source) => UpdateError::Archive(source),
+            ChainError::Steam(source) => UpdateError::Steam(source),
+            ChainError::Uncovered { app } => UpdateError::Uncovered { app },
+        }
+    }
 }
 
 struct BuiltCatalog {
@@ -162,9 +173,7 @@ async fn update_with<S: Get + Sync>(
     let earlier = if update.full() {
         Vec::new()
     } else {
-        let chain = archive.chain().map_err(UpdateError::Archive)?;
-        check_base(&chain, update.dir())?;
-        chain
+        chain(&archive).await?
     };
     let now = update.started_at();
     if update.resumed_responses() > 0 {
@@ -201,7 +210,7 @@ async fn update_with<S: Get + Sync>(
     update
         .complete(wall_clock())
         .map_err(UpdateError::Complete)?;
-    let rotate_error = archive.rotate(config.kept_updates).err();
+    let rotate_error = rotate(&archive, config.kept_updates).await.err();
 
     Ok(Updated {
         games: built.catalog.games().len(),
@@ -237,11 +246,10 @@ pub fn pending_update(data_dir: &Path, config: &Config) -> Option<PendingUpdate>
 }
 
 pub async fn rebuild_catalog(data_dir: &Path) -> Result<Rebuilt, UpdateError> {
-    let chain = archive(data_dir).chain().map_err(UpdateError::Archive)?;
+    let chain = chain(&archive(data_dir)).await?;
     let Some((latest, earlier)) = chain.split_first() else {
         return Err(UpdateError::NoCompletedUpdate);
     };
-    check_base(&chain, latest.dir())?;
 
     let built = build_catalog(
         latest,
@@ -265,15 +273,6 @@ fn not_marked_note(not_marked: &Option<io::Error>) -> String {
     match not_marked {
         Some(error) => format!("; could not mark this one as failed in the archive: {error}"),
         None => String::new(),
-    }
-}
-
-fn check_base(chain: &[ArchivedUpdate], update: &Path) -> Result<(), UpdateError> {
-    match chain.last() {
-        Some(base) if base.full() => Ok(()),
-        _ => Err(UpdateError::MissingBase {
-            dir: update.to_path_buf(),
-        }),
     }
 }
 
@@ -317,11 +316,14 @@ async fn build_catalog<S: Get>(
     let mut known = KnownApps::new(ids.iter().copied(), now);
     prices.extend(formatted_prices(&items));
     known.add(&asked, items);
+    let mut tags_updated_at = now;
     for update in earlier {
         for batch in archived_batches(update)? {
             let batch = batch?;
             prices.extend(formatted_prices(&batch.items));
-            known.add(&batch.asked, batch.items);
+            if known.add(&batch.asked, batch.items) > 0 {
+                tags_updated_at = update.started_at();
+            }
         }
     }
     let currency = Currency::learn(prices.iter().map(|(cents, text)| (*cents, text.as_str())))
@@ -331,7 +333,7 @@ async fn build_catalog<S: Get>(
     let idf = compute_idf(&games);
     let freshness = Freshness {
         prices_updated_at: now,
-        tags_updated_at: earlier.last().map_or(now, ArchivedUpdate::started_at),
+        tags_updated_at,
         region,
     };
     Ok(BuiltCatalog {
@@ -841,19 +843,104 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rebuild_without_the_full_update_of_the_chain_fails() {
+    async fn rebuild_with_an_app_no_update_answers_fails() {
         let data = tempfile::tempdir().unwrap();
-        run_update(data.path(), &FakeSteam::new(&[(1, 10)]))
+        run_update(data.path(), &FakeSteam::new(&[(1, 10), (2, 20)]))
             .await
             .unwrap();
-        run_update(data.path(), &FakeSteam::new(&[(1, 11)]))
+        run_update(data.path(), &FakeSteam::new(&[(1, 10), (2, 21)]))
             .await
             .unwrap();
         fs::remove_dir_all(update_dir(data.path(), "000001")).unwrap();
 
         let error = rebuild_catalog(data.path()).await.unwrap_err();
 
-        assert!(error.to_string().contains("no longer has the full update"));
+        assert!(matches!(error, UpdateError::Uncovered { app: AppId(1) }));
+        assert!(
+            error
+                .to_string()
+                .starts_with("app 1 has no response in the archive")
+        );
+    }
+
+    #[tokio::test]
+    async fn rebuild_needs_only_the_updates_that_answer_the_listed_apps() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(data.path(), &FakeSteam::new(&[(1, 10), (2, 20)]))
+            .await
+            .unwrap();
+        run_update(data.path(), &FakeSteam::new(&[(1, 11), (2, 21)]))
+            .await
+            .unwrap();
+        fs::remove_dir_all(update_dir(data.path(), "000001")).unwrap();
+
+        rebuild_catalog(data.path()).await.unwrap();
+
+        assert_eq!(game_ids(data.path()), [1, 2]);
+    }
+
+    fn tags_updated_at(data_dir: &Path) -> Timestamp {
+        load_catalog(&data_dir.join("catalog.sqlite"))
+            .unwrap()
+            .freshness
+            .tags_updated_at
+    }
+
+    fn started_at(data_dir: &Path, number: &str) -> Timestamp {
+        let manifest: Value = serde_json::from_slice(
+            &fs::read(update_dir(data_dir, number).join("update.json")).unwrap(),
+        )
+        .unwrap();
+        let text = manifest["startedAt"].as_str().unwrap();
+        Timestamp(text.parse::<jiff::Timestamp>().unwrap().as_millisecond())
+    }
+
+    #[tokio::test]
+    async fn the_tags_are_as_old_as_the_oldest_response_in_the_catalog() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(data.path(), &FakeSteam::new(&[(1, 10), (2, 20)]))
+            .await
+            .unwrap();
+        run_update(data.path(), &FakeSteam::new(&[(1, 11), (2, 20)]))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tags_updated_at(data.path()),
+            started_at(data.path(), "000001")
+        );
+
+        run_update(data.path(), &FakeSteam::new(&[(1, 11), (2, 21)]))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tags_updated_at(data.path()),
+            started_at(data.path(), "000002")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_update_keeps_the_full_one_until_every_app_was_asked_again() {
+        let data = tempfile::tempdir().unwrap();
+        let config = Config {
+            kept_updates: 1,
+            ..Config::default()
+        };
+        for apps in [[(1, 10), (2, 20)], [(1, 11), (2, 20)], [(1, 11), (2, 21)]] {
+            update_catalog(data.path(), &FakeSteam::new(&apps), &config, |_| {})
+                .await
+                .unwrap();
+        }
+
+        let mut folders: Vec<_> = fs::read_dir(data.path().join("archive"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        folders.sort();
+
+        assert_eq!(folders, ["000002", "000003"]);
+        assert_eq!(game_ids(data.path()), [1, 2]);
     }
 
     #[tokio::test]

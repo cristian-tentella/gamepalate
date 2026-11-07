@@ -8,7 +8,7 @@ use gamepalate_core::{
     timestamp::Timestamp,
 };
 use serde::{Deserialize, Deserializer, de};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::{
     archive::{ArchivedRecord, ArchivedUpdate},
@@ -186,24 +186,34 @@ pub fn archived_batches(
         .map(|record| record.and_then(asked_and_items)))
 }
 
+pub fn archived_asked(
+    update: &ArchivedUpdate,
+) -> Result<impl Iterator<Item = Result<Vec<AppId>, SteamError>>, SteamError> {
+    Ok(update
+        .requests(ENDPOINT)?
+        .map(|params| params.and_then(|params| asked(&params))))
+}
+
 fn asked_and_items(record: ArchivedRecord) -> Result<ArchivedBatch, SteamError> {
+    Ok(ArchivedBatch {
+        asked: asked(&record.params)?,
+        items: parse_items(record.body)?,
+    })
+}
+
+fn asked(params: &Map<String, Value>) -> Result<Vec<AppId>, SteamError> {
     let shape = |reason: String| SteamError::Shape {
         endpoint: ENDPOINT.to_string(),
         reason,
     };
-    let input = record
-        .params
+    let input = params
         .get("input_json")
         .and_then(Value::as_str)
         .ok_or_else(|| shape("the archived request has no input_json".to_string()))?;
     let input: ItemsInput = serde_json::from_str(input)
         .map_err(|error| shape(format!("the archived input_json: {error}")))?;
 
-    let asked = input.ids.into_iter().map(|id| AppId(id.appid)).collect();
-    Ok(ArchivedBatch {
-        asked,
-        items: parse_items(record.body)?,
-    })
+    Ok(input.ids.into_iter().map(|id| AppId(id.appid)).collect())
 }
 
 fn parse_items(value: Value) -> Result<Vec<StoreItem>, SteamError> {
