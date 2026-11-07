@@ -333,4 +333,28 @@ mod tests {
         assert_eq!(game_name(AppId(10), &catalog, &off_catalog), "off game");
         assert_eq!(game_name(AppId(20), &catalog, &off_catalog), "#20");
     }
+
+    #[test]
+    fn signals_taste_changes_when_a_game_is_played_elsewhere() {
+        use crate::{
+            effective_hours::effective_hours, signals::Signals, timestamp::Timestamp, votes::Votes,
+        };
+
+        let signals = Signals {
+            read_at: Timestamp(0),
+            library: Vec::new(),
+            borrowed: Vec::new(),
+            recent: Vec::new(),
+            wishlist: Vec::new(),
+            followed: Vec::new(),
+        };
+        let config = SignalsConfig::default();
+        let taste_of = |played_elsewhere: &BTreeSet<AppId>| {
+            let hours = effective_hours(&signals, &Votes::new(), played_elsewhere, &config);
+            signals_taste(&hours, &catalog(), &off_catalog(), &corrections(), &config)
+        };
+
+        assert!(ids(&taste_of(&BTreeSet::new())).is_empty());
+        assert_eq!(ids(&taste_of(&BTreeSet::from([AppId(4)]))), [AppId(4)]);
+    }
 }

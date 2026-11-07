@@ -132,6 +132,7 @@ impl<'a> FilterContext<'a> {
         let owned = signals
             .played()
             .chain(signals.recent.iter().map(|game| game.id))
+            .chain(corrections.played_elsewhere.iter().copied())
             .collect();
         let family_games = families
             .families
@@ -355,5 +356,26 @@ mod tests {
             context.owned,
             BTreeSet::from([AppId(1), AppId(2), AppId(3)])
         );
+    }
+
+    #[test]
+    fn a_game_played_elsewhere_is_owned() {
+        let signals = Signals {
+            read_at: Timestamp(0),
+            library: vec![],
+            borrowed: vec![],
+            recent: vec![],
+            wishlist: vec![],
+            followed: vec![],
+        };
+        let votes = Votes::new();
+        let corrections = Corrections {
+            played_elsewhere: BTreeSet::from([AppId(5)]),
+            ..Corrections::default()
+        };
+
+        let context = FilterContext::new(&signals, &Families::default(), &votes, &corrections);
+
+        assert_eq!(context.owned, BTreeSet::from([AppId(5)]));
     }
 }

@@ -78,6 +78,7 @@ pub(crate) async fn check_ready_with<S: Get>(
         OffCatalogInputs {
             signals: &files.signals,
             votes: &files.votes,
+            corrections: &files.corrections,
             families: &files.families,
             catalog: &files.catalog,
             config: &files.config,

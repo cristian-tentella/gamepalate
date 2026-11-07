@@ -103,6 +103,7 @@ impl Profile {
             HoursSource::Followed,
             HoursSource::Wishlist,
             HoursSource::WouldTry,
+            HoursSource::Elsewhere,
         ]
         .into_iter()
         .map(|source| {
@@ -303,7 +304,12 @@ pub fn family_profiles(inputs: &SearchInputs, problems: &[FamilyProblem]) -> Vec
 
 // None when no game is above the hours threshold.
 pub fn profile(inputs: &SearchInputs, limit: usize) -> Option<Profile> {
-    let hours_by_source = hours_by_source(inputs.signals, inputs.votes, &inputs.config.signals);
+    let hours_by_source = hours_by_source(
+        inputs.signals,
+        inputs.votes,
+        &inputs.corrections.played_elsewhere,
+        &inputs.config.signals,
+    );
     let hours: BTreeMap<AppId, f64> = hours_by_source
         .iter()
         .map(|(&id, &(hours, _))| (id, hours))
@@ -519,6 +525,7 @@ mod tests {
                 (HoursSource::Followed, rounded(followed / total)),
                 (HoursSource::Wishlist, rounded(wishlist / total)),
                 (HoursSource::WouldTry, rounded(wishlist / total)),
+                (HoursSource::Elsewhere, 0.0),
             ]
         );
     }

@@ -74,7 +74,12 @@ fn main() -> anyhow::Result<()> {
     println!("bets: {}", votes.values().filter(|vote| vote.bet).count());
     print_opinions(&votes, &catalog, &off_catalog);
 
-    let hours = effective_hours(&signals, &votes, &config.signals);
+    let hours = effective_hours(
+        &signals,
+        &votes,
+        &corrections.played_elsewhere,
+        &config.signals,
+    );
     let mut by_hours: Vec<_> = hours.iter().collect();
     by_hours.sort_by(|a, b| b.1.total_cmp(a.1));
     println!("\n== effective hours");

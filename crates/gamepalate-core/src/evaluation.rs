@@ -392,7 +392,12 @@ pub fn summarize(games: Vec<EvaluatedGame>) -> GroupSummary {
 pub fn evaluate(inputs: &SearchInputs) -> Evaluation {
     let config = inputs.config;
     let quality_weight = config.relevance.quality_weight;
-    let hours = effective_hours(inputs.signals, inputs.votes, &config.signals);
+    let hours = effective_hours(
+        inputs.signals,
+        inputs.votes,
+        &inputs.corrections.played_elsewhere,
+        &config.signals,
+    );
     let taste = signals_taste(
         &hours,
         inputs.catalog,

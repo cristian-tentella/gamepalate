@@ -16,7 +16,12 @@ struct Line {
 pub fn run(files: &DataFiles) {
     let inputs = files.search_inputs(&[]);
     let corrections = &files.corrections;
-    let hours = effective_hours(&files.signals, &files.votes, &files.config.signals);
+    let hours = effective_hours(
+        &files.signals,
+        &files.votes,
+        &corrections.played_elsewhere,
+        &files.config.signals,
+    );
     let in_effect: Vec<(AppId, bool)> = corrected_games(&hours, &inputs)
         .iter()
         .map(|game| (game.id, game.in_effect))

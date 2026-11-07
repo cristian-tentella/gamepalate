@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     config::SignalsConfig,
@@ -13,14 +13,16 @@ pub enum HoursSource {
     Followed,
     Wishlist,
     WouldTry,
+    Elsewhere,
 }
 
 pub fn effective_hours(
     signals: &Signals,
     votes: &Votes,
+    played_elsewhere: &BTreeSet<AppId>,
     signals_config: &SignalsConfig,
 ) -> BTreeMap<AppId, f64> {
-    hours_by_source(signals, votes, signals_config)
+    hours_by_source(signals, votes, played_elsewhere, signals_config)
         .into_iter()
         .map(|(id, (hours, _))| (id, hours))
         .collect()
@@ -29,6 +31,7 @@ pub fn effective_hours(
 pub fn hours_by_source(
     signals: &Signals,
     votes: &Votes,
+    played_elsewhere: &BTreeSet<AppId>,
     signals_config: &SignalsConfig,
 ) -> BTreeMap<AppId, (f64, HoursSource)> {
     let mut hours: BTreeMap<AppId, (f64, HoursSource)> = signals
@@ -100,6 +103,15 @@ pub fn hours_by_source(
         );
     }
 
+    for &id in played_elsewhere {
+        keep_max_hours(
+            &mut hours,
+            id,
+            signals_config.elsewhere_hours,
+            HoursSource::Elsewhere,
+        );
+    }
+
     hours
 }
 
@@ -151,13 +163,23 @@ mod tests {
 
     #[test]
     fn effective_hours_count_recent_hours_three_times() {
-        let hours = effective_hours(&signals(), &Votes::new(), &SignalsConfig::default());
+        let hours = effective_hours(
+            &signals(),
+            &Votes::new(),
+            &BTreeSet::new(),
+            &SignalsConfig::default(),
+        );
         assert_eq!(hours[&AppId(1)], 110.0);
     }
 
     #[test]
     fn effective_hours_keep_the_highest_value_of_every_source() {
-        let hours = effective_hours(&signals(), &Votes::new(), &SignalsConfig::default());
+        let hours = effective_hours(
+            &signals(),
+            &Votes::new(),
+            &BTreeSet::new(),
+            &SignalsConfig::default(),
+        );
         assert_eq!(hours[&AppId(2)], 3.0);
         assert_eq!(hours[&AppId(3)], 50.0);
         assert_eq!(hours[&AppId(4)], 5.0);
@@ -169,7 +191,12 @@ mod tests {
             (AppId(10), vote(VoteKind::WouldTry)),
             (AppId(20), vote(VoteKind::Maybe)),
         ]);
-        let hours = effective_hours(&signals(), &votes, &SignalsConfig::default());
+        let hours = effective_hours(
+            &signals(),
+            &votes,
+            &BTreeSet::new(),
+            &SignalsConfig::default(),
+        );
         assert_eq!(hours[&AppId(10)], 5.0);
         assert!(!hours.contains_key(&AppId(20)));
     }
@@ -177,7 +204,12 @@ mod tests {
     #[test]
     fn every_game_keeps_the_source_of_its_hours() {
         let votes = Votes::from([(AppId(2), vote(VoteKind::WouldTry))]);
-        let hours = hours_by_source(&signals(), &votes, &SignalsConfig::default());
+        let hours = hours_by_source(
+            &signals(),
+            &votes,
+            &BTreeSet::new(),
+            &SignalsConfig::default(),
+        );
         assert_eq!(hours[&AppId(1)], (110.0, HoursSource::Played));
         assert_eq!(hours[&AppId(2)], (5.0, HoursSource::WouldTry));
         assert_eq!(hours[&AppId(3)], (50.0, HoursSource::Played));
@@ -194,7 +226,7 @@ mod tests {
             followed_hours: 5.0,
             ..SignalsConfig::default()
         };
-        let hours = hours_by_source(&signals, &Votes::new(), &config);
+        let hours = hours_by_source(&signals, &Votes::new(), &BTreeSet::new(), &config);
         assert_eq!(hours[&AppId(4)], (5.0, HoursSource::Followed));
     }
 
@@ -221,9 +253,75 @@ mod tests {
             }],
             ..signals()
         };
-        let hours = hours_by_source(&signals, &Votes::new(), &SignalsConfig::default());
+        let hours = hours_by_source(
+            &signals,
+            &Votes::new(),
+            &BTreeSet::new(),
+            &SignalsConfig::default(),
+        );
         assert_eq!(hours[&AppId(8)], (40.0, HoursSource::Played));
         assert_eq!(hours[&AppId(3)], (50.0, HoursSource::Played));
         assert_eq!(hours[&AppId(1)], (110.0, HoursSource::Played));
+    }
+
+    fn elsewhere(ids: &[u32]) -> BTreeSet<AppId> {
+        ids.iter().map(|&id| AppId(id)).collect()
+    }
+
+    #[test]
+    fn a_game_played_elsewhere_counts_the_fixed_hours() {
+        let hours = hours_by_source(
+            &signals(),
+            &Votes::new(),
+            &elsewhere(&[9]),
+            &SignalsConfig::default(),
+        );
+        assert_eq!(hours[&AppId(9)], (20.0, HoursSource::Elsewhere));
+    }
+
+    #[test]
+    fn more_real_hours_win_over_played_elsewhere() {
+        let hours = hours_by_source(
+            &signals(),
+            &Votes::new(),
+            &elsewhere(&[1]),
+            &SignalsConfig::default(),
+        );
+        assert_eq!(hours[&AppId(1)], (110.0, HoursSource::Played));
+    }
+
+    #[test]
+    fn an_owned_game_with_no_hours_played_elsewhere_counts_as_elsewhere() {
+        let signals = Signals {
+            library: vec![LibraryGame {
+                id: AppId(7),
+                total_hours: 0.0,
+            }],
+            ..signals()
+        };
+        let hours = hours_by_source(
+            &signals,
+            &Votes::new(),
+            &elsewhere(&[7]),
+            &SignalsConfig::default(),
+        );
+        assert_eq!(hours[&AppId(7)], (20.0, HoursSource::Elsewhere));
+    }
+
+    #[test]
+    fn the_highest_of_wishlist_and_played_elsewhere_wins() {
+        let config = SignalsConfig {
+            elsewhere_hours: 3.0,
+            ..SignalsConfig::default()
+        };
+        let hours = hours_by_source(&signals(), &Votes::new(), &elsewhere(&[4]), &config);
+        assert_eq!(hours[&AppId(4)], (5.0, HoursSource::Wishlist));
+        let hours = hours_by_source(
+            &signals(),
+            &Votes::new(),
+            &elsewhere(&[4]),
+            &SignalsConfig::default(),
+        );
+        assert_eq!(hours[&AppId(4)], (20.0, HoursSource::Elsewhere));
     }
 }

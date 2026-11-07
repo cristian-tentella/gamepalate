@@ -232,7 +232,12 @@ fn corrections_view(inputs: &SearchInputs) -> CorrectionsView {
     let corrections = inputs.corrections;
     let catalog = inputs.catalog;
     let name = |id| game_name(id, catalog, inputs.off_catalog);
-    let hours = effective_hours(inputs.signals, inputs.votes, &inputs.config.signals);
+    let hours = effective_hours(
+        inputs.signals,
+        inputs.votes,
+        &corrections.played_elsewhere,
+        &inputs.config.signals,
+    );
 
     let mut view = CorrectionsView {
         tag_multipliers: corrections
@@ -486,11 +491,12 @@ mod tests {
                 .games
         };
 
-        assert_eq!(taste.sources.len(), 4);
+        assert_eq!(taste.sources.len(), 5);
         assert_eq!(games(HoursSource::Played), 2);
         assert_eq!(games(HoursSource::Wishlist), 1);
         assert_eq!(games(HoursSource::WouldTry), 1);
         assert_eq!(games(HoursSource::Followed), 0);
+        assert_eq!(games(HoursSource::Elsewhere), 0);
     }
 
     #[test]

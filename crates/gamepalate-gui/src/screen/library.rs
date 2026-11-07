@@ -1208,6 +1208,7 @@ fn tile_label(game: &LibraryGameView) -> String {
         HoursSource::Wishlist => "wishlist".to_string(),
         HoursSource::Followed => "followed".to_string(),
         HoursSource::WouldTry => "would try".to_string(),
+        HoursSource::Elsewhere => "elsewhere".to_string(),
     }
 }
 
@@ -1366,6 +1367,7 @@ fn source_line(game: &LibraryGameView, view: &LibraryView) -> String {
         (HoursSource::Wishlist, _) => counts_as(view.wishlist_hours),
         (HoursSource::Followed, _) => counts_as(view.followed_hours),
         (HoursSource::WouldTry, _) => counts_as(game.hours),
+        (HoursSource::Elsewhere, _) => counts_as(game.hours),
     });
     if game.recent {
         parts.push("played in the last two weeks".to_string());

@@ -1061,6 +1061,7 @@ fn source_label(source: HoursSource) -> &'static str {
         HoursSource::Wishlist => "Wishlist",
         HoursSource::Followed => "Followed",
         HoursSource::WouldTry => "Would try",
+        HoursSource::Elsewhere => "Played elsewhere",
     }
 }
 
@@ -1099,6 +1100,13 @@ fn source_text(source: &SourceView, hours: &SignalsConfig) -> String {
                 each(hours.would_try_hours)
             )
         }
+        HoursSource::Elsewhere => {
+            format!(
+                "{}, {}",
+                games_count(source.games),
+                each(hours.elsewhere_hours)
+            )
+        }
     }
 }
 
@@ -1108,9 +1116,10 @@ fn source_tooltip(source: HoursSource, hours: &SignalsConfig) -> String {
             "Games with at least {} of play. {SETTINGS_HINT}",
             hours_text(hours.min_hours)
         ),
-        HoursSource::Wishlist | HoursSource::Followed | HoursSource::WouldTry => {
-            SETTINGS_HINT.to_string()
-        }
+        HoursSource::Wishlist
+        | HoursSource::Followed
+        | HoursSource::WouldTry
+        | HoursSource::Elsewhere => SETTINGS_HINT.to_string(),
     }
 }
 
@@ -1124,6 +1133,9 @@ fn source_message(source: HoursSource) -> Message {
             Message::OpenLibrary(library::Filter::Followed, library::Sort::TasteWeight)
         }
         HoursSource::WouldTry => Message::OpenVotes(Filter::Kind(VoteKind::WouldTry)),
+        HoursSource::Elsewhere => {
+            Message::OpenLibrary(library::Filter::All, library::Sort::TasteWeight)
+        }
     }
 }
 
@@ -1184,6 +1196,7 @@ fn game_hours(game: &HoursGame) -> String {
         HoursSource::Wishlist => "wishlist".to_string(),
         HoursSource::Followed => "followed".to_string(),
         HoursSource::WouldTry => "would try".to_string(),
+        HoursSource::Elsewhere => "elsewhere".to_string(),
     }
 }
 

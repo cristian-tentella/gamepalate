@@ -82,7 +82,12 @@ pub enum GameCorrectionError {
 pub(crate) fn library_view(inputs: &SearchInputs) -> LibraryView {
     let signals = inputs.signals;
     let config = &inputs.config.signals;
-    let hours = hours_by_source(signals, inputs.votes, config);
+    let hours = hours_by_source(
+        signals,
+        inputs.votes,
+        &inputs.corrections.played_elsewhere,
+        config,
+    );
     let effective: BTreeMap<AppId, f64> = hours.iter().map(|(&id, &(h, _))| (id, h)).collect();
     let taste = signals_taste(
         &effective,
@@ -186,7 +191,12 @@ pub fn check_game_multiplier(
     }
     let game = || game_label(id, inputs.catalog, inputs.off_catalog);
     let config = &inputs.config.signals;
-    let hours = hours_by_source(inputs.signals, inputs.votes, config);
+    let hours = hours_by_source(
+        inputs.signals,
+        inputs.votes,
+        &inputs.corrections.played_elsewhere,
+        config,
+    );
     match hours.get(&id) {
         None => Err(GameCorrectionError::NotInSignals { game: game() }),
         Some(&(hours, _)) if hours < config.min_hours => Err(GameCorrectionError::BelowThreshold {

@@ -67,6 +67,7 @@ pub fn load_for(
         OffCatalogInputs {
             signals: &files.signals,
             votes: &files.votes,
+            corrections: &files.corrections,
             families: &files.families,
             catalog: &files.catalog,
             config: &files.config,
