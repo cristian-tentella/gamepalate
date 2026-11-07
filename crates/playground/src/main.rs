@@ -9,7 +9,7 @@ use gamepalate_core::{
     catalog::Catalog,
     config::{Config, RelevanceConfig},
     currency::Currency,
-    effective_hours::effective_hours,
+    effective_hours::hours_by_source,
     evaluation::{GroupSummary, evaluate},
     filters::{FilterContext, FilterOptions, active_filters, apply_filters},
     game_vector::{GameVector, game_vectors},
@@ -74,17 +74,20 @@ fn main() -> anyhow::Result<()> {
     println!("bets: {}", votes.values().filter(|vote| vote.bet).count());
     print_opinions(&votes, &catalog, &off_catalog);
 
-    let hours = effective_hours(
+    let hours_by_source = hours_by_source(
         &signals,
         &votes,
         &corrections.played_elsewhere,
         &config.signals,
     );
-    let mut by_hours: Vec<_> = hours.iter().collect();
-    by_hours.sort_by(|a, b| b.1.total_cmp(a.1));
+    let mut by_hours: Vec<_> = hours_by_source
+        .iter()
+        .map(|(&id, &(hours, _))| (id, hours))
+        .collect();
+    by_hours.sort_by(|a, b| b.1.total_cmp(&a.1));
     println!("\n== effective hours");
-    println!("games: {}", hours.len());
-    for &(&id, hours) in by_hours.iter().take(10) {
+    println!("games: {}", hours_by_source.len());
+    for &(id, hours) in by_hours.iter().take(10) {
         println!("{hours:>8.1}  {}", game_name(id, &catalog, &off_catalog));
     }
 
@@ -120,7 +123,7 @@ fn main() -> anyhow::Result<()> {
     print_profile(&inputs);
 
     let taste = signals_taste(
-        &hours,
+        &hours_by_source,
         &catalog,
         &off_catalog,
         &corrections,

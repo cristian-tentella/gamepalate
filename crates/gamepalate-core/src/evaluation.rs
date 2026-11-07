@@ -8,7 +8,7 @@ use crate::{
         references_similarity,
     },
     catalog::Catalog,
-    effective_hours::effective_hours,
+    effective_hours::hours_by_source,
     families::Families,
     filters::FilterContext,
     game_vector::GameVector,
@@ -392,14 +392,18 @@ pub fn summarize(games: Vec<EvaluatedGame>) -> GroupSummary {
 pub fn evaluate(inputs: &SearchInputs) -> Evaluation {
     let config = inputs.config;
     let quality_weight = config.relevance.quality_weight;
-    let hours = effective_hours(
+    let hours_by_source = hours_by_source(
         inputs.signals,
         inputs.votes,
         &inputs.corrections.played_elsewhere,
         &config.signals,
     );
+    let hours: BTreeMap<AppId, f64> = hours_by_source
+        .iter()
+        .map(|(&id, &(hours, _))| (id, hours))
+        .collect();
     let taste = signals_taste(
-        &hours,
+        &hours_by_source,
         inputs.catalog,
         inputs.off_catalog,
         inputs.corrections,

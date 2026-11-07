@@ -18,8 +18,7 @@ const WHAT: &str = "gamepalate can read it at every update and keep only the hou
 const ELSEWHERE: &str = "Played games outside Steam? Add them from ";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum ElsewhereHint<M> {
-    Link(M),
+pub(crate) enum ElsewhereHint {
     Text,
     None,
 }
@@ -64,7 +63,7 @@ impl SteamClientQuestion {
     pub(crate) fn view<'a, M: Clone + 'a>(
         &'a self,
         answer: fn(bool) -> M,
-        hint: ElsewhereHint<M>,
+        hint: ElsewhereHint,
     ) -> Element<'a, M> {
         let buttons = row![
             space().width(Fill),
@@ -112,21 +111,15 @@ impl SteamClientQuestion {
     }
 }
 
-fn hint_view<'a, M: Clone + 'a>(hint: ElsewhereHint<M>) -> Option<Element<'a, M>> {
-    let library: Element<'a, M> = match hint {
-        ElsewhereHint::None => return None,
-        ElsewhereHint::Text => text("Library").size(font::NOTE_SIZE).into(),
-        ElsewhereHint::Link(open) => button(text("Library").size(font::NOTE_SIZE))
-            .padding(0)
-            .style(style::link)
-            .on_press(open)
-            .into(),
-    };
+fn hint_view<'a, M: 'a>(hint: ElsewhereHint) -> Option<Element<'a, M>> {
+    if hint == ElsewhereHint::None {
+        return None;
+    }
 
     Some(
         row![
             text(ELSEWHERE).size(font::NOTE_SIZE).style(style::muted),
-            library,
+            text("Library").size(font::NOTE_SIZE),
             text(".").size(font::NOTE_SIZE).style(style::muted),
         ]
         .align_y(Center)
@@ -142,7 +135,6 @@ mod tests {
     fn the_hint_about_games_played_elsewhere_shows_only_when_asked() {
         assert!(hint_view::<()>(ElsewhereHint::None).is_none());
         assert!(hint_view::<()>(ElsewhereHint::Text).is_some());
-        assert!(hint_view(ElsewhereHint::Link(())).is_some());
         assert_eq!(
             format!("{ELSEWHERE}Library."),
             "Played games outside Steam? Add them from Library."

@@ -188,8 +188,12 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Navigate(Page::Settings) if self.page() == Some(Page::Settings) => {
+                let back = self.back_page();
+                self.leave(back)
+            }
             Message::Navigate(page) if self.page() == Some(page) => Task::none(),
-            Message::Navigate(page) => self.open(page),
+            Message::Navigate(page) => self.leave(page),
             Message::Discover(discover::Message::OpenSimilar(id)) => self.show_game(id),
             Message::Discover(message) => {
                 if let Screen::Discover(screen) = &mut self.screen {
@@ -254,7 +258,11 @@ impl App {
             }
             Message::Settings(message) => {
                 let Screen::Settings(screen) = &mut self.screen else {
-                    return Task::none();
+                    return if message.changed_data() {
+                        self.reopen()
+                    } else {
+                        Task::none()
+                    };
                 };
                 match screen.update(message) {
                     settings::Action::None => Task::none(),
@@ -265,7 +273,9 @@ impl App {
                         self.reopen(),
                         self.run_refresh(Plan::EVERYTHING, Start::Button),
                     ]),
-                    settings::Action::Close(page) => self.open(page),
+                    settings::Action::Close(page, saving) => {
+                        Task::batch([self.open(page), saving.map(Message::Settings)])
+                    }
                 }
             }
             Message::Reopened(Ok(gamepalate)) => {
@@ -459,7 +469,7 @@ impl App {
             Screen::Votes(_) => Votes::subscription().map(Message::Votes),
             Screen::Library(_) => Library::subscription().map(Message::Library),
             Screen::Profile(_) => Profile::subscription().map(Message::Profile),
-            Screen::Settings(_) => Settings::subscription().map(Message::Settings),
+            Screen::Settings(screen) => screen.subscription().map(Message::Settings),
             Screen::Setup(_) | Screen::Starting => Subscription::none(),
         };
 
@@ -525,7 +535,11 @@ impl App {
                             ),
                         )
                     }))
-                    .push(self.gamepalate.is_some().then(settings_button))
+                    .push(
+                        self.gamepalate
+                            .is_some()
+                            .then(|| settings_button(self.page() == Some(Page::Settings))),
+                    )
                     .push(theme_button(&self.theme))
                     .push(window_button(MINIMIZE, WindowAction::Minimize))
                     .push(window_button(
@@ -742,6 +756,15 @@ impl App {
             Screen::Settings(settings) => settings.back(),
             _ => self.page().unwrap_or(Page::Discover),
         }
+    }
+
+    fn leave(&mut self, page: Page) -> Task<Message> {
+        let saving = match &mut self.screen {
+            Screen::Settings(screen) => screen.leave().map(Message::Settings),
+            _ => Task::none(),
+        };
+
+        Task::batch([self.open(page), saving])
     }
 
     fn open(&mut self, page: Page) -> Task<Message> {
@@ -1156,11 +1179,20 @@ fn refresh_button<'a>(refresh: &Refresh, idle_tip: String) -> Element<'a, Messag
     with_tooltip(bar_icon(icon, message), tip)
 }
 
-fn settings_button<'a>() -> Element<'a, Message> {
+fn settings_button<'a>(open: bool) -> Element<'a, Message> {
+    let button = bar_icon(GEAR, Some(Message::Navigate(Page::Settings)));
     with_tooltip(
-        bar_icon(GEAR, Some(Message::Navigate(Page::Settings))),
-        "Settings".to_string(),
+        if open {
+            button.style(style::open_bar_icon)
+        } else {
+            button
+        },
+        settings_tip(open).to_string(),
     )
+}
+
+fn settings_tip(open: bool) -> &'static str {
+    if open { "Close Settings" } else { "Settings" }
 }
 
 fn theme_button<'a>(theme: &Theme) -> Element<'a, Message> {
@@ -1426,6 +1458,12 @@ mod tests {
             prices_text("28 Oct".to_string(), Some(Region::ITALY)),
             "Prices 28 Oct · IT"
         );
+    }
+
+    #[test]
+    fn the_gear_offers_to_close_settings_while_they_are_open() {
+        assert_eq!(settings_tip(false), "Settings");
+        assert_eq!(settings_tip(true), "Close Settings");
     }
 
     #[test]

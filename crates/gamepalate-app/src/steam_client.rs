@@ -108,6 +108,7 @@ mod tests {
             [LibraryGame {
                 id: AppId(70),
                 total_hours: 1.5,
+                last_played: None,
             }]
         );
     }

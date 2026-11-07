@@ -34,6 +34,7 @@ pub struct Settings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigKey {
     WishlistHours,
+    WishlistCap,
     FollowedHours,
     WouldTryHours,
     ElsewhereHours,
@@ -55,6 +56,7 @@ impl ConfigKey {
     pub fn keys(self) -> [&'static str; 2] {
         match self {
             ConfigKey::WishlistHours => ["signals", "wishlist_hours"],
+            ConfigKey::WishlistCap => ["signals", "wishlist_cap"],
             ConfigKey::FollowedHours => ["signals", "followed_hours"],
             ConfigKey::WouldTryHours => ["signals", "would_try_hours"],
             ConfigKey::ElsewhereHours => ["signals", "elsewhere_hours"],
@@ -77,6 +79,7 @@ impl ConfigKey {
         let integer = |value: usize| ConfigValue::Integer(value as i64);
         match self {
             ConfigKey::WishlistHours => ConfigValue::Number(config.signals.wishlist_hours),
+            ConfigKey::WishlistCap => ConfigValue::Number(config.signals.wishlist_cap),
             ConfigKey::FollowedHours => ConfigValue::Number(config.signals.followed_hours),
             ConfigKey::WouldTryHours => ConfigValue::Number(config.signals.would_try_hours),
             ConfigKey::ElsewhereHours => ConfigValue::Number(config.signals.elsewhere_hours),
@@ -271,6 +274,7 @@ mod tests {
         std::fs::write(&path, "steam_id = \"76561198000000000\"\n").unwrap();
         let keys = [
             ConfigKey::WishlistHours,
+            ConfigKey::WishlistCap,
             ConfigKey::FollowedHours,
             ConfigKey::WouldTryHours,
             ConfigKey::ElsewhereHours,

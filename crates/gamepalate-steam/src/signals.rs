@@ -3,6 +3,8 @@ use gamepalate_core::{
     signals::{LibraryGame, RecentGame, SignalsReading},
     timestamp::Timestamp,
 };
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -55,6 +57,8 @@ struct OwnedGamesResponse {
 struct OwnedGame {
     appid: u32,
     playtime_forever: u64,
+    #[serde(default)]
+    rtime_last_played: i64,
 }
 
 #[derive(Deserialize)]
@@ -78,6 +82,14 @@ struct WishlistResponse {
 #[derive(Deserialize)]
 struct WishlistItem {
     appid: u32,
+    #[serde(default)]
+    date_added: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Wishlist {
+    pub ids: Vec<AppId>,
+    pub added: BTreeMap<AppId, Timestamp>,
 }
 
 #[derive(Deserialize)]
@@ -112,7 +124,22 @@ pub async fn read_signals<S: Get>(
         }
     };
 
+    let mut library = library;
+    for game in &mut library {
+        if game.last_played.is_none() && recent.iter().any(|played| played.id == game.id) {
+            game.last_played = Some(now);
+        }
+    }
+
     let mut failed = Vec::new();
+    let (wishlist, added) = match wishlist {
+        Ok(Some(wishlist)) => (Ok(Some(wishlist.ids)), Some(wishlist.added)),
+        Ok(None) => (Ok(None), Some(BTreeMap::new())),
+        Err(error) => (Err(error), None),
+    };
+    let wishlist_added = added
+        .or_else(|| saved.as_ref().map(|saved| saved.wishlist_added.clone()))
+        .unwrap_or_default();
     let (wishlist, wishlist_read_at) = settle(
         OptionalList::Wishlist,
         wishlist,
@@ -136,6 +163,7 @@ pub async fn read_signals<S: Get>(
             recent,
             wishlist,
             followed,
+            wishlist_added,
             wishlist_read_at,
             followed_read_at,
         },
@@ -210,7 +238,7 @@ pub async fn get_recently_played_games<S: Get>(
 pub async fn get_wishlist<S: Get>(
     steam: &S,
     steam_id: SteamId,
-) -> Result<Option<Vec<AppId>>, SteamError> {
+) -> Result<Option<Wishlist>, SteamError> {
     let id = steam_id.0.to_string();
     let value = steam.get(WISHLIST, &[("steamid", &id)], false).await?;
     parse_wishlist(value)
@@ -265,6 +293,7 @@ fn parse_owned_games(steam_id: SteamId, value: Value) -> Result<Vec<LibraryGame>
         .map(|game| LibraryGame {
             id: AppId(game.appid),
             total_hours: hours(game.playtime_forever),
+            last_played: seconds_to_timestamp(game.rtime_last_played),
         })
         .collect())
 }
@@ -284,12 +313,18 @@ fn parse_recently_played_games(value: Value) -> Result<Vec<RecentGame>, SteamErr
         .collect())
 }
 
-fn parse_wishlist(value: Value) -> Result<Option<Vec<AppId>>, SteamError> {
+fn parse_wishlist(value: Value) -> Result<Option<Wishlist>, SteamError> {
     let items = parse::<Envelope<WishlistResponse>>(WISHLIST, value)?
         .response
         .items;
 
-    Ok(items.map(|items| items.into_iter().map(|item| AppId(item.appid)).collect()))
+    Ok(items.map(|items| Wishlist {
+        ids: items.iter().map(|item| AppId(item.appid)).collect(),
+        added: items
+            .iter()
+            .filter_map(|item| Some((AppId(item.appid), seconds_to_timestamp(item.date_added)?)))
+            .collect(),
+    }))
 }
 
 fn parse_games_followed(value: Value) -> Result<Option<Vec<AppId>>, SteamError> {
@@ -298,6 +333,10 @@ fn parse_games_followed(value: Value) -> Result<Option<Vec<AppId>>, SteamError> 
         .appids;
 
     Ok(appids.map(|appids| appids.into_iter().map(AppId).collect()))
+}
+
+fn seconds_to_timestamp(seconds: i64) -> Option<Timestamp> {
+    (seconds > 0).then(|| Timestamp(seconds * 1000))
 }
 
 fn hours(minutes: u64) -> f64 {
@@ -388,8 +427,8 @@ mod tests {
             "response": {
                 "game_count": 2,
                 "games": [
-                    { "appid": 10, "playtime_forever": 90, "playtime_windows_forever": 90 },
-                    { "appid": 20, "playtime_forever": 0 }
+                    { "appid": 10, "playtime_forever": 90, "playtime_windows_forever": 90, "rtime_last_played": 1730000000 },
+                    { "appid": 20, "playtime_forever": 0, "rtime_last_played": 0 }
                 ]
             }
         });
@@ -402,10 +441,12 @@ mod tests {
                 LibraryGame {
                     id: AppId(10),
                     total_hours: 1.5,
+                    last_played: Some(Timestamp(1_730_000_000_000)),
                 },
                 LibraryGame {
                     id: AppId(20),
                     total_hours: 0.0,
+                    last_played: None,
                 },
             ]
         );
@@ -448,6 +489,91 @@ mod tests {
     }
 
     #[test]
+    fn the_wishlist_dates_leave_out_a_zero() {
+        let wishlist = parse_wishlist(json!({ "response": { "items": [
+            { "appid": 1, "date_added": 1700000000 },
+            { "appid": 2, "date_added": 0 },
+            { "appid": 3 }
+        ] } }))
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(wishlist.ids, [AppId(1), AppId(2), AppId(3)]);
+        assert_eq!(
+            wishlist.added,
+            BTreeMap::from([(AppId(1), Timestamp(1_700_000_000_000))])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_recent_game_without_a_date_was_played_when_it_was_read() {
+        let steam = steam(&[
+            (
+                OWNED_GAMES,
+                json!({ "response": { "games": [
+                    { "appid": 10, "playtime_forever": 90 },
+                    { "appid": 30, "playtime_forever": 120 },
+                    { "appid": 40, "playtime_forever": 60, "rtime_last_played": 1700000000 }
+                ] } }),
+            ),
+            (
+                RECENTLY_PLAYED,
+                json!({ "response": { "games": [
+                    { "appid": 30, "playtime_2weeks": 15, "playtime_forever": 120 },
+                    { "appid": 40, "playtime_2weeks": 5, "playtime_forever": 60 }
+                ] } }),
+            ),
+            wishlist(),
+            followed(),
+        ]);
+
+        let read = read_signals(&steam, ME, None, NOW).await.unwrap();
+
+        let last_played: Vec<_> = read
+            .reading
+            .library
+            .iter()
+            .map(|game| game.last_played)
+            .collect();
+        assert_eq!(
+            last_played,
+            [None, Some(NOW), Some(Timestamp(1_700_000_000_000))]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_wishlist_keeps_the_saved_dates() {
+        let steam = steam(&[
+            library(),
+            recent(),
+            (WISHLIST, json!({ "response": { "items": "changed" } })),
+            followed(),
+        ]);
+
+        let read = read_signals(&steam, ME, Some(saved()), NOW).await.unwrap();
+
+        assert_eq!(read.reading.wishlist, Some(vec![AppId(4)]));
+        assert_eq!(
+            read.reading.wishlist_added,
+            BTreeMap::from([(AppId(4), Timestamp(1_600_000_000_000))])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hidden_wishlist_has_no_dates() {
+        let steam = steam(&[
+            library(),
+            recent(),
+            (WISHLIST, json!({ "response": {} })),
+            followed(),
+        ]);
+
+        let read = read_signals(&steam, ME, Some(saved()), NOW).await.unwrap();
+
+        assert!(read.reading.wishlist_added.is_empty());
+    }
+
+    #[test]
     fn a_hidden_wishlist_or_followed_list_is_none() {
         assert_eq!(parse_wishlist(json!({ "response": {} })).unwrap(), None);
         assert_eq!(
@@ -463,7 +589,7 @@ mod tests {
     fn wishlist() -> (&'static str, Value) {
         (
             WISHLIST,
-            json!({ "response": { "items": [{ "appid": 400, "priority": 1 }] } }),
+            json!({ "response": { "items": [{ "appid": 400, "priority": 1, "date_added": 1690000000 }] } }),
         )
     }
 
@@ -477,11 +603,13 @@ mod tests {
             library: vec![LibraryGame {
                 id: AppId(1),
                 total_hours: 10.0,
+                last_played: None,
             }],
             borrowed: vec![],
             recent: vec![],
             wishlist: Some(vec![AppId(4)]),
             followed: Some(vec![AppId(5)]),
+            wishlist_added: BTreeMap::from([(AppId(4), Timestamp(1_600_000_000_000))]),
             wishlist_read_at: Some(LONG_BEFORE),
             followed_read_at: None,
         }
@@ -501,6 +629,7 @@ mod tests {
                     library: vec![LibraryGame {
                         id: AppId(10),
                         total_hours: 1.5,
+                        last_played: None,
                     }],
                     borrowed: vec![],
                     recent: vec![RecentGame {
@@ -510,6 +639,7 @@ mod tests {
                     }],
                     wishlist: Some(vec![AppId(400)]),
                     followed: Some(vec![AppId(500), AppId(600)]),
+                    wishlist_added: BTreeMap::from([(AppId(400), Timestamp(1_690_000_000_000))]),
                     wishlist_read_at: Some(NOW),
                     followed_read_at: Some(NOW),
                 },

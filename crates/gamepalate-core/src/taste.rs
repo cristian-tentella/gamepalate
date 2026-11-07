@@ -4,6 +4,7 @@ use crate::{
     catalog::Catalog,
     config::SignalsConfig,
     corrections::Corrections,
+    effective_hours::HoursSource,
     families::Family,
     game::GameTag,
     ids::{AppId, TagId},
@@ -71,15 +72,16 @@ pub fn game_name(id: AppId, catalog: &Catalog, off_catalog: &OffCatalogGames) ->
 }
 
 pub fn signals_taste(
-    effective_hours: &BTreeMap<AppId, f64>,
+    hours_by_source: &BTreeMap<AppId, (f64, HoursSource)>,
     catalog: &Catalog,
     off_catalog: &OffCatalogGames,
     corrections: &Corrections,
     signals_config: &SignalsConfig,
 ) -> Taste {
     let mut taste = Taste { games: Vec::new() };
+    let mut sources: Vec<HoursSource> = Vec::new();
 
-    for (&id, &hours) in effective_hours {
+    for (&id, &(hours, source)) in hours_by_source {
         if hours < signals_config.min_hours {
             continue;
         }
@@ -106,10 +108,43 @@ pub fn signals_taste(
             id,
             weight,
             tag_vector,
-        })
+        });
+        sources.push(source);
     }
 
+    cap_wishlist(&mut taste, &sources, signals_config.wishlist_cap);
+
     taste
+}
+
+// With no played games there is nothing to compare the wishlist to, so it stays as it is.
+fn cap_wishlist(taste: &mut Taste, sources: &[HoursSource], wishlist_cap: f64) {
+    if wishlist_cap == 0.0 {
+        return;
+    }
+
+    let total = |counts: fn(HoursSource) -> bool| -> f64 {
+        taste
+            .games
+            .iter()
+            .zip(sources)
+            .filter(|&(_, &source)| counts(source))
+            .map(|(game, _)| game.weight)
+            .sum()
+    };
+    let played = total(|source| matches!(source, HoursSource::Played | HoursSource::Elsewhere));
+    let wishlist = total(|source| source == HoursSource::Wishlist);
+
+    if played == 0.0 || wishlist <= wishlist_cap * played {
+        return;
+    }
+
+    let factor = wishlist_cap * played / wishlist;
+    for (game, &source) in taste.games.iter_mut().zip(sources) {
+        if source == HoursSource::Wishlist {
+            game.weight *= factor;
+        }
+    }
 }
 
 pub fn family_taste(
@@ -234,20 +269,54 @@ mod tests {
         }
     }
 
+    fn played(pairs: &[(u32, f64)]) -> BTreeMap<AppId, (f64, HoursSource)> {
+        pairs
+            .iter()
+            .map(|&(id, hours)| (AppId(id), (hours, HoursSource::Played)))
+            .collect()
+    }
+
+    fn with_wishlist(
+        mut hours: BTreeMap<AppId, (f64, HoursSource)>,
+        wishlist: &[(u32, f64)],
+    ) -> BTreeMap<AppId, (f64, HoursSource)> {
+        hours.extend(
+            wishlist
+                .iter()
+                .map(|&(id, hours)| (AppId(id), (hours, HoursSource::Wishlist))),
+        );
+        hours
+    }
+
+    fn capped_weights(hours: &BTreeMap<AppId, (f64, HoursSource)>, wishlist_cap: f64) -> Vec<f64> {
+        let config = SignalsConfig {
+            wishlist_cap,
+            ..SignalsConfig::default()
+        };
+        let taste = signals_taste(
+            hours,
+            &catalog(),
+            &off_catalog(),
+            &Corrections::default(),
+            &config,
+        );
+        taste.games.iter().map(|game| game.weight).collect()
+    }
+
     fn ids(taste: &Taste) -> Vec<AppId> {
         taste.games.iter().map(|game| game.id).collect()
     }
 
     #[test]
     fn signals_taste_keeps_only_the_games_that_count() {
-        let hours = BTreeMap::from([
-            (AppId(1), 100.0),
-            (AppId(2), 50.0),
-            (AppId(3), 10.0),
-            (AppId(4), 1.0),
-            (AppId(10), 1000.0),
-            (AppId(20), 10.0),
-            (AppId(99), 10.0),
+        let hours = played(&[
+            (1, 100.0),
+            (2, 50.0),
+            (3, 10.0),
+            (4, 1.0),
+            (10, 1000.0),
+            (20, 10.0),
+            (99, 10.0),
         ]);
         let taste = signals_taste(
             &hours,
@@ -262,7 +331,7 @@ mod tests {
 
     #[test]
     fn signals_taste_caps_the_hours_and_applies_the_tag_multipliers() {
-        let hours = BTreeMap::from([(AppId(1), 100.0), (AppId(10), 1000.0)]);
+        let hours = played(&[(1, 100.0), (10, 1000.0)]);
         let taste = signals_taste(
             &hours,
             &catalog(),
@@ -337,7 +406,7 @@ mod tests {
     #[test]
     fn signals_taste_changes_when_a_game_is_played_elsewhere() {
         use crate::{
-            effective_hours::effective_hours, signals::Signals, timestamp::Timestamp, votes::Votes,
+            effective_hours::hours_by_source, signals::Signals, timestamp::Timestamp, votes::Votes,
         };
 
         let signals = Signals {
@@ -350,11 +419,64 @@ mod tests {
         };
         let config = SignalsConfig::default();
         let taste_of = |played_elsewhere: &BTreeSet<AppId>| {
-            let hours = effective_hours(&signals, &Votes::new(), played_elsewhere, &config);
+            let hours = hours_by_source(&signals, &Votes::new(), played_elsewhere, &config);
             signals_taste(&hours, &catalog(), &off_catalog(), &corrections(), &config)
         };
 
         assert!(ids(&taste_of(&BTreeSet::new())).is_empty());
         assert_eq!(ids(&taste_of(&BTreeSet::from([AppId(4)]))), [AppId(4)]);
+    }
+
+    #[test]
+    fn a_wishlist_under_the_cap_stays_as_it_is() {
+        let hours = with_wishlist(played(&[(1, 100.0)]), &[(4, 5.0)]);
+
+        assert_eq!(
+            capped_weights(&hours, 1.0),
+            [100.0_f64.ln_1p(), 5.0_f64.ln_1p()]
+        );
+    }
+
+    #[test]
+    fn a_wishlist_over_the_cap_weighs_exactly_the_cap_times_the_played_games() {
+        let hours = with_wishlist(played(&[(1, 2.0)]), &[(3, 100.0), (4, 50.0)]);
+
+        let weights = capped_weights(&hours, 1.5);
+
+        let played_weight = 2.0_f64.ln_1p();
+        assert_eq!(weights[0], played_weight);
+        assert!((weights[1] + weights[2] - 1.5 * played_weight).abs() < 1e-12);
+        let ratio = weights[1] / weights[2];
+        assert!((ratio - 100.0_f64.ln_1p() / 50.0_f64.ln_1p()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_cap_of_zero_means_no_cap() {
+        let hours = with_wishlist(played(&[(1, 2.0)]), &[(3, 100.0), (4, 50.0)]);
+
+        assert_eq!(
+            capped_weights(&hours, 0.0),
+            [2.0_f64.ln_1p(), 100.0_f64.ln_1p(), 50.0_f64.ln_1p()]
+        );
+    }
+
+    #[test]
+    fn a_wishlist_without_played_games_is_not_capped() {
+        let hours = with_wishlist(BTreeMap::new(), &[(3, 100.0), (4, 50.0)]);
+
+        assert_eq!(
+            capped_weights(&hours, 1.0),
+            [100.0_f64.ln_1p(), 50.0_f64.ln_1p()]
+        );
+    }
+
+    #[test]
+    fn a_wishlist_game_that_is_also_played_counts_as_played() {
+        let hours = with_wishlist(played(&[(1, 2.0), (3, 100.0)]), &[(4, 50.0)]);
+
+        assert_eq!(
+            capped_weights(&hours, 1.0),
+            [2.0_f64.ln_1p(), 100.0_f64.ln_1p(), 50.0_f64.ln_1p()]
+        );
     }
 }
