@@ -7,7 +7,7 @@ use std::{
 
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use gamepalate_core::{region::Region, timestamp::Timestamp};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
@@ -29,6 +29,7 @@ pub struct UpdateFolder {
     resumed_responses: usize,
 }
 
+#[derive(Debug)]
 pub struct ArchivedUpdate {
     dir: PathBuf,
     started_at: Timestamp,
@@ -54,6 +55,10 @@ struct Manifest {
     full: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     region: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    renewal: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    renewed_apps: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -65,6 +70,14 @@ struct RecordToWrite<'a> {
     endpoint: &'a str,
     params: &'a Map<String, Value>,
     body: &'a Value,
+}
+
+#[derive(Deserialize)]
+struct ArchivedRequest {
+    #[serde(default)]
+    params: Map<String, Value>,
+    #[serde(rename = "body")]
+    _body: IgnoredAny,
 }
 
 #[derive(Deserialize)]
@@ -83,8 +96,8 @@ impl Archive {
         &self,
         now: Timestamp,
         resume_within_hours: u32,
-        tags_max_age_days: f64,
         region: Region,
+        renewal: bool,
     ) -> io::Result<UpdateFolder> {
         if let Some((dir, manifest, pending)) = self.resumable(now, resume_within_hours, region)? {
             return Ok(UpdateFolder {
@@ -100,16 +113,16 @@ impl Archive {
         let dir = self.root.join(format!("{:0FOLDER_DIGITS$}", last + 1));
         fs::create_dir(&dir)?;
 
-        let full = match self.chain()?.last() {
-            Some(base) if base.full && base.region == region => {
-                now.ms_since(base.started_at) as f64 >= tags_max_age_days * 86_400_000.0
-            }
-            _ => true,
-        };
+        let full = self
+            .completed()?
+            .first()
+            .is_none_or(|latest| latest.region != region);
         let manifest = Manifest {
             started_at: iso(now),
             full,
             region: Some(region.to_string()),
+            renewal: renewal && !full,
+            renewed_apps: None,
             completed_at: None,
             failed_at: None,
         };
@@ -122,43 +135,23 @@ impl Archive {
         })
     }
 
-    pub fn chain(&self) -> io::Result<Vec<ArchivedUpdate>> {
-        let mut chain = Vec::new();
+    pub fn completed(&self) -> io::Result<Vec<ArchivedUpdate>> {
+        let mut completed = Vec::new();
         for (dir, manifest) in self.updates_newest_first()? {
             if manifest.completed_at.is_none() {
                 continue;
             }
-            let full = manifest.full;
-            chain.push(ArchivedUpdate {
+            completed.push(ArchivedUpdate {
                 started_at: parse_iso(&manifest.started_at)?,
                 region: manifest.region()?,
+                full: manifest.full,
                 dir,
-                full,
             });
-            if full {
-                break;
-            }
         }
-        Ok(chain)
+        Ok(completed)
     }
 
-    pub fn rotate(&self, kept_updates: u32) -> io::Result<usize> {
-        let mut updates = self.updates_newest_first()?;
-        updates.reverse();
-        let completed: Vec<&(PathBuf, Manifest)> = updates
-            .iter()
-            .filter(|(_, manifest)| manifest.completed_at.is_some())
-            .collect();
-
-        let mut first = completed.len().saturating_sub(kept_updates as usize);
-        while first > 0 && !completed[first].1.full {
-            first -= 1;
-        }
-        let kept: Vec<&Path> = completed[first..]
-            .iter()
-            .map(|(dir, _)| dir.as_path())
-            .collect();
-
+    pub fn keep_only(&self, kept: &[&Path]) -> io::Result<usize> {
         let mut removed = 0;
         for number in self.folder_numbers()? {
             let dir = self.root.join(format!("{number:0FOLDER_DIGITS$}"));
@@ -278,6 +271,14 @@ impl UpdateFolder {
         self.manifest.full
     }
 
+    pub fn renewal(&self) -> bool {
+        self.manifest.renewal
+    }
+
+    pub fn set_renewed_apps(&mut self, apps: usize) {
+        self.manifest.renewed_apps = Some(apps);
+    }
+
     pub fn complete(mut self, now: Timestamp) -> io::Result<()> {
         self.manifest.completed_at = Some(iso(now));
         write_manifest(&self.dir, &self.manifest)
@@ -310,6 +311,34 @@ impl ArchivedUpdate {
         &self,
         endpoint: &str,
     ) -> Result<impl Iterator<Item = Result<ArchivedRecord, SteamError>>, SteamError> {
+        Ok(self
+            .response_paths(endpoint)?
+            .into_iter()
+            .map(|path| read_record(&path).map_err(|source| SteamError::Archive { path, source })))
+    }
+
+    pub fn requests(
+        &self,
+        endpoint: &str,
+    ) -> Result<impl Iterator<Item = Result<Map<String, Value>, SteamError>>, SteamError> {
+        Ok(self
+            .response_paths(endpoint)?
+            .into_iter()
+            .map(|path| read_params(&path).map_err(|source| SteamError::Archive { path, source })))
+    }
+
+    pub fn remove_responses(&self, endpoint: &str) -> Result<usize, SteamError> {
+        let paths = self.response_paths(endpoint)?;
+        for path in &paths {
+            fs::remove_file(path).map_err(|source| SteamError::Archive {
+                path: path.clone(),
+                source,
+            })?;
+        }
+        Ok(paths.len())
+    }
+
+    fn response_paths(&self, endpoint: &str) -> Result<Vec<PathBuf>, SteamError> {
         let archive_error = |source| SteamError::Archive {
             path: self.dir.clone(),
             source,
@@ -324,10 +353,7 @@ impl ArchivedUpdate {
             }
         }
         paths.sort();
-
-        Ok(paths
-            .into_iter()
-            .map(|path| read_record(&path).map_err(|source| SteamError::Archive { path, source })))
+        Ok(paths)
     }
 }
 
@@ -412,6 +438,12 @@ fn read_record(path: &Path) -> io::Result<ArchivedRecord> {
     Ok(serde_json::from_str(&text)?)
 }
 
+fn read_params(path: &Path) -> io::Result<Map<String, Value>> {
+    let mut text = String::new();
+    GzDecoder::new(fs::File::open(path)?).read_to_string(&mut text)?;
+    Ok(serde_json::from_str::<ArchivedRequest>(&text)?.params)
+}
+
 fn write_record(path: &Path, record: &RecordToWrite) -> io::Result<()> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     serde_json::to_writer(&mut encoder, record)?;
@@ -463,6 +495,10 @@ fn write_atomically(path: &Path, data: &[u8]) -> io::Result<()> {
     fs::rename(&temporary, path).inspect_err(|_| {
         let _ = fs::remove_file(&temporary);
     })
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 fn iso(timestamp: Timestamp) -> String {
@@ -557,7 +593,7 @@ mod tests {
     async fn the_first_answer_is_archived_and_the_second_comes_from_the_file() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap();
         let steam = FakeSteam::new();
         let archiving = update.archiving(&steam);
@@ -580,7 +616,7 @@ mod tests {
     async fn the_file_holds_endpoint_params_and_body() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap();
         let steam = FakeSteam::new();
 
@@ -605,7 +641,7 @@ mod tests {
     async fn the_request_reaches_steam_unchanged() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap();
         let steam = FakeSteam::new();
 
@@ -674,7 +710,7 @@ mod tests {
     async fn a_failed_request_archives_nothing() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap();
         let steam = FakeSteam {
             fails: true,
@@ -694,7 +730,7 @@ mod tests {
     async fn a_corrupt_file_is_an_archive_error() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap();
         let params = canonical(&[("language", "english")]);
         fs::write(
@@ -721,7 +757,7 @@ mod tests {
             archive.pending_update(NOW, 24, Region::ITALY).unwrap(),
             None
         );
-        let update = archive.start_update(NOW, 24, 0.0, Region::ITALY).unwrap();
+        let update = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
         update
             .archiving(&FakeSteam::new())
             .get(TAG_LIST, &[("language", "english")], false)
@@ -737,7 +773,7 @@ mod tests {
                 responses: 1,
             })
         );
-        let resumed = archive.start_update(NOW, 24, 0.0, Region::ITALY).unwrap();
+        let resumed = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
         assert_eq!(resumed.dir(), update.dir());
         assert_eq!(resumed.resumed_responses(), 1);
     }
@@ -756,7 +792,7 @@ mod tests {
         for (name, finish) in cases {
             let root = tempfile::tempdir().unwrap();
             let archive = Archive::new(root.path().join("archive"));
-            finish(archive.start_update(NOW, 24, 0.0, Region::ITALY).unwrap());
+            finish(archive.start_update(NOW, 24, Region::ITALY, false).unwrap());
 
             let pending_now = archive.pending_update(NOW, 24, Region::ITALY).unwrap();
             assert_eq!(pending_now.is_some(), name == "interrupted", "{name}");
@@ -766,7 +802,7 @@ mod tests {
             );
             assert_eq!(archive.pending_update(NOW, 24, us).unwrap(), None);
 
-            let next = archive.start_update(NOW, 24, 0.0, Region::ITALY).unwrap();
+            let next = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
             assert_eq!(
                 next.dir().ends_with("000001"),
                 pending_now.is_some(),
@@ -782,8 +818,8 @@ mod tests {
         fs::create_dir(root.path().join("notes")).unwrap();
         let archive = Archive::new(root.path().to_path_buf());
 
-        let first = archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
-        let second = archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        let first = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
+        let second = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
 
         assert_eq!(first.dir(), root.path().join("000008"));
         assert_eq!(second.dir(), root.path().join("000009"));
@@ -794,7 +830,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
 
         let update = Archive::new(root.path().join("archive"))
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap();
 
         assert_eq!(
@@ -807,7 +843,7 @@ mod tests {
     fn completing_records_when_it_ended() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap();
         let dir = update.dir().to_path_buf();
 
@@ -826,12 +862,12 @@ mod tests {
     }
 
     fn latest(archive: &Archive) -> ArchivedUpdate {
-        archive.chain().unwrap().into_iter().next().unwrap()
+        archive.completed().unwrap().into_iter().next().unwrap()
     }
 
     fn completed_update(archive: &Archive, started_at: Timestamp) -> PathBuf {
         let update = archive
-            .start_update(started_at, 0, 0.0, Region::ITALY)
+            .start_update(started_at, 0, Region::ITALY, false)
             .unwrap();
         let dir = update.dir().to_path_buf();
         update.complete(started_at).unwrap();
@@ -842,9 +878,11 @@ mod tests {
     fn an_archive_that_does_not_exist_has_no_completed_update() {
         let root = tempfile::tempdir().unwrap();
 
-        let chain = Archive::new(root.path().join("archive")).chain().unwrap();
+        let completed = Archive::new(root.path().join("archive"))
+            .completed()
+            .unwrap();
 
-        assert!(chain.is_empty());
+        assert!(completed.is_empty());
     }
 
     #[test]
@@ -854,7 +892,7 @@ mod tests {
         completed_update(&archive, Timestamp(NOW.0 - 60_000));
         let expected = completed_update(&archive, NOW);
         archive
-            .start_update(Timestamp(NOW.0 + 60_000), 0, 0.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + 60_000), 0, Region::ITALY, false)
             .unwrap();
         fs::create_dir(root.path().join("000009")).unwrap();
 
@@ -868,19 +906,19 @@ mod tests {
     fn only_unfinished_updates_means_no_completed_update() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
 
-        assert!(archive.chain().unwrap().is_empty());
+        assert!(archive.completed().unwrap().is_empty());
     }
 
     #[test]
     fn a_broken_manifest_is_an_error() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        let update = archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        let update = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
         fs::write(update.dir().join(MANIFEST_FILE), "{").unwrap();
 
-        let error = archive.chain().err().unwrap();
+        let error = archive.completed().err().unwrap();
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
@@ -889,7 +927,7 @@ mod tests {
     async fn a_completed_update_answers_what_it_archived_without_steam() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        let update = archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        let update = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
         let steam = FakeSteam::new();
         let live = update
             .archiving(&steam)
@@ -929,7 +967,7 @@ mod tests {
     const HOUR: i64 = 3_600_000;
 
     async fn interrupted_update(archive: &Archive, responses: &[&str]) -> PathBuf {
-        let update = archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        let update = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
         let steam = FakeSteam::new();
         for language in responses {
             update
@@ -948,7 +986,7 @@ mod tests {
         let dir = interrupted_update(&archive, &["english", "italian"]).await;
 
         let resumed = archive
-            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
             .unwrap();
 
         assert_eq!(resumed.dir(), dir);
@@ -962,7 +1000,7 @@ mod tests {
         let archive = Archive::new(root.path().to_path_buf());
         interrupted_update(&archive, &["english"]).await;
         let resumed = archive
-            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
             .unwrap();
         let steam = FakeSteam::new();
 
@@ -987,7 +1025,9 @@ mod tests {
         let dir = interrupted_update(&archive, &["english"]).await;
         let later = Timestamp(NOW.0 + 24 * HOUR);
 
-        let update = archive.start_update(later, 24, 0.0, Region::ITALY).unwrap();
+        let update = archive
+            .start_update(later, 24, Region::ITALY, false)
+            .unwrap();
 
         assert_ne!(update.dir(), dir);
         assert_eq!(update.started_at(), later);
@@ -998,12 +1038,12 @@ mod tests {
     async fn a_failed_update_is_not_resumed() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        let update = archive.start_update(NOW, 24, 0.0, Region::ITALY).unwrap();
+        let update = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
         let dir = update.dir().to_path_buf();
         update.fail(Timestamp(NOW.0 + 60_000)).unwrap();
 
         let next = archive
-            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
             .unwrap();
 
         assert_ne!(next.dir(), dir);
@@ -1017,7 +1057,7 @@ mod tests {
         let dir = completed_update(&archive, NOW);
 
         let next = archive
-            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
             .unwrap();
 
         assert_ne!(next.dir(), dir);
@@ -1028,11 +1068,11 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
         interrupted_update(&archive, &["english"]).await;
-        let failed = archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        let failed = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
         failed.fail(NOW).unwrap();
 
         let next = archive
-            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
             .unwrap();
 
         assert_eq!(next.dir(), root.path().join("000003"));
@@ -1047,6 +1087,12 @@ mod tests {
         names
     }
 
+    fn make_full(dir: &Path) {
+        let mut manifest = read_manifest(dir);
+        manifest["full"] = json!(true);
+        fs::write(dir.join(MANIFEST_FILE), manifest.to_string()).unwrap();
+    }
+
     fn make_incremental(dir: &Path) {
         let mut manifest = read_manifest(dir);
         manifest["full"] = json!(false);
@@ -1054,65 +1100,23 @@ mod tests {
     }
 
     #[test]
-    fn rotation_keeps_the_latest_completed_updates() {
+    fn keep_only_removes_every_other_numbered_folder() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        for _ in 0..4 {
-            completed_update(&archive, NOW);
-        }
-
-        let removed = archive.rotate(3).unwrap();
-
-        assert_eq!(removed, 1);
-        assert_eq!(folders(root.path()), ["000002", "000003", "000004"]);
-    }
-
-    #[test]
-    fn rotation_removes_failed_interrupted_and_bare_folders() {
-        let root = tempfile::tempdir().unwrap();
-        let archive = Archive::new(root.path().to_path_buf());
-        archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        let kept = completed_update(&archive, NOW);
         archive
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap()
             .fail(NOW)
             .unwrap();
-        fs::create_dir(root.path().join("000003")).unwrap();
-        completed_update(&archive, NOW);
+        archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
+        fs::create_dir(root.path().join("000009")).unwrap();
         fs::create_dir(root.path().join("notes")).unwrap();
 
-        archive.rotate(3).unwrap();
+        let removed = archive.keep_only(&[kept.as_path()]).unwrap();
 
-        assert_eq!(folders(root.path()), ["000004", "notes"]);
-    }
-
-    #[test]
-    fn rotation_keeps_the_full_update_the_kept_ones_build_on() {
-        let root = tempfile::tempdir().unwrap();
-        let archive = Archive::new(root.path().to_path_buf());
-        completed_update(&archive, NOW);
-        completed_update(&archive, NOW);
-        for _ in 0..3 {
-            make_incremental(&completed_update(&archive, NOW));
-        }
-
-        archive.rotate(2).unwrap();
-
-        assert_eq!(
-            folders(root.path()),
-            ["000002", "000003", "000004", "000005"]
-        );
-    }
-
-    #[test]
-    fn rotation_of_an_archive_without_completed_updates_removes_them_all() {
-        let root = tempfile::tempdir().unwrap();
-        let archive = Archive::new(root.path().to_path_buf());
-        archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
-
-        archive.rotate(3).unwrap();
-
-        assert!(folders(root.path()).is_empty());
+        assert_eq!(removed, 3);
+        assert_eq!(folders(root.path()), ["000001", "notes"]);
     }
 
     const DAY: i64 = 24 * HOUR;
@@ -1122,7 +1126,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
 
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 24, 7.0, Region::ITALY)
+            .start_update(NOW, 24, Region::ITALY, false)
             .unwrap();
 
         assert!(update.full());
@@ -1135,7 +1139,7 @@ mod tests {
         completed_update(&archive, NOW);
 
         let update = archive
-            .start_update(Timestamp(NOW.0 + DAY), 24, 7.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + DAY), 24, Region::ITALY, false)
             .unwrap();
 
         assert!(!update.full());
@@ -1143,14 +1147,98 @@ mod tests {
     }
 
     #[test]
-    fn an_update_is_full_again_once_the_tags_are_old() {
+    fn an_update_stays_incremental_however_old_the_full_one_is() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
         completed_update(&archive, NOW);
-        make_incremental(&completed_update(&archive, Timestamp(NOW.0 + DAY)));
+        completed_update(&archive, Timestamp(NOW.0 + DAY));
 
         let update = archive
-            .start_update(Timestamp(NOW.0 + 7 * DAY), 24, 7.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + 400 * DAY), 24, Region::ITALY, false)
+            .unwrap();
+
+        assert!(!update.full());
+    }
+
+    #[test]
+    fn a_renewal_is_written_in_the_manifest() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        completed_update(&archive, NOW);
+
+        let mut update = archive
+            .start_update(Timestamp(NOW.0 + DAY), 24, Region::ITALY, true)
+            .unwrap();
+        let dir = update.dir().to_path_buf();
+
+        assert!(update.renewal());
+        assert_eq!(read_manifest(&dir)["renewal"], true);
+        assert_eq!(read_manifest(&dir).get("renewedApps"), None);
+        update.set_renewed_apps(260);
+        update.complete(Timestamp(NOW.0 + DAY)).unwrap();
+        assert_eq!(read_manifest(&dir)["renewedApps"], 260);
+    }
+
+    #[test]
+    fn an_update_of_prices_says_nothing_about_renewals() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        completed_update(&archive, NOW);
+
+        let update = archive
+            .start_update(Timestamp(NOW.0 + DAY), 24, Region::ITALY, false)
+            .unwrap();
+
+        assert!(!update.renewal());
+        let manifest = read_manifest(update.dir());
+        assert_eq!(manifest.get("renewal"), None);
+        assert_eq!(manifest.get("renewedApps"), None);
+    }
+
+    #[test]
+    fn a_full_update_is_never_a_renewal() {
+        let root = tempfile::tempdir().unwrap();
+
+        let update = Archive::new(root.path().to_path_buf())
+            .start_update(NOW, 24, Region::ITALY, true)
+            .unwrap();
+
+        assert!(update.full());
+        assert!(!update.renewal());
+    }
+
+    #[test]
+    fn a_resumed_update_keeps_its_kind() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        completed_update(&archive, NOW);
+        let renewal = archive
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, true)
+            .unwrap();
+        let dir = renewal.dir().to_path_buf();
+
+        let resumed = archive
+            .start_update(Timestamp(NOW.0 + 2 * HOUR), 24, Region::ITALY, false)
+            .unwrap();
+
+        assert_eq!(resumed.dir(), dir);
+        assert!(resumed.renewal());
+        assert_eq!(resumed.started_at(), Timestamp(NOW.0 + HOUR));
+    }
+
+    #[test]
+    fn an_update_after_one_in_another_region_is_full() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        completed_update(&archive, NOW);
+        archive
+            .start_update(Timestamp(NOW.0 + HOUR), 24, us(), false)
+            .unwrap()
+            .complete(Timestamp(NOW.0 + HOUR))
+            .unwrap();
+
+        let update = archive
+            .start_update(Timestamp(NOW.0 + DAY), 24, Region::ITALY, false)
             .unwrap();
 
         assert!(update.full());
@@ -1172,9 +1260,9 @@ mod tests {
         let archive = Archive::new(root.path().to_path_buf());
         without_region(&completed_update(&archive, NOW));
 
-        assert_eq!(archive.chain().unwrap()[0].region(), Region::ITALY);
+        assert_eq!(archive.completed().unwrap()[0].region(), Region::ITALY);
         let update = archive
-            .start_update(Timestamp(NOW.0 + DAY), 24, 7.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + DAY), 24, Region::ITALY, false)
             .unwrap();
         assert!(!update.full());
     }
@@ -1186,7 +1274,7 @@ mod tests {
         completed_update(&archive, NOW);
 
         let update = archive
-            .start_update(Timestamp(NOW.0 + DAY), 24, 7.0, us())
+            .start_update(Timestamp(NOW.0 + DAY), 24, us(), false)
             .unwrap();
 
         assert!(update.full());
@@ -1202,7 +1290,7 @@ mod tests {
         manifest["region"] = json!("usa");
         fs::write(dir.join(MANIFEST_FILE), manifest.to_string()).unwrap();
 
-        let error = archive.chain().err().unwrap();
+        let error = archive.completed().err().unwrap();
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
@@ -1214,7 +1302,7 @@ mod tests {
         let dir = interrupted_update(&archive, &["english"]).await;
 
         let update = archive
-            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0, us())
+            .start_update(Timestamp(NOW.0 + HOUR), 24, us(), false)
             .unwrap();
         assert_ne!(update.dir(), dir);
         assert_eq!(update.resumed_responses(), 0);
@@ -1228,43 +1316,70 @@ mod tests {
         without_region(&dir);
 
         let resumed = archive
-            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
             .unwrap();
 
         assert_eq!(resumed.dir(), dir);
     }
 
     #[test]
-    fn the_chain_goes_back_to_the_last_full_update() {
+    fn completed_updates_come_newest_first_past_the_full_ones() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        completed_update(&archive, NOW);
+        let oldest = completed_update(&archive, NOW);
         let base = completed_update(&archive, Timestamp(NOW.0 + HOUR));
+        make_full(&base);
         let middle = completed_update(&archive, Timestamp(NOW.0 + 2 * HOUR));
         make_incremental(&middle);
         archive
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap()
             .fail(NOW)
             .unwrap();
         let latest = completed_update(&archive, Timestamp(NOW.0 + 3 * HOUR));
         make_incremental(&latest);
 
-        let chain = archive.chain().unwrap();
+        let completed = archive.completed().unwrap();
 
-        let dirs: Vec<&Path> = chain.iter().map(ArchivedUpdate::dir).collect();
-        assert_eq!(dirs, [latest.as_path(), middle.as_path(), base.as_path()]);
+        let dirs: Vec<&Path> = completed.iter().map(ArchivedUpdate::dir).collect();
         assert_eq!(
-            chain.iter().map(ArchivedUpdate::full).collect::<Vec<_>>(),
-            [false, false, true]
+            dirs,
+            [
+                latest.as_path(),
+                middle.as_path(),
+                base.as_path(),
+                oldest.as_path()
+            ]
         );
+        assert_eq!(
+            completed
+                .iter()
+                .map(ArchivedUpdate::full)
+                .collect::<Vec<_>>(),
+            [false, false, true, true]
+        );
+    }
+
+    #[test]
+    fn an_update_is_incremental_on_the_latest_full_one_even_past_incrementals() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        completed_update(&archive, NOW);
+        make_incremental(&completed_update(&archive, Timestamp(NOW.0 + DAY)));
+        make_incremental(&completed_update(&archive, Timestamp(NOW.0 + 2 * DAY)));
+
+        let update = archive
+            .start_update(Timestamp(NOW.0 + 3 * DAY), 24, Region::ITALY, false)
+            .unwrap();
+
+        assert!(!update.full());
     }
 
     #[tokio::test]
     async fn records_are_the_responses_of_one_endpoint_with_their_params() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        let update = archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        let update = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
         let steam = FakeSteam::new();
         let archiving = update.archiving(&steam);
         for language in ["english", "italian"] {
@@ -1287,5 +1402,62 @@ mod tests {
         languages.sort_by_key(Value::to_string);
 
         assert_eq!(languages, [json!("english"), json!("italian")]);
+    }
+
+    #[tokio::test]
+    async fn requests_are_the_params_of_one_endpoint_without_the_bodies() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        let update = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
+        let steam = FakeSteam::new();
+        let archiving = update.archiving(&steam);
+        for language in ["english", "italian"] {
+            archiving
+                .get(TAG_LIST, &[("language", language)], false)
+                .await
+                .unwrap();
+        }
+        archiving
+            .get("IStoreService/GetAppList/v1", &[], true)
+            .await
+            .unwrap();
+        update.complete(NOW).unwrap();
+
+        let mut languages: Vec<Value> = latest(&archive)
+            .requests(TAG_LIST)
+            .unwrap()
+            .map(|params| params.unwrap()["language"].clone())
+            .collect();
+        languages.sort_by_key(Value::to_string);
+
+        assert_eq!(languages, [json!("english"), json!("italian")]);
+    }
+
+    #[tokio::test]
+    async fn removing_the_responses_of_one_endpoint_keeps_the_others() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        let update = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
+        let steam = FakeSteam::new();
+        let archiving = update.archiving(&steam);
+        for language in ["english", "italian"] {
+            archiving
+                .get(TAG_LIST, &[("language", language)], false)
+                .await
+                .unwrap();
+        }
+        archiving
+            .get("IStoreService/GetAppList/v1", &[], true)
+            .await
+            .unwrap();
+        update.complete(NOW).unwrap();
+        let latest = latest(&archive);
+
+        let removed = latest.remove_responses(TAG_LIST).unwrap();
+
+        assert_eq!(removed, 2);
+        let files = archived_files(latest.dir());
+        assert_eq!(files.len(), 1);
+        assert!(files[0].starts_with("IStoreService_GetAppList_v1-"));
     }
 }

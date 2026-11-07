@@ -28,17 +28,20 @@ impl KnownApps {
         }
     }
 
-    pub fn add(&mut self, asked: &[AppId], items: Vec<StoreItem>) {
+    pub fn add(&mut self, asked: &[AppId], items: Vec<StoreItem>) -> usize {
         let mut found: HashMap<AppId, StoreItem> =
             items.into_iter().map(|item| (item.id, item)).collect();
 
+        let mut decided = 0;
         for id in asked {
             if !self.listed.contains(id) || self.decided.contains_key(id) {
                 continue;
             }
             let game = found.remove(id).and_then(|item| item.into_game(self.now));
             self.decided.insert(*id, game);
+            decided += 1;
         }
+        decided
     }
 
     pub fn into_games(self) -> Vec<Game> {
@@ -155,5 +158,14 @@ mod tests {
         assert_eq!(games.len(), 2);
         let ended = games.iter().find(|game| game.id == AppId(2)).unwrap();
         assert_eq!(ended.price.discount, None);
+    }
+
+    #[test]
+    fn adding_tells_how_many_apps_it_decided() {
+        let mut known = KnownApps::new([AppId(1), AppId(2)], NOW);
+
+        assert_eq!(known.add(&[AppId(1), AppId(3)], vec![item(1, "New")]), 1);
+        assert_eq!(known.add(&[AppId(1), AppId(2)], vec![]), 1);
+        assert_eq!(known.add(&[AppId(2)], vec![item(2, "Old")]), 0);
     }
 }

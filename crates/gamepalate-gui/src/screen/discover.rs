@@ -165,6 +165,10 @@ impl Discover {
         (discover, task)
     }
 
+    pub fn use_gamepalate(&mut self, gamepalate: &Arc<Gamepalate>) {
+        self.gamepalate = Arc::clone(gamepalate);
+    }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         if self.showcase.is_open() {
             match message {

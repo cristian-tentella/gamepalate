@@ -10,6 +10,7 @@ pub struct Config {
     pub prices_max_age_hours: u32,
     pub tags_max_age_days: f64,
     pub kept_updates: u32,
+    pub renewal_requests: u32,
     pub region: Region,
 }
 
@@ -24,6 +25,7 @@ impl Default for Config {
             prices_max_age_hours: 24,
             tags_max_age_days: 7.0,
             kept_updates: 3,
+            renewal_requests: 150,
             region: Region::ITALY,
         }
     }

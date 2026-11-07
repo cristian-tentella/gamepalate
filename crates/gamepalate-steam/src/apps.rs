@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::transport::{Get, SteamError, parse};
 
-const ENDPOINT: &str = "IStoreService/GetAppList/v1";
+pub(crate) const ENDPOINT: &str = "IStoreService/GetAppList/v1";
 const PAGE_SIZE: &str = "50000";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
