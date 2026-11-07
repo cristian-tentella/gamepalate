@@ -37,11 +37,17 @@ pub struct ItemTag {
 }
 
 impl StoreItem {
+    pub fn sold(&self) -> bool {
+        self.app_type == GAME_TYPE
+            && !self.is_free
+            && self.price.is_some_and(|price| price.original_cents > 0)
+    }
+
     pub fn into_game(self, now: Timestamp) -> Option<Game> {
-        let price = self.price?;
-        if self.app_type != GAME_TYPE || self.is_free || price.original_cents == 0 {
+        if !self.sold() {
             return None;
         }
+        let price = self.price?;
         if self.is_coming_soon || self.release_date.is_some_and(|date| date > now) {
             return None;
         }

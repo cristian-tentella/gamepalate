@@ -19,6 +19,7 @@ pub mod profile;
 pub mod quality;
 pub mod ranking;
 pub mod region;
+pub mod renewal;
 pub mod search;
 pub mod signals;
 pub mod store_item;

@@ -134,7 +134,7 @@ mod tests {
         asked: &[u32],
     ) -> PathBuf {
         let started_at = Timestamp(NOW.0 + hours * HOUR);
-        let update = archive.start_update(started_at, 0, 30.0, region).unwrap();
+        let update = archive.start_update(started_at, 0, region, false).unwrap();
         let steam = FakeSteam {
             listed: listed.to_vec(),
         };
@@ -298,9 +298,9 @@ mod tests {
     async fn rotation_removes_failed_interrupted_and_bare_folders() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        archive.start_update(NOW, 0, 30.0, Region::ITALY).unwrap();
+        archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
         archive
-            .start_update(NOW, 0, 30.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap()
             .fail(NOW)
             .unwrap();

@@ -12,6 +12,7 @@ use gamepalate_core::{
     ids::AppId,
     incremental::{KnownApps, changed_apps},
     region::Region,
+    renewal::{Answers, Band, Renewal},
     store_item::StoreItem,
     timestamp::Timestamp,
 };
@@ -19,7 +20,7 @@ use gamepalate_steam::{
     apps::get_app_list,
     archive::{Archive, ArchivedUpdate, PendingUpdate},
     chain::{ChainError, chain, rotate},
-    items::{archived_batches, batch_count, item_batches},
+    items::{BATCH_SIZE, archived_batches, batch_count, item_batches},
     tags::get_tags,
     transport::{Get, SteamError, Transport},
 };
@@ -54,6 +55,7 @@ pub struct Updated {
     pub apps: usize,
     pub asked: usize,
     pub prices_at: Timestamp,
+    pub renewal: Option<Renewal>,
     pub rotate_error: Option<ChainError>,
 }
 
@@ -127,6 +129,7 @@ struct BuiltCatalog {
     apps: usize,
     asked: usize,
     price_change_numbers: HashMap<AppId, u64>,
+    renewal: Option<Renewal>,
 }
 
 pub fn archive(data_dir: &Path) -> Archive {
@@ -143,31 +146,77 @@ pub async fn update_catalog<S: Get + Sync>(
     config: &Config,
     progress: impl FnMut(Progress),
 ) -> Result<Updated, UpdateError> {
+    logged_update(data_dir, steam, config, false, progress).await
+}
+
+pub async fn renew_catalog<S: Get + Sync>(
+    data_dir: &Path,
+    steam: &S,
+    config: &Config,
+    progress: impl FnMut(Progress),
+) -> Result<Updated, UpdateError> {
+    logged_update(data_dir, steam, config, true, progress).await
+}
+
+async fn logged_update<S: Get + Sync>(
+    data_dir: &Path,
+    steam: &S,
+    config: &Config,
+    renewal: bool,
+    progress: impl FnMut(Progress),
+) -> Result<Updated, UpdateError> {
     tracing::info!("update started");
-    let updated = update_with(data_dir, steam, config, progress)
+    let updated = update_with(data_dir, steam, config, renewal, progress)
         .await
         .inspect_err(failed("update stopped"))?;
     if let Some(error) = &updated.rotate_error {
         failed("could not remove the old updates")(error);
+    }
+    if let Some(renewal) = &updated.renewal {
+        log_renewal(renewal);
     }
     tracing::info!("update done, {} games", updated.games);
 
     Ok(updated)
 }
 
+fn log_renewal(renewal: &Renewal) {
+    let bands: Vec<String> = renewal
+        .renewed
+        .iter()
+        .map(|(band, apps)| format!("{} {apps}", band_name(*band)))
+        .collect();
+    tracing::info!(
+        "renewed {} apps ({}), {} still expired",
+        renewal.renewed_apps(),
+        bands.join(", "),
+        renewal.still_expired
+    );
+}
+
+fn band_name(band: Band) -> &'static str {
+    match band {
+        Band::Month => "month",
+        Band::Quarter => "quarter",
+        Band::Year => "year",
+        Band::Older => "older",
+    }
+}
+
 async fn update_with<S: Get + Sync>(
     data_dir: &Path,
     steam: &S,
     config: &Config,
+    renewal: bool,
     mut progress: impl FnMut(Progress),
 ) -> Result<Updated, UpdateError> {
     let archive = archive(data_dir);
-    let update = archive
+    let mut update = archive
         .start_update(
             wall_clock(),
             config.prices_max_age_hours,
-            config.tags_max_age_days,
             config.region,
+            renewal,
         )
         .map_err(UpdateError::Start)?;
     let earlier = if update.full() {
@@ -183,11 +232,15 @@ async fn update_with<S: Get + Sync>(
         });
     }
 
+    let max_renewed = update
+        .renewal()
+        .then(|| config.renewal_requests as usize * BATCH_SIZE);
     let result = build_catalog(
         &update.archiving(steam),
         now,
         &earlier,
         config.region,
+        max_renewed,
         &mut progress,
     )
     .await;
@@ -207,6 +260,9 @@ async fn update_with<S: Get + Sync>(
         }
     };
     built.write(data_dir)?;
+    if let Some(renewal) = &built.renewal {
+        update.set_renewed_apps(renewal.renewed_apps());
+    }
     update
         .complete(wall_clock())
         .map_err(UpdateError::Complete)?;
@@ -217,6 +273,7 @@ async fn update_with<S: Get + Sync>(
         apps: built.apps,
         asked: built.asked,
         prices_at: now,
+        renewal: built.renewal,
         rotate_error,
     })
 }
@@ -256,6 +313,7 @@ pub async fn rebuild_catalog(data_dir: &Path) -> Result<Rebuilt, UpdateError> {
         latest.started_at(),
         earlier,
         latest.region(),
+        None,
         &mut |_| {},
     )
     .await?;
@@ -281,6 +339,7 @@ async fn build_catalog<S: Get>(
     now: Timestamp,
     earlier: &[ArchivedUpdate],
     region: Region,
+    max_renewed: Option<usize>,
     progress: &mut impl FnMut(Progress),
 ) -> Result<BuiltCatalog, SteamError> {
     progress(Progress::ReadingApps);
@@ -288,7 +347,7 @@ async fn build_catalog<S: Get>(
     let apps = get_app_list(steam).await?;
     let ids: Vec<AppId> = apps.iter().map(|app| app.id).collect();
     let current = apps.iter().map(|app| (app.id, app.price_change_number));
-    let asked = match earlier.first() {
+    let changed = match earlier.first() {
         None => ids.clone(),
         Some(previous) => {
             let previous: HashMap<AppId, u64> = get_app_list(previous)
@@ -298,6 +357,14 @@ async fn build_catalog<S: Get>(
                 .collect();
             changed_apps(current, &previous)
         }
+    };
+    let renewal = match max_renewed {
+        Some(max_apps) => Some(answers(earlier)?.choose(&ids, &changed, now, max_apps)),
+        None => None,
+    };
+    let asked = match &renewal {
+        Some(renewal) => renewal.asked.clone(),
+        None => changed,
     };
 
     let total = batch_count(asked.len());
@@ -344,7 +411,19 @@ async fn build_catalog<S: Get>(
             .iter()
             .map(|app| (app.id, app.price_change_number))
             .collect(),
+        renewal,
     })
+}
+
+fn answers(earlier: &[ArchivedUpdate]) -> Result<Answers, SteamError> {
+    let mut answers = Answers::default();
+    for update in earlier {
+        for batch in archived_batches(update)? {
+            let batch = batch?;
+            answers.add(update.started_at(), &batch.asked, &batch.items);
+        }
+    }
+    Ok(answers)
 }
 
 fn formatted_prices(items: &[StoreItem]) -> impl Iterator<Item = (u32, String)> + '_ {
@@ -941,6 +1020,143 @@ mod tests {
 
         assert_eq!(folders, ["000002", "000003"]);
         assert_eq!(game_ids(data.path()), [1, 2]);
+    }
+
+    fn backdate(data_dir: &Path, number: &str, days: i64) {
+        let path = update_dir(data_dir, number).join("update.json");
+        let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let earlier = started_at(data_dir, number).0 - days * 24 * HOUR_MS;
+        manifest["startedAt"] = json!(
+            jiff::Timestamp::from_millisecond(earlier)
+                .unwrap()
+                .to_string()
+        );
+        fs::write(path, manifest.to_string()).unwrap();
+    }
+
+    fn renewing(requests: u32) -> Config {
+        Config {
+            renewal_requests: requests,
+            ..Config::default()
+        }
+    }
+
+    async fn renew(
+        data_dir: &Path,
+        steam: &FakeSteam,
+        config: &Config,
+    ) -> Result<Updated, UpdateError> {
+        renew_catalog(data_dir, steam, config, |_| {}).await
+    }
+
+    fn sorted(mut ids: Vec<u32>) -> Vec<u32> {
+        ids.sort();
+        ids
+    }
+
+    #[tokio::test]
+    async fn an_update_long_after_the_full_one_stays_incremental_and_renews_nothing() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(data.path(), &FakeSteam::new(&[(1, 10), (2, 20)]))
+            .await
+            .unwrap();
+        backdate(data.path(), "000001", 40);
+
+        let steam = FakeSteam::new(&[(1, 10), (2, 21)]);
+        let updated = run_update(data.path(), &steam).await.unwrap();
+
+        assert_eq!(steam.asked_items(), [2]);
+        assert!(updated.renewal.is_none());
+        let manifest = &manifests(data.path())[1];
+        assert_eq!(manifest["full"], false);
+        assert_eq!(manifest.get("renewal"), None);
+    }
+
+    #[tokio::test]
+    async fn a_renewal_asks_the_changed_apps_and_the_expired_ones() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(data.path(), &FakeSteam::new(&[(1, 10), (2, 20)]))
+            .await
+            .unwrap();
+        backdate(data.path(), "000001", 31);
+        run_update(data.path(), &FakeSteam::new(&[(1, 10), (2, 21)]))
+            .await
+            .unwrap();
+
+        let steam = FakeSteam::new(&[(1, 10), (2, 21), (3, 30)]);
+        let updated = renew(data.path(), &steam, &Config::default())
+            .await
+            .unwrap();
+
+        assert_eq!(sorted(steam.asked_items()), [1, 3]);
+        assert_eq!(game_ids(data.path()), [1, 2, 3]);
+        let renewal = updated.renewal.unwrap();
+        assert_eq!(renewal.renewed_apps(), 1);
+        assert_eq!(renewal.still_expired, 0);
+        let manifest = &manifests(data.path())[2];
+        assert_eq!(manifest["full"], false);
+        assert_eq!(manifest["renewal"], true);
+        assert_eq!(manifest["renewedApps"], 1);
+    }
+
+    #[tokio::test]
+    async fn a_renewal_stops_at_its_requests() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(data.path(), &FakeSteam::new(&apps(600)))
+            .await
+            .unwrap();
+        backdate(data.path(), "000001", 31);
+
+        let steam = FakeSteam::new(&apps(600));
+        let updated = renew(data.path(), &steam, &renewing(1)).await.unwrap();
+
+        assert_eq!(sorted(steam.asked_items()), (1..=260).collect::<Vec<_>>());
+        assert_eq!(updated.asked, 260);
+        assert_eq!(updated.renewal.unwrap().still_expired, 340);
+        assert_eq!(game_ids(data.path()).len(), 600);
+    }
+
+    #[tokio::test]
+    async fn a_resumed_renewal_asks_the_same_apps() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(data.path(), &FakeSteam::new(&apps(600)))
+            .await
+            .unwrap();
+        backdate(data.path(), "000001", 31);
+        let config = renewing(2);
+        let interrupted = FakeSteam::failing(&apps(600), Failure::DownAfterOneBatch);
+        renew(data.path(), &interrupted, &config).await.unwrap_err();
+        let first_batch = interrupted.asked_items()[..260].to_vec();
+
+        let steam = FakeSteam::new(&apps(600));
+        let updated = update_catalog(data.path(), &steam, &config, |_| {})
+            .await
+            .unwrap();
+
+        let resumed = steam.asked_items();
+        assert_eq!(resumed.len(), 260);
+        assert!(first_batch.iter().all(|id| !resumed.contains(id)));
+        let mut asked = first_batch;
+        asked.extend(resumed);
+        assert_eq!(sorted(asked), (1..=520).collect::<Vec<_>>());
+        assert_eq!(updated.renewal.unwrap().renewed_apps(), 520);
+        assert_eq!(manifests(data.path()).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_first_renewal_is_a_full_update() {
+        let data = tempfile::tempdir().unwrap();
+
+        let steam = FakeSteam::new(&[(1, 10), (2, 20)]);
+        let updated = renew(data.path(), &steam, &Config::default())
+            .await
+            .unwrap();
+
+        assert_eq!(sorted(steam.asked_items()), [1, 2]);
+        assert!(updated.renewal.is_none());
+        let manifest = &manifests(data.path())[0];
+        assert_eq!(manifest["full"], true);
+        assert_eq!(manifest.get("renewal"), None);
     }
 
     #[tokio::test]

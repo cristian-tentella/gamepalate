@@ -102,6 +102,7 @@ struct UpdateSection {
     prices_max_age_hours: Option<i64>,
     tags_max_age_days: Option<f64>,
     kept_updates: Option<i64>,
+    renewal_requests: Option<i64>,
 }
 
 pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
@@ -346,6 +347,13 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
         1,
         None,
     )?;
+    let renewal_requests = integer(
+        "update.renewal_requests",
+        file.update.renewal_requests,
+        base.renewal_requests,
+        1,
+        None,
+    )?;
 
     Ok(Config {
         steam_id: Some(steam_id),
@@ -356,6 +364,7 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
         prices_max_age_hours,
         tags_max_age_days,
         kept_updates,
+        renewal_requests,
         region,
     })
 }
@@ -753,6 +762,23 @@ steam_client_hours = true
         assert_eq!(config.prices_max_age_hours, 12);
         assert_eq!(config.tags_max_age_days, 7.0);
         assert_eq!(config.kept_updates, 3);
+        assert_eq!(config.renewal_requests, 150);
+    }
+
+    #[test]
+    fn parse_config_reads_the_renewal_requests() {
+        let config = parse_with(
+            "[update]
+renewal_requests = 40",
+        )
+        .unwrap();
+        assert_eq!(config.renewal_requests, 40);
+
+        let result = parse_with(
+            "[update]
+renewal_requests = 0",
+        );
+        assert_eq!(invalid_field(result), "update.renewal_requests");
     }
 
     #[test]

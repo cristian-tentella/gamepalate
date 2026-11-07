@@ -290,8 +290,8 @@ mod tests {
             .start_update(
                 wall_clock(),
                 24,
-                0.0,
                 gamepalate_core::region::Region::ITALY,
+                false,
             )
             .unwrap();
 

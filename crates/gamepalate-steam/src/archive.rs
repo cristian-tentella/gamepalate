@@ -55,6 +55,10 @@ struct Manifest {
     full: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     region: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    renewal: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    renewed_apps: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -92,8 +96,8 @@ impl Archive {
         &self,
         now: Timestamp,
         resume_within_hours: u32,
-        tags_max_age_days: f64,
         region: Region,
+        renewal: bool,
     ) -> io::Result<UpdateFolder> {
         if let Some((dir, manifest, pending)) = self.resumable(now, resume_within_hours, region)? {
             return Ok(UpdateFolder {
@@ -109,17 +113,16 @@ impl Archive {
         let dir = self.root.join(format!("{:0FOLDER_DIGITS$}", last + 1));
         fs::create_dir(&dir)?;
 
-        let base = self.completed()?.into_iter().find(ArchivedUpdate::full);
-        let full = match base {
-            Some(base) if base.region == region => {
-                now.ms_since(base.started_at) as f64 >= tags_max_age_days * 86_400_000.0
-            }
-            _ => true,
-        };
+        let full = self
+            .completed()?
+            .first()
+            .is_none_or(|latest| latest.region != region);
         let manifest = Manifest {
             started_at: iso(now),
             full,
             region: Some(region.to_string()),
+            renewal: renewal && !full,
+            renewed_apps: None,
             completed_at: None,
             failed_at: None,
         };
@@ -266,6 +269,14 @@ impl UpdateFolder {
 
     pub fn full(&self) -> bool {
         self.manifest.full
+    }
+
+    pub fn renewal(&self) -> bool {
+        self.manifest.renewal
+    }
+
+    pub fn set_renewed_apps(&mut self, apps: usize) {
+        self.manifest.renewed_apps = Some(apps);
     }
 
     pub fn complete(mut self, now: Timestamp) -> io::Result<()> {
@@ -486,6 +497,10 @@ fn write_atomically(path: &Path, data: &[u8]) -> io::Result<()> {
     })
 }
 
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
 fn iso(timestamp: Timestamp) -> String {
     jiff::Timestamp::from_millisecond(timestamp.0)
         .expect("a timestamp within jiff's range")
@@ -578,7 +593,7 @@ mod tests {
     async fn the_first_answer_is_archived_and_the_second_comes_from_the_file() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap();
         let steam = FakeSteam::new();
         let archiving = update.archiving(&steam);
@@ -601,7 +616,7 @@ mod tests {
     async fn the_file_holds_endpoint_params_and_body() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap();
         let steam = FakeSteam::new();
 
@@ -626,7 +641,7 @@ mod tests {
     async fn the_request_reaches_steam_unchanged() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap();
         let steam = FakeSteam::new();
 
@@ -695,7 +710,7 @@ mod tests {
     async fn a_failed_request_archives_nothing() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap();
         let steam = FakeSteam {
             fails: true,
@@ -715,7 +730,7 @@ mod tests {
     async fn a_corrupt_file_is_an_archive_error() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap();
         let params = canonical(&[("language", "english")]);
         fs::write(
@@ -742,7 +757,7 @@ mod tests {
             archive.pending_update(NOW, 24, Region::ITALY).unwrap(),
             None
         );
-        let update = archive.start_update(NOW, 24, 0.0, Region::ITALY).unwrap();
+        let update = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
         update
             .archiving(&FakeSteam::new())
             .get(TAG_LIST, &[("language", "english")], false)
@@ -758,7 +773,7 @@ mod tests {
                 responses: 1,
             })
         );
-        let resumed = archive.start_update(NOW, 24, 0.0, Region::ITALY).unwrap();
+        let resumed = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
         assert_eq!(resumed.dir(), update.dir());
         assert_eq!(resumed.resumed_responses(), 1);
     }
@@ -777,7 +792,7 @@ mod tests {
         for (name, finish) in cases {
             let root = tempfile::tempdir().unwrap();
             let archive = Archive::new(root.path().join("archive"));
-            finish(archive.start_update(NOW, 24, 0.0, Region::ITALY).unwrap());
+            finish(archive.start_update(NOW, 24, Region::ITALY, false).unwrap());
 
             let pending_now = archive.pending_update(NOW, 24, Region::ITALY).unwrap();
             assert_eq!(pending_now.is_some(), name == "interrupted", "{name}");
@@ -787,7 +802,7 @@ mod tests {
             );
             assert_eq!(archive.pending_update(NOW, 24, us).unwrap(), None);
 
-            let next = archive.start_update(NOW, 24, 0.0, Region::ITALY).unwrap();
+            let next = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
             assert_eq!(
                 next.dir().ends_with("000001"),
                 pending_now.is_some(),
@@ -803,8 +818,8 @@ mod tests {
         fs::create_dir(root.path().join("notes")).unwrap();
         let archive = Archive::new(root.path().to_path_buf());
 
-        let first = archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
-        let second = archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        let first = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
+        let second = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
 
         assert_eq!(first.dir(), root.path().join("000008"));
         assert_eq!(second.dir(), root.path().join("000009"));
@@ -815,7 +830,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
 
         let update = Archive::new(root.path().join("archive"))
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap();
 
         assert_eq!(
@@ -828,7 +843,7 @@ mod tests {
     fn completing_records_when_it_ended() {
         let root = tempfile::tempdir().unwrap();
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap();
         let dir = update.dir().to_path_buf();
 
@@ -852,7 +867,7 @@ mod tests {
 
     fn completed_update(archive: &Archive, started_at: Timestamp) -> PathBuf {
         let update = archive
-            .start_update(started_at, 0, 0.0, Region::ITALY)
+            .start_update(started_at, 0, Region::ITALY, false)
             .unwrap();
         let dir = update.dir().to_path_buf();
         update.complete(started_at).unwrap();
@@ -877,7 +892,7 @@ mod tests {
         completed_update(&archive, Timestamp(NOW.0 - 60_000));
         let expected = completed_update(&archive, NOW);
         archive
-            .start_update(Timestamp(NOW.0 + 60_000), 0, 0.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + 60_000), 0, Region::ITALY, false)
             .unwrap();
         fs::create_dir(root.path().join("000009")).unwrap();
 
@@ -891,7 +906,7 @@ mod tests {
     fn only_unfinished_updates_means_no_completed_update() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
 
         assert!(archive.completed().unwrap().is_empty());
     }
@@ -900,7 +915,7 @@ mod tests {
     fn a_broken_manifest_is_an_error() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        let update = archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        let update = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
         fs::write(update.dir().join(MANIFEST_FILE), "{").unwrap();
 
         let error = archive.completed().err().unwrap();
@@ -912,7 +927,7 @@ mod tests {
     async fn a_completed_update_answers_what_it_archived_without_steam() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        let update = archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        let update = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
         let steam = FakeSteam::new();
         let live = update
             .archiving(&steam)
@@ -952,7 +967,7 @@ mod tests {
     const HOUR: i64 = 3_600_000;
 
     async fn interrupted_update(archive: &Archive, responses: &[&str]) -> PathBuf {
-        let update = archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        let update = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
         let steam = FakeSteam::new();
         for language in responses {
             update
@@ -971,7 +986,7 @@ mod tests {
         let dir = interrupted_update(&archive, &["english", "italian"]).await;
 
         let resumed = archive
-            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
             .unwrap();
 
         assert_eq!(resumed.dir(), dir);
@@ -985,7 +1000,7 @@ mod tests {
         let archive = Archive::new(root.path().to_path_buf());
         interrupted_update(&archive, &["english"]).await;
         let resumed = archive
-            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
             .unwrap();
         let steam = FakeSteam::new();
 
@@ -1010,7 +1025,9 @@ mod tests {
         let dir = interrupted_update(&archive, &["english"]).await;
         let later = Timestamp(NOW.0 + 24 * HOUR);
 
-        let update = archive.start_update(later, 24, 0.0, Region::ITALY).unwrap();
+        let update = archive
+            .start_update(later, 24, Region::ITALY, false)
+            .unwrap();
 
         assert_ne!(update.dir(), dir);
         assert_eq!(update.started_at(), later);
@@ -1021,12 +1038,12 @@ mod tests {
     async fn a_failed_update_is_not_resumed() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        let update = archive.start_update(NOW, 24, 0.0, Region::ITALY).unwrap();
+        let update = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
         let dir = update.dir().to_path_buf();
         update.fail(Timestamp(NOW.0 + 60_000)).unwrap();
 
         let next = archive
-            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
             .unwrap();
 
         assert_ne!(next.dir(), dir);
@@ -1040,7 +1057,7 @@ mod tests {
         let dir = completed_update(&archive, NOW);
 
         let next = archive
-            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
             .unwrap();
 
         assert_ne!(next.dir(), dir);
@@ -1051,11 +1068,11 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
         interrupted_update(&archive, &["english"]).await;
-        let failed = archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        let failed = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
         failed.fail(NOW).unwrap();
 
         let next = archive
-            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
             .unwrap();
 
         assert_eq!(next.dir(), root.path().join("000003"));
@@ -1070,6 +1087,12 @@ mod tests {
         names
     }
 
+    fn make_full(dir: &Path) {
+        let mut manifest = read_manifest(dir);
+        manifest["full"] = json!(true);
+        fs::write(dir.join(MANIFEST_FILE), manifest.to_string()).unwrap();
+    }
+
     fn make_incremental(dir: &Path) {
         let mut manifest = read_manifest(dir);
         manifest["full"] = json!(false);
@@ -1082,11 +1105,11 @@ mod tests {
         let archive = Archive::new(root.path().to_path_buf());
         let kept = completed_update(&archive, NOW);
         archive
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap()
             .fail(NOW)
             .unwrap();
-        archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
         fs::create_dir(root.path().join("000009")).unwrap();
         fs::create_dir(root.path().join("notes")).unwrap();
 
@@ -1103,7 +1126,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
 
         let update = Archive::new(root.path().to_path_buf())
-            .start_update(NOW, 24, 7.0, Region::ITALY)
+            .start_update(NOW, 24, Region::ITALY, false)
             .unwrap();
 
         assert!(update.full());
@@ -1116,7 +1139,7 @@ mod tests {
         completed_update(&archive, NOW);
 
         let update = archive
-            .start_update(Timestamp(NOW.0 + DAY), 24, 7.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + DAY), 24, Region::ITALY, false)
             .unwrap();
 
         assert!(!update.full());
@@ -1124,14 +1147,98 @@ mod tests {
     }
 
     #[test]
-    fn an_update_is_full_again_once_the_tags_are_old() {
+    fn an_update_stays_incremental_however_old_the_full_one_is() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
         completed_update(&archive, NOW);
-        make_incremental(&completed_update(&archive, Timestamp(NOW.0 + DAY)));
+        completed_update(&archive, Timestamp(NOW.0 + DAY));
 
         let update = archive
-            .start_update(Timestamp(NOW.0 + 7 * DAY), 24, 7.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + 400 * DAY), 24, Region::ITALY, false)
+            .unwrap();
+
+        assert!(!update.full());
+    }
+
+    #[test]
+    fn a_renewal_is_written_in_the_manifest() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        completed_update(&archive, NOW);
+
+        let mut update = archive
+            .start_update(Timestamp(NOW.0 + DAY), 24, Region::ITALY, true)
+            .unwrap();
+        let dir = update.dir().to_path_buf();
+
+        assert!(update.renewal());
+        assert_eq!(read_manifest(&dir)["renewal"], true);
+        assert_eq!(read_manifest(&dir).get("renewedApps"), None);
+        update.set_renewed_apps(260);
+        update.complete(Timestamp(NOW.0 + DAY)).unwrap();
+        assert_eq!(read_manifest(&dir)["renewedApps"], 260);
+    }
+
+    #[test]
+    fn an_update_of_prices_says_nothing_about_renewals() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        completed_update(&archive, NOW);
+
+        let update = archive
+            .start_update(Timestamp(NOW.0 + DAY), 24, Region::ITALY, false)
+            .unwrap();
+
+        assert!(!update.renewal());
+        let manifest = read_manifest(update.dir());
+        assert_eq!(manifest.get("renewal"), None);
+        assert_eq!(manifest.get("renewedApps"), None);
+    }
+
+    #[test]
+    fn a_full_update_is_never_a_renewal() {
+        let root = tempfile::tempdir().unwrap();
+
+        let update = Archive::new(root.path().to_path_buf())
+            .start_update(NOW, 24, Region::ITALY, true)
+            .unwrap();
+
+        assert!(update.full());
+        assert!(!update.renewal());
+    }
+
+    #[test]
+    fn a_resumed_update_keeps_its_kind() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        completed_update(&archive, NOW);
+        let renewal = archive
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, true)
+            .unwrap();
+        let dir = renewal.dir().to_path_buf();
+
+        let resumed = archive
+            .start_update(Timestamp(NOW.0 + 2 * HOUR), 24, Region::ITALY, false)
+            .unwrap();
+
+        assert_eq!(resumed.dir(), dir);
+        assert!(resumed.renewal());
+        assert_eq!(resumed.started_at(), Timestamp(NOW.0 + HOUR));
+    }
+
+    #[test]
+    fn an_update_after_one_in_another_region_is_full() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        completed_update(&archive, NOW);
+        archive
+            .start_update(Timestamp(NOW.0 + HOUR), 24, us(), false)
+            .unwrap()
+            .complete(Timestamp(NOW.0 + HOUR))
+            .unwrap();
+
+        let update = archive
+            .start_update(Timestamp(NOW.0 + DAY), 24, Region::ITALY, false)
             .unwrap();
 
         assert!(update.full());
@@ -1155,7 +1262,7 @@ mod tests {
 
         assert_eq!(archive.completed().unwrap()[0].region(), Region::ITALY);
         let update = archive
-            .start_update(Timestamp(NOW.0 + DAY), 24, 7.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + DAY), 24, Region::ITALY, false)
             .unwrap();
         assert!(!update.full());
     }
@@ -1167,7 +1274,7 @@ mod tests {
         completed_update(&archive, NOW);
 
         let update = archive
-            .start_update(Timestamp(NOW.0 + DAY), 24, 7.0, us())
+            .start_update(Timestamp(NOW.0 + DAY), 24, us(), false)
             .unwrap();
 
         assert!(update.full());
@@ -1195,7 +1302,7 @@ mod tests {
         let dir = interrupted_update(&archive, &["english"]).await;
 
         let update = archive
-            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0, us())
+            .start_update(Timestamp(NOW.0 + HOUR), 24, us(), false)
             .unwrap();
         assert_ne!(update.dir(), dir);
         assert_eq!(update.resumed_responses(), 0);
@@ -1209,7 +1316,7 @@ mod tests {
         without_region(&dir);
 
         let resumed = archive
-            .start_update(Timestamp(NOW.0 + HOUR), 24, 0.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
             .unwrap();
 
         assert_eq!(resumed.dir(), dir);
@@ -1221,10 +1328,11 @@ mod tests {
         let archive = Archive::new(root.path().to_path_buf());
         let oldest = completed_update(&archive, NOW);
         let base = completed_update(&archive, Timestamp(NOW.0 + HOUR));
+        make_full(&base);
         let middle = completed_update(&archive, Timestamp(NOW.0 + 2 * HOUR));
         make_incremental(&middle);
         archive
-            .start_update(NOW, 0, 0.0, Region::ITALY)
+            .start_update(NOW, 0, Region::ITALY, false)
             .unwrap()
             .fail(NOW)
             .unwrap();
@@ -1261,7 +1369,7 @@ mod tests {
         make_incremental(&completed_update(&archive, Timestamp(NOW.0 + 2 * DAY)));
 
         let update = archive
-            .start_update(Timestamp(NOW.0 + 3 * DAY), 24, 7.0, Region::ITALY)
+            .start_update(Timestamp(NOW.0 + 3 * DAY), 24, Region::ITALY, false)
             .unwrap();
 
         assert!(!update.full());
@@ -1271,7 +1379,7 @@ mod tests {
     async fn records_are_the_responses_of_one_endpoint_with_their_params() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        let update = archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        let update = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
         let steam = FakeSteam::new();
         let archiving = update.archiving(&steam);
         for language in ["english", "italian"] {
@@ -1300,7 +1408,7 @@ mod tests {
     async fn requests_are_the_params_of_one_endpoint_without_the_bodies() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        let update = archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        let update = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
         let steam = FakeSteam::new();
         let archiving = update.archiving(&steam);
         for language in ["english", "italian"] {
@@ -1329,7 +1437,7 @@ mod tests {
     async fn removing_the_responses_of_one_endpoint_keeps_the_others() {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
-        let update = archive.start_update(NOW, 0, 0.0, Region::ITALY).unwrap();
+        let update = archive.start_update(NOW, 0, Region::ITALY, false).unwrap();
         let steam = FakeSteam::new();
         let archiving = update.archiving(&steam);
         for language in ["english", "italian"] {
