@@ -6,6 +6,7 @@ use std::{
 use gamepalate_core::{
     catalog::Catalog,
     config::Config,
+    corrections::Corrections,
     effective_hours::effective_hours,
     families::Families,
     ids::SteamId,
@@ -83,6 +84,7 @@ pub enum OffCatalogError {
 pub struct OffCatalogInputs<'a> {
     pub signals: &'a Signals,
     pub votes: &'a Votes,
+    pub corrections: &'a Corrections,
     pub families: &'a Families,
     pub catalog: &'a Catalog,
     pub config: &'a Config,
@@ -187,7 +189,12 @@ pub async fn off_catalog<S: Get>(
     inputs: OffCatalogInputs<'_>,
     now: Timestamp,
 ) -> Result<OffCatalogGames, OffCatalogError> {
-    let hours = effective_hours(inputs.signals, inputs.votes, &inputs.config.signals);
+    let hours = effective_hours(
+        inputs.signals,
+        inputs.votes,
+        &inputs.corrections.played_elsewhere,
+        &inputs.config.signals,
+    );
     let wanted = wanted_off_catalog(&hours, inputs.families, inputs.catalog);
     let max_age_days = inputs.config.tags_max_age_days;
     let region = inputs.config.region;
@@ -338,6 +345,7 @@ mod tests {
         let inputs = OffCatalogInputs {
             signals: &signals,
             votes: &votes,
+            corrections: &Corrections::default(),
             families: &families,
             catalog: &catalog,
             config: &config,

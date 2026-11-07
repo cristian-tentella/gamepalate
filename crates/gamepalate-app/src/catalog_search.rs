@@ -1,0 +1,275 @@
+use std::{cmp::Reverse, collections::BTreeSet};
+
+use gamepalate_core::{catalog::Catalog, ids::AppId};
+
+use crate::names::folded;
+
+pub const MIN_SEARCH_CHARS: usize = 3;
+pub const MAX_MATCHES: usize = 20;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogMatch {
+    pub id: AppId,
+    pub name: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct NameIndex {
+    entries: Vec<Entry>,
+}
+
+#[derive(Debug)]
+struct Entry {
+    id: AppId,
+    name: Box<str>,
+}
+
+impl NameIndex {
+    pub(crate) fn new(catalog: &Catalog) -> NameIndex {
+        let mut games: Vec<_> = catalog.games().iter().collect();
+        games.sort_by_key(|game| (Reverse(game.reviews.total), game.id));
+
+        NameIndex {
+            entries: games
+                .into_iter()
+                .map(|game| Entry {
+                    id: game.id,
+                    name: folded(game.name.trim()).into_boxed_str(),
+                })
+                .collect(),
+        }
+    }
+
+    pub(crate) fn search(&self, text: &str, excluded: &BTreeSet<AppId>) -> Vec<AppId> {
+        let text = folded(text.trim());
+        if text.chars().count() < MIN_SEARCH_CHARS {
+            return Vec::new();
+        }
+
+        let mut equal = Vec::new();
+        let mut starting = Vec::new();
+        let mut containing = Vec::new();
+        for entry in &self.entries {
+            if equal.len() == MAX_MATCHES {
+                break;
+            }
+            if !entry.name.contains(&text) || excluded.contains(&entry.id) {
+                continue;
+            }
+            let group = if *entry.name == *text {
+                &mut equal
+            } else if entry.name.starts_with(&text) {
+                &mut starting
+            } else {
+                &mut containing
+            };
+            if group.len() < MAX_MATCHES {
+                group.push(entry.id);
+            }
+        }
+
+        equal
+            .into_iter()
+            .chain(starting)
+            .chain(containing)
+            .take(MAX_MATCHES)
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, time::Instant};
+
+    use gamepalate_core::{
+        catalog::Freshness,
+        currency::Currency,
+        game::{Game, Price, Reviews},
+        region::Region,
+        timestamp::Timestamp,
+    };
+
+    use super::*;
+
+    fn game(id: u32, name: &str, reviews: u32) -> Game {
+        Game {
+            id: AppId(id),
+            name: name.to_string(),
+            price: Price {
+                original_cents: 999,
+                discount: None,
+            },
+            reviews: Reviews {
+                total: reviews,
+                positive: reviews,
+            },
+            is_early_access: false,
+            tags: Vec::new(),
+        }
+    }
+
+    fn catalog(games: Vec<Game>) -> Catalog {
+        Catalog::new(
+            games,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            Freshness {
+                prices_updated_at: Timestamp(0),
+                tags_updated_at: Timestamp(0),
+                region: Region::ITALY,
+            },
+            Currency::italian(),
+        )
+    }
+
+    fn search(games: Vec<Game>, text: &str) -> Vec<u32> {
+        search_without(games, text, &[])
+    }
+
+    fn search_without(games: Vec<Game>, text: &str, excluded: &[u32]) -> Vec<u32> {
+        let excluded = excluded.iter().map(|&id| AppId(id)).collect();
+        NameIndex::new(&catalog(games))
+            .search(text, &excluded)
+            .into_iter()
+            .map(|id| id.0)
+            .collect()
+    }
+
+    #[test]
+    fn case_and_accents_are_ignored() {
+        let games = vec![game(1, "Pokémon Snap", 10), game(2, "Portal", 10)];
+
+        assert_eq!(search(games.clone(), "POKEMON"), [1]);
+        assert_eq!(search(games.clone(), "pokémon"), [1]);
+        assert_eq!(search(games, "  portal  "), [2]);
+    }
+
+    #[test]
+    fn under_three_characters_nothing_is_found() {
+        let games = vec![game(1, "It Takes Two", 10)];
+
+        assert!(search(games.clone(), "it").is_empty());
+        assert!(search(games.clone(), " it ").is_empty());
+        assert!(search(games.clone(), "").is_empty());
+        assert_eq!(search(games, "it t"), [1]);
+    }
+
+    #[test]
+    fn the_games_of_the_library_are_left_out() {
+        let games = vec![game(1, "Portal", 10), game(2, "Portal 2", 20)];
+
+        assert_eq!(search_without(games, "portal", &[2]), [1]);
+    }
+
+    #[test]
+    fn at_most_twenty_games_come_back() {
+        let games = (1..=50)
+            .map(|id| game(id, &format!("Puzzle {id}"), id))
+            .collect();
+
+        let found = search(games, "puzzle");
+
+        assert_eq!(found.len(), MAX_MATCHES);
+        assert_eq!(found[0], 50);
+    }
+
+    #[test]
+    fn an_equal_name_comes_before_the_names_that_start_with_it() {
+        let games = vec![game(1, "Hades II", 90_000), game(2, "Hades", 200)];
+
+        assert_eq!(search(games, "hades"), [2, 1]);
+    }
+
+    #[test]
+    fn a_name_that_starts_with_the_text_comes_before_one_that_contains_it() {
+        let games = vec![
+            game(1, "Escape the Portal Room", 90_000),
+            game(2, "Portal 2", 100),
+            game(3, "Portal", 50),
+            game(4, "Aperture Portal Test", 80_000),
+        ];
+
+        assert_eq!(search(games, "portal"), [3, 2, 1, 4]);
+    }
+
+    #[test]
+    fn games_with_the_same_kind_of_match_come_by_reviews() {
+        let games = vec![
+            game(1, "Portal Knights", 10),
+            game(2, "Portal Reloaded", 500),
+            game(3, "Portal Stories", 500),
+        ];
+
+        assert_eq!(search(games, "portal"), [2, 3, 1]);
+    }
+
+    #[test]
+    fn the_equal_names_beyond_twenty_are_cut_while_a_start_stays_out() {
+        let mut games: Vec<Game> = (1..=25).map(|id| game(id, "Hades", 100 + id)).collect();
+        games.push(game(100, "Hades II", 1_000_000));
+
+        let found = search(games, "hades");
+
+        assert_eq!(found.len(), MAX_MATCHES);
+        assert!(found.iter().all(|&id| id != 100));
+    }
+
+    #[test]
+    fn a_new_catalog_gives_a_new_index() {
+        let before = NameIndex::new(&catalog(vec![game(1, "Portal", 10)]));
+        let after = NameIndex::new(&catalog(vec![game(2, "Portal 2", 10)]));
+        let none = BTreeSet::new();
+
+        assert_eq!(before.search("portal", &none), [AppId(1)]);
+        assert_eq!(after.search("portal", &none), [AppId(2)]);
+    }
+
+    #[test]
+    #[ignore = "measures the cost of a search, run with --release --nocapture"]
+    fn measure_a_search_on_a_catalog_of_110_thousand_games() {
+        let words = [
+            "Dark", "Portal", "Quest", "Hades", "Tower", "Space", "Farm", "Craft", "Night",
+            "Legend", "Rogue", "Puzzle", "Ocean", "Knight", "Cyber", "Zombie",
+        ];
+        let games: Vec<Game> = (1..=110_000u32)
+            .map(|id| {
+                let a = words[(id as usize * 7) % words.len()];
+                let b = words[(id as usize * 13 + 5) % words.len()];
+                game(
+                    id,
+                    &format!("{a} of the {b} {id}"),
+                    id.wrapping_mul(2_654_435_761) % 100_000,
+                )
+            })
+            .collect();
+
+        let built = Instant::now();
+        let index = NameIndex::new(&catalog(games));
+        let build = built.elapsed();
+        let bytes: usize = index.entries.len() * std::mem::size_of::<Entry>()
+            + index
+                .entries
+                .iter()
+                .map(|entry| entry.name.len())
+                .sum::<usize>();
+        let none = BTreeSet::new();
+
+        for text in ["por", "portal", "dark of the", "hades", "zzz", "the 1"] {
+            let started = Instant::now();
+            let runs = 50;
+            let mut found = 0;
+            for _ in 0..runs {
+                found = index.search(text, &none).len();
+            }
+            println!(
+                "{text:?}: {found} games, {:?} per search",
+                started.elapsed() / runs
+            );
+        }
+        println!(
+            "built in {build:?}, {} entries, {} KB",
+            index.entries.len(),
+            bytes / 1024
+        );
+    }
+}

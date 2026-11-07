@@ -46,6 +46,8 @@ enum Command {
         /// Steam appid of the game
         appid: u32,
     },
+    /// Count a game you played outside Steam, or stop counting it with --remove
+    PlayedElsewhere(correct::PlayedElsewhereArgs),
     /// Ban a tag from the recommendations
     Ban(correct::BanArgs),
     /// Boost a tag in your profile
@@ -112,6 +114,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Hide { appid } => {
             let files = load_data_files(&data_dir)?;
             correct::hide(appid, &files, &data_dir)?;
+        }
+        Command::PlayedElsewhere(args) => {
+            let files = load_data_files(&data_dir)?;
+            correct::played_elsewhere(&args, &files, &data_dir)?;
         }
         Command::Ban(args) => {
             let files = load_data_files(&data_dir)?;

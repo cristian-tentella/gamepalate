@@ -36,6 +36,7 @@ pub enum ConfigKey {
     WishlistHours,
     FollowedHours,
     WouldTryHours,
+    ElsewhereHours,
     MinHours,
     MaxHours,
     RecentHoursMultiplier,
@@ -56,6 +57,7 @@ impl ConfigKey {
             ConfigKey::WishlistHours => ["signals", "wishlist_hours"],
             ConfigKey::FollowedHours => ["signals", "followed_hours"],
             ConfigKey::WouldTryHours => ["signals", "would_try_hours"],
+            ConfigKey::ElsewhereHours => ["signals", "elsewhere_hours"],
             ConfigKey::MinHours => ["signals", "min_hours"],
             ConfigKey::MaxHours => ["signals", "max_hours"],
             ConfigKey::RecentHoursMultiplier => ["signals", "recent_hours_multiplier"],
@@ -77,6 +79,7 @@ impl ConfigKey {
             ConfigKey::WishlistHours => ConfigValue::Number(config.signals.wishlist_hours),
             ConfigKey::FollowedHours => ConfigValue::Number(config.signals.followed_hours),
             ConfigKey::WouldTryHours => ConfigValue::Number(config.signals.would_try_hours),
+            ConfigKey::ElsewhereHours => ConfigValue::Number(config.signals.elsewhere_hours),
             ConfigKey::MinHours => ConfigValue::Number(config.signals.min_hours),
             ConfigKey::MaxHours => ConfigValue::Number(config.signals.max_hours),
             ConfigKey::RecentHoursMultiplier => {
@@ -230,6 +233,38 @@ mod tests {
     }
 
     #[test]
+    fn the_hours_of_a_game_played_elsewhere_are_read_and_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "steam_id = \"76561198000000000\"
+",
+        )
+        .unwrap();
+        assert_eq!(
+            ConfigKey::ElsewhereHours.default_value(),
+            ConfigValue::Number(20.0)
+        );
+
+        change_config(
+            dir.path(),
+            ConfigKey::ElsewhereHours,
+            ConfigValue::Number(35.0),
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.signals.elsewhere_hours, 35.0);
+        assert_eq!(
+            ConfigKey::ElsewhereHours.value(&config),
+            ConfigValue::Number(35.0)
+        );
+        reset_config(dir.path(), ConfigKey::ElsewhereHours).unwrap();
+        assert_eq!(load_config(&path).unwrap().signals.elsewhere_hours, 20.0);
+    }
+
+    #[test]
     fn every_key_writes_a_value_the_config_reads() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
@@ -238,6 +273,7 @@ mod tests {
             ConfigKey::WishlistHours,
             ConfigKey::FollowedHours,
             ConfigKey::WouldTryHours,
+            ConfigKey::ElsewhereHours,
             ConfigKey::MinHours,
             ConfigKey::MaxHours,
             ConfigKey::RecentHoursMultiplier,

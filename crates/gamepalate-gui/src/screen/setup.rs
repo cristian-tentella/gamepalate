@@ -22,7 +22,10 @@ use iced::{
     },
 };
 
-use super::{library::hours, steam_client::SteamClientQuestion};
+use super::{
+    library::hours,
+    steam_client::{ElsewhereHint, SteamClientQuestion},
+};
 use crate::{
     font, format,
     progress::{Stage, Tracker, update_error_text},
@@ -417,7 +420,9 @@ impl Setup {
                         self.question
                             .as_ref()
                             .filter(|_| step == Step::Catalog)
-                            .map(|question| question.view(Message::SteamClient)),
+                            .map(|question| {
+                                question.view(Message::SteamClient, ElsewhereHint::Text)
+                            }),
                     )
                     .push(card)
                     .push(self.most_played_view(step))

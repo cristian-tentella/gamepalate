@@ -39,6 +39,7 @@ pub struct SignalsConfig {
     pub wishlist_hours: f64,
     pub followed_hours: f64,
     pub would_try_hours: f64,
+    pub elsewhere_hours: f64,
     pub steam_client_hours: Option<bool>,
 }
 
@@ -51,6 +52,7 @@ impl Default for SignalsConfig {
             wishlist_hours: 5.0,
             followed_hours: 3.0,
             would_try_hours: 5.0,
+            elsewhere_hours: 20.0,
             steam_client_hours: None,
         }
     }

@@ -20,7 +20,7 @@ use crate::{
             KEY_DOMAIN_NOTE, PRIVACY_PAGE, PROFILE_PLACEHOLDER, connect_error_text, needs_privacy,
             note_link, steam_id_note,
         },
-        steam_client::SteamClientQuestion,
+        steam_client::{ElsewhereHint, SteamClientQuestion},
     },
     style,
 };
@@ -30,10 +30,11 @@ const LABEL_WIDTH: f32 = 120.0;
 const MEGABYTE: u64 = 1024 * 1024;
 const CONFIG_NOTE: &str = "Changes made in the file apply after the next update or restart";
 const CONFIG_FIELD: Id = Id::new("settings-config-field");
-const TASTE: [ConfigKey; 6] = [
+const TASTE: [ConfigKey; 7] = [
     ConfigKey::WishlistHours,
     ConfigKey::FollowedHours,
     ConfigKey::WouldTryHours,
+    ConfigKey::ElsewhereHours,
     ConfigKey::MinHours,
     ConfigKey::MaxHours,
     ConfigKey::RecentHoursMultiplier,
@@ -108,6 +109,7 @@ pub enum Message {
     ResetConfig,
     SetConfig(ConfigKey, ConfigValue),
     ConfigSaved(Result<(), String>),
+    OpenLibrary,
     Escape,
 }
 
@@ -317,6 +319,7 @@ impl Settings {
                 }
                 Action::None
             }
+            Message::OpenLibrary => Action::Close(Page::Library),
             Message::Escape => {
                 if self.question.take().is_some() {
                     return Action::None;
@@ -599,7 +602,14 @@ impl Settings {
 
     fn steam_client_line(&self) -> Element<'_, Message> {
         if let Some(question) = &self.question {
-            return setting("Steam app", question.view(Message::SteamClient), None);
+            return setting(
+                "Steam app",
+                question.view(
+                    Message::SteamClient,
+                    ElsewhereHint::Link(Message::OpenLibrary),
+                ),
+                None,
+            );
         }
         if self.settings.steam_client_file.is_none() {
             return setting("Steam app", value("Not found on this PC".to_string()), None);
@@ -757,6 +767,7 @@ fn config_label(key: ConfigKey) -> &'static str {
         ConfigKey::WishlistHours => "Wishlist",
         ConfigKey::FollowedHours => "Followed",
         ConfigKey::WouldTryHours => "Would try",
+        ConfigKey::ElsewhereHours => "Played elsewhere",
         ConfigKey::MinHours => "Fewest hours",
         ConfigKey::MaxHours => "Most hours",
         ConfigKey::RecentHoursMultiplier => "Recent play",
@@ -777,6 +788,7 @@ fn config_note(key: ConfigKey) -> &'static str {
         ConfigKey::WishlistHours => "Each game in your wishlist counts as this much play",
         ConfigKey::FollowedHours => "Each game you follow counts as this much play",
         ConfigKey::WouldTryHours => "Each Would try vote counts as this much play",
+        ConfigKey::ElsewhereHours => "Each game you played outside Steam counts as this much play",
         ConfigKey::MinHours => "Games played less are left out",
         ConfigKey::MaxHours => "Play past this counts no more",
         ConfigKey::RecentHoursMultiplier => "Hours from the last two weeks count this many times",
@@ -813,6 +825,7 @@ fn value_text(key: ConfigKey, value: ConfigValue) -> String {
             ConfigKey::WishlistHours
             | ConfigKey::FollowedHours
             | ConfigKey::WouldTryHours
+            | ConfigKey::ElsewhereHours
             | ConfigKey::MinHours
             | ConfigKey::MaxHours,
             ConfigValue::Number(1.0),
@@ -821,6 +834,7 @@ fn value_text(key: ConfigKey, value: ConfigValue) -> String {
             ConfigKey::WishlistHours
             | ConfigKey::FollowedHours
             | ConfigKey::WouldTryHours
+            | ConfigKey::ElsewhereHours
             | ConfigKey::MinHours
             | ConfigKey::MaxHours,
             ConfigValue::Number(hours),
@@ -988,6 +1002,21 @@ mod tests {
     use super::*;
 
     const ID: SteamId = SteamId(76_561_198_000_000_000);
+
+    #[test]
+    fn the_hours_of_a_game_played_elsewhere_are_with_the_other_fixed_hours() {
+        let at = |key| TASTE.iter().position(|&shown| shown == key);
+
+        assert_eq!(
+            at(ConfigKey::ElsewhereHours),
+            Some(at(ConfigKey::WouldTryHours).unwrap() + 1)
+        );
+        assert_eq!(config_label(ConfigKey::ElsewhereHours), "Played elsewhere");
+        assert_eq!(
+            value_text(ConfigKey::ElsewhereHours, ConfigValue::Number(20.0)),
+            "20 hours"
+        );
+    }
 
     fn editing(field: Field, text: &str) -> Editing {
         Editing {

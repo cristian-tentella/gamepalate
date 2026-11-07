@@ -53,6 +53,7 @@ struct CorrectionsFile {
     tag_multipliers: BTreeMap<String, f64>,
     hidden_games: BTreeMap<String, bool>,
     game_multipliers: BTreeMap<String, f64>,
+    played_elsewhere: BTreeMap<String, bool>,
 }
 
 #[derive(Deserialize)]
@@ -109,6 +110,13 @@ pub fn parse_corrections(text: &str) -> Result<Corrections, CorrectionsError> {
         let id = id_key("hidden_games", key)?;
         if hidden {
             corrections.hidden_games.insert(AppId(id));
+        }
+    }
+
+    for (key, elsewhere) in file.played_elsewhere {
+        let id = id_key("played_elsewhere", key)?;
+        if elsewhere {
+            corrections.played_elsewhere.insert(AppId(id));
         }
     }
 
@@ -180,6 +188,25 @@ mod tests {
             corrections.game_multipliers,
             BTreeMap::from([(AppId(300), 0.0), (AppId(400), 0.25)])
         );
+    }
+
+    #[test]
+    fn parse_corrections_reads_the_games_played_elsewhere() {
+        let corrections = parse_corrections("[played_elsewhere]\n100 = true\n200 = false").unwrap();
+
+        assert_eq!(
+            corrections.played_elsewhere.iter().collect::<Vec<_>>(),
+            [&AppId(100)]
+        );
+    }
+
+    #[test]
+    fn parse_corrections_rejects_a_played_elsewhere_key_that_is_not_an_id() {
+        let result = parse_corrections("[played_elsewhere]\nportal = true");
+        assert!(matches!(
+            result,
+            Err(CorrectionsError::InvalidKey { section: "played_elsewhere", key }) if key == "portal"
+        ));
     }
 
     #[test]

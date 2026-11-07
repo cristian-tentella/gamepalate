@@ -69,6 +69,7 @@ struct SignalsSection {
     wishlist_hours: Option<f64>,
     followed_hours: Option<f64>,
     would_try_hours: Option<f64>,
+    elsewhere_hours: Option<f64>,
     steam_client_hours: Option<bool>,
 }
 
@@ -257,6 +258,12 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
             "signals.would_try_hours",
             file.signals.would_try_hours,
             base.signals.would_try_hours,
+            Range::AtLeast(0.0),
+        )?,
+        elsewhere_hours: number(
+            "signals.elsewhere_hours",
+            file.signals.elsewhere_hours,
+            base.signals.elsewhere_hours,
             Range::AtLeast(0.0),
         )?,
         steam_client_hours: file.signals.steam_client_hours,
@@ -763,6 +770,17 @@ steam_client_hours = true
         assert_eq!(config.tags_max_age_days, 7.0);
         assert_eq!(config.kept_updates, 3);
         assert_eq!(config.renewal_requests, 150);
+    }
+
+    #[test]
+    fn parse_config_reads_the_elsewhere_hours() {
+        assert_eq!(parse_with("").unwrap().signals.elsewhere_hours, 20.0);
+
+        let config = parse_with("[signals]\nelsewhere_hours = 12").unwrap();
+        assert_eq!(config.signals.elsewhere_hours, 12.0);
+
+        let result = parse_with("[signals]\nelsewhere_hours = -1");
+        assert_eq!(invalid_field(result), "signals.elsewhere_hours");
     }
 
     #[test]

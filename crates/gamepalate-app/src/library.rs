@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use gamepalate_core::{
     corrections::Corrections,
@@ -24,6 +27,7 @@ pub struct LibraryView {
     pub min_hours: f64,
     pub wishlist_hours: f64,
     pub followed_hours: f64,
+    pub elsewhere_hours: f64,
     pub dampen: f64,
 }
 
@@ -36,6 +40,8 @@ pub struct LibraryGameView {
     pub recent: bool,
     pub wishlist: bool,
     pub followed: bool,
+    pub elsewhere: bool,
+    pub elsewhere_only: bool,
     pub hours: f64,
     pub source: HoursSource,
     pub counts: bool,
@@ -50,6 +56,19 @@ pub struct LibraryGameView {
 pub struct GameCorrection {
     pub multiplier: Option<f64>,
     pub hidden: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PlayedElsewhereError {
+    #[error("{id} is not a valid Steam appid")]
+    InvalidAppId { id: u32 },
+
+    #[error("could not save the game played elsewhere in {}", path.display())]
+    Save {
+        path: std::path::PathBuf,
+        #[source]
+        source: Box<CorrectionsError>,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -82,7 +101,12 @@ pub enum GameCorrectionError {
 pub(crate) fn library_view(inputs: &SearchInputs) -> LibraryView {
     let signals = inputs.signals;
     let config = &inputs.config.signals;
-    let hours = hours_by_source(signals, inputs.votes, config);
+    let hours = hours_by_source(
+        signals,
+        inputs.votes,
+        &inputs.corrections.played_elsewhere,
+        config,
+    );
     let effective: BTreeMap<AppId, f64> = hours.iter().map(|(&id, &(h, _))| (id, h)).collect();
     let taste = signals_taste(
         &effective,
@@ -116,6 +140,7 @@ pub(crate) fn library_view(inputs: &SearchInputs) -> LibraryView {
                 })
                 .unwrap_or_default();
 
+            let elsewhere = inputs.corrections.played_elsewhere.contains(&id);
             LibraryGameView {
                 id,
                 name: game_name(id, inputs.catalog, inputs.off_catalog),
@@ -128,6 +153,8 @@ pub(crate) fn library_view(inputs: &SearchInputs) -> LibraryView {
                 recent: signals.recent.iter().any(|game| game.id == id),
                 wishlist: signals.wishlist.contains(&id),
                 followed: signals.followed.contains(&id),
+                elsewhere,
+                elsewhere_only: elsewhere && !in_steam_signals(id, inputs),
                 hours: game_hours,
                 source,
                 counts: weight > 0.0,
@@ -157,16 +184,27 @@ pub(crate) fn library_view(inputs: &SearchInputs) -> LibraryView {
         min_hours: config.min_hours,
         wishlist_hours: config.wishlist_hours,
         followed_hours: config.followed_hours,
+        elsewhere_hours: config.elsewhere_hours,
         dampen: inputs.config.corrections.dampen,
     }
 }
 
 fn in_signals(id: AppId, inputs: &SearchInputs) -> bool {
+    in_steam_signals(id, inputs) || inputs.corrections.played_elsewhere.contains(&id)
+}
+
+fn in_steam_signals(id: AppId, inputs: &SearchInputs) -> bool {
     let signals = inputs.signals;
     signals.played().any(|played| played == id)
         || signals.recent.iter().any(|game| game.id == id)
         || signals.wishlist.contains(&id)
         || signals.followed.contains(&id)
+}
+
+pub(crate) fn library_ids(inputs: &SearchInputs) -> BTreeSet<AppId> {
+    let mut ids: BTreeSet<AppId> = inputs.signals.ids().into_iter().collect();
+    ids.extend(&inputs.corrections.played_elsewhere);
+    ids
 }
 
 pub fn game_correction(id: AppId, corrections: &Corrections) -> GameCorrection {
@@ -186,7 +224,12 @@ pub fn check_game_multiplier(
     }
     let game = || game_label(id, inputs.catalog, inputs.off_catalog);
     let config = &inputs.config.signals;
-    let hours = hours_by_source(inputs.signals, inputs.votes, config);
+    let hours = hours_by_source(
+        inputs.signals,
+        inputs.votes,
+        &inputs.corrections.played_elsewhere,
+        config,
+    );
     match hours.get(&id) {
         None => Err(GameCorrectionError::NotInSignals { game: game() }),
         Some(&(hours, _)) if hours < config.min_hours => Err(GameCorrectionError::BelowThreshold {
@@ -245,10 +288,35 @@ pub(crate) fn corrected_game(
     editor.save().map_err(save_error)
 }
 
+pub(crate) fn changed_played_elsewhere(
+    path: &Path,
+    id: AppId,
+    played: bool,
+    corrections: &Corrections,
+    name: Option<&str>,
+) -> Result<Corrections, PlayedElsewhereError> {
+    if id.0 == 0 {
+        return Err(PlayedElsewhereError::InvalidAppId { id: id.0 });
+    }
+    if corrections.played_elsewhere.contains(&id) == played {
+        return Ok(corrections.clone());
+    }
+
+    let save_error = |source| PlayedElsewhereError::Save {
+        path: path.to_path_buf(),
+        source: Box::new(source),
+    };
+    let mut editor = CorrectionsEditor::open(path).map_err(save_error)?;
+    if played {
+        editor.set(Section::PlayedElsewhere, id.0, EntryValue::Bool(true), name);
+    } else {
+        editor.remove(Section::PlayedElsewhere, id.0);
+    }
+    editor.save().map_err(save_error)
+}
+
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use gamepalate_core::{
         catalog::{Catalog, Freshness, TagName},
         config::Config,
@@ -660,5 +728,149 @@ mod tests {
             game_correction(AppId(7), &corrections),
             GameCorrection::default()
         );
+    }
+
+    #[test]
+    fn a_game_played_elsewhere_is_in_the_library_with_the_fixed_hours() {
+        let mut fixture = Fixture::new();
+        fixture.corrections.played_elsewhere.insert(AppId(7));
+
+        let view = library_view(&fixture.inputs());
+
+        let game = find(&view, 7);
+        assert!(game.elsewhere && game.elsewhere_only);
+        assert_eq!((game.hours, game.source), (20.0, HoursSource::Elsewhere));
+        assert_eq!(game.owned_hours, None);
+        assert_eq!(view.elsewhere_hours, 20.0);
+        assert!(!find(&view, 1).elsewhere);
+    }
+
+    #[test]
+    fn a_game_played_elsewhere_that_is_also_in_the_signals_is_not_only_elsewhere() {
+        let mut fixture = Fixture::new();
+        fixture
+            .corrections
+            .played_elsewhere
+            .extend([AppId(1), AppId(3), AppId(4), AppId(90)]);
+
+        let view = library_view(&fixture.inputs());
+
+        for id in [1, 3, 4, 90] {
+            let game = find(&view, id);
+            assert!(game.elsewhere && !game.elsewhere_only, "{id}");
+        }
+        assert_eq!(
+            (find(&view, 1).hours, find(&view, 1).source),
+            (50.0, HoursSource::Played)
+        );
+        assert_eq!(
+            (find(&view, 3).hours, find(&view, 3).source),
+            (20.0, HoursSource::Elsewhere)
+        );
+    }
+
+    #[test]
+    fn a_game_played_elsewhere_can_be_halved_and_goes_in_a_family() {
+        let mut fixture = Fixture::new();
+        fixture.corrections.played_elsewhere.insert(AppId(7));
+        fixture.families = Families {
+            families: vec![Family {
+                name: "roguelikes".to_string(),
+                games: vec![AppId(7)],
+            }],
+            held_out: vec![],
+        };
+
+        assert!(check_game_multiplier(AppId(7), 0.5, &fixture.inputs()).is_ok());
+        assert!(matches!(
+            check_game_multiplier(AppId(8), 0.5, &fixture.inputs()),
+            Err(GameCorrectionError::NotInSignals { .. })
+        ));
+        let view = library_view(&fixture.inputs());
+        assert_eq!(find(&view, 7).families, ["roguelikes"]);
+    }
+
+    #[test]
+    fn a_game_played_elsewhere_is_added_removed_and_added_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("corrections.toml");
+        std::fs::write(&path, "# mine\n\n[game_multipliers]\n6 = 0.5\n").unwrap();
+        let mut corrections = Corrections {
+            game_multipliers: BTreeMap::from([(AppId(6), 0.5)]),
+            ..Corrections::default()
+        };
+
+        corrections =
+            changed_played_elsewhere(&path, AppId(6), true, &corrections, Some("Balatro")).unwrap();
+        assert!(corrections.played_elsewhere.contains(&AppId(6)));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("6 = true # Balatro"), "{text}");
+        assert!(text.starts_with("# mine"));
+
+        corrections =
+            changed_played_elsewhere(&path, AppId(6), false, &corrections, Some("Balatro"))
+                .unwrap();
+        assert!(corrections.played_elsewhere.is_empty());
+        assert_eq!(corrections.game_multipliers[&AppId(6)], 0.5);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("6 = 0.5") && !text.contains("6 = true"),
+            "{text}"
+        );
+
+        corrections =
+            changed_played_elsewhere(&path, AppId(6), true, &corrections, Some("Balatro")).unwrap();
+        assert!(corrections.played_elsewhere.contains(&AppId(6)));
+        assert_eq!(corrections.game_multipliers[&AppId(6)], 0.5);
+    }
+
+    #[test]
+    fn a_game_already_in_the_state_asked_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("corrections.toml");
+        let corrections = Corrections {
+            played_elsewhere: BTreeSet::from([AppId(6)]),
+            ..Corrections::default()
+        };
+
+        let same = changed_played_elsewhere(&path, AppId(6), true, &corrections, None).unwrap();
+        let none = changed_played_elsewhere(&path, AppId(7), false, &corrections, None).unwrap();
+
+        assert_eq!(same, corrections);
+        assert_eq!(none, corrections);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn an_invalid_appid_or_a_file_that_cannot_be_written_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("corrections.toml");
+        let corrections = Corrections::default();
+
+        let zero = changed_played_elsewhere(&path, AppId(0), true, &corrections, None).unwrap_err();
+        assert_eq!(zero.to_string(), "0 is not a valid Steam appid");
+
+        let missing = dir.path().join("missing").join("corrections.toml");
+        let unwritable =
+            changed_played_elsewhere(&missing, AppId(6), true, &corrections, None).unwrap_err();
+        assert_eq!(
+            unwritable.to_string(),
+            format!(
+                "could not save the game played elsewhere in {}",
+                missing.display()
+            )
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn the_ids_of_the_library_include_the_games_played_elsewhere() {
+        let mut fixture = Fixture::new();
+        fixture.corrections.played_elsewhere.insert(AppId(7));
+
+        let ids = library_ids(&fixture.inputs());
+
+        assert!([7, 1, 90].iter().all(|&id| ids.contains(&AppId(id))));
+        assert!(!ids.contains(&AppId(8)));
     }
 }

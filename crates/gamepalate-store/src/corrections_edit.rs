@@ -15,6 +15,7 @@ const NEW_FILE: &str = "\
 # [tag_multipliers]   tagid = factor, above 1 boosts a tag, below 1 dampens it
 # [hidden_games]      appid = true hides a game from the recommendations
 # [game_multipliers]  appid = factor from 0 to 1 dampens a game of your signals
+# [played_elsewhere]  appid = true counts a game you played outside Steam
 
 [banned_tags]
 
@@ -23,6 +24,8 @@ const NEW_FILE: &str = "\
 [hidden_games]
 
 [game_multipliers]
+
+[played_elsewhere]
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +34,7 @@ pub enum Section {
     TagMultipliers,
     HiddenGames,
     GameMultipliers,
+    PlayedElsewhere,
 }
 
 impl Section {
@@ -40,6 +44,7 @@ impl Section {
             Section::TagMultipliers => "tag_multipliers",
             Section::HiddenGames => "hidden_games",
             Section::GameMultipliers => "game_multipliers",
+            Section::PlayedElsewhere => "played_elsewhere",
         }
     }
 }
@@ -168,4 +173,76 @@ fn decor_prefix(decor: &toml_edit::Decor) -> &str {
         .prefix()
         .and_then(|prefix| prefix.as_str())
         .unwrap_or("")
+}
+
+#[cfg(test)]
+mod tests {
+    use gamepalate_core::ids::AppId;
+
+    use super::*;
+
+    const WITH_COMMENTS: &str = "# my corrections
+
+[hidden_games]
+# a comment
+100 = true
+
+[played_elsewhere]
+# the co-op games
+200 = true
+";
+
+    fn written(text: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("corrections.toml");
+        std::fs::write(&path, text).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn a_game_played_elsewhere_is_added_without_touching_the_comments() {
+        let (_dir, path) = written(WITH_COMMENTS);
+
+        let mut editor = CorrectionsEditor::open(&path).unwrap();
+        editor.set(Section::PlayedElsewhere, 300, EntryValue::Bool(true), None);
+        let corrections = editor.save().unwrap();
+
+        assert_eq!(
+            corrections.played_elsewhere.iter().collect::<Vec<_>>(),
+            [&AppId(200), &AppId(300)]
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("{WITH_COMMENTS}300 = true\n")
+        );
+    }
+
+    #[test]
+    fn a_game_played_elsewhere_is_removed_without_touching_the_comments() {
+        let (_dir, path) = written(WITH_COMMENTS);
+
+        let mut editor = CorrectionsEditor::open(&path).unwrap();
+        assert!(editor.remove(Section::PlayedElsewhere, 200));
+        let corrections = editor.save().unwrap();
+
+        assert!(corrections.played_elsewhere.is_empty());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# my corrections\n\n[hidden_games]\n# a comment\n100 = true"));
+        assert!(text.contains("[played_elsewhere]"));
+        assert!(!text.contains("200"));
+    }
+
+    #[test]
+    fn the_section_is_created_in_a_file_without_it() {
+        let (_dir, path) = written("[hidden_games]\n100 = true\n");
+
+        let mut editor = CorrectionsEditor::open(&path).unwrap();
+        editor.set(Section::PlayedElsewhere, 300, EntryValue::Bool(true), None);
+        editor.save().unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[hidden_games]\n100 = true\n\n[played_elsewhere]\n300 = true\n"
+        );
+    }
 }

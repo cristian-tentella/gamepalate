@@ -232,7 +232,12 @@ fn corrections_view(inputs: &SearchInputs) -> CorrectionsView {
     let corrections = inputs.corrections;
     let catalog = inputs.catalog;
     let name = |id| game_name(id, catalog, inputs.off_catalog);
-    let hours = effective_hours(inputs.signals, inputs.votes, &inputs.config.signals);
+    let hours = effective_hours(
+        inputs.signals,
+        inputs.votes,
+        &corrections.played_elsewhere,
+        &inputs.config.signals,
+    );
 
     let mut view = CorrectionsView {
         tag_multipliers: corrections
@@ -392,12 +397,21 @@ mod tests {
     }
 
     fn view_with(signals: &Signals, votes: &Votes) -> ProfileView {
+        view_played_elsewhere(signals, votes, BTreeSet::new())
+    }
+
+    fn view_played_elsewhere(
+        signals: &Signals,
+        votes: &Votes,
+        played_elsewhere: BTreeSet<AppId>,
+    ) -> ProfileView {
         let catalog = catalog();
         let corrections = Corrections {
             game_multipliers: BTreeMap::from([(AppId(2), 0.5), (AppId(99), 2.0)]),
             tag_multipliers: BTreeMap::from([(TagId(4), 0.5)]),
             banned_tags: BTreeMap::from([(TagId(5), Ban::TopTags(8))]),
             hidden_games: BTreeSet::from([AppId(3)]),
+            played_elsewhere,
         };
         let families = Families {
             families: vec![
@@ -485,11 +499,39 @@ mod tests {
                 .games
         };
 
-        assert_eq!(taste.sources.len(), 4);
+        assert_eq!(taste.sources.len(), 5);
         assert_eq!(games(HoursSource::Played), 2);
         assert_eq!(games(HoursSource::Wishlist), 1);
         assert_eq!(games(HoursSource::WouldTry), 1);
         assert_eq!(games(HoursSource::Followed), 0);
+        assert_eq!(games(HoursSource::Elsewhere), 0);
+    }
+
+    #[test]
+    fn a_game_played_elsewhere_counts_in_its_own_source() {
+        let taste = view_played_elsewhere(&signals(), &votes(), BTreeSet::from([AppId(3)]))
+            .taste
+            .unwrap();
+        let games = |source| {
+            taste
+                .sources
+                .iter()
+                .find(|view| view.source == source)
+                .unwrap()
+                .games
+        };
+
+        assert_eq!(games(HoursSource::Elsewhere), 1);
+        assert_eq!(games(HoursSource::Wishlist), 0);
+        let portal = taste
+            .shaping_games
+            .iter()
+            .find(|game| game.name == "Portal 2")
+            .unwrap();
+        assert_eq!(
+            (portal.hours, portal.source),
+            (20.0, HoursSource::Elsewhere)
+        );
     }
 
     #[test]

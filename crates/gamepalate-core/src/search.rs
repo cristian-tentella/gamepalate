@@ -153,7 +153,12 @@ pub fn search_tastes(
 
     match family {
         None => {
-            let hours = effective_hours(inputs.signals, inputs.votes, &inputs.config.signals);
+            let hours = effective_hours(
+                inputs.signals,
+                inputs.votes,
+                &inputs.corrections.played_elsewhere,
+                &inputs.config.signals,
+            );
             let taste = signals_taste(
                 &hours,
                 inputs.catalog,

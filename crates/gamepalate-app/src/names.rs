@@ -47,3 +47,35 @@ pub fn family_problem_text(problem: &FamilyProblem, inputs: &SearchInputs) -> St
         }
     }
 }
+
+pub fn folded(text: &str) -> String {
+    text.chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| match c {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ą' => 'a',
+            'ç' | 'ć' | 'č' => 'c',
+            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ę' | 'ě' => 'e',
+            'ì' | 'í' | 'î' | 'ï' | 'ī' => 'i',
+            'ñ' | 'ń' | 'ň' => 'n',
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' => 'o',
+            'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ů' => 'u',
+            'ý' | 'ÿ' => 'y',
+            'ś' | 'š' => 's',
+            'ź' | 'ż' | 'ž' => 'z',
+            'ł' => 'l',
+            'ř' => 'r',
+            other => other,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folding_ignores_case_and_accents() {
+        assert_eq!(folded("Pokémon ÉTÉ Ørn Łódź"), "pokemon ete orn lodz");
+        assert_eq!(folded("Hades II"), "hades ii");
+    }
+}
