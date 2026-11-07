@@ -757,6 +757,7 @@ fn config_label(key: ConfigKey) -> &'static str {
         ConfigKey::WishlistHours => "Wishlist",
         ConfigKey::FollowedHours => "Followed",
         ConfigKey::WouldTryHours => "Would try",
+        ConfigKey::ElsewhereHours => "Played elsewhere",
         ConfigKey::MinHours => "Fewest hours",
         ConfigKey::MaxHours => "Most hours",
         ConfigKey::RecentHoursMultiplier => "Recent play",
@@ -777,6 +778,7 @@ fn config_note(key: ConfigKey) -> &'static str {
         ConfigKey::WishlistHours => "Each game in your wishlist counts as this much play",
         ConfigKey::FollowedHours => "Each game you follow counts as this much play",
         ConfigKey::WouldTryHours => "Each Would try vote counts as this much play",
+        ConfigKey::ElsewhereHours => "Each game you played outside Steam counts as this much play",
         ConfigKey::MinHours => "Games played less are left out",
         ConfigKey::MaxHours => "Play past this counts no more",
         ConfigKey::RecentHoursMultiplier => "Hours from the last two weeks count this many times",
@@ -813,6 +815,7 @@ fn value_text(key: ConfigKey, value: ConfigValue) -> String {
             ConfigKey::WishlistHours
             | ConfigKey::FollowedHours
             | ConfigKey::WouldTryHours
+            | ConfigKey::ElsewhereHours
             | ConfigKey::MinHours
             | ConfigKey::MaxHours,
             ConfigValue::Number(1.0),
@@ -821,6 +824,7 @@ fn value_text(key: ConfigKey, value: ConfigValue) -> String {
             ConfigKey::WishlistHours
             | ConfigKey::FollowedHours
             | ConfigKey::WouldTryHours
+            | ConfigKey::ElsewhereHours
             | ConfigKey::MinHours
             | ConfigKey::MaxHours,
             ConfigValue::Number(hours),

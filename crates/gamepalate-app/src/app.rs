@@ -1,6 +1,6 @@
 use std::{
     cmp::Reverse,
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
     time::Duration,
@@ -40,6 +40,7 @@ use gamepalate_store::{
 
 use crate::{
     capsules::{Capsule, CapsuleFinder, capsule},
+    catalog_search::{CatalogMatch, NameIndex},
     data_dir,
     details::{GameDetails, StoreDetails},
     families::{
@@ -48,8 +49,8 @@ use crate::{
     },
     images::{DecodedImage, ImageCache, ImageKind, LoadImageError, MAX_CACHE_BYTES, cache_dir},
     library::{
-        GameCorrection, GameCorrectionError, LibraryView, corrected_game, game_correction,
-        library_view,
+        GameCorrection, GameCorrectionError, LibraryView, PlayedElsewhereError,
+        changed_played_elsewhere, corrected_game, game_correction, library_ids, library_view,
     },
     log::failed,
     profile::{ProfileView, profile_view},
@@ -70,6 +71,7 @@ pub struct Gamepalate {
     families: Mutex<Families>,
     gui_saving: Mutex<()>,
     vectors: Vec<GameVector>,
+    names: NameIndex,
     images: Arc<ImageCache>,
     store: Arc<StoreDetails>,
     capsules: Arc<CapsuleFinder>,
@@ -92,6 +94,7 @@ impl Gamepalate {
             .ok_or(OpenError::DataDirNotFound)?;
         let files = load_data_files(&dir).inspect_err(failed("could not read the data files"))?;
         let vectors = game_vectors(&files.catalog);
+        let names = NameIndex::new(&files.catalog);
         let images = ImageCache::new(cache_dir(), ImageDownloader::new()?);
 
         let store = StoreDetails::new(
@@ -101,7 +104,14 @@ impl Gamepalate {
         let capsules = CapsuleFinder::new(
             Transport::new(None)?.with_interval(Duration::ZERO),
             files.config.region,
-            files.signals.ids(),
+            files
+                .signals
+                .ids()
+                .into_iter()
+                .chain(files.corrections.played_elsewhere.iter().copied())
+                .collect::<BTreeSet<AppId>>()
+                .into_iter()
+                .collect(),
         );
 
         Ok(Gamepalate {
@@ -112,6 +122,7 @@ impl Gamepalate {
             gui_saving: Mutex::new(()),
             files,
             vectors,
+            names,
             images: Arc::new(images),
             store: Arc::new(store),
             capsules: Arc::new(capsules),
@@ -297,6 +308,38 @@ impl Gamepalate {
         )
         .inspect_err(failed("could not save the correction"))?;
         Ok(before)
+    }
+
+    pub fn set_played_elsewhere(
+        &self,
+        id: AppId,
+        played: bool,
+    ) -> Result<bool, PlayedElsewhereError> {
+        let mut corrections = self.lock_corrections();
+        let before = corrections.played_elsewhere.contains(&id);
+        let name = game_name(id, &self.files.catalog, &self.files.off_catalog);
+        *corrections = changed_played_elsewhere(
+            &self.data_dir.join("corrections.toml"),
+            id,
+            played,
+            &corrections,
+            (name != format!("#{}", id.0)).then_some(name.as_str()),
+        )
+        .inspect_err(failed("could not save the game played elsewhere"))?;
+        Ok(before)
+    }
+
+    pub fn search_catalog(&self, text: &str) -> Vec<CatalogMatch> {
+        let in_library = self.with_inputs(library_ids);
+        self.names
+            .search(text, &in_library)
+            .into_iter()
+            .filter_map(|id| self.files.catalog.game(id))
+            .map(|game| CatalogMatch {
+                id: game.id,
+                name: game.name.clone(),
+            })
+            .collect()
     }
 
     pub fn change_families(

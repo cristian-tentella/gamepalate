@@ -2,7 +2,7 @@ use std::{fmt, ops::Range, path::PathBuf, sync::Arc};
 
 use gamepalate_app::{
     AppId, Capsule, FamiliesChanged, FamiliesUndo, FamilyChange, GameCorrection, Gamepalate,
-    HoursSource, LibraryGameView, LibraryView,
+    HoursSource, LibraryGameView, LibraryView, names::folded,
 };
 use iced::{
     Center, ContentFit, Element, Fill, Padding, Point, Size, Subscription, Task,
@@ -1102,27 +1102,6 @@ fn shown(games: &[LibraryGameView], filter: Filter, sort: Sort, search: &str) ->
     shown
 }
 
-fn folded(text: &str) -> String {
-    text.chars()
-        .flat_map(char::to_lowercase)
-        .map(|c| match c {
-            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ą' => 'a',
-            'ç' | 'ć' | 'č' => 'c',
-            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ę' | 'ě' => 'e',
-            'ì' | 'í' | 'î' | 'ï' | 'ī' => 'i',
-            'ñ' | 'ń' | 'ň' => 'n',
-            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' => 'o',
-            'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ů' => 'u',
-            'ý' | 'ÿ' => 'y',
-            'ś' | 'š' => 's',
-            'ź' | 'ż' | 'ž' => 'z',
-            'ł' => 'l',
-            'ř' => 'r',
-            other => other,
-        })
-        .collect()
-}
-
 fn columns(width: f32) -> usize {
     let inner = width - 2.0 * GRID_PADDING;
     (((inner + GAP) / (TILE_WIDTH + GAP)).floor() as usize).max(1)
@@ -1484,6 +1463,8 @@ mod tests {
             recent: false,
             wishlist: false,
             followed: false,
+            elsewhere: false,
+            elsewhere_only: false,
             hours: 0.0,
             source: HoursSource::Played,
             counts: false,
@@ -1694,6 +1675,7 @@ mod tests {
             min_hours: 2.0,
             wishlist_hours: 5.0,
             followed_hours: 3.0,
+            elsewhere_hours: 20.0,
             dampen: 0.5,
         }
     }
