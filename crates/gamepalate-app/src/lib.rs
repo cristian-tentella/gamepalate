@@ -10,6 +10,7 @@ pub mod library;
 mod lock;
 pub mod log;
 pub mod names;
+pub mod new_version;
 pub mod profile;
 pub mod ready;
 pub mod refresh;
