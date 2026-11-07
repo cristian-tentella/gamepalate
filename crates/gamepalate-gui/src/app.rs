@@ -12,7 +12,11 @@ use gamepalate_app::{
 };
 use iced::{
     Center, Color, Element, Fill, Length, Shrink, Size, Subscription, Task, Theme,
-    futures::{SinkExt, channel::mpsc},
+    futures::{
+        SinkExt,
+        channel::mpsc,
+        future::{AbortHandle, Abortable, Aborted},
+    },
     keyboard::{self, Key},
     mouse, padding, stream, task,
     theme::Palette,
@@ -75,7 +79,7 @@ pub struct App {
     last_bar_press: Option<Instant>,
     refresh: Refresh,
     pending: Option<PendingUpdate>,
-    expired_apps: usize,
+    renewal_due: bool,
     startup_error: Option<String>,
     logo: image::Handle,
 }
@@ -159,7 +163,7 @@ impl App {
             last_bar_press: None,
             refresh: Refresh::Idle,
             pending: None,
-            expired_apps: 0,
+            renewal_due: false,
             startup_error: None,
             logo: image::Handle::from_bytes(LOGO_BYTES),
         };
@@ -327,7 +331,7 @@ impl App {
             Message::Refresh => self.run_refresh(Plan::EVERYTHING, Start::Button),
             Message::ArchiveRead(start, result) => match result {
                 Ok(state) => {
-                    self.expired_apps = state.expired_apps;
+                    self.renewal_due = state.renewal_due;
                     match start {
                         Start::Startup => {
                             self.run_refresh(startup_plan(&state, wall_clock()), Start::Startup)
@@ -434,12 +438,16 @@ impl App {
 
         Task::perform(
             async move {
-                Gamepalate::open(Some(dir)).map(Arc::new).map_err(|error| {
-                    format!(
-                        "gamepalate could not open the data files: {}",
-                        error_chain(&error)
-                    )
-                })
+                let opened = tokio::task::spawn_blocking(move || Gamepalate::open(Some(dir))).await;
+                match opened {
+                    Ok(opened) => opened.map(Arc::new).map_err(|error| {
+                        format!(
+                            "gamepalate could not open the data files: {}",
+                            error_chain(&error)
+                        )
+                    }),
+                    Err(error) => Err(format!("gamepalate could not open the data files: {error}")),
+                }
             },
             Message::Reopened,
         )
@@ -512,7 +520,7 @@ impl App {
                             &self.refresh,
                             refresh_tooltip(
                                 self.pending,
-                                self.expired_apps,
+                                self.renewal_due,
                                 self.startup_error.as_deref(),
                             ),
                         )
@@ -629,7 +637,21 @@ impl App {
 
         let (task, handle) = Task::run(
             stream::channel(64, async move |mut output: mpsc::Sender<Message>| {
-                let result = refresh_in_two(&dir, plan, &mut output).await;
+                let (abort, registration) = AbortHandle::new_pair();
+                let _abort_on_drop = AbortOnDrop(abort);
+                let mut events = output.clone();
+                let runtime = tokio::runtime::Handle::current();
+                let blocking = tokio::task::spawn_blocking(move || {
+                    runtime.block_on(Abortable::new(
+                        refresh_in_two(&dir, plan, &mut events),
+                        registration,
+                    ))
+                });
+                let result = match blocking.await {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(Aborted)) => return,
+                    Err(error) => Err(format!("The update stopped unexpectedly: {error}")),
+                };
                 let _ = output.send(Message::Refreshed(start, result)).await;
             }),
             |message| message,
@@ -655,7 +677,6 @@ impl App {
         Task::perform(
             async move {
                 archive_state(&dir, wall_clock())
-                    .await
                     .map_err(|error| progress::update_error_text(&error))
             },
             move |result| Message::ArchiveRead(start, result),
@@ -996,6 +1017,14 @@ async fn refresh_in_two(
     Ok(latest)
 }
 
+struct AbortOnDrop(AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 fn reopens_the_screen(start: Start) -> bool {
     start == Start::Button
 }
@@ -1071,7 +1100,7 @@ fn refreshing_count(refreshing: &Refreshing) -> Option<String> {
 
 fn refresh_tooltip(
     pending: Option<PendingUpdate>,
-    expired_apps: usize,
+    renewal_due: bool,
     startup_error: Option<&str>,
 ) -> String {
     if let Some(error) = startup_error {
@@ -1082,9 +1111,7 @@ fn refresh_tooltip(
             "Resume the update started on {}",
             format::day_time(pending.started_at)
         ),
-        None if expired_apps > 0 => {
-            "Update prices and Signals, then renew tags and reviews".to_string()
-        }
+        None if renewal_due => "Update prices and Signals, then renew tags and reviews".to_string(),
         None => "Update prices and Signals".to_string(),
     }
 }
@@ -1312,14 +1339,17 @@ mod tests {
     fn the_tooltip_offers_to_resume_a_pending_update() {
         let started_at = Timestamp(1_793_369_460_000);
 
-        assert_eq!(refresh_tooltip(None, 0, None), "Update prices and Signals");
+        assert_eq!(
+            refresh_tooltip(None, false, None),
+            "Update prices and Signals"
+        );
         assert_eq!(
             refresh_tooltip(
                 Some(PendingUpdate {
                     started_at,
                     responses: 3,
                 }),
-                12,
+                true,
                 None
             ),
             format!(
@@ -1332,7 +1362,7 @@ mod tests {
     #[test]
     fn the_tooltip_says_when_tags_and_reviews_are_renewed_after_the_prices() {
         assert_eq!(
-            refresh_tooltip(None, 14_210, None),
+            refresh_tooltip(None, true, None),
             "Update prices and Signals, then renew tags and reviews"
         );
     }
@@ -1342,7 +1372,7 @@ mod tests {
         let error =
             "Steam is not responding, so the update stopped. Update again before 7 Nov to resume.";
 
-        assert_eq!(refresh_tooltip(None, 14_210, Some(error)), error);
+        assert_eq!(refresh_tooltip(None, true, Some(error)), error);
     }
 
     #[test]
