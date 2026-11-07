@@ -136,6 +136,7 @@ pub fn update_error_text(error: &UpdateError) -> String {
 
 pub fn refresh_error_text(error: &RefreshError) -> String {
     match error {
+        RefreshError::Locked => "Another update is running.".to_string(),
         RefreshError::Update(error) => update_error_text(error),
         RefreshError::Open(error) => format!(
             "gamepalate could not open the updated data: {}",
@@ -280,6 +281,14 @@ mod tests {
         assert_eq!(
             update_error_text(&start_over),
             "Steam sent an unexpected answer. The next update starts over."
+        );
+    }
+
+    #[test]
+    fn a_taken_lock_says_another_update_is_running() {
+        assert_eq!(
+            refresh_error_text(&RefreshError::Locked),
+            "Another update is running."
         );
     }
 }

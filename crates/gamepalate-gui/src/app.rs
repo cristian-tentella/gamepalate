@@ -5,7 +5,7 @@ use std::{
 
 use gamepalate_app::{
     AppId, Gamepalate, GuiSettings, PendingUpdate, Region, SavedWindow, ThemeChoice, Timestamp,
-    refresh::{Step, refresh},
+    refresh::{Plan, Step, refresh},
     setup::{FirstRun, error_chain},
 };
 use iced::{
@@ -568,7 +568,7 @@ impl App {
         let (task, handle) = Task::run(
             stream::channel(64, async move |mut output: mpsc::Sender<Message>| {
                 let mut events = output.clone();
-                let result = refresh(&dir, move |step| {
+                let result = refresh(&dir, Plan::EVERYTHING, move |step| {
                     let _ = events.try_send(Message::Refreshing(step));
                 })
                 .await
@@ -883,6 +883,14 @@ impl Refreshing {
                 }
             }
             Step::Signals => *self = Refreshing::Signals,
+            Step::Renewal(progress) => {
+                if !matches!(self, Refreshing::Catalog(_)) {
+                    *self = Refreshing::Catalog(Tracker::default());
+                }
+                if let Refreshing::Catalog(tracker) = self {
+                    tracker.advance(progress, now);
+                }
+            }
             Step::Opening => *self = Refreshing::Opening,
         }
     }

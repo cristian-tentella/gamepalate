@@ -68,6 +68,13 @@ pub struct Updated {
     pub rotate_error: Option<ChainError>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ArchiveState {
+    pub pending: bool,
+    pub updated_at: Option<Timestamp>,
+    pub expired_apps: usize,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rebuilt {
     pub dir: PathBuf,
@@ -321,6 +328,44 @@ pub fn pending_update(data_dir: &Path, config: &Config) -> Option<PendingUpdate>
         .pending_update(wall_clock(), config.prices_max_age_hours, config.region)
         .ok()
         .flatten()
+}
+
+pub async fn expired_apps(
+    data_dir: &Path,
+    region: Region,
+    now: Timestamp,
+) -> Result<usize, UpdateError> {
+    let chain = chain(&archive(data_dir)).await?;
+    let Some(latest) = chain.first() else {
+        return Ok(0);
+    };
+    if latest.region() != region {
+        return Ok(0);
+    }
+    let listed: Vec<AppId> = get_app_list(latest)
+        .await?
+        .into_iter()
+        .map(|app| app.id)
+        .collect();
+
+    Ok(answers(&chain)?
+        .choose(&listed, &[], now, usize::MAX)
+        .renewed_apps())
+}
+
+pub async fn archive_state(data_dir: &Path, now: Timestamp) -> Result<ArchiveState, UpdateError> {
+    let config = update_config(data_dir)?;
+    let updated_at = archive(data_dir)
+        .completed()
+        .map_err(UpdateError::Archive)?
+        .first()
+        .map(ArchivedUpdate::started_at);
+
+    Ok(ArchiveState {
+        pending: pending_update(data_dir, &config).is_some(),
+        updated_at,
+        expired_apps: expired_apps(data_dir, config.region, now).await?,
+    })
 }
 
 pub async fn rebuild_catalog(data_dir: &Path) -> Result<Rebuilt, UpdateError> {
@@ -1262,6 +1307,99 @@ mod tests {
             }
         );
         assert_eq!(events[2], Progress::StoreData { done: 0, total: 1 });
+    }
+
+    #[tokio::test]
+    async fn the_expired_apps_are_read_from_the_archive_without_asking_steam() {
+        let data = tempfile::tempdir().unwrap();
+        let region = Config::default().region;
+        assert_eq!(
+            expired_apps(data.path(), region, wall_clock())
+                .await
+                .unwrap(),
+            0
+        );
+        run_update(data.path(), &FakeSteam::new(&[(1, 10), (2, 20)]))
+            .await
+            .unwrap();
+        assert_eq!(
+            expired_apps(data.path(), region, wall_clock())
+                .await
+                .unwrap(),
+            0
+        );
+
+        backdate(data.path(), "000001", 31);
+
+        assert_eq!(
+            expired_apps(data.path(), region, wall_clock())
+                .await
+                .unwrap(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn an_app_asked_again_by_a_later_update_is_not_expired() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(data.path(), &FakeSteam::new(&[(1, 10), (2, 20)]))
+            .await
+            .unwrap();
+        backdate(data.path(), "000001", 31);
+        run_update(data.path(), &FakeSteam::new(&[(1, 10), (2, 21)]))
+            .await
+            .unwrap();
+
+        let expired = expired_apps(data.path(), Config::default().region, wall_clock())
+            .await
+            .unwrap();
+
+        assert_eq!(expired, 1);
+    }
+
+    #[tokio::test]
+    async fn nothing_is_expired_in_another_region_than_the_archive_one() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(data.path(), &FakeSteam::new(&[(1, 10)]))
+            .await
+            .unwrap();
+        backdate(data.path(), "000001", 31);
+        let other = Region::new("US").unwrap();
+
+        let expired = expired_apps(data.path(), other, wall_clock())
+            .await
+            .unwrap();
+
+        assert_eq!(expired, 0);
+    }
+
+    #[tokio::test]
+    async fn the_archive_state_tells_the_last_update_the_pending_one_and_the_expired_apps() {
+        let data = tempfile::tempdir().unwrap();
+        let empty = archive_state(data.path(), wall_clock()).await.unwrap();
+        assert_eq!(
+            empty,
+            ArchiveState {
+                pending: false,
+                updated_at: None,
+                expired_apps: 0
+            }
+        );
+
+        run_update(data.path(), &FakeSteam::new(&apps(600)))
+            .await
+            .unwrap();
+        backdate(data.path(), "000001", 31);
+        let interrupted = FakeSteam::failing(&apps(600), Failure::DownAfterOneBatch);
+        renew(data.path(), &interrupted, &Config::default())
+            .await
+            .unwrap_err();
+
+        let state = archive_state(data.path(), wall_clock()).await.unwrap();
+
+        assert!(state.pending);
+        assert_eq!(state.updated_at, Some(started_at(data.path(), "000001")));
+        assert_eq!(state.expired_apps, 600);
     }
 
     #[tokio::test]
