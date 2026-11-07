@@ -107,9 +107,8 @@ pub(crate) fn library_view(inputs: &SearchInputs) -> LibraryView {
         &inputs.corrections.played_elsewhere,
         config,
     );
-    let effective: BTreeMap<AppId, f64> = hours.iter().map(|(&id, &(h, _))| (id, h)).collect();
     let taste = signals_taste(
-        &effective,
+        &hours,
         inputs.catalog,
         inputs.off_catalog,
         inputs.corrections,

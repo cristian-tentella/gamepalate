@@ -4,7 +4,7 @@ use crate::{
     catalog::{Catalog, Freshness},
     config::Config,
     corrections::Corrections,
-    effective_hours::effective_hours,
+    effective_hours::hours_by_source,
     explanation::{similar_to, top_tags},
     families::{Families, Family},
     filters::{Blame, FilterContext, FilterOptions, TagNameError, active_filters, apply_filters},
@@ -153,7 +153,7 @@ pub fn search_tastes(
 
     match family {
         None => {
-            let hours = effective_hours(
+            let hours = hours_by_source(
                 inputs.signals,
                 inputs.votes,
                 &inputs.corrections.played_elsewhere,

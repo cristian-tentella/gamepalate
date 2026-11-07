@@ -67,6 +67,7 @@ struct SignalsSection {
     max_hours: Option<f64>,
     recent_hours_multiplier: Option<f64>,
     wishlist_hours: Option<f64>,
+    wishlist_cap: Option<f64>,
     followed_hours: Option<f64>,
     would_try_hours: Option<f64>,
     elsewhere_hours: Option<f64>,
@@ -247,6 +248,12 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
             file.signals.wishlist_hours,
             base.signals.wishlist_hours,
             Range::AtLeast(0.0),
+        )?,
+        wishlist_cap: number(
+            "signals.wishlist_cap",
+            file.signals.wishlist_cap,
+            base.signals.wishlist_cap,
+            Range::Between(0.0, 10.0),
         )?,
         followed_hours: number(
             "signals.followed_hours",
@@ -809,6 +816,33 @@ steam_client_hours = true
 
         let result = parse_with("[signals]\nelsewhere_hours = -1");
         assert_eq!(invalid_field(result), "signals.elsewhere_hours");
+    }
+
+    #[test]
+    fn parse_config_reads_the_wishlist_cap() {
+        assert_eq!(parse_with("").unwrap().signals.wishlist_cap, 1.0);
+
+        let config = parse_with(
+            "[signals]
+wishlist_cap = 0",
+        )
+        .unwrap();
+        assert_eq!(config.signals.wishlist_cap, 0.0);
+
+        let config = parse_with(
+            "[signals]
+wishlist_cap = 1.5",
+        )
+        .unwrap();
+        assert_eq!(config.signals.wishlist_cap, 1.5);
+
+        for text in ["-0.5", "10.5"] {
+            let result = parse_with(&format!(
+                "[signals]
+wishlist_cap = {text}"
+            ));
+            assert_eq!(invalid_field(result), "signals.wishlist_cap");
+        }
     }
 
     #[test]

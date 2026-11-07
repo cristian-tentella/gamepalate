@@ -30,8 +30,9 @@ const LABEL_WIDTH: f32 = 120.0;
 const MEGABYTE: u64 = 1024 * 1024;
 const CONFIG_NOTE: &str = "Changes made in the file apply after the next update or restart";
 const CONFIG_FIELD: Id = Id::new("settings-config-field");
-const TASTE: [ConfigKey; 7] = [
+const TASTE: [ConfigKey; 8] = [
     ConfigKey::WishlistHours,
+    ConfigKey::WishlistCap,
     ConfigKey::FollowedHours,
     ConfigKey::WouldTryHours,
     ConfigKey::ElsewhereHours,
@@ -765,6 +766,7 @@ fn region_change(editing: &Editing, saved: Region) -> Option<Region> {
 fn config_label(key: ConfigKey) -> &'static str {
     match key {
         ConfigKey::WishlistHours => "Wishlist",
+        ConfigKey::WishlistCap => "Wishlist cap",
         ConfigKey::FollowedHours => "Followed",
         ConfigKey::WouldTryHours => "Would try",
         ConfigKey::ElsewhereHours => "Played elsewhere",
@@ -786,6 +788,9 @@ fn config_label(key: ConfigKey) -> &'static str {
 fn config_note(key: ConfigKey) -> &'static str {
     match key {
         ConfigKey::WishlistHours => "Each game in your wishlist counts as this much play",
+        ConfigKey::WishlistCap => {
+            "Your wishlist never weighs more than this many times the games you played, 0 turns it off"
+        }
         ConfigKey::FollowedHours => "Each game you follow counts as this much play",
         ConfigKey::WouldTryHours => "Each Would try vote counts as this much play",
         ConfigKey::ElsewhereHours => "Each game you played outside Steam counts as this much play",
@@ -811,6 +816,7 @@ fn value_text(key: ConfigKey, value: ConfigValue) -> String {
         (_, ConfigValue::Flag(true)) => "Shown".to_string(),
         (_, ConfigValue::Flag(false)) => "Hidden".to_string(),
         (ConfigKey::BetEvery, ConfigValue::Integer(0)) => "Off".to_string(),
+        (ConfigKey::WishlistCap, ConfigValue::Number(0.0)) => "Off".to_string(),
         (ConfigKey::BetEvery, ConfigValue::Integer(every)) => format!("1 in {every}"),
         (ConfigKey::MinReviews, ConfigValue::Integer(reviews)) => {
             format::count(u32::try_from(reviews).unwrap_or(u32::MAX))
@@ -818,7 +824,10 @@ fn value_text(key: ConfigKey, value: ConfigValue) -> String {
         (ConfigKey::MinPositivePercent, ConfigValue::Integer(percent)) => format!("{percent}%"),
         (_, ConfigValue::Integer(integer)) => integer.to_string(),
         (
-            ConfigKey::RecentHoursMultiplier | ConfigKey::Boost | ConfigKey::Dampen,
+            ConfigKey::RecentHoursMultiplier
+            | ConfigKey::WishlistCap
+            | ConfigKey::Boost
+            | ConfigKey::Dampen,
             ConfigValue::Number(times),
         ) => format!("×{times}"),
         (
@@ -1053,6 +1062,11 @@ mod tests {
         assert_eq!(shown(ConfigKey::MaxHours), "200 hours");
         assert_eq!(shown(ConfigKey::RecentHoursMultiplier), "×3");
         assert_eq!(shown(ConfigKey::Dampen), "×0.5");
+        assert_eq!(shown(ConfigKey::WishlistCap), "×1");
+        assert_eq!(
+            value_text(ConfigKey::WishlistCap, ConfigValue::Number(0.0)),
+            "Off"
+        );
         assert_eq!(shown(ConfigKey::Count), "20");
         assert_eq!(shown(ConfigKey::EarlyAccess), "Shown");
         assert_eq!(shown(ConfigKey::MinReviews), "1,000");

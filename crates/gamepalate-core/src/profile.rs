@@ -315,7 +315,7 @@ pub fn profile(inputs: &SearchInputs, limit: usize) -> Option<Profile> {
         .map(|(&id, &(hours, _))| (id, hours))
         .collect();
     let taste = signals_taste(
-        &hours,
+        &hours_by_source,
         inputs.catalog,
         inputs.off_catalog,
         inputs.corrections,
