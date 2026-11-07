@@ -44,6 +44,7 @@ impl Tracker {
         match progress {
             Progress::Resumed { responses, .. } => self.archived = responses,
             Progress::ReadingApps => self.stage = Stage::Reading,
+            Progress::Renewing { .. } => {}
             Progress::StoreData { done, total } => {
                 self.stage = Stage::StoreData { done, total };
                 if done > self.archived {

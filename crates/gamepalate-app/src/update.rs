@@ -29,7 +29,11 @@ use gamepalate_store::{
     config::{ConfigError, load_config},
 };
 
-use crate::{account::steam_api_key, log::failed};
+use crate::{
+    account::steam_api_key,
+    lock::{LockError, UpdateLock},
+    log::failed,
+};
 
 const CONCURRENCY: usize = 4;
 const HOUR_MS: i64 = 3_600_000;
@@ -42,6 +46,10 @@ pub enum Progress {
         responses: usize,
     },
     ReadingApps,
+    Renewing {
+        apps: usize,
+        requests: usize,
+    },
     StoreData {
         done: usize,
         total: usize,
@@ -51,6 +59,7 @@ pub enum Progress {
 
 #[derive(Debug)]
 pub struct Updated {
+    pub full: bool,
     pub games: usize,
     pub apps: usize,
     pub asked: usize,
@@ -74,6 +83,12 @@ pub enum UpdateError {
 
     #[error("could not read the archive")]
     Archive(#[source] io::Error),
+
+    #[error("another update is running")]
+    Locked,
+
+    #[error("could not lock the data folder for the update")]
+    Lock(#[source] io::Error),
 
     #[error("the archive has no completed update: run update first")]
     NoCompletedUpdate,
@@ -165,6 +180,10 @@ async fn logged_update<S: Get + Sync>(
     renewal: bool,
     progress: impl FnMut(Progress),
 ) -> Result<Updated, UpdateError> {
+    let _lock = UpdateLock::take(data_dir).map_err(|error| match error {
+        LockError::Taken => UpdateError::Locked,
+        LockError::Io(source) => UpdateError::Lock(source),
+    })?;
     tracing::info!("update started");
     let updated = update_with(data_dir, steam, config, renewal, progress)
         .await
@@ -225,6 +244,7 @@ async fn update_with<S: Get + Sync>(
         chain(&archive).await?
     };
     let now = update.started_at();
+    let update_full = update.full();
     if update.resumed_responses() > 0 {
         progress(Progress::Resumed {
             started_at: now,
@@ -269,6 +289,7 @@ async fn update_with<S: Get + Sync>(
     let rotate_error = rotate(&archive, config.kept_updates).await.err();
 
     Ok(Updated {
+        full: update_full,
         games: built.catalog.games().len(),
         apps: built.apps,
         asked: built.asked,
@@ -368,6 +389,12 @@ async fn build_catalog<S: Get>(
     };
 
     let total = batch_count(asked.len());
+    if let Some(renewal) = &renewal {
+        progress(Progress::Renewing {
+            apps: renewal.renewed_apps(),
+            requests: total,
+        });
+    }
     progress(Progress::StoreData { done: 0, total });
     let mut items: Vec<StoreItem> = Vec::new();
     let mut stream = item_batches(steam, &asked, LANGUAGE, region.as_str(), CONCURRENCY);
@@ -1177,5 +1204,72 @@ mod tests {
             UpdateError::Steam(SteamError::NotArchived { .. })
         ));
         assert!(error.to_string().contains("IStoreService/GetAppList/v1"));
+    }
+
+    #[tokio::test]
+    async fn a_second_update_does_not_start_while_the_first_holds_the_lock() {
+        let data = tempfile::tempdir().unwrap();
+        let held = UpdateLock::take(data.path()).unwrap();
+        let steam = FakeSteam::new(&[(1, 10)]);
+
+        let error = run_update(data.path(), &steam).await.unwrap_err();
+        assert!(matches!(error, UpdateError::Locked));
+        let error = renew(data.path(), &steam, &Config::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, UpdateError::Locked));
+        assert!(steam.asked_items().is_empty());
+        assert!(!data.path().join("archive").exists());
+
+        drop(held);
+        run_update(data.path(), &steam).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_failed_update_releases_the_lock() {
+        let data = tempfile::tempdir().unwrap();
+        let down = FakeSteam::failing(&apps(600), Failure::DownAfterOneBatch);
+
+        run_update(data.path(), &down).await.unwrap_err();
+
+        assert!(UpdateLock::take(data.path()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_renewal_tells_how_many_apps_and_requests_before_asking() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(data.path(), &FakeSteam::new(&apps(600)))
+            .await
+            .unwrap();
+        backdate(data.path(), "000001", 31);
+        let mut events = Vec::new();
+
+        renew_catalog(
+            data.path(),
+            &FakeSteam::new(&apps(600)),
+            &renewing(1),
+            |progress| events.push(progress),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(events[0], Progress::ReadingApps);
+        assert_eq!(
+            events[1],
+            Progress::Renewing {
+                apps: 260,
+                requests: 1
+            }
+        );
+        assert_eq!(events[2], Progress::StoreData { done: 0, total: 1 });
+    }
+
+    #[tokio::test]
+    async fn a_full_update_says_it_was_full() {
+        let data = tempfile::tempdir().unwrap();
+        let steam = FakeSteam::new(&[(1, 10)]);
+
+        assert!(run_update(data.path(), &steam).await.unwrap().full);
+        assert!(!run_update(data.path(), &steam).await.unwrap().full);
     }
 }

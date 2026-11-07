@@ -6,6 +6,7 @@ mod details;
 pub mod families;
 mod images;
 pub mod library;
+mod lock;
 pub mod log;
 pub mod names;
 pub mod profile;
