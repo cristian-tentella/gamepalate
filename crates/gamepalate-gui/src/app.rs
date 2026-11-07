@@ -1,12 +1,14 @@
 use std::{
+    path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use gamepalate_app::{
     AppId, Gamepalate, GuiSettings, PendingUpdate, Region, SavedWindow, ThemeChoice, Timestamp,
-    refresh::{Plan, Step, refresh},
+    refresh::{Plan, Step, refresh, startup_plan},
     setup::{FirstRun, error_chain},
+    update::{ArchiveState, archive_state, wall_clock},
 };
 use iced::{
     Center, Color, Element, Fill, Length, Shrink, Size, Subscription, Task, Theme,
@@ -73,6 +75,8 @@ pub struct App {
     last_bar_press: Option<Instant>,
     refresh: Refresh,
     pending: Option<PendingUpdate>,
+    expired_apps: usize,
+    startup_error: Option<String>,
     logo: image::Handle,
 }
 
@@ -84,10 +88,17 @@ enum Refresh {
     Failed(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Start {
+    Startup,
+    Button,
+}
+
 #[derive(Debug)]
 enum Refreshing {
     Catalog(Tracker),
     Signals,
+    Renewal(Tracker),
     Opening,
 }
 
@@ -108,8 +119,10 @@ pub enum Message {
     Maximized(bool),
     ToggleTheme,
     Refresh,
+    ArchiveRead(Start, Result<ArchiveState, String>),
     Refreshing(Step),
-    Refreshed(Result<Arc<Gamepalate>, String>),
+    Entered(Arc<Gamepalate>),
+    Refreshed(Start, Result<Option<Arc<Gamepalate>>, String>),
     CancelRefresh,
     DismissRefreshError,
     Reopened(Result<Arc<Gamepalate>, String>),
@@ -146,10 +159,15 @@ impl App {
             last_bar_press: None,
             refresh: Refresh::Idle,
             pending: None,
+            expired_apps: 0,
+            startup_error: None,
             logo: image::Handle::from_bytes(LOGO_BYTES),
         };
         let task = match setup::start(FirstRun::check(None)) {
-            Ok(gamepalate) => app.opened(gamepalate),
+            Ok(gamepalate) => {
+                let opened = app.opened(gamepalate);
+                Task::batch([opened, app.read_archive(Start::Startup)])
+            }
             Err(mut setup) => {
                 app.theme = theme(setup.first_run().gui_settings().theme);
                 let task = setup.begin().map(Message::Setup);
@@ -239,9 +257,10 @@ impl App {
                     settings::Action::Run(task) => task.map(Message::Settings),
                     settings::Action::Theme(choice) => self.set_theme(choice),
                     settings::Action::Reopen => self.reopen(),
-                    settings::Action::RegionChanged => {
-                        Task::batch([self.reopen(), self.start_refresh()])
-                    }
+                    settings::Action::RegionChanged => Task::batch([
+                        self.reopen(),
+                        self.run_refresh(Plan::EVERYTHING, Start::Button),
+                    ]),
                     settings::Action::Close(page) => self.open(page),
                 }
             }
@@ -305,29 +324,66 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Refresh => self.start_refresh(),
+            Message::Refresh => self.run_refresh(Plan::EVERYTHING, Start::Button),
+            Message::ArchiveRead(start, result) => match result {
+                Ok(state) => {
+                    self.expired_apps = state.expired_apps;
+                    match start {
+                        Start::Startup => {
+                            self.run_refresh(startup_plan(&state, wall_clock()), Start::Startup)
+                        }
+                        Start::Button => Task::none(),
+                    }
+                }
+                Err(error) => {
+                    if start == Start::Startup {
+                        self.startup_error = Some(error);
+                    }
+                    Task::none()
+                }
+            },
             Message::Refreshing(step) => {
-                if let Refresh::Running(refreshing, _) = &mut self.refresh {
+                if let Refresh::Running(refreshing, ..) = &mut self.refresh {
                     refreshing.advance(step, Instant::now());
                 }
                 Task::none()
             }
-            Message::Refreshed(result) => {
+            Message::Entered(gamepalate) => {
+                if let Refresh::Running(refreshing, ..) = &mut self.refresh {
+                    *refreshing = Refreshing::Renewal(Tracker::default());
+                }
+                self.enter(gamepalate);
+                Task::none()
+            }
+            Message::Refreshed(start, result) => {
                 self.refresh = Refresh::Idle;
+                let read = self.read_archive(Start::Button);
                 let gamepalate = match result {
-                    Ok(gamepalate) => gamepalate,
-                    Err(error) => {
-                        self.refresh = Refresh::Failed(error);
+                    Ok(Some(gamepalate)) => gamepalate,
+                    Ok(None) => {
                         self.find_pending();
-                        return Task::none();
+                        return read;
+                    }
+                    Err(error) => {
+                        match start {
+                            Start::Button => self.refresh = Refresh::Failed(error),
+                            Start::Startup => self.startup_error = Some(error),
+                        }
+                        self.find_pending();
+                        return read;
                     }
                 };
+                if !reopens_the_screen(start) {
+                    self.enter(gamepalate);
+                    return read;
+                }
                 self.gamepalate = Some(gamepalate);
                 self.find_pending();
-                match self.page() {
+                let open = match self.page() {
                     Some(page) => self.open(page),
                     None => Task::none(),
-                }
+                };
+                Task::batch([open, read])
             }
             Message::CancelRefresh => {
                 if let Refresh::Running(refreshing, handle) = &self.refresh
@@ -336,6 +392,7 @@ impl App {
                     handle.abort();
                     self.refresh = Refresh::Idle;
                     self.find_pending();
+                    return self.read_archive(Start::Button);
                 }
                 Task::none()
             }
@@ -450,11 +507,16 @@ impl App {
             }))
             .push(
                 row![]
-                    .push(
-                        self.gamepalate
-                            .is_some()
-                            .then(|| refresh_button(&self.refresh, self.pending)),
-                    )
+                    .push(self.gamepalate.is_some().then(|| {
+                        refresh_button(
+                            &self.refresh,
+                            refresh_tooltip(
+                                self.pending,
+                                self.expired_apps,
+                                self.startup_error.as_deref(),
+                            ),
+                        )
+                    }))
                     .push(self.gamepalate.is_some().then(settings_button))
                     .push(theme_button(&self.theme))
                     .push(window_button(MINIMIZE, WindowAction::Minimize))
@@ -529,10 +591,10 @@ impl App {
         let refreshing = match &self.refresh {
             Refresh::Idle => return freshness(gamepalate),
             Refresh::Failed(error) => return refresh_failed(error),
-            Refresh::Running(refreshing, _) => refreshing,
+            Refresh::Running(refreshing, ..) => refreshing,
         };
         let bar = match refreshing {
-            Refreshing::Catalog(tracker)
+            Refreshing::Catalog(tracker) | Refreshing::Renewal(tracker)
                 if matches!(tracker.stage(), Stage::StoreData { .. } | Stage::Writing) =>
             {
                 Some(
@@ -556,32 +618,56 @@ impl App {
             .into()
     }
 
-    fn start_refresh(&mut self) -> Task<Message> {
+    fn run_refresh(&mut self, plan: Plan, start: Start) -> Task<Message> {
         let Some(gamepalate) = &self.gamepalate else {
             return Task::none();
         };
-        if matches!(self.refresh, Refresh::Running(..)) {
+        if plan.is_nothing() || matches!(self.refresh, Refresh::Running(..)) {
             return Task::none();
         }
         let dir = gamepalate.data_dir().to_path_buf();
 
         let (task, handle) = Task::run(
             stream::channel(64, async move |mut output: mpsc::Sender<Message>| {
-                let mut events = output.clone();
-                let result = refresh(&dir, Plan::EVERYTHING, move |step| {
-                    let _ = events.try_send(Message::Refreshing(step));
-                })
-                .await
-                .map(|refreshed| Arc::new(refreshed.gamepalate))
-                .map_err(|error| progress::refresh_error_text(&error));
-                let _ = output.send(Message::Refreshed(result)).await;
+                let result = refresh_in_two(&dir, plan, &mut output).await;
+                let _ = output.send(Message::Refreshed(start, result)).await;
             }),
             |message| message,
         )
         .abortable();
-        self.refresh = Refresh::Running(Refreshing::Catalog(Tracker::default()), handle);
+        let refreshing = if plan.prices {
+            Refreshing::Catalog(Tracker::default())
+        } else {
+            Refreshing::Renewal(Tracker::default())
+        };
+        self.startup_error = None;
+        self.refresh = Refresh::Running(refreshing, handle);
 
         task
+    }
+
+    fn read_archive(&self, start: Start) -> Task<Message> {
+        let Some(gamepalate) = &self.gamepalate else {
+            return Task::none();
+        };
+        let dir = gamepalate.data_dir().to_path_buf();
+
+        Task::perform(
+            async move {
+                archive_state(&dir, wall_clock())
+                    .await
+                    .map_err(|error| progress::update_error_text(&error))
+            },
+            move |result| Message::ArchiveRead(start, result),
+        )
+    }
+
+    fn enter(&mut self, gamepalate: Arc<Gamepalate>) {
+        if let Screen::Discover(discover) = &mut self.screen {
+            discover.use_gamepalate(&gamepalate);
+        }
+        self.gamepalate = Some(gamepalate);
+        self.find_pending();
     }
 
     fn find_pending(&mut self) {
@@ -874,20 +960,63 @@ fn theme_icon(theme: &Theme) -> char {
     if is_dark(theme) { SUN } else { MOON }
 }
 
+async fn refresh_in_two(
+    dir: &Path,
+    plan: Plan,
+    output: &mut mpsc::Sender<Message>,
+) -> Result<Option<Arc<Gamepalate>>, String> {
+    let mut events = output.clone();
+    let mut progress = move |step| {
+        let _ = events.try_send(Message::Refreshing(step));
+    };
+    let mut latest = None;
+    let mut renewal = plan.renewal_after(None);
+
+    let prices = plan.prices_only();
+    if !prices.is_nothing() {
+        let refreshed = refresh(dir, prices, &mut progress)
+            .await
+            .map_err(|error| progress::refresh_error_text(&error))?;
+        renewal = plan.renewal_after(refreshed.prices.as_ref());
+        latest = refreshed.gamepalate.map(Arc::new);
+        if let Some(gamepalate) = latest.as_ref().filter(|_| !renewal.is_nothing()) {
+            let _ = output.send(Message::Entered(Arc::clone(gamepalate))).await;
+        }
+    }
+
+    if !renewal.is_nothing() {
+        let refreshed = refresh(dir, renewal, &mut progress)
+            .await
+            .map_err(|error| progress::refresh_error_text(&error))?;
+        if let Some(gamepalate) = refreshed.gamepalate {
+            latest = Some(Arc::new(gamepalate));
+        }
+    }
+
+    Ok(latest)
+}
+
+fn reopens_the_screen(start: Start) -> bool {
+    start == Start::Button
+}
+
 impl Refreshing {
     fn advance(&mut self, step: Step, now: Instant) {
         match step {
             Step::Catalog(progress) => {
+                if !matches!(self, Refreshing::Catalog(_)) {
+                    *self = Refreshing::Catalog(Tracker::default());
+                }
                 if let Refreshing::Catalog(tracker) = self {
                     tracker.advance(progress, now);
                 }
             }
             Step::Signals => *self = Refreshing::Signals,
             Step::Renewal(progress) => {
-                if !matches!(self, Refreshing::Catalog(_)) {
-                    *self = Refreshing::Catalog(Tracker::default());
+                if !matches!(self, Refreshing::Renewal(_)) {
+                    *self = Refreshing::Renewal(Tracker::default());
                 }
-                if let Refreshing::Catalog(tracker) = self {
+                if let Refreshing::Renewal(tracker) = self {
                     tracker.advance(progress, now);
                 }
             }
@@ -896,7 +1025,11 @@ impl Refreshing {
     }
 
     fn can_cancel(&self) -> bool {
-        matches!(self, Refreshing::Catalog(tracker) if tracker.stage() != Stage::Writing)
+        matches!(
+            self,
+            Refreshing::Catalog(tracker) | Refreshing::Renewal(tracker)
+                if tracker.stage() != Stage::Writing
+        )
     }
 }
 
@@ -908,12 +1041,17 @@ fn refreshing_text(refreshing: &Refreshing) -> &'static str {
             Stage::Writing => "Writing the catalog…",
         },
         Refreshing::Signals => "Reading your Signals…",
+        Refreshing::Renewal(tracker) => match tracker.stage() {
+            Stage::Starting | Stage::Reading => "Renewing tags and reviews…",
+            Stage::StoreData { .. } => "Renewing tags and reviews",
+            Stage::Writing => "Writing the catalog…",
+        },
         Refreshing::Opening => "Loading…",
     }
 }
 
 fn refreshing_count(refreshing: &Refreshing) -> Option<String> {
-    let Refreshing::Catalog(tracker) = refreshing else {
+    let (Refreshing::Catalog(tracker) | Refreshing::Renewal(tracker)) = refreshing else {
         return None;
     };
     let Stage::StoreData { done, total } = tracker.stage() else {
@@ -931,12 +1069,22 @@ fn refreshing_count(refreshing: &Refreshing) -> Option<String> {
     })
 }
 
-fn refresh_tooltip(pending: Option<PendingUpdate>) -> String {
+fn refresh_tooltip(
+    pending: Option<PendingUpdate>,
+    expired_apps: usize,
+    startup_error: Option<&str>,
+) -> String {
+    if let Some(error) = startup_error {
+        return error.to_string();
+    }
     match pending {
         Some(pending) => format!(
             "Resume the update started on {}",
             format::day_time(pending.started_at)
         ),
+        None if expired_apps > 0 => {
+            "Update prices and Signals, then renew tags and reviews".to_string()
+        }
         None => "Update prices and Signals".to_string(),
     }
 }
@@ -967,17 +1115,15 @@ fn refresh_failed<'a>(error: &str) -> Element<'a, Message> {
     .into()
 }
 
-fn refresh_button<'a>(refresh: &Refresh, pending: Option<PendingUpdate>) -> Element<'a, Message> {
+fn refresh_button<'a>(refresh: &Refresh, idle_tip: String) -> Element<'a, Message> {
     let (icon, message, tip) = match refresh {
-        Refresh::Running(refreshing, _) if refreshing.can_cancel() => (
+        Refresh::Running(refreshing, ..) if refreshing.can_cancel() => (
             CANCEL,
             Some(Message::CancelRefresh),
             "Pause the update".to_string(),
         ),
-        Refresh::Running(..) => (REFRESH, None, refresh_tooltip(pending)),
-        Refresh::Idle | Refresh::Failed(_) => {
-            (REFRESH, Some(Message::Refresh), refresh_tooltip(pending))
-        }
+        Refresh::Running(..) => (REFRESH, None, idle_tip),
+        Refresh::Idle | Refresh::Failed(_) => (REFRESH, Some(Message::Refresh), idle_tip),
     };
 
     with_tooltip(bar_icon(icon, message), tip)
@@ -1158,21 +1304,89 @@ mod tests {
         assert!(!refreshing.can_cancel());
     }
 
+    fn renewal_data(done: usize, total: usize) -> Step {
+        Step::Renewal(gamepalate_app::update::Progress::StoreData { done, total })
+    }
+
     #[test]
     fn the_tooltip_offers_to_resume_a_pending_update() {
         let started_at = Timestamp(1_793_369_460_000);
 
-        assert_eq!(refresh_tooltip(None), "Update prices and Signals");
+        assert_eq!(refresh_tooltip(None, 0, None), "Update prices and Signals");
         assert_eq!(
-            refresh_tooltip(Some(PendingUpdate {
-                started_at,
-                responses: 3,
-            })),
+            refresh_tooltip(
+                Some(PendingUpdate {
+                    started_at,
+                    responses: 3,
+                }),
+                12,
+                None
+            ),
             format!(
                 "Resume the update started on {}",
                 format::day_time(started_at)
             )
         );
+    }
+
+    #[test]
+    fn the_tooltip_says_when_tags_and_reviews_are_renewed_after_the_prices() {
+        assert_eq!(
+            refresh_tooltip(None, 14_210, None),
+            "Update prices and Signals, then renew tags and reviews"
+        );
+    }
+
+    #[test]
+    fn the_tooltip_says_what_stopped_the_update_at_startup() {
+        let error =
+            "Steam is not responding, so the update stopped. Update again before 7 Nov to resume.";
+
+        assert_eq!(refresh_tooltip(None, 14_210, Some(error)), error);
+    }
+
+    #[test]
+    fn the_renewal_has_its_own_words_in_the_bar() {
+        let mut refreshing = Refreshing::Catalog(Tracker::default());
+        let now = Instant::now();
+        refreshing.advance(store_data(2, 2), now);
+        refreshing.advance(Step::Signals, now);
+
+        refreshing.advance(
+            Step::Renewal(gamepalate_app::update::Progress::ReadingApps),
+            now,
+        );
+        assert_eq!(refreshing_text(&refreshing), "Renewing tags and reviews…");
+        assert!(refreshing.can_cancel());
+
+        refreshing.advance(renewal_data(40, 150), now);
+        assert_eq!(refreshing_text(&refreshing), "Renewing tags and reviews");
+        assert_eq!(refreshing_count(&refreshing).as_deref(), Some("40 of 150"));
+
+        refreshing.advance(
+            Step::Renewal(gamepalate_app::update::Progress::Writing),
+            now,
+        );
+        assert_eq!(refreshing_text(&refreshing), "Writing the catalog…");
+        assert!(!refreshing.can_cancel());
+    }
+
+    #[test]
+    fn the_renewal_starts_its_count_from_zero() {
+        let mut refreshing = Refreshing::Catalog(Tracker::default());
+        let now = Instant::now();
+        refreshing.advance(store_data(757, 757), now);
+
+        refreshing.advance(renewal_data(3, 150), now);
+
+        assert!(matches!(refreshing, Refreshing::Renewal(_)));
+        assert_eq!(refreshing_count(&refreshing).as_deref(), Some("3 of 150"));
+    }
+
+    #[test]
+    fn only_the_button_opens_the_screen_again() {
+        assert!(reopens_the_screen(Start::Button));
+        assert!(!reopens_the_screen(Start::Startup));
     }
 
     #[test]

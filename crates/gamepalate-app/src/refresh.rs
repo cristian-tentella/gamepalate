@@ -43,6 +43,22 @@ impl Plan {
     pub fn is_nothing(self) -> bool {
         self == Plan::NOTHING
     }
+
+    pub fn prices_only(self) -> Plan {
+        Plan {
+            renewal: false,
+            ..self
+        }
+    }
+
+    pub fn renewal_after(self, prices: Option<&Updated>) -> Plan {
+        let renewed = prices.is_some_and(|updated| updated.full || updated.renewal.is_some());
+
+        Plan {
+            prices: false,
+            renewal: self.renewal && !renewed,
+        }
+    }
 }
 
 pub fn startup_plan(state: &ArchiveState, now: Timestamp) -> Plan {
@@ -58,7 +74,7 @@ pub fn startup_plan(state: &ArchiveState, now: Timestamp) -> Plan {
 
 #[derive(Debug)]
 pub struct Refreshed {
-    pub gamepalate: Gamepalate,
+    pub gamepalate: Option<Gamepalate>,
     pub prices: Option<Updated>,
     pub renewal: Option<Updated>,
     pub signals_error: Option<ReadyError>,
@@ -110,8 +126,12 @@ pub async fn refresh(
         &mut progress,
     )
     .await?;
-    progress(Step::Opening);
-    let gamepalate = Gamepalate::open(Some(data_dir.to_path_buf()))?;
+    let gamepalate = if outcome.prices.is_some() || outcome.renewal.is_some() {
+        progress(Step::Opening);
+        Some(Gamepalate::open(Some(data_dir.to_path_buf()))?)
+    } else {
+        None
+    };
 
     Ok(Refreshed {
         gamepalate,
@@ -144,11 +164,7 @@ async fn refresh_with<S: Get + Sync>(
         outcome.prices = Some(updated);
     }
 
-    let renews_already = outcome
-        .prices
-        .as_ref()
-        .is_some_and(|updated| updated.full || updated.renewal.is_some());
-    if plan.renewal && !renews_already {
+    if plan.renewal_after(outcome.prices.as_ref()).renewal {
         match renew_expired(data_dir, steam, config, now, progress).await {
             Ok(renewal) => outcome.renewal = renewal,
             Err(error) if outcome.prices.is_some() => outcome.renewal_error = Some(error),
@@ -647,6 +663,38 @@ mod tests {
 
     fn plan(prices: bool, renewal: bool) -> Plan {
         Plan { prices, renewal }
+    }
+
+    fn updated(full: bool) -> Updated {
+        Updated {
+            full,
+            games: 1,
+            apps: 1,
+            asked: 1,
+            prices_at: NOW,
+            renewal: None,
+            rotate_error: None,
+        }
+    }
+
+    #[test]
+    fn a_plan_splits_into_the_prices_and_then_the_renewal() {
+        assert_eq!(Plan::EVERYTHING.prices_only(), plan(true, false));
+        assert_eq!(renew_only().prices_only(), Plan::NOTHING);
+        assert_eq!(Plan::EVERYTHING.renewal_after(None), renew_only());
+        assert_eq!(
+            Plan::EVERYTHING.renewal_after(Some(&updated(false))),
+            renew_only()
+        );
+        assert_eq!(plan(true, false).renewal_after(None), Plan::NOTHING);
+    }
+
+    #[test]
+    fn a_full_update_needs_no_renewal_after_it() {
+        assert_eq!(
+            Plan::EVERYTHING.renewal_after(Some(&updated(true))),
+            Plan::NOTHING
+        );
     }
 
     #[test]
