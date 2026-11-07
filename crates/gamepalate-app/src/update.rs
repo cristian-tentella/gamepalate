@@ -72,7 +72,7 @@ pub struct Updated {
 pub struct ArchiveState {
     pub pending: bool,
     pub updated_at: Option<Timestamp>,
-    pub expired_apps: usize,
+    pub renewal_due: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -152,6 +152,7 @@ struct BuiltCatalog {
     asked: usize,
     price_change_numbers: HashMap<AppId, u64>,
     renewal: Option<Renewal>,
+    next_expiry: Option<Timestamp>,
 }
 
 pub fn archive(data_dir: &Path) -> Archive {
@@ -290,6 +291,9 @@ async fn update_with<S: Get + Sync>(
     if let Some(renewal) = &built.renewal {
         update.set_renewed_apps(renewal.renewed_apps());
     }
+    if let Some(at) = built.next_expiry {
+        update.set_next_expiry(at);
+    }
     update
         .complete(wall_clock())
         .map_err(UpdateError::Complete)?;
@@ -330,30 +334,21 @@ pub fn pending_update(data_dir: &Path, config: &Config) -> Option<PendingUpdate>
         .flatten()
 }
 
-pub async fn expired_apps(
-    data_dir: &Path,
-    region: Region,
-    now: Timestamp,
-) -> Result<usize, UpdateError> {
-    let chain = chain(&archive(data_dir)).await?;
-    let Some(latest) = chain.first() else {
-        return Ok(0);
+pub fn renewal_due(data_dir: &Path, region: Region, now: Timestamp) -> Result<bool, UpdateError> {
+    let completed = archive(data_dir)
+        .completed()
+        .map_err(UpdateError::Archive)?;
+    let Some(latest) = completed.first() else {
+        return Ok(false);
     };
     if latest.region() != region {
-        return Ok(0);
+        return Ok(false);
     }
-    let listed: Vec<AppId> = get_app_list(latest)
-        .await?
-        .into_iter()
-        .map(|app| app.id)
-        .collect();
 
-    Ok(answers(&chain)?
-        .choose(&listed, &[], now, usize::MAX)
-        .renewed_apps())
+    Ok(latest.next_expiry().is_none_or(|at| now > at))
 }
 
-pub async fn archive_state(data_dir: &Path, now: Timestamp) -> Result<ArchiveState, UpdateError> {
+pub fn archive_state(data_dir: &Path, now: Timestamp) -> Result<ArchiveState, UpdateError> {
     let config = update_config(data_dir)?;
     let updated_at = archive(data_dir)
         .completed()
@@ -364,7 +359,7 @@ pub async fn archive_state(data_dir: &Path, now: Timestamp) -> Result<ArchiveSta
     Ok(ArchiveState {
         pending: pending_update(data_dir, &config).is_some(),
         updated_at,
-        expired_apps: expired_apps(data_dir, config.region, now).await?,
+        renewal_due: renewal_due(data_dir, config.region, now)?,
     })
 }
 
@@ -453,13 +448,16 @@ async fn build_catalog<S: Get>(
 
     let mut prices = Vec::new();
     let mut known = KnownApps::new(ids.iter().copied(), now);
+    let mut answers = Answers::default();
     prices.extend(formatted_prices(&items));
+    answers.add(now, &asked, &items);
     known.add(&asked, items);
     let mut tags_updated_at = now;
     for update in earlier {
         for batch in archived_batches(update)? {
             let batch = batch?;
             prices.extend(formatted_prices(&batch.items));
+            answers.add(update.started_at(), &batch.asked, &batch.items);
             if known.add(&batch.asked, batch.items) > 0 {
                 tags_updated_at = update.started_at();
             }
@@ -484,6 +482,7 @@ async fn build_catalog<S: Get>(
             .map(|app| (app.id, app.price_change_number))
             .collect(),
         renewal,
+        next_expiry: answers.next_expiry(&ids, now),
     })
 }
 
@@ -1097,12 +1096,18 @@ mod tests {
     fn backdate(data_dir: &Path, number: &str, days: i64) {
         let path = update_dir(data_dir, number).join("update.json");
         let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        let earlier = started_at(data_dir, number).0 - days * 24 * HOUR_MS;
-        manifest["startedAt"] = json!(
-            jiff::Timestamp::from_millisecond(earlier)
-                .unwrap()
-                .to_string()
-        );
+        let shift = |text: &Value| {
+            let at: jiff::Timestamp = text.as_str().unwrap().parse().unwrap();
+            json!(
+                jiff::Timestamp::from_millisecond(at.as_millisecond() - days * 24 * HOUR_MS)
+                    .unwrap()
+                    .to_string()
+            )
+        };
+        manifest["startedAt"] = shift(&manifest["startedAt"]);
+        if manifest.get("nextExpiry").is_some() {
+            manifest["nextExpiry"] = shift(&manifest["nextExpiry"]);
+        }
         fs::write(path, manifest.to_string()).unwrap();
     }
 
@@ -1310,55 +1315,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_expired_apps_are_read_from_the_archive_without_asking_steam() {
+    async fn the_renewal_is_due_once_an_app_expires() {
         let data = tempfile::tempdir().unwrap();
         let region = Config::default().region;
-        assert_eq!(
-            expired_apps(data.path(), region, wall_clock())
-                .await
-                .unwrap(),
-            0
-        );
+        assert!(!renewal_due(data.path(), region, wall_clock()).unwrap());
         run_update(data.path(), &FakeSteam::new(&[(1, 10), (2, 20)]))
             .await
             .unwrap();
-        assert_eq!(
-            expired_apps(data.path(), region, wall_clock())
-                .await
-                .unwrap(),
-            0
-        );
+        assert!(!renewal_due(data.path(), region, wall_clock()).unwrap());
 
         backdate(data.path(), "000001", 31);
 
-        assert_eq!(
-            expired_apps(data.path(), region, wall_clock())
-                .await
-                .unwrap(),
-            2
-        );
+        assert!(renewal_due(data.path(), region, wall_clock()).unwrap());
     }
 
     #[tokio::test]
-    async fn an_app_asked_again_by_a_later_update_is_not_expired() {
+    async fn every_update_records_when_its_first_app_expires() {
         let data = tempfile::tempdir().unwrap();
+        run_update(data.path(), &FakeSteam::new(&[(1, 10)]))
+            .await
+            .unwrap();
+        let first = manifests(data.path())[0]["nextExpiry"].clone();
+        backdate(data.path(), "000001", 31);
         run_update(data.path(), &FakeSteam::new(&[(1, 10), (2, 20)]))
             .await
             .unwrap();
-        backdate(data.path(), "000001", 31);
-        run_update(data.path(), &FakeSteam::new(&[(1, 10), (2, 21)]))
-            .await
-            .unwrap();
 
-        let expired = expired_apps(data.path(), Config::default().region, wall_clock())
-            .await
-            .unwrap();
-
-        assert_eq!(expired, 1);
+        assert!(first.is_string());
+        let manifests = manifests(data.path());
+        assert!(manifests[1]["nextExpiry"].as_str() < first.as_str());
+        assert!(renewal_due(data.path(), Config::default().region, wall_clock()).unwrap());
     }
 
     #[tokio::test]
-    async fn nothing_is_expired_in_another_region_than_the_archive_one() {
+    async fn an_update_without_a_next_expiry_makes_the_renewal_due() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(data.path(), &FakeSteam::new(&[(1, 10)]))
+            .await
+            .unwrap();
+        let path = update_dir(data.path(), "000001").join("update.json");
+        let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        manifest.as_object_mut().unwrap().remove("nextExpiry");
+        fs::write(path, manifest.to_string()).unwrap();
+
+        assert!(renewal_due(data.path(), Config::default().region, wall_clock()).unwrap());
+    }
+
+    #[tokio::test]
+    async fn no_renewal_is_due_in_another_region_than_the_archive_one() {
         let data = tempfile::tempdir().unwrap();
         run_update(data.path(), &FakeSteam::new(&[(1, 10)]))
             .await
@@ -1366,23 +1370,19 @@ mod tests {
         backdate(data.path(), "000001", 31);
         let other = Region::new("US").unwrap();
 
-        let expired = expired_apps(data.path(), other, wall_clock())
-            .await
-            .unwrap();
-
-        assert_eq!(expired, 0);
+        assert!(!renewal_due(data.path(), other, wall_clock()).unwrap());
     }
 
     #[tokio::test]
-    async fn the_archive_state_tells_the_last_update_the_pending_one_and_the_expired_apps() {
+    async fn the_archive_state_tells_the_last_update_the_pending_one_and_the_renewal() {
         let data = tempfile::tempdir().unwrap();
-        let empty = archive_state(data.path(), wall_clock()).await.unwrap();
+        let empty = archive_state(data.path(), wall_clock()).unwrap();
         assert_eq!(
             empty,
             ArchiveState {
                 pending: false,
                 updated_at: None,
-                expired_apps: 0
+                renewal_due: false
             }
         );
 
@@ -1395,11 +1395,11 @@ mod tests {
             .await
             .unwrap_err();
 
-        let state = archive_state(data.path(), wall_clock()).await.unwrap();
+        let state = archive_state(data.path(), wall_clock()).unwrap();
 
         assert!(state.pending);
         assert_eq!(state.updated_at, Some(started_at(data.path(), "000001")));
-        assert_eq!(state.expired_apps, 600);
+        assert!(state.renewal_due);
     }
 
     #[tokio::test]

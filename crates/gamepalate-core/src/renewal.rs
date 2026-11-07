@@ -115,6 +115,14 @@ impl Answers {
             still_expired,
         }
     }
+
+    pub fn next_expiry(&self, listed: &[AppId], now: Timestamp) -> Option<Timestamp> {
+        listed
+            .iter()
+            .filter_map(|id| self.answers.get(id))
+            .map(|answer| Timestamp(answer.at.0 + Band::of(answer.released, now).max_age_ms()))
+            .min()
+    }
 }
 
 impl Renewal {
@@ -326,5 +334,32 @@ mod tests {
 
         assert!(renewal.asked.is_empty());
         assert_eq!(renewal.renewed_apps(), 0);
+    }
+
+    #[test]
+    fn the_next_expiry_is_the_earliest_among_the_listed_apps() {
+        let answers = answered(&[
+            (1, ago(DAY_MS), item(1, ago(1000 * DAY_MS))),
+            (2, ago(HOUR_MS), item(2, ago(10 * DAY_MS))),
+            (3, ago(10 * HOUR_MS), item(3, ago(10 * DAY_MS))),
+        ]);
+
+        assert_eq!(
+            answers.next_expiry(&ids(&[1, 2, 3]), NOW),
+            Some(Timestamp(NOW.0 + 10 * HOUR_MS))
+        );
+        assert_eq!(
+            answers.next_expiry(&ids(&[1, 2]), NOW),
+            Some(Timestamp(NOW.0 + 19 * HOUR_MS))
+        );
+        assert_eq!(
+            answers.next_expiry(&ids(&[1]), NOW),
+            Some(Timestamp(NOW.0 + 29 * DAY_MS))
+        );
+    }
+
+    #[test]
+    fn there_is_no_next_expiry_without_answers() {
+        assert_eq!(Answers::default().next_expiry(&ids(&[1]), NOW), None);
     }
 }
