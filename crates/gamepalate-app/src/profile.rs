@@ -398,6 +398,7 @@ mod tests {
             tag_multipliers: BTreeMap::from([(TagId(4), 0.5)]),
             banned_tags: BTreeMap::from([(TagId(5), Ban::TopTags(8))]),
             hidden_games: BTreeSet::from([AppId(3)]),
+            played_elsewhere: BTreeSet::new(),
         };
         let families = Families {
             families: vec![

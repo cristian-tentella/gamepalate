@@ -8,6 +8,7 @@ pub struct Corrections {
     pub tag_multipliers: BTreeMap<TagId, f64>,
     pub banned_tags: BTreeMap<TagId, Ban>,
     pub hidden_games: BTreeSet<AppId>,
+    pub played_elsewhere: BTreeSet<AppId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
