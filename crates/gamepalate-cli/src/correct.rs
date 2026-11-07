@@ -20,6 +20,17 @@ use crate::{
 };
 
 #[derive(Args)]
+pub struct PlayedElsewhereArgs {
+    /// Steam appid of the game
+    #[arg(value_parser = clap::value_parser!(u32).range(1..))]
+    appid: u32,
+
+    /// Stop counting the game as played elsewhere
+    #[arg(long)]
+    remove: bool,
+}
+
+#[derive(Args)]
 pub struct BanArgs {
     /// Ban the tag only for games that have it within their first N tags
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
@@ -86,6 +97,51 @@ pub fn hide(appid: u32, files: &DataFiles, data_dir: &Path) -> anyhow::Result<()
 
     println!("Hidden game {label}.");
     Ok(())
+}
+
+pub fn played_elsewhere(
+    args: &PlayedElsewhereArgs,
+    files: &DataFiles,
+    data_dir: &Path,
+) -> anyhow::Result<()> {
+    println!("{}", change_played_elsewhere(args, files, data_dir)?);
+    Ok(())
+}
+
+fn change_played_elsewhere(
+    args: &PlayedElsewhereArgs,
+    files: &DataFiles,
+    data_dir: &Path,
+) -> anyhow::Result<String> {
+    let id = AppId(args.appid);
+    let label = game_label(id, &files.catalog, &files.off_catalog);
+    let counted = files.corrections.played_elsewhere.contains(&id);
+    if counted != args.remove {
+        return Ok(if args.remove {
+            format!("Game {label} was not played elsewhere.")
+        } else {
+            format!("Game {label} was already played elsewhere.")
+        });
+    }
+
+    let mut editor = open(data_dir)?;
+    if args.remove {
+        editor.remove(Section::PlayedElsewhere, args.appid);
+    } else {
+        editor.set(
+            Section::PlayedElsewhere,
+            args.appid,
+            EntryValue::Bool(true),
+            game_comment(id, files).as_deref(),
+        );
+    }
+    save(editor, data_dir)?;
+
+    Ok(if args.remove {
+        format!("Removed {label} from the games played elsewhere.")
+    } else {
+        format!("Added {label} as played elsewhere.")
+    })
 }
 
 pub fn ban(args: &BanArgs, files: &DataFiles, data_dir: &Path) -> anyhow::Result<()> {
@@ -333,4 +389,123 @@ fn save(editor: CorrectionsEditor, data_dir: &Path) -> anyhow::Result<()> {
         .save()
         .with_context(|| format!("in {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use gamepalate_core::{
+        catalog::{Catalog, Freshness},
+        config::Config,
+        corrections::Corrections,
+        currency::Currency,
+        families::Families,
+        game::{Game, Price, Reviews},
+        off_catalog::OffCatalogGames,
+        region::Region,
+        signals::Signals,
+        timestamp::Timestamp,
+        votes::Votes,
+    };
+
+    use super::*;
+
+    fn files(corrections: Corrections) -> DataFiles {
+        let game = Game {
+            id: AppId(1426210),
+            name: "It Takes Two".to_string(),
+            price: Price {
+                original_cents: 3999,
+                discount: None,
+            },
+            reviews: Reviews {
+                total: 100,
+                positive: 95,
+            },
+            is_early_access: false,
+            tags: Vec::new(),
+        };
+        DataFiles {
+            config: Config::default(),
+            catalog: Catalog::new(
+                vec![game],
+                BTreeMap::new(),
+                BTreeMap::new(),
+                Freshness {
+                    prices_updated_at: Timestamp(0),
+                    tags_updated_at: Timestamp(0),
+                    region: Region::ITALY,
+                },
+                Currency::italian(),
+            ),
+            corrections,
+            families: Families::default(),
+            signals: Signals {
+                read_at: Timestamp(0),
+                library: Vec::new(),
+                borrowed: Vec::new(),
+                recent: Vec::new(),
+                wishlist: Vec::new(),
+                followed: Vec::new(),
+            },
+            votes: Votes::new(),
+            off_catalog: OffCatalogGames::new(),
+        }
+    }
+
+    fn args(remove: bool) -> PlayedElsewhereArgs {
+        PlayedElsewhereArgs {
+            appid: 1426210,
+            remove,
+        }
+    }
+
+    #[test]
+    fn a_game_is_added_as_played_elsewhere_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("corrections.toml");
+
+        let message =
+            change_played_elsewhere(&args(false), &files(Corrections::default()), dir.path())
+                .unwrap();
+
+        assert_eq!(message, "Added It Takes Two (1426210) as played elsewhere.");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("1426210 = true # It Takes Two"), "{text}");
+
+        let corrections = gamepalate_store::corrections::load_corrections(&path).unwrap();
+        let message =
+            change_played_elsewhere(&args(true), &files(corrections), dir.path()).unwrap();
+
+        assert_eq!(
+            message,
+            "Removed It Takes Two (1426210) from the games played elsewhere."
+        );
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("1426210"));
+    }
+
+    #[test]
+    fn a_change_that_is_already_there_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let counted = Corrections {
+            played_elsewhere: [AppId(1426210)].into(),
+            ..Corrections::default()
+        };
+
+        let again = change_played_elsewhere(&args(false), &files(counted), dir.path()).unwrap();
+        let missing =
+            change_played_elsewhere(&args(true), &files(Corrections::default()), dir.path())
+                .unwrap();
+
+        assert_eq!(
+            again,
+            "Game It Takes Two (1426210) was already played elsewhere."
+        );
+        assert_eq!(
+            missing,
+            "Game It Takes Two (1426210) was not played elsewhere."
+        );
+        assert!(!dir.path().join("corrections.toml").exists());
+    }
 }
