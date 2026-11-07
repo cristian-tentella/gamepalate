@@ -742,6 +742,34 @@ steam_client_hours = true
     }
 
     #[test]
+    fn the_defaults_suit_a_new_user() {
+        let config = Config::default();
+
+        assert_eq!(config.results.min_positive_percent, 75);
+        assert_eq!(config.relevance.votes_weight, 0.25);
+        assert_eq!(config.results.bet_every, 10);
+        assert_eq!(config.relevance.quality_weight, 0.75);
+    }
+
+    #[test]
+    fn parse_config_keeps_the_values_the_user_already_has() {
+        let config = parse_with(
+            "[relevance]
+            quality_weight = 0.5
+            votes_weight = 0
+            [results]
+            min_positive_percent = 0
+            bet_every = 5",
+        )
+        .unwrap();
+
+        assert_eq!(config.relevance.quality_weight, 0.5);
+        assert_eq!(config.relevance.votes_weight, 0.0);
+        assert_eq!(config.results.min_positive_percent, 0);
+        assert_eq!(config.results.bet_every, 5);
+    }
+
+    #[test]
     fn parse_config_reads_every_section() {
         let config = parse_with(
             "region = \"IT\"

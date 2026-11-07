@@ -68,9 +68,9 @@ pub struct RelevanceConfig {
 impl Default for RelevanceConfig {
     fn default() -> Self {
         RelevanceConfig {
-            quality_weight: 0.5,
+            quality_weight: 0.75,
             min_reviews: 1000,
-            votes_weight: 0.0,
+            votes_weight: 0.25,
         }
     }
 }
@@ -88,8 +88,8 @@ impl Default for ResultsConfig {
         ResultsConfig {
             count: 20,
             early_access: true,
-            min_positive_percent: 0,
-            bet_every: 5,
+            min_positive_percent: 75,
+            bet_every: 10,
         }
     }
 }

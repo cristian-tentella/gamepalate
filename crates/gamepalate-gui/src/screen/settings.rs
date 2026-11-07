@@ -1056,9 +1056,9 @@ mod tests {
         assert_eq!(shown(ConfigKey::Count), "20");
         assert_eq!(shown(ConfigKey::EarlyAccess), "Shown");
         assert_eq!(shown(ConfigKey::MinReviews), "1,000");
-        assert_eq!(shown(ConfigKey::MinPositivePercent), "0%");
-        assert_eq!(shown(ConfigKey::BetEvery), "1 in 5");
-        assert_eq!(shown(ConfigKey::QualityWeight), "0.5");
+        assert_eq!(shown(ConfigKey::MinPositivePercent), "75%");
+        assert_eq!(shown(ConfigKey::BetEvery), "1 in 10");
+        assert_eq!(shown(ConfigKey::QualityWeight), "0.75");
         assert_eq!(
             value_text(ConfigKey::BetEvery, ConfigValue::Integer(0)),
             "Off"
