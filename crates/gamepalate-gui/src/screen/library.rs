@@ -1,8 +1,8 @@
-use std::{fmt, ops::Range, path::PathBuf, sync::Arc};
+use std::{fmt, ops::Range, path::PathBuf, sync::Arc, time::Duration};
 
 use gamepalate_app::{
-    AppId, Capsule, FamiliesChanged, FamiliesUndo, FamilyChange, GameCorrection, Gamepalate,
-    HoursSource, LibraryGameView, LibraryView, names::folded,
+    AppId, Capsule, CatalogMatch, FamiliesChanged, FamiliesUndo, FamilyChange, GameCorrection,
+    Gamepalate, HoursSource, LibraryGameView, LibraryView, names::folded,
 };
 use iced::{
     Center, ContentFit, Element, Fill, Padding, Point, Size, Subscription, Task,
@@ -22,19 +22,20 @@ use super::{
     profile::HELD_OUT_TIP,
     sentence,
     showcase::images::{Images, Picture},
-    steam_client::SteamClientQuestion,
+    steam_client::{ElsewhereHint, SteamClientQuestion},
 };
 use crate::{
     font, format,
     style::{self, Tone},
 };
 
-const FILTERS: [Filter; 6] = [
+const FILTERS: [Filter; 7] = [
     Filter::All,
     Filter::Owned,
     Filter::NotOwned,
     Filter::Wishlist,
     Filter::Followed,
+    Filter::Elsewhere,
     Filter::Corrected,
 ];
 const SORTS: [Sort; 3] = [Sort::TasteWeight, Sort::Hours, Sort::Name];
@@ -46,6 +47,12 @@ const TILE_HEIGHT: f32 = 225.0;
 const GAP: f32 = 12.0;
 const GRID_PADDING: f32 = 24.0;
 const DIVIDER_HEIGHT: f32 = 56.0;
+const NO_MATCH_HEIGHT: f32 = 40.0;
+const SETTLE: Duration = Duration::from_millis(300);
+const SEARCH_WIDTH: f32 = 300.0;
+const SEARCH_PLACEHOLDER: &str = "Search by name (Ctrl+F)";
+const ADD_PLACEHOLDER: &str = "Search Steam for a game you played elsewhere";
+const FROM_STEAM: &str = "From Steam, add a game you played elsewhere";
 const DIMMED: f32 = 0.45;
 const SCREENS_AHEAD: f32 = 2.0;
 const SCREENS_KEPT: f32 = 2.0;
@@ -75,7 +82,9 @@ pub struct Library {
     filter: Filter,
     sort: Sort,
     search: String,
+    adding: bool,
     shown: Vec<usize>,
+    found: Found,
     offset: f32,
     upward: bool,
     area: Size,
@@ -85,6 +94,32 @@ pub struct Library {
 enum Undo {
     Correction(AppId, GameCorrection),
     Families(FamiliesUndo),
+    Elsewhere(AppId, bool),
+}
+
+#[derive(Debug, Default)]
+struct Found {
+    games: Vec<CatalogMatch>,
+    settled: bool,
+}
+
+impl Found {
+    fn searched(&mut self, games: Vec<CatalogMatch>) {
+        self.games = games;
+        self.settled = false;
+    }
+
+    fn waited(&mut self, waited: &str, search: &str) {
+        if waited == search {
+            self.settled = true;
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Enter {
+    Open,
+    Add,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -110,6 +145,7 @@ pub enum Filter {
     NotOwned,
     Wishlist,
     Followed,
+    Elsewhere,
     Corrected,
 }
 
@@ -125,6 +161,10 @@ pub enum Message {
     Filter(Filter),
     Sort(Sort),
     Search(String),
+    Settled(String),
+    AddGame,
+    PlayElsewhere(AppId, String, bool),
+    PlayedElsewhere(AppId, String, bool, Result<bool, String>),
     Scrolled(Viewport),
     WindowResized(Size),
     CapsuleLoaded(AppId, Option<image::Handle>),
@@ -154,6 +194,8 @@ pub enum Message {
 enum Row {
     Games(Range<usize>),
     Divider,
+    NoMatch,
+    FromSteam,
 }
 
 impl Library {
@@ -181,7 +223,9 @@ impl Library {
             filter,
             sort,
             search: String::new(),
+            adding: false,
             shown: Vec::new(),
+            found: Found::default(),
             offset: 0.0,
             upward: false,
             area: DEFAULT_AREA,
@@ -219,6 +263,8 @@ impl Library {
             Message::Filter(filter) => {
                 self.filter = filter;
                 self.search.clear();
+                self.adding = false;
+                self.found.searched(Vec::new());
                 return self.refresh();
             }
             Message::Sort(sort) => {
@@ -226,8 +272,44 @@ impl Library {
                 return self.refresh();
             }
             Message::Search(search) => {
-                self.search = search;
-                return self.refresh();
+                self.found.searched(self.gamepalate.search_catalog(&search));
+                self.search = search.clone();
+                let settle = if self.found.games.is_empty() {
+                    Task::none()
+                } else {
+                    Task::perform(tokio::time::sleep(SETTLE), move |_| {
+                        Message::Settled(search)
+                    })
+                };
+                return Task::batch([self.refresh(), settle]);
+            }
+            Message::Settled(search) => self.found.waited(&search, &self.search),
+            Message::AddGame => {
+                self.adding = true;
+                return operation::focus(SEARCH);
+            }
+            Message::PlayElsewhere(id, name, played) => {
+                let gamepalate = Arc::clone(&self.gamepalate);
+                return Task::perform(
+                    async move {
+                        gamepalate
+                            .set_played_elsewhere(id, played)
+                            .map_err(|error| sentence(&error.to_string()))
+                    },
+                    move |result| Message::PlayedElsewhere(id, name, played, result),
+                );
+            }
+            Message::PlayedElsewhere(id, name, played, Ok(before)) => {
+                if before != played {
+                    self.undo = Some(Undo::Elsewhere(id, before));
+                }
+                if !played && self.open == Some(id) {
+                    self.open = None;
+                    self.new_family = None;
+                }
+                self.adding = false;
+                self.read_view();
+                return self.show_toast(elsewhere_text(&name, played), before != played);
             }
             Message::Scrolled(viewport) => {
                 let offset = viewport.absolute_offset().y;
@@ -253,10 +335,12 @@ impl Library {
                 self.open = Some(id);
                 self.selected = Some(id);
                 self.new_family = None;
+                self.adding = false;
             }
             Message::Close => {
                 self.open = None;
                 self.new_family = None;
+                self.adding = false;
             }
             Message::Move(direction) => {
                 let rows = self.rows(self.area.width);
@@ -264,17 +348,27 @@ impl Library {
                 let Some(next) = moved(&rows, position, direction) else {
                     return Task::none();
                 };
-                let id = self.view.games[self.shown[next]].id;
+                let Some(id) = self.id_at(next) else {
+                    return Task::none();
+                };
                 self.selected = Some(id);
                 if self.open.is_some() {
-                    self.open = Some(id);
+                    self.open = (next < self.shown.len()).then_some(id);
                     self.new_family = None;
                 }
                 return self.reveal_selected();
             }
             Message::OpenSelected => {
-                if self.selected_position().is_some() {
-                    self.open = self.selected;
+                let Some(position) = self.selected_position() else {
+                    return Task::none();
+                };
+                match enter(position, self.shown.len()) {
+                    Enter::Open => self.open = self.selected,
+                    Enter::Add => {
+                        let found = &self.found.games[position - self.shown.len()];
+                        let (id, name) = (found.id, found.name.clone());
+                        return self.update(Message::PlayElsewhere(id, name, true));
+                    }
                 }
             }
             Message::Pick(index) => {
@@ -296,7 +390,10 @@ impl Library {
                     return self.update(Message::Correct(id, correction));
                 }
             }
-            Message::FocusSearch => return operation::focus(SEARCH),
+            Message::FocusSearch => {
+                self.adding = false;
+                return operation::focus(SEARCH);
+            }
             Message::Correct(id, correction) => {
                 let gamepalate = Arc::clone(&self.gamepalate);
                 return Task::perform(
@@ -319,6 +416,7 @@ impl Library {
                 return self.show_toast(text, before != correction);
             }
             Message::Corrected(_, _, Err(error))
+            | Message::PlayedElsewhere(_, _, _, Err(error))
             | Message::Undone(Err(error))
             | Message::FamiliesSaved(_, Err(error)) => {
                 return self.show_toast(error, false);
@@ -339,6 +437,15 @@ impl Library {
                         async move {
                             gamepalate
                                 .undo_families(&undo)
+                                .map_err(|error| sentence(&error.to_string()))
+                        },
+                        Message::Undone,
+                    ),
+                    Some(Undo::Elsewhere(id, before)) => Task::perform(
+                        async move {
+                            gamepalate
+                                .set_played_elsewhere(id, before)
+                                .map(|_| ())
                                 .map_err(|error| sentence(&error.to_string()))
                         },
                         Message::Undone,
@@ -435,6 +542,7 @@ impl Library {
         self.view = self.gamepalate.library_view();
         self.heaviest = heaviest(&self.view.games);
         self.shown = shown(&self.view.games, self.filter, self.sort, &self.search);
+        self.found.games = self.gamepalate.search_catalog(&self.search);
     }
 
     fn selected_position(&self) -> Option<usize> {
@@ -442,6 +550,24 @@ impl Library {
         self.shown
             .iter()
             .position(|&index| self.view.games[index].id == id)
+            .or_else(|| {
+                self.found
+                    .games
+                    .iter()
+                    .position(|game| game.id == id)
+                    .map(|position| self.shown.len() + position)
+            })
+    }
+
+    fn id_at(&self, position: usize) -> Option<AppId> {
+        match self.shown.get(position) {
+            Some(&index) => Some(self.view.games[index].id),
+            None => self
+                .found
+                .games
+                .get(position - self.shown.len())
+                .map(|game| game.id),
+        }
     }
 
     fn reveal_selected(&mut self) -> Task<Message> {
@@ -485,6 +611,7 @@ impl Library {
         rows(
             self.counting(),
             self.shown.len(),
+            self.found.games.len(),
             columns(width),
             self.sort == Sort::TasteWeight,
         )
@@ -500,15 +627,18 @@ impl Library {
     fn load(&mut self) -> Task<Message> {
         let rows = self.rows(self.area.width);
         let height = self.area.height;
+        let library = self.shown.len();
+        let settled = self.found.settled;
         let ids = |range: Range<usize>| -> Vec<AppId> {
             rows[range]
                 .iter()
                 .filter_map(|row| match row {
                     Row::Games(games) => Some(games.clone()),
-                    Row::Divider => None,
+                    Row::Divider | Row::NoMatch | Row::FromSteam => None,
                 })
                 .flatten()
-                .map(|index| self.view.games[self.shown[index]].id)
+                .filter(|&position| asks_cover(position, library, settled))
+                .filter_map(|position| self.id_at(position))
                 .collect()
         };
         let open = self.open.into_iter();
@@ -544,7 +674,7 @@ impl Library {
         let searching = !self.search.trim().is_empty();
         let filters = row(FILTERS
             .into_iter()
-            .filter(|&filter| !filter.hides_when_empty() || count(&self.view.games, filter) > 0)
+            .filter(|&filter| shows_filter(filter, &self.view.games))
             .map(|filter| {
                 let chip = button(
                     text!(
@@ -579,18 +709,22 @@ impl Library {
                 .padding([4, 8])
                 .style(style::dropdown)
                 .menu_style(style::menu),
-            text_input("Search by name (Ctrl+F)", &self.search)
+            text_input(placeholder(self.adding), &self.search)
                 .style(style::field)
                 .id(SEARCH)
                 .on_input(Message::Search)
                 .size(font::NOTE_SIZE)
                 .padding([5, 8])
-                .width(240),
+                .width(SEARCH_WIDTH),
+            button(text("+ Add a game").size(font::NOTE_SIZE))
+                .padding([4, 12])
+                .style(style::chip)
+                .on_press(Message::AddGame),
         ]
         .spacing(8)
         .align_y(Center);
 
-        let body: Element<'_, Message> = if self.shown.is_empty() {
+        let body: Element<'_, Message> = if self.shown.is_empty() && self.found.games.is_empty() {
             container(
                 text(empty_text(
                     self.view.games.is_empty(),
@@ -615,7 +749,7 @@ impl Library {
         let toast = self.toasts.view(Message::Undo);
 
         let question = self.question.as_ref().map(|question| {
-            container(question.view(Message::SteamClient))
+            container(question.view(Message::SteamClient, ElsewhereHint::None))
                 .padding([16, GRID_PADDING as u16])
                 .center_x(Fill)
                 .max_width(800)
@@ -655,12 +789,29 @@ impl Library {
 
     fn line<'a>(&'a self, line: &Row) -> Element<'a, Message> {
         match line {
-            Row::Games(games) => row(self.shown[games.clone()]
-                .iter()
-                .map(|&index| self.tile(&self.view.games[index])))
-            .spacing(GAP)
-            .height(TILE_HEIGHT + GAP)
+            Row::Games(games) => {
+                row(games
+                    .clone()
+                    .map(|position| match self.shown.get(position) {
+                        Some(&index) => self.tile(&self.view.games[index]),
+                        None => self.found_tile(&self.found.games[position - self.shown.len()]),
+                    }))
+                .spacing(GAP)
+                .height(TILE_HEIGHT + GAP)
+                .into()
+            }
+            Row::NoMatch => container(
+                text(empty_text(false, self.filter, &self.search))
+                    .size(font::BAR_SIZE)
+                    .style(style::muted),
+            )
+            .height(NO_MATCH_HEIGHT)
+            .align_y(Center)
             .into(),
+            Row::FromSteam => container(text(FROM_STEAM).size(font::BAR_SIZE).font(font::SEMIBOLD))
+                .height(DIVIDER_HEIGHT)
+                .align_y(Center)
+                .into(),
             Row::Divider => container(
                 column![
                     text("Doesn't count")
@@ -756,6 +907,57 @@ impl Library {
         .into()
     }
 
+    fn found_tile<'a>(&'a self, game: &'a CatalogMatch) -> Element<'a, Message> {
+        let picture: Element<'a, Message> = match self.capsules.get(&game.id) {
+            Some(Picture::Ready(allocation)) => image(allocation.handle().clone())
+                .width(TILE_WIDTH)
+                .height(TILE_HEIGHT)
+                .content_fit(ContentFit::Cover)
+                .border_radius(IMAGE_RADIUS)
+                .into(),
+            Some(Picture::Failed | Picture::Loading) | None => container(
+                text(&game.name)
+                    .size(font::BAR_SIZE)
+                    .center()
+                    .style(style::muted),
+            )
+            .padding(12)
+            .center_x(TILE_WIDTH)
+            .center_y(TILE_HEIGHT)
+            .style(style::picture)
+            .into(),
+        };
+        let plus = container(
+            container(text("+").size(font::PRICE_SIZE).font(font::SEMIBOLD))
+                .padding([0, 12])
+                .style(style::capsule_badge),
+        )
+        .center_x(TILE_WIDTH)
+        .center_y(TILE_HEIGHT);
+        let frame = (self.selected == Some(game.id)).then(|| {
+            container(space())
+                .width(TILE_WIDTH)
+                .height(TILE_HEIGHT)
+                .style(style::capsule_selected)
+        });
+
+        tooltip(
+            mouse_area(
+                stack![picture, plus]
+                    .push(frame)
+                    .width(TILE_WIDTH)
+                    .height(TILE_HEIGHT),
+            )
+            .interaction(mouse::Interaction::Pointer)
+            .on_press(Message::PlayElsewhere(game.id, game.name.clone(), true)),
+            container(text(&game.name).size(font::NOTE_SIZE))
+                .padding([6, 10])
+                .style(style::popup),
+            tooltip::Position::Bottom,
+        )
+        .into()
+    }
+
     fn placed_popup<'a>(&'a self, game: &'a LibraryGameView, size: Size) -> Element<'a, Message> {
         let rows = self.rows(size.width);
         let Some(tile) = self
@@ -808,22 +1010,25 @@ impl Library {
             .into()
         }))
         .spacing(6);
-        let hide = (game.owned_hours.is_none() && !game.borrowed && !game.recent).then(|| {
-            let id = game.id;
-            let correction = game.correction;
-            checkbox(correction.hidden)
-                .label("Hide from Discover")
-                .text_size(font::BAR_SIZE)
-                .on_toggle(move |hidden| {
-                    Message::Correct(
-                        id,
-                        GameCorrection {
-                            hidden,
-                            ..correction
-                        },
-                    )
-                })
-        });
+        let hide =
+            (game.owned_hours.is_none() && !game.borrowed && !game.recent && !game.elsewhere).then(
+                || {
+                    let id = game.id;
+                    let correction = game.correction;
+                    checkbox(correction.hidden)
+                        .label("Hide from Discover")
+                        .text_size(font::BAR_SIZE)
+                        .on_toggle(move |hidden| {
+                            Message::Correct(
+                                id,
+                                GameCorrection {
+                                    hidden,
+                                    ..correction
+                                },
+                            )
+                        })
+                },
+            );
 
         column![
             column![
@@ -859,6 +1064,13 @@ impl Library {
                 .style(style::link)
                 .on_press(Message::OpenFamilies),
         )
+        .push(removal(game).map(|_| style::separator()))
+        .push(removal(game).map(|message| {
+            button(text("Remove from Library").size(font::NOTE_SIZE))
+                .padding(0)
+                .style(style::link)
+                .on_press(message)
+        }))
         .spacing(10)
         .padding(16)
         .into()
@@ -992,7 +1204,7 @@ fn moved(rows: &[Row], position: Option<usize>, direction: Move) -> Option<usize
         .iter()
         .filter_map(|row| match row {
             Row::Games(games) => Some(games),
-            Row::Divider => None,
+            Row::Divider | Row::NoMatch | Row::FromSteam => None,
         })
         .collect();
     let last = games.last()?.end.checked_sub(1)?;
@@ -1027,6 +1239,7 @@ impl Filter {
             Filter::NotOwned => game.borrowed,
             Filter::Wishlist => game.wishlist,
             Filter::Followed => game.followed,
+            Filter::Elsewhere => game.elsewhere,
             Filter::Corrected => {
                 game.correction.multiplier.is_some() || game.correction.hidden || game.held_out
             }
@@ -1034,7 +1247,47 @@ impl Filter {
     }
 
     fn hides_when_empty(self) -> bool {
-        matches!(self, Filter::NotOwned | Filter::Corrected)
+        matches!(
+            self,
+            Filter::NotOwned | Filter::Elsewhere | Filter::Corrected
+        )
+    }
+}
+
+fn shows_filter(filter: Filter, games: &[LibraryGameView]) -> bool {
+    !filter.hides_when_empty() || count(games, filter) > 0
+}
+
+fn removal(game: &LibraryGameView) -> Option<Message> {
+    game.elsewhere_only
+        .then(|| Message::PlayElsewhere(game.id, game.name.clone(), false))
+}
+
+fn enter(position: usize, library: usize) -> Enter {
+    if position < library {
+        Enter::Open
+    } else {
+        Enter::Add
+    }
+}
+
+fn asks_cover(position: usize, library: usize, settled: bool) -> bool {
+    position < library || settled
+}
+
+fn placeholder(adding: bool) -> &'static str {
+    if adding {
+        ADD_PLACEHOLDER
+    } else {
+        SEARCH_PLACEHOLDER
+    }
+}
+
+fn elsewhere_text(name: &str, played: bool) -> String {
+    if played {
+        format!("Added {name} as played elsewhere")
+    } else {
+        format!("Removed {name}")
     }
 }
 
@@ -1055,6 +1308,7 @@ fn filter_label(filter: Filter) -> &'static str {
         Filter::NotOwned => "Not owned",
         Filter::Wishlist => "Wishlist",
         Filter::Followed => "Followed",
+        Filter::Elsewhere => "Elsewhere",
         Filter::Corrected => "Corrected",
     }
 }
@@ -1111,7 +1365,7 @@ fn grid_width(columns: usize) -> f32 {
     columns as f32 * (TILE_WIDTH + GAP) - GAP
 }
 
-fn rows(counting: usize, total: usize, columns: usize, divided: bool) -> Vec<Row> {
+fn rows(counting: usize, total: usize, found: usize, columns: usize, divided: bool) -> Vec<Row> {
     let chunks = |range: Range<usize>| {
         range
             .clone()
@@ -1119,20 +1373,29 @@ fn rows(counting: usize, total: usize, columns: usize, divided: bool) -> Vec<Row
             .map(move |start| Row::Games(start..(start + columns).min(range.end)))
     };
 
-    if divided && counting < total {
+    let mut rows: Vec<Row> = if divided && counting < total {
         chunks(0..counting)
             .chain([Row::Divider])
             .chain(chunks(counting..total))
             .collect()
     } else {
         chunks(0..total).collect()
+    };
+    if found > 0 {
+        if total == 0 {
+            rows.push(Row::NoMatch);
+        }
+        rows.push(Row::FromSteam);
+        rows.extend(chunks(total..total + found));
     }
+    rows
 }
 
 fn row_height(row: &Row) -> f32 {
     match row {
         Row::Games(_) => TILE_HEIGHT + GAP,
-        Row::Divider => DIVIDER_HEIGHT,
+        Row::Divider | Row::FromSteam => DIVIDER_HEIGHT,
+        Row::NoMatch => NO_MATCH_HEIGHT,
     }
 }
 
@@ -1329,6 +1592,7 @@ fn source_line(game: &LibraryGameView, view: &LibraryView) -> String {
         (game.borrowed, "Not owned"),
         (game.wishlist, "Wishlist"),
         (game.followed, "Followed"),
+        (game.elsewhere, "Played elsewhere"),
     ]
     .into_iter()
     .filter(|&(is_in, _)| is_in)
@@ -1346,7 +1610,7 @@ fn source_line(game: &LibraryGameView, view: &LibraryView) -> String {
         (HoursSource::Wishlist, _) => counts_as(view.wishlist_hours),
         (HoursSource::Followed, _) => counts_as(view.followed_hours),
         (HoursSource::WouldTry, _) => counts_as(game.hours),
-        (HoursSource::Elsewhere, _) => counts_as(game.hours),
+        (HoursSource::Elsewhere, _) => counts_as(view.elsewhere_hours),
     });
     if game.recent {
         parts.push("played in the last two weeks".to_string());
@@ -1445,6 +1709,7 @@ fn empty_text(no_games: bool, filter: Filter, search: &str) -> String {
             Filter::NotOwned => "No games played without owning them".to_string(),
             Filter::Wishlist => "No games in your wishlist".to_string(),
             Filter::Followed => "No followed games".to_string(),
+            Filter::Elsewhere => "No games played elsewhere".to_string(),
             Filter::Corrected => "No corrected games".to_string(),
         }
     }
@@ -1575,7 +1840,7 @@ mod tests {
     #[test]
     fn the_rows_break_at_the_divider() {
         assert_eq!(
-            rows(3, 7, 2, true),
+            rows(3, 7, 0, 2, true),
             [
                 Row::Games(0..2),
                 Row::Games(2..3),
@@ -1584,14 +1849,17 @@ mod tests {
                 Row::Games(5..7),
             ]
         );
-        assert_eq!(rows(3, 7, 4, false), [Row::Games(0..4), Row::Games(4..7)]);
-        assert_eq!(rows(5, 5, 4, true), [Row::Games(0..4), Row::Games(4..5)]);
-        assert_eq!(rows(0, 2, 4, true), [Row::Divider, Row::Games(0..2)]);
+        assert_eq!(
+            rows(3, 7, 0, 4, false),
+            [Row::Games(0..4), Row::Games(4..7)]
+        );
+        assert_eq!(rows(5, 5, 0, 4, true), [Row::Games(0..4), Row::Games(4..5)]);
+        assert_eq!(rows(0, 2, 0, 4, true), [Row::Divider, Row::Games(0..2)]);
     }
 
     #[test]
     fn only_the_rows_in_view_are_drawn() {
-        let rows = rows(20, 40, 4, true);
+        let rows = rows(20, 40, 0, 4, true);
         let row = TILE_HEIGHT + GAP;
 
         assert_eq!(visible_rows(&rows, 0.0, row), 0..1);
@@ -1607,7 +1875,7 @@ mod tests {
 
     #[test]
     fn loads_the_rows_in_view_then_two_screens_the_way_it_scrolls() {
-        let rows = rows(20, 40, 4, true);
+        let rows = rows(20, 40, 0, 4, true);
         let row = TILE_HEIGHT + GAP;
 
         assert_eq!(
@@ -1724,7 +1992,7 @@ mod tests {
     #[test]
     fn the_tile_corner_follows_the_column_the_divider_and_the_scroll() {
         let width = 2.0 * GRID_PADDING + grid_width(4);
-        let rows = rows(5, 9, 4, true);
+        let rows = rows(5, 9, 0, 4, true);
 
         assert_eq!(
             tile_origin(&rows, 0, width, 0.0),
@@ -1948,7 +2216,7 @@ mod tests {
 
     #[test]
     fn the_open_game_is_scrolled_into_view() {
-        let rows = rows(20, 40, 4, true);
+        let rows = rows(20, 40, 0, 4, true);
         let row = TILE_HEIGHT + GAP;
 
         assert_eq!(reveal_offset(&rows, 0, 0.0, 600.0), None);
@@ -2014,7 +2282,7 @@ mod tests {
 
     #[test]
     fn the_arrows_walk_the_grid_across_the_divider() {
-        let rows = rows(5, 9, 4, true);
+        let rows = rows(5, 9, 0, 4, true);
         let to = |position, direction| moved(&rows, position, direction);
 
         assert_eq!(to(None, Move::Down), Some(0));
@@ -2109,6 +2377,201 @@ mod tests {
         assert_eq!(
             families_text(&add, &celeste, &[]),
             "Added to slow puzzles, no longer held out"
+        );
+    }
+
+    fn elsewhere(id: u32, name: &str) -> LibraryGameView {
+        LibraryGameView {
+            elsewhere: true,
+            elsewhere_only: true,
+            hours: 20.0,
+            source: HoursSource::Elsewhere,
+            counts: true,
+            share: 0.1,
+            ..game(id, name)
+        }
+    }
+
+    fn found(id: u32, name: &str) -> CatalogMatch {
+        CatalogMatch {
+            id: AppId(id),
+            name: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_games_from_steam_come_after_the_library_under_their_heading() {
+        assert_eq!(
+            rows(2, 3, 3, 2, true),
+            [
+                Row::Games(0..2),
+                Row::Divider,
+                Row::Games(2..3),
+                Row::FromSteam,
+                Row::Games(3..5),
+                Row::Games(5..6),
+            ]
+        );
+        assert_eq!(rows(3, 3, 0, 2, true), [Row::Games(0..2), Row::Games(2..3)]);
+        assert!(rows(0, 0, 0, 2, true).is_empty());
+    }
+
+    #[test]
+    fn without_library_matches_the_no_match_line_stays_above_the_games_from_steam() {
+        assert_eq!(
+            rows(0, 0, 3, 2, true),
+            [
+                Row::NoMatch,
+                Row::FromSteam,
+                Row::Games(0..2),
+                Row::Games(2..3)
+            ]
+        );
+        assert_eq!(
+            empty_text(false, Filter::All, "it takes"),
+            "No game matches \"it takes\""
+        );
+    }
+
+    #[test]
+    fn the_arrows_walk_from_the_library_to_the_games_from_steam_and_back() {
+        let rows = rows(3, 3, 2, 2, true);
+        let to = |position, direction| moved(&rows, Some(position), direction);
+
+        assert_eq!(to(2, Move::Down), Some(3));
+        assert_eq!(to(1, Move::Down), Some(2));
+        assert_eq!(to(2, Move::Right), Some(3));
+        assert_eq!(to(4, Move::Up), Some(2));
+        assert_eq!(to(3, Move::Left), Some(2));
+        assert_eq!(enter(2, 3), Enter::Open);
+        assert_eq!(enter(3, 3), Enter::Add);
+    }
+
+    #[test]
+    fn the_heading_counts_in_the_scroll_and_in_the_popup_place() {
+        let rows = rows(0, 0, 3, 2, true);
+
+        assert_eq!(
+            tile_origin(&rows, 0, 2.0 * GRID_PADDING + grid_width(2), 0.0),
+            Some(Point::new(
+                GRID_PADDING,
+                GRID_PADDING + NO_MATCH_HEIGHT + DIVIDER_HEIGHT
+            ))
+        );
+        assert_eq!(
+            reveal_offset(&rows, 2, 0.0, 300.0),
+            Some(
+                GRID_PADDING
+                    + NO_MATCH_HEIGHT
+                    + DIVIDER_HEIGHT
+                    + 2.0 * TILE_HEIGHT
+                    + GAP
+                    + GRID_PADDING
+                    - 300.0
+            )
+        );
+    }
+
+    #[test]
+    fn the_covers_from_steam_are_asked_only_once_the_text_stays_still() {
+        let mut matches = Found::default();
+
+        matches.searched(vec![found(1, "It Takes Two")]);
+        assert!(!asks_cover(0, 0, matches.settled));
+        assert!(asks_cover(0, 1, matches.settled));
+
+        matches.waited("it t", "it ta");
+        assert!(!matches.settled);
+
+        matches.waited("it ta", "it ta");
+        assert!(matches.settled);
+        assert!(asks_cover(0, 0, matches.settled));
+
+        matches.searched(vec![found(1, "It Takes Two")]);
+        assert!(!matches.settled);
+    }
+
+    #[test]
+    fn adding_and_removing_say_which_game_and_can_be_undone() {
+        assert_eq!(
+            elsewhere_text("It Takes Two", true),
+            "Added It Takes Two as played elsewhere"
+        );
+        assert_eq!(
+            elsewhere_text("It Takes Two", false),
+            "Removed It Takes Two"
+        );
+        assert!(matches!(
+            character("z", keyboard::Modifiers::CTRL),
+            Some(Message::Undo)
+        ));
+        assert!(matches!(named(Named::Enter), Some(Message::OpenSelected)));
+    }
+
+    #[test]
+    fn only_a_game_played_only_elsewhere_can_be_removed_from_the_library() {
+        let only = elsewhere(7, "It Takes Two");
+        let owned_too = LibraryGameView {
+            elsewhere_only: false,
+            ..owned(8, "Portal 2", 0.0, 0.1)
+        };
+
+        assert!(matches!(
+            removal(&only),
+            Some(Message::PlayElsewhere(AppId(7), _, false))
+        ));
+        assert!(removal(&owned_too).is_none());
+        assert!(removal(&games()[0]).is_none());
+    }
+
+    #[test]
+    fn the_elsewhere_filter_shows_with_the_first_game_played_elsewhere() {
+        let mut games = games();
+        assert!(!shows_filter(Filter::Elsewhere, &games));
+        assert!(shows_filter(Filter::Followed, &games));
+
+        games.push(elsewhere(7, "It Takes Two"));
+        assert!(shows_filter(Filter::Elsewhere, &games));
+        assert_eq!(
+            ids(&games, &shown(&games, Filter::Elsewhere, Sort::Name, "")),
+            [7]
+        );
+        assert_eq!(filter_label(Filter::Elsewhere), "Elsewhere");
+
+        games.pop();
+        assert!(!shows_filter(Filter::Elsewhere, &games));
+        assert_eq!(
+            empty_text(false, Filter::Elsewhere, ""),
+            "No games played elsewhere"
+        );
+    }
+
+    #[test]
+    fn adding_a_game_changes_what_the_search_field_asks() {
+        assert_eq!(placeholder(false), "Search by name (Ctrl+F)");
+        assert_eq!(
+            placeholder(true),
+            "Search Steam for a game you played elsewhere"
+        );
+    }
+
+    #[test]
+    fn a_game_played_elsewhere_says_so_on_its_tile_and_in_the_popup() {
+        let view = view_of(Vec::new());
+        let only = elsewhere(7, "It Takes Two");
+        let owned_too = LibraryGameView {
+            elsewhere: true,
+            ..owned(8, "Portal 2", 40.0, 0.1)
+        };
+
+        assert_eq!(tile_label(&only), "elsewhere");
+        assert_eq!(
+            source_line(&only, &view),
+            "Played elsewhere · counts as 20 hours"
+        );
+        assert_eq!(
+            source_line(&owned_too, &view),
+            "Owned and played elsewhere · 40 h"
         );
     }
 

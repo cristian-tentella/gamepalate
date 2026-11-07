@@ -1134,7 +1134,7 @@ fn source_message(source: HoursSource) -> Message {
         }
         HoursSource::WouldTry => Message::OpenVotes(Filter::Kind(VoteKind::WouldTry)),
         HoursSource::Elsewhere => {
-            Message::OpenLibrary(library::Filter::All, library::Sort::TasteWeight)
+            Message::OpenLibrary(library::Filter::Elsewhere, library::Sort::TasteWeight)
         }
     }
 }
@@ -1422,6 +1422,11 @@ mod tests {
             source_text(&source(HoursSource::Followed, 0.06, 1), &hours),
             "1 game, 3 hours each"
         );
+        assert_eq!(
+            source_text(&source(HoursSource::Elsewhere, 0.04, 3), &hours),
+            "3 games, 20 hours each"
+        );
+        assert_eq!(source_label(HoursSource::Elsewhere), "Played elsewhere");
     }
 
     #[test]
@@ -1451,6 +1456,10 @@ mod tests {
         assert!(matches!(
             source_message(HoursSource::WouldTry),
             Message::OpenVotes(Filter::Kind(VoteKind::WouldTry))
+        ));
+        assert!(matches!(
+            source_message(HoursSource::Elsewhere),
+            Message::OpenLibrary(library::Filter::Elsewhere, library::Sort::TasteWeight)
         ));
     }
 
