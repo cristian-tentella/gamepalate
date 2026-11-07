@@ -40,3 +40,15 @@ Name: "{autodesktop}\gamepalate"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,gamepalate}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExe}"; Flags: nowait; Check: ShouldLaunch
+
+[Code]
+function ShouldLaunch: Boolean;
+var
+  I: Integer;
+begin
+  Result := WizardSilent;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), '/NOLAUNCH') = 0 then
+      Result := False;
+end;
