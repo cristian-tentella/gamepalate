@@ -9,7 +9,7 @@ use crate::{
     log::failed,
     ready::{ReadyError, check_ready_with},
     update::{
-        ArchiveState, Progress, UpdateError, Updated, expired_apps, renew_catalog, update_catalog,
+        ArchiveState, Progress, UpdateError, Updated, renew_catalog, renewal_due, update_catalog,
         update_config, wall_clock,
     },
 };
@@ -68,7 +68,7 @@ pub fn startup_plan(state: &ArchiveState, now: Timestamp) -> Plan {
 
     Plan {
         prices: state.pending || now.ms_since(updated_at) > FRESH_PRICES_MS,
-        renewal: state.expired_apps > 0,
+        renewal: state.renewal_due,
     }
 }
 
@@ -182,10 +182,9 @@ async fn renew_expired<S: Get + Sync>(
     now: Timestamp,
     progress: &mut impl FnMut(Step),
 ) -> Result<Option<Updated>, UpdateError> {
-    let expired = expired_apps(data_dir, config.region, now)
-        .await
-        .inspect_err(failed("could not read the expired apps"))?;
-    if expired == 0 {
+    let due = renewal_due(data_dir, config.region, now)
+        .inspect_err(failed("could not read when the renewal is due"))?;
+    if !due {
         return Ok(None);
     }
 
@@ -334,13 +333,18 @@ mod tests {
     fn backdate(dir: &Path, number: &str, days: i64) {
         let path = dir.join("archive").join(number).join("update.json");
         let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        let started: jiff::Timestamp = manifest["startedAt"].as_str().unwrap().parse().unwrap();
-        let earlier = started.as_millisecond() - days * 24 * HOUR_MS;
-        manifest["startedAt"] = json!(
-            jiff::Timestamp::from_millisecond(earlier)
-                .unwrap()
-                .to_string()
-        );
+        let shift = |text: &Value| {
+            let at: jiff::Timestamp = text.as_str().unwrap().parse().unwrap();
+            json!(
+                jiff::Timestamp::from_millisecond(at.as_millisecond() - days * 24 * HOUR_MS)
+                    .unwrap()
+                    .to_string()
+            )
+        };
+        manifest["startedAt"] = shift(&manifest["startedAt"]);
+        if manifest.get("nextExpiry").is_some() {
+            manifest["nextExpiry"] = shift(&manifest["nextExpiry"]);
+        }
         fs::write(path, manifest.to_string()).unwrap();
     }
 
@@ -653,11 +657,11 @@ mod tests {
         ));
     }
 
-    fn state(pending: bool, updated_minutes_ago: Option<i64>, expired_apps: usize) -> ArchiveState {
+    fn state(pending: bool, updated_minutes_ago: Option<i64>, renewal_due: bool) -> ArchiveState {
         ArchiveState {
             pending,
             updated_at: updated_minutes_ago.map(|minutes| Timestamp(NOW.0 - minutes * 60_000)),
-            expired_apps,
+            renewal_due,
         }
     }
 
@@ -699,28 +703,34 @@ mod tests {
 
     #[test]
     fn the_startup_does_nothing_before_the_first_update() {
-        assert!(startup_plan(&state(false, None, 0), NOW).is_nothing());
-        assert!(startup_plan(&state(true, None, 5), NOW).is_nothing());
+        assert!(startup_plan(&state(false, None, false), NOW).is_nothing());
+        assert!(startup_plan(&state(true, None, true), NOW).is_nothing());
     }
 
     #[test]
     fn the_startup_resumes_a_pending_update_even_when_the_prices_are_recent() {
         assert_eq!(
-            startup_plan(&state(true, Some(5), 0), NOW),
+            startup_plan(&state(true, Some(5), false), NOW),
             plan(true, false)
         );
         assert_eq!(
-            startup_plan(&state(true, Some(5), 9), NOW),
+            startup_plan(&state(true, Some(5), true), NOW),
             plan(true, true)
         );
     }
 
     #[test]
     fn the_startup_updates_the_prices_after_an_hour() {
-        assert_eq!(startup_plan(&state(false, Some(30), 0), NOW), Plan::NOTHING);
-        assert_eq!(startup_plan(&state(false, Some(60), 0), NOW), Plan::NOTHING);
         assert_eq!(
-            startup_plan(&state(false, Some(61), 0), NOW),
+            startup_plan(&state(false, Some(30), false), NOW),
+            Plan::NOTHING
+        );
+        assert_eq!(
+            startup_plan(&state(false, Some(60), false), NOW),
+            Plan::NOTHING
+        );
+        assert_eq!(
+            startup_plan(&state(false, Some(61), false), NOW),
             plan(true, false)
         );
     }
@@ -728,11 +738,11 @@ mod tests {
     #[test]
     fn the_startup_renews_when_an_app_is_expired() {
         assert_eq!(
-            startup_plan(&state(false, Some(30), 1), NOW),
+            startup_plan(&state(false, Some(30), true), NOW),
             plan(false, true)
         );
         assert_eq!(
-            startup_plan(&state(false, Some(600), 1), NOW),
+            startup_plan(&state(false, Some(600), true), NOW),
             Plan::EVERYTHING
         );
     }

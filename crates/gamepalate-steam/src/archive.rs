@@ -35,6 +35,7 @@ pub struct ArchivedUpdate {
     started_at: Timestamp,
     full: bool,
     region: Region,
+    next_expiry: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -59,6 +60,8 @@ struct Manifest {
     renewal: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     renewed_apps: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    next_expiry: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -123,6 +126,7 @@ impl Archive {
             region: Some(region.to_string()),
             renewal: renewal && !full,
             renewed_apps: None,
+            next_expiry: None,
             completed_at: None,
             failed_at: None,
         };
@@ -145,6 +149,7 @@ impl Archive {
                 started_at: parse_iso(&manifest.started_at)?,
                 region: manifest.region()?,
                 full: manifest.full,
+                next_expiry: manifest.next_expiry.as_deref().map(parse_iso).transpose()?,
                 dir,
             });
         }
@@ -279,6 +284,10 @@ impl UpdateFolder {
         self.manifest.renewed_apps = Some(apps);
     }
 
+    pub fn set_next_expiry(&mut self, at: Timestamp) {
+        self.manifest.next_expiry = Some(iso(at));
+    }
+
     pub fn complete(mut self, now: Timestamp) -> io::Result<()> {
         self.manifest.completed_at = Some(iso(now));
         write_manifest(&self.dir, &self.manifest)
@@ -305,6 +314,10 @@ impl ArchivedUpdate {
 
     pub fn full(&self) -> bool {
         self.full
+    }
+
+    pub fn next_expiry(&self) -> Option<Timestamp> {
+        self.next_expiry
     }
 
     pub fn records(
@@ -1193,6 +1206,28 @@ mod tests {
         let manifest = read_manifest(update.dir());
         assert_eq!(manifest.get("renewal"), None);
         assert_eq!(manifest.get("renewedApps"), None);
+    }
+
+    #[test]
+    fn a_completed_update_keeps_its_next_expiry() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        completed_update(&archive, NOW);
+        let mut update = archive
+            .start_update(Timestamp(NOW.0 + DAY), 24, Region::ITALY, false)
+            .unwrap();
+        let dir = update.dir().to_path_buf();
+
+        update.set_next_expiry(Timestamp(NOW.0 + 2 * DAY));
+        update.complete(Timestamp(NOW.0 + DAY)).unwrap();
+
+        assert_eq!(
+            read_manifest(&dir)["nextExpiry"],
+            iso(Timestamp(NOW.0 + 2 * DAY))
+        );
+        let completed = archive.completed().unwrap();
+        assert_eq!(completed[0].next_expiry(), Some(Timestamp(NOW.0 + 2 * DAY)));
+        assert_eq!(completed[1].next_expiry(), None);
     }
 
     #[test]
