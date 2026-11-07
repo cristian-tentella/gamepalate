@@ -102,6 +102,19 @@ pub fn window_button(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+pub fn open_bar_icon(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+    let style = window_button(theme, status);
+
+    button::Style {
+        background: style
+            .background
+            .or_else(|| Some(palette.background.weak.color.into())),
+        text_color: palette.primary.base.color,
+        ..style
+    }
+}
+
 pub fn close_button(theme: &Theme, status: button::Status) -> button::Style {
     let red = Color::from_rgb8(0xc4, 0x2b, 0x1c);
 
@@ -513,6 +526,18 @@ pub fn field(theme: &Theme, status: text_input::Status) -> text_input::Style {
     text_input::Style {
         border: Border {
             radius: 6.0.into(),
+            ..style.border
+        },
+        ..style
+    }
+}
+
+pub fn wrong_field(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let style = field(theme, status);
+
+    text_input::Style {
+        border: Border {
+            color: theme.extended_palette().danger.base.color,
             ..style.border
         },
         ..style

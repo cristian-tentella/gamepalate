@@ -157,6 +157,7 @@ mod tests {
             library: vec![LibraryGame {
                 id: AppId(1),
                 total_hours: 20.0,
+                last_played: None,
             }],
             borrowed: Vec::new(),
             recent: Vec::new(),

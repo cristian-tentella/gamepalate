@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use gamepalate_core::{
     ids::AppId,
@@ -38,6 +41,8 @@ struct SignalsFile {
     recent: Vec<RecentEntry>,
     wishlist: Option<Vec<u32>>,
     followed: Option<Vec<u32>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    wishlist_added: BTreeMap<u32, i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     wishlist_read_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -49,6 +54,8 @@ struct SignalsFile {
 struct LibraryEntry {
     appid: u32,
     total_hours: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_played: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -100,6 +107,11 @@ fn parse_reading(text: &str) -> Result<SignalsReading, SignalsError> {
             .collect(),
         wishlist: app_ids(file.wishlist),
         followed: app_ids(file.followed),
+        wishlist_added: file
+            .wishlist_added
+            .into_iter()
+            .map(|(id, at)| (AppId(id), Timestamp(at)))
+            .collect(),
         wishlist_read_at: file.wishlist_read_at.map(Timestamp),
         followed_read_at: file.followed_read_at.map(Timestamp),
     })
@@ -121,6 +133,11 @@ fn signals_file(reading: &SignalsReading) -> SignalsFile {
             .collect(),
         wishlist: raw_ids(reading.wishlist.as_deref()),
         followed: raw_ids(reading.followed.as_deref()),
+        wishlist_added: reading
+            .wishlist_added
+            .iter()
+            .map(|(id, at)| (id.0, at.0))
+            .collect(),
         wishlist_read_at: reading.wishlist_read_at.map(|at| at.0),
         followed_read_at: reading.followed_read_at.map(|at| at.0),
     }
@@ -132,6 +149,7 @@ fn library_games(entries: Vec<LibraryEntry>) -> Vec<LibraryGame> {
         .map(|entry| LibraryGame {
             id: AppId(entry.appid),
             total_hours: entry.total_hours,
+            last_played: entry.last_played.map(Timestamp),
         })
         .collect()
 }
@@ -142,6 +160,7 @@ fn library_entries(games: &[LibraryGame]) -> Vec<LibraryEntry> {
         .map(|game| LibraryEntry {
             appid: game.id.0,
             total_hours: game.total_hours,
+            last_played: game.last_played.map(|at| at.0),
         })
         .collect()
 }
@@ -181,10 +200,12 @@ mod tests {
                 library: vec![LibraryGame {
                     id: AppId(10),
                     total_hours: 12.5,
+                    last_played: None,
                 }],
                 borrowed: vec![LibraryGame {
                     id: AppId(20),
                     total_hours: 3.0,
+                    last_played: None,
                 }],
                 recent: vec![RecentGame {
                     id: AppId(10),
@@ -193,9 +214,38 @@ mod tests {
                 }],
                 wishlist: Some(vec![AppId(400)]),
                 followed: Some(vec![AppId(500), AppId(600)]),
+                wishlist_added: BTreeMap::new(),
                 wishlist_read_at: Some(Timestamp(1_759_835_069_734)),
                 followed_read_at: Some(Timestamp(1_759_700_000_000)),
             }
+        );
+    }
+
+    #[test]
+    fn an_old_file_without_the_dates_reads_with_none_and_an_empty_map() {
+        let reading = parse_reading(
+            r#"{ "readAt": 1, "library": [{ "appid": 10, "totalHours": 1.0 }], "recent": [], "wishlist": [400], "followed": [] }"#,
+        )
+        .unwrap();
+
+        assert_eq!(reading.library[0].last_played, None);
+        assert!(reading.wishlist_added.is_empty());
+    }
+
+    #[test]
+    fn parse_reading_reads_the_dates() {
+        let reading = parse_reading(
+            r#"{ "readAt": 1, "library": [{ "appid": 10, "totalHours": 1.0, "lastPlayed": 1700000000000 }], "recent": [], "wishlist": [400], "followed": [], "wishlistAdded": { "400": 1690000000000 } }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            reading.library[0].last_played,
+            Some(Timestamp(1_700_000_000_000))
+        );
+        assert_eq!(
+            reading.wishlist_added,
+            BTreeMap::from([(AppId(400), Timestamp(1_690_000_000_000))])
         );
     }
 
@@ -239,10 +289,12 @@ mod tests {
             library: vec![LibraryGame {
                 id: AppId(10),
                 total_hours: 1.5,
+                last_played: Some(Timestamp(1_700_000_000_000)),
             }],
             borrowed: vec![LibraryGame {
                 id: AppId(30),
                 total_hours: 4.5,
+                last_played: None,
             }],
             recent: vec![RecentGame {
                 id: AppId(10),
@@ -251,6 +303,7 @@ mod tests {
             }],
             wishlist: Some(vec![AppId(400)]),
             followed: None,
+            wishlist_added: BTreeMap::from([(AppId(400), Timestamp(1_690_000_000_000))]),
             wishlist_read_at: Some(Timestamp(2_000)),
             followed_read_at: None,
         };
@@ -260,6 +313,8 @@ mod tests {
         assert_eq!(load_reading(&path).unwrap(), reading);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains(r#""followed":null"#));
+        assert!(text.contains(r#""lastPlayed":1700000000000"#));
+        assert!(text.contains(r#""wishlistAdded":{"400":1690000000000}"#));
         assert!(!text.contains("followedReadAt"));
         assert!(!dir.path().join("signals.json.tmp").exists());
     }
@@ -276,6 +331,7 @@ mod tests {
             recent: vec![],
             wishlist: Some(vec![]),
             followed: Some(vec![AppId(500)]),
+            wishlist_added: BTreeMap::new(),
             wishlist_read_at: Some(Timestamp(3_000)),
             followed_read_at: Some(Timestamp(1_000)),
         };
@@ -283,7 +339,10 @@ mod tests {
         save_reading(&path, &reading).unwrap();
 
         assert_eq!(load_reading(&path).unwrap(), reading);
-        assert!(!std::fs::read_to_string(&path).unwrap().contains("borrowed"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("borrowed"));
+        assert!(!text.contains("wishlistAdded"));
+        assert!(!text.contains("lastPlayed"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{ids::AppId, timestamp::Timestamp};
 
@@ -20,6 +20,7 @@ pub struct SignalsReading {
     pub recent: Vec<RecentGame>,
     pub wishlist: Option<Vec<AppId>>,
     pub followed: Option<Vec<AppId>>,
+    pub wishlist_added: BTreeMap<AppId, Timestamp>,
     pub wishlist_read_at: Option<Timestamp>,
     pub followed_read_at: Option<Timestamp>,
 }
@@ -60,6 +61,7 @@ impl SignalsReading {
 pub struct LibraryGame {
     pub id: AppId,
     pub total_hours: f64,
+    pub last_played: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -80,10 +82,12 @@ mod tests {
             library: vec![LibraryGame {
                 id: AppId(3),
                 total_hours: 1.0,
+                last_played: None,
             }],
             borrowed: vec![LibraryGame {
                 id: AppId(7),
                 total_hours: 4.0,
+                last_played: None,
             }],
             recent: vec![RecentGame {
                 id: AppId(9),

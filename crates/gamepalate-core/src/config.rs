@@ -37,6 +37,7 @@ pub struct SignalsConfig {
     pub max_hours: f64,
     pub recent_hours_multiplier: f64,
     pub wishlist_hours: f64,
+    pub wishlist_cap: f64,
     pub followed_hours: f64,
     pub would_try_hours: f64,
     pub elsewhere_hours: f64,
@@ -50,6 +51,7 @@ impl Default for SignalsConfig {
             max_hours: 200.0,
             recent_hours_multiplier: 3.0,
             wishlist_hours: 5.0,
+            wishlist_cap: 1.0,
             followed_hours: 3.0,
             would_try_hours: 5.0,
             elsewhere_hours: 20.0,
@@ -68,9 +70,9 @@ pub struct RelevanceConfig {
 impl Default for RelevanceConfig {
     fn default() -> Self {
         RelevanceConfig {
-            quality_weight: 0.5,
+            quality_weight: 0.75,
             min_reviews: 1000,
-            votes_weight: 0.0,
+            votes_weight: 0.25,
         }
     }
 }
@@ -88,8 +90,8 @@ impl Default for ResultsConfig {
         ResultsConfig {
             count: 20,
             early_access: true,
-            min_positive_percent: 0,
-            bet_every: 5,
+            min_positive_percent: 75,
+            bet_every: 10,
         }
     }
 }
