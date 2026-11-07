@@ -9,7 +9,9 @@ use gamepalate_app::{
 use iced::{
     Center, Element, Fill, Subscription, Task,
     keyboard::{self, Key, key::Named},
-    widget::{Id, button, column, container, operation, radio, row, scrollable, text, text_input},
+    widget::{
+        Id, button, column, container, operation, radio, row, scrollable, text, text_input, tooltip,
+    },
 };
 
 use crate::{
@@ -25,6 +27,7 @@ use crate::{
     style,
 };
 
+const BACK: char = '\u{E5CB}';
 const COLUMN_WIDTH: f32 = 760.0;
 const LABEL_WIDTH: f32 = 120.0;
 const MEGABYTE: u64 = 1024 * 1024;
@@ -111,6 +114,7 @@ pub enum Message {
     SetConfig(ConfigKey, ConfigValue),
     ConfigSaved(Result<(), String>),
     OpenLibrary,
+    Back,
     Escape,
 }
 
@@ -321,6 +325,7 @@ impl Settings {
                 Action::None
             }
             Message::OpenLibrary => Action::Close(Page::Library),
+            Message::Back => Action::Close(self.back),
             Message::Escape => {
                 if self.question.take().is_some() {
                     return Action::None;
@@ -494,7 +499,7 @@ impl Settings {
             .as_ref()
             .map(|error| text(error.clone()).size(font::BAR_SIZE).style(text::danger));
 
-        scrollable(
+        let page = scrollable(
             container(
                 column![]
                     .push(error)
@@ -512,8 +517,9 @@ impl Settings {
             .padding(24)
             .center_x(Fill),
         )
-        .height(Fill)
-        .into()
+        .height(Fill);
+
+        column![title_bar(), style::separator(), page].into()
     }
 
     fn config_lines(&self, keys: &[ConfigKey]) -> Element<'_, Message> {
@@ -953,6 +959,42 @@ fn cache_text(bytes: Option<u64>, max: u64) -> String {
         None => "Measuring…".to_string(),
         Some(bytes) => format!("{} MB of {} MB", bytes.div_ceil(MEGABYTE), max / MEGABYTE),
     }
+}
+
+fn title_bar<'a>() -> Element<'a, Message> {
+    let back = tooltip(
+        button(
+            container(
+                text(BACK)
+                    .font(font::ICONS)
+                    .size(font::icon(14.0))
+                    .width(Fill)
+                    .height(Fill)
+                    .center(),
+            )
+            .width(40)
+            .height(40),
+        )
+        .padding(0)
+        .style(style::window_button)
+        .on_press(Message::Back),
+        container(text("Back (Esc)").size(font::NOTE_SIZE))
+            .padding([6, 10])
+            .style(style::popup),
+        tooltip::Position::Bottom,
+    );
+
+    container(
+        row![
+            back,
+            text("Settings").font(font::SEMIBOLD).size(font::INFO_SIZE)
+        ]
+        .spacing(12)
+        .align_y(Center),
+    )
+    .padding([8, 12])
+    .width(Fill)
+    .into()
 }
 
 fn group<'a>(title: &'a str, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {

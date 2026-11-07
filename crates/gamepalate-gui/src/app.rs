@@ -188,6 +188,9 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Navigate(Page::Settings) if self.page() == Some(Page::Settings) => {
+                self.open(self.back_page())
+            }
             Message::Navigate(page) if self.page() == Some(page) => Task::none(),
             Message::Navigate(page) => self.open(page),
             Message::Discover(discover::Message::OpenSimilar(id)) => self.show_game(id),
@@ -525,7 +528,11 @@ impl App {
                             ),
                         )
                     }))
-                    .push(self.gamepalate.is_some().then(settings_button))
+                    .push(
+                        self.gamepalate
+                            .is_some()
+                            .then(|| settings_button(self.page() == Some(Page::Settings))),
+                    )
                     .push(theme_button(&self.theme))
                     .push(window_button(MINIMIZE, WindowAction::Minimize))
                     .push(window_button(
@@ -1156,11 +1163,20 @@ fn refresh_button<'a>(refresh: &Refresh, idle_tip: String) -> Element<'a, Messag
     with_tooltip(bar_icon(icon, message), tip)
 }
 
-fn settings_button<'a>() -> Element<'a, Message> {
+fn settings_button<'a>(open: bool) -> Element<'a, Message> {
+    let button = bar_icon(GEAR, Some(Message::Navigate(Page::Settings)));
     with_tooltip(
-        bar_icon(GEAR, Some(Message::Navigate(Page::Settings))),
-        "Settings".to_string(),
+        if open {
+            button.style(style::open_bar_icon)
+        } else {
+            button
+        },
+        settings_tip(open).to_string(),
     )
+}
+
+fn settings_tip(open: bool) -> &'static str {
+    if open { "Close Settings" } else { "Settings" }
 }
 
 fn theme_button<'a>(theme: &Theme) -> Element<'a, Message> {
@@ -1426,6 +1442,12 @@ mod tests {
             prices_text("28 Oct".to_string(), Some(Region::ITALY)),
             "Prices 28 Oct · IT"
         );
+    }
+
+    #[test]
+    fn the_gear_offers_to_close_settings_while_they_are_open() {
+        assert_eq!(settings_tip(false), "Settings");
+        assert_eq!(settings_tip(true), "Close Settings");
     }
 
     #[test]
