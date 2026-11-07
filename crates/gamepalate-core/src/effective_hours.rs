@@ -131,14 +131,17 @@ mod tests {
                 LibraryGame {
                     id: AppId(1),
                     total_hours: 100.0,
+                    last_played: None,
                 },
                 LibraryGame {
                     id: AppId(2),
                     total_hours: 1.0,
+                    last_played: None,
                 },
                 LibraryGame {
                     id: AppId(3),
                     total_hours: 50.0,
+                    last_played: None,
                 },
             ],
             borrowed: vec![],
@@ -237,19 +240,23 @@ mod tests {
                 LibraryGame {
                     id: AppId(1),
                     total_hours: 7.0,
+                    last_played: None,
                 },
                 LibraryGame {
                     id: AppId(3),
                     total_hours: 80.0,
+                    last_played: None,
                 },
                 LibraryGame {
                     id: AppId(8),
                     total_hours: 40.0,
+                    last_played: None,
                 },
             ],
             library: vec![LibraryGame {
                 id: AppId(3),
                 total_hours: 50.0,
+                last_played: None,
             }],
             ..signals()
         };
@@ -296,6 +303,7 @@ mod tests {
             library: vec![LibraryGame {
                 id: AppId(7),
                 total_hours: 0.0,
+                last_played: None,
             }],
             ..signals()
         };

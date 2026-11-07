@@ -394,6 +394,7 @@ mod tests {
         let owned = |id, total_hours| LibraryGame {
             id: AppId(id),
             total_hours,
+            last_played: None,
         };
         Signals {
             read_at: Timestamp(0),
@@ -531,6 +532,7 @@ mod tests {
         fixture.signals.borrowed = vec![LibraryGame {
             id: AppId(4),
             total_hours: 12.0,
+            last_played: None,
         }];
 
         let view = library_view(&fixture.inputs());

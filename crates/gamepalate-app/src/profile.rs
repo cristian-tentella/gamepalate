@@ -365,10 +365,12 @@ mod tests {
                 LibraryGame {
                     id: AppId(1),
                     total_hours: 50.0,
+                    last_played: None,
                 },
                 LibraryGame {
                     id: AppId(2),
                     total_hours: 30.0,
+                    last_played: None,
                 },
             ],
             borrowed: vec![],

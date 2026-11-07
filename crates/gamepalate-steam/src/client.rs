@@ -6,6 +6,7 @@ use std::{
 use gamepalate_core::{
     ids::{AppId, SteamId},
     signals::LibraryGame,
+    timestamp::Timestamp,
 };
 use keyvalues_parser::Value;
 
@@ -84,9 +85,15 @@ fn parse_played_hours(text: &str) -> Result<Vec<LibraryGame>, String> {
                 .get_str()?
                 .parse()
                 .ok()?;
+            let last_played = child(values.first()?, "LastPlayed")
+                .and_then(Value::get_str)
+                .and_then(|seconds| seconds.parse::<i64>().ok())
+                .filter(|seconds| *seconds > 0)
+                .map(|seconds| Timestamp(seconds * 1000));
             (minutes > 0).then(|| LibraryGame {
                 id,
                 total_hours: minutes as f64 / 60.0,
+                last_played,
             })
         })
         .collect())
@@ -155,8 +162,23 @@ mod tests {
             [LibraryGame {
                 id: AppId(1_086_940),
                 total_hours: 8866.0 / 60.0,
+                last_played: Some(Timestamp(1_771_705_394_000)),
             }]
         );
+    }
+
+    #[test]
+    fn an_app_without_a_last_played_date_has_none() {
+        let text = r#"
+"UserLocalConfigStore" { "Software" { "Valve" { "Steam" { "apps" {
+    "70" { "Playtime" "90" }
+    "80" { "Playtime" "30" "LastPlayed" "0" }
+} } } } }"#;
+
+        let games = parse_played_hours(text).unwrap();
+
+        assert_eq!(games.len(), 2);
+        assert!(games.iter().all(|game| game.last_played.is_none()));
     }
 
     #[test]

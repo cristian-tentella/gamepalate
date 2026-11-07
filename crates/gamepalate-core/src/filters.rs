@@ -334,6 +334,7 @@ mod tests {
         let game = |id| LibraryGame {
             id: AppId(id),
             total_hours: 3.0,
+            last_played: None,
         };
         let signals = Signals {
             read_at: Timestamp(0),

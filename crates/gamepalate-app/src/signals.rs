@@ -316,6 +316,7 @@ mod tests {
             library: vec![gamepalate_core::signals::LibraryGame {
                 id: AppId(10),
                 total_hours: 0.5,
+                last_played: None,
             }],
             borrowed: vec![],
             recent: Vec::new(),
@@ -546,6 +547,7 @@ mod tests {
             [LibraryGame {
                 id: AppId(70),
                 total_hours: 1.5,
+                last_played: None,
             }]
         );
         assert_eq!(saved.library[0].total_hours, 2.0);
