@@ -71,6 +71,7 @@ pub struct Discover {
     updating: bool,
     empty_because: Option<Blame>,
     votes_this_session: usize,
+    votes_last_day: usize,
     bet_every: usize,
     toast: Option<Toast>,
     flash: Option<Flash>,
@@ -151,6 +152,7 @@ impl Discover {
             updating: changed,
             empty_because: None,
             votes_this_session: 0,
+            votes_last_day: gamepalate.votes_in_last_day(),
             bet_every: gamepalate.bet_every(),
             toast: None,
             flash: None,
@@ -265,7 +267,10 @@ impl Discover {
                     ]);
                 }
             }
-            Message::VoteSaved(Ok(())) => self.votes_this_session += 1,
+            Message::VoteSaved(Ok(())) => {
+                self.votes_this_session += 1;
+                self.votes_last_day = self.gamepalate.votes_in_last_day();
+            }
             Message::VoteSaved(Err(error)) => return self.show_toast(error),
             Message::Open(link) => {
                 if let Some(game) = self.current() {
@@ -389,9 +394,12 @@ impl Discover {
         }))
         .push(space().width(Fill))
         .push(
-            text(format::votes_this_session(self.votes_this_session))
-                .size(font::NOTE_SIZE)
-                .style(style::muted),
+            text(format::votes_this_session(
+                self.votes_this_session,
+                self.votes_last_day,
+            ))
+            .size(font::NOTE_SIZE)
+            .style(style::muted),
         )
         .spacing(8)
         .align_y(Center);

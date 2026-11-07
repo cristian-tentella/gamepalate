@@ -91,11 +91,12 @@ pub fn empty_because(blame: Option<&Blame>) -> String {
     )
 }
 
-pub fn votes_this_session(votes: usize) -> String {
-    match votes {
+pub fn votes_this_session(session: usize, last_day: usize) -> String {
+    let session = match session {
         1 => "1 vote this session".to_string(),
         votes => format!("{votes} votes this session"),
-    }
+    };
+    format!("{session} · {last_day} in the last 24 hours")
 }
 
 pub fn count(number: u32) -> String {
@@ -492,8 +493,14 @@ mod tests {
 
     #[test]
     fn counts_votes_in_singular_and_plural() {
-        assert_eq!(votes_this_session(1), "1 vote this session");
-        assert_eq!(votes_this_session(12), "12 votes this session");
+        assert_eq!(
+            votes_this_session(1, 5),
+            "1 vote this session · 5 in the last 24 hours"
+        );
+        assert_eq!(
+            votes_this_session(12, 40),
+            "12 votes this session · 40 in the last 24 hours"
+        );
     }
 
     #[test]

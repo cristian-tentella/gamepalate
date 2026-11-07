@@ -367,6 +367,7 @@ mod tests {
                 kind: VoteKind::WouldTry,
                 date: "2026-10-01".to_string(),
                 bet: false,
+                at: None,
             },
         )])
     }

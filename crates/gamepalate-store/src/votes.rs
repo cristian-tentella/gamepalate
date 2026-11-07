@@ -7,6 +7,7 @@ use std::{
 
 use gamepalate_core::{
     ids::AppId,
+    timestamp::Timestamp,
     votes::{Vote, VoteKind, Votes},
 };
 use serde::Deserialize;
@@ -22,6 +23,7 @@ const HEADER: &str = "\
 # not_for_me  not for you, it leaves the recommendations
 # known       you already know it, it leaves the recommendations
 # bet = true  the vote was given to a bet
+# at          when the vote was cast, in milliseconds since 1970 (used to count the last 24 hours)
 ";
 
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +59,7 @@ struct VotesFile {
 struct VoteEntry {
     vote: VoteKindEntry,
     date: String,
+    at: Option<i64>,
     bet: Option<bool>,
 }
 
@@ -109,10 +112,13 @@ pub fn save_votes(
 fn votes_text(votes: &Votes, name: impl Fn(AppId) -> Option<String>) -> String {
     let mut text = format!("{HEADER}\n[votes]\n");
     for (&id, vote) in votes {
+        let at = vote
+            .at
+            .map_or(String::new(), |at| format!(", at = {}", at.0));
         let bet = if vote.bet { ", bet = true" } else { "" };
         let _ = write!(
             text,
-            "{} = {{ vote = \"{}\", date = \"{}\"{bet} }}",
+            "{} = {{ vote = \"{}\", date = \"{}\"{at}{bet} }}",
             id.0,
             kind_name(vote.kind),
             vote.date
@@ -163,6 +169,7 @@ fn vote_from_entry(appid: u32, entry: VoteEntry) -> Result<Vote, VotesError> {
     Ok(Vote {
         kind: entry.vote.into(),
         date: entry.date,
+        at: entry.at.map(Timestamp),
         bet,
     })
 }
@@ -196,6 +203,7 @@ mod tests {
             Vote {
                 kind: VoteKind::WouldTry,
                 date: "2026-10-07".to_string(),
+                at: None,
                 bet: false,
             }
         );
@@ -204,9 +212,40 @@ mod tests {
             Vote {
                 kind: VoteKind::NotForMe,
                 date: "2026-10-08".to_string(),
+                at: None,
                 bet: true,
             }
         );
+    }
+
+    #[test]
+    fn the_time_of_a_vote_survives_saving_and_loading() {
+        let mut votes = Votes::new();
+        votes.insert(
+            AppId(10),
+            Vote {
+                kind: VoteKind::Maybe,
+                date: "2026-11-07".to_string(),
+                at: Some(Timestamp(1_762_500_000_000)),
+                bet: true,
+            },
+        );
+        votes.insert(
+            AppId(20),
+            Vote {
+                kind: VoteKind::Known,
+                date: "2026-10-07".to_string(),
+                at: None,
+                bet: false,
+            },
+        );
+
+        let text = votes_text(&votes, |_| None);
+
+        assert!(text.contains(
+            "10 = { vote = \"maybe\", date = \"2026-11-07\", at = 1762500000000, bet = true }"
+        ));
+        assert_eq!(parse_votes(&text).unwrap(), votes);
     }
 
     #[test]
