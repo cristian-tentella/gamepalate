@@ -189,10 +189,11 @@ impl App {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Navigate(Page::Settings) if self.page() == Some(Page::Settings) => {
-                self.open(self.back_page())
+                let back = self.back_page();
+                self.leave(back)
             }
             Message::Navigate(page) if self.page() == Some(page) => Task::none(),
-            Message::Navigate(page) => self.open(page),
+            Message::Navigate(page) => self.leave(page),
             Message::Discover(discover::Message::OpenSimilar(id)) => self.show_game(id),
             Message::Discover(message) => {
                 if let Screen::Discover(screen) = &mut self.screen {
@@ -257,7 +258,11 @@ impl App {
             }
             Message::Settings(message) => {
                 let Screen::Settings(screen) = &mut self.screen else {
-                    return Task::none();
+                    return if message.changed_data() {
+                        self.reopen()
+                    } else {
+                        Task::none()
+                    };
                 };
                 match screen.update(message) {
                     settings::Action::None => Task::none(),
@@ -268,7 +273,9 @@ impl App {
                         self.reopen(),
                         self.run_refresh(Plan::EVERYTHING, Start::Button),
                     ]),
-                    settings::Action::Close(page) => self.open(page),
+                    settings::Action::Close(page, saving) => {
+                        Task::batch([self.open(page), saving.map(Message::Settings)])
+                    }
                 }
             }
             Message::Reopened(Ok(gamepalate)) => {
@@ -462,7 +469,7 @@ impl App {
             Screen::Votes(_) => Votes::subscription().map(Message::Votes),
             Screen::Library(_) => Library::subscription().map(Message::Library),
             Screen::Profile(_) => Profile::subscription().map(Message::Profile),
-            Screen::Settings(_) => Settings::subscription().map(Message::Settings),
+            Screen::Settings(screen) => screen.subscription().map(Message::Settings),
             Screen::Setup(_) | Screen::Starting => Subscription::none(),
         };
 
@@ -749,6 +756,15 @@ impl App {
             Screen::Settings(settings) => settings.back(),
             _ => self.page().unwrap_or(Page::Discover),
         }
+    }
+
+    fn leave(&mut self, page: Page) -> Task<Message> {
+        let saving = match &mut self.screen {
+            Screen::Settings(screen) => screen.leave().map(Message::Settings),
+            _ => Task::none(),
+        };
+
+        Task::batch([self.open(page), saving])
     }
 
     fn open(&mut self, page: Page) -> Task<Message> {

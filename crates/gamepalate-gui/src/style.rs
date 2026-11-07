@@ -532,6 +532,18 @@ pub fn field(theme: &Theme, status: text_input::Status) -> text_input::Style {
     }
 }
 
+pub fn wrong_field(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let style = field(theme, status);
+
+    text_input::Style {
+        border: Border {
+            color: theme.extended_palette().danger.base.color,
+            ..style.border
+        },
+        ..style
+    }
+}
+
 pub fn dropdown(theme: &Theme, status: pick_list::Status) -> pick_list::Style {
     let palette = theme.extended_palette();
     let border = match status {
