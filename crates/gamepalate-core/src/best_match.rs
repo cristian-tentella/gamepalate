@@ -135,6 +135,7 @@ mod tests {
             kind: VoteKind::WouldTry,
             date: "2026-11-02".to_string(),
             bet: false,
+            at: None,
         }
     }
 

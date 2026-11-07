@@ -5,6 +5,7 @@ use clap::{Args, ValueEnum};
 use gamepalate_core::{
     ids::AppId,
     taste::game_name,
+    timestamp::Timestamp,
     votes::{VoteKind, cast},
 };
 use gamepalate_store::{data_files::DataFiles, votes::save_votes};
@@ -64,6 +65,7 @@ pub fn run(args: &VoteArgs, files: &DataFiles, data_dir: &Path) -> anyhow::Resul
         args.vote.kind(),
         jiff::Zoned::now().date().to_string(),
         args.bet,
+        Some(Timestamp(jiff::Timestamp::now().as_millisecond())),
     );
 
     let path = data_dir.join("votes.toml");

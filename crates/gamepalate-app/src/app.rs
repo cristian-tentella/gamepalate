@@ -23,7 +23,7 @@ use gamepalate_core::{
     },
     taste::game_name,
     timestamp::Timestamp,
-    votes::{Vote, VoteKind, Votes, cast},
+    votes::{Vote, VoteKind, Votes, cast, cast_in_last_day},
 };
 use gamepalate_steam::{
     archive::PendingUpdate,
@@ -148,7 +148,9 @@ impl Gamepalate {
 
     pub fn vote(&self, id: AppId, kind: VoteKind, bet: bool) -> Result<(), VoteError> {
         let mut votes = self.lock_votes();
-        let date = jiff::Zoned::now().date().to_string();
+        let now = jiff::Zoned::now();
+        let date = now.date().to_string();
+        let at = Timestamp(now.timestamp().as_millisecond());
         let name = |id| {
             let name = game_name(id, &self.files.catalog, &self.files.off_catalog);
             (name != format!("#{}", id.0)).then_some(name)
@@ -157,13 +159,23 @@ impl Gamepalate {
             &self.data_dir.join("votes.toml"),
             &votes,
             id,
-            kind,
-            date,
-            bet,
+            Vote {
+                kind,
+                date,
+                at: Some(at),
+                bet,
+            },
             name,
         )
         .inspect_err(failed("could not save the vote"))?;
         Ok(())
+    }
+
+    pub fn votes_in_last_day(&self) -> usize {
+        cast_in_last_day(
+            &self.lock_votes(),
+            Timestamp(jiff::Timestamp::now().as_millisecond()),
+        )
     }
 
     pub fn voted_games(&self) -> Vec<VotedGame> {
@@ -494,13 +506,11 @@ fn saved_vote(
     path: &Path,
     votes: &Votes,
     id: AppId,
-    kind: VoteKind,
-    date: String,
-    bet: bool,
+    vote: Vote,
     name: impl Fn(AppId) -> Option<String>,
 ) -> Result<Votes, VoteError> {
     let mut changed = votes.clone();
-    cast(&mut changed, id, kind, date, bet);
+    cast(&mut changed, id, vote.kind, vote.date, vote.bet, vote.at);
     save_votes(path, &changed, name).map_err(|source| VoteError {
         path: path.to_path_buf(),
         source,
@@ -583,9 +593,12 @@ mod tests {
             path,
             votes,
             AppId(620),
-            VoteKind::WouldTry,
-            "2026-10-30".to_string(),
-            true,
+            Vote {
+                kind: VoteKind::WouldTry,
+                date: "2026-10-30".to_string(),
+                at: Some(Timestamp(1_762_500_000_000)),
+                bet: true,
+            },
             |_| Some("Portal 2".to_string()),
         )
     }
@@ -600,7 +613,7 @@ mod tests {
         assert_eq!(votes.len(), 1);
         assert_eq!(gamepalate_store::votes::load_votes(&path).unwrap(), votes);
         assert!(std::fs::read_to_string(&path).unwrap().contains(
-            "620 = { vote = \"would_try\", date = \"2026-10-30\", bet = true } # Portal 2"
+            "620 = { vote = \"would_try\", date = \"2026-10-30\", at = 1762500000000, bet = true } # Portal 2"
         ));
     }
 
@@ -626,6 +639,7 @@ mod tests {
             VoteKind::Maybe,
             "2026-10-01".to_string(),
             false,
+            None,
         );
         cast(
             &mut votes,
@@ -633,6 +647,7 @@ mod tests {
             VoteKind::WouldTry,
             "2026-10-30".to_string(),
             true,
+            None,
         );
         let mut catalog_game = Game {
             id: AppId(1),
@@ -678,6 +693,7 @@ mod tests {
             VoteKind::Known,
             "2026-10-01".to_string(),
             false,
+            None,
         );
         let off_catalog = OffCatalogGames::from([(
             AppId(72850),

@@ -378,6 +378,7 @@ mod tests {
             kind,
             date: "2026-10-01".to_string(),
             bet: false,
+            at: None,
         }
     }
 

@@ -824,6 +824,7 @@ mod tests {
                 kind,
                 date: date.to_string(),
                 bet,
+                at: None,
             },
             price: None,
             reviews: None,
