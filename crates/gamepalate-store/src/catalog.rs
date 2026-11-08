@@ -14,7 +14,7 @@ use gamepalate_core::{
 };
 use rusqlite::{Connection, OpenFlags, Row, params};
 
-const CACHE_FORMAT: u32 = 2;
+const CACHE_FORMAT: u32 = 3;
 
 const SCHEMA: &str = "
     CREATE TABLE games (
@@ -34,6 +34,18 @@ const SCHEMA: &str = "
         tagid INTEGER NOT NULL,
         weight REAL NOT NULL,
         PRIMARY KEY (appid, tagid)
+    ) WITHOUT ROWID;
+    CREATE TABLE game_developers (
+        appid INTEGER NOT NULL REFERENCES games(appid),
+        position INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        PRIMARY KEY (appid, position)
+    ) WITHOUT ROWID;
+    CREATE TABLE game_franchises (
+        appid INTEGER NOT NULL REFERENCES games(appid),
+        position INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        PRIMARY KEY (appid, position)
     ) WITHOUT ROWID;
     CREATE TABLE tags (tagid INTEGER PRIMARY KEY, name_it TEXT NOT NULL, name_en TEXT NOT NULL);
     CREATE TABLE tag_idf (tagid INTEGER PRIMARY KEY, idf REAL NOT NULL);
@@ -162,6 +174,13 @@ fn insert_catalog(
         let mut insert_game_tag = transaction
             .prepare_cached("INSERT INTO game_tags (appid, tagid, weight) VALUES (?, ?, ?)")?;
 
+        let mut insert_developer = transaction.prepare_cached(
+            "INSERT INTO game_developers (appid, position, name) VALUES (?, ?, ?)",
+        )?;
+        let mut insert_franchise = transaction.prepare_cached(
+            "INSERT INTO game_franchises (appid, position, name) VALUES (?, ?, ?)",
+        )?;
+
         for game in catalog.games() {
             let discount = game.price.discount;
             let price_change_number =
@@ -182,6 +201,12 @@ fn insert_catalog(
 
             for tag in &game.tags {
                 insert_game_tag.execute(params![game.id.0, tag.id.0, tag.weight])?;
+            }
+            for (position, name) in game.developers.iter().enumerate() {
+                insert_developer.execute(params![game.id.0, to_sql_int(position)?, name])?;
+            }
+            for (position, name) in game.franchises.iter().enumerate() {
+                insert_franchise.execute(params![game.id.0, to_sql_int(position)?, name])?;
             }
         }
 
@@ -217,9 +242,19 @@ fn insert_catalog(
     transaction.commit()
 }
 
+fn to_sql_int(value: usize) -> rusqlite::Result<i64> {
+    i64::try_from(value).map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+}
+
 fn read_catalog(conn: &Connection) -> Result<Catalog, CatalogError> {
     let mut games = read_games(conn)?;
     attach_game_tags(conn, &mut games)?;
+    attach_names(conn, "game_developers", &mut games, |game| {
+        &mut game.developers
+    })?;
+    attach_names(conn, "game_franchises", &mut games, |game| {
+        &mut game.franchises
+    })?;
 
     let tag_names = read_tag_names(conn)?;
     let idf = read_idf(conn)?;
@@ -292,6 +327,39 @@ fn attach_game_tags(conn: &Connection, games: &mut [Game]) -> Result<(), Catalog
     }
 
     Ok(())
+}
+
+fn attach_names(
+    conn: &Connection,
+    table: &str,
+    games: &mut [Game],
+    names: impl Fn(&mut Game) -> &mut Vec<String>,
+) -> Result<(), CatalogError> {
+    if !has_table(conn, table)? {
+        return Ok(());
+    }
+
+    let mut stmt = conn.prepare(&format!(
+        "SELECT appid, name FROM {table} ORDER BY appid, position"
+    ))?;
+    let mut rows = stmt.query([])?;
+    let mut games = games.iter_mut().peekable();
+
+    while let Some(row) = rows.next()? {
+        let app_id = AppId(row.get(0)?);
+        while games.next_if(|game| game.id < app_id).is_some() {}
+
+        if let Some(game) = games.peek_mut().filter(|game| game.id == app_id) {
+            names(game).push(row.get(1)?);
+        }
+    }
+
+    Ok(())
+}
+
+fn has_table(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    conn.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")?
+        .exists([name])
 }
 
 fn read_tag_names(conn: &Connection) -> Result<BTreeMap<TagId, TagName>, CatalogError> {
@@ -397,6 +465,12 @@ mod tests {
                 (10, 2, 0.75),
                 (20, 2, 1.0),
                 (99, 2, 1.0);
+            INSERT INTO game_developers VALUES
+                (10, 1, 'Second Dev'),
+                (10, 0, 'First Dev'),
+                (20, 0, 'Beta Dev'),
+                (99, 0, 'Ghost Dev');
+            INSERT INTO game_franchises VALUES (10, 0, 'Alpha Saga');
             INSERT INTO tags VALUES (2, 'Azione', 'Action'), (5, 'Indipendente', 'Indie');
             INSERT INTO tag_idf VALUES (2, 0.5), (5, 1.25);
             INSERT INTO freshness VALUES (1700000000000, 1690000000000, 'IT', '', '€', ',', NULL);",
@@ -462,7 +536,7 @@ mod tests {
                 id: TagId(2),
                 weight: 1.0,
             }],
-            developers: Vec::new(),
+            developers: vec!["Beta Dev".to_string()],
             franchises: Vec::new(),
         };
         assert_eq!(catalog.game(AppId(20)), Some(&expected));
@@ -499,6 +573,64 @@ mod tests {
         assert_eq!(catalog.game(AppId(99)), None);
         let tag_count: usize = catalog.games().iter().map(|game| game.tags.len()).sum();
         assert_eq!(tag_count, 3);
+    }
+
+    #[test]
+    fn read_catalog_attaches_developers_and_franchises_in_position_order() {
+        let catalog = test_catalog();
+        let alpha = catalog.game(AppId(10)).unwrap();
+        assert_eq!(alpha.developers, ["First Dev", "Second Dev"]);
+        assert_eq!(alpha.franchises, ["Alpha Saga"]);
+        assert_eq!(catalog.game(AppId(20)).unwrap().developers, ["Beta Dev"]);
+    }
+
+    #[test]
+    fn read_catalog_leaves_a_game_without_names_empty() {
+        let catalog = test_catalog();
+        let gamma = catalog.game(AppId(30)).unwrap();
+        assert!(gamma.developers.is_empty());
+        assert!(gamma.franchises.is_empty());
+        assert!(catalog.game(AppId(20)).unwrap().franchises.is_empty());
+    }
+
+    #[test]
+    fn a_written_catalog_keeps_developers_and_franchises() {
+        let catalog = test_catalog();
+        let mut conn = Connection::open_in_memory().unwrap();
+
+        insert_catalog(&mut conn, &catalog, &HashMap::new()).unwrap();
+        let read = read_catalog(&conn).unwrap();
+
+        let alpha = read.game(AppId(10)).unwrap();
+        assert_eq!(alpha.developers, ["First Dev", "Second Dev"]);
+        assert_eq!(alpha.franchises, ["Alpha Saga"]);
+    }
+
+    #[test]
+    fn a_catalog_without_the_name_tables_reads_with_empty_lists() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE games (
+                appid INTEGER PRIMARY KEY, name TEXT NOT NULL, final_price_cents INTEGER NOT NULL,
+                original_price_cents INTEGER NOT NULL, discount_percent INTEGER NOT NULL,
+                discount_end_ms INTEGER, review_count INTEGER NOT NULL,
+                positive_count INTEGER NOT NULL, early_access INTEGER NOT NULL,
+                price_change_number INTEGER NOT NULL
+            );
+            CREATE TABLE game_tags (appid INTEGER NOT NULL, tagid INTEGER NOT NULL, weight REAL NOT NULL);
+            CREATE TABLE tags (tagid INTEGER PRIMARY KEY, name_it TEXT NOT NULL, name_en TEXT NOT NULL);
+            CREATE TABLE tag_idf (tagid INTEGER PRIMARY KEY, idf REAL NOT NULL);
+            CREATE TABLE freshness (prices_updated_at INTEGER NOT NULL, tags_updated_at INTEGER NOT NULL);
+            INSERT INTO games VALUES (10, 'Alpha', 1500, 1500, 0, NULL, 100, 90, 0, 3);
+            INSERT INTO freshness VALUES (1700000000000, 1690000000000);",
+        )
+        .unwrap();
+
+        let catalog = read_catalog(&conn).unwrap();
+
+        let alpha = catalog.game(AppId(10)).unwrap();
+        assert!(alpha.developers.is_empty());
+        assert!(alpha.franchises.is_empty());
     }
 
     #[test]
@@ -640,6 +772,13 @@ mod tests {
         std::fs::write(
             &cache,
             postcard::to_stdvec(&(1_u32, &dollar_catalog())).unwrap(),
+        )
+        .unwrap();
+        assert!(read_cache(&cache, &sqlite).is_none());
+
+        std::fs::write(
+            &cache,
+            postcard::to_stdvec(&(2_u32, &dollar_catalog())).unwrap(),
         )
         .unwrap();
         assert!(read_cache(&cache, &sqlite).is_none());
