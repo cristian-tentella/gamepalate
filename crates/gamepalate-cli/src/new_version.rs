@@ -58,18 +58,19 @@ async fn execute<F: Fetch>(
     let Some(target) = target else {
         bail!("{}", download_by_hand(&new));
     };
+    let mut line = ProgressLine::new(std::io::stderr());
     let downloaded = download(
         fetch,
         releases_url,
         new.version,
         &target,
         data_dir,
-        print_progress,
+        |progress| line.show(progress),
     )
-    .await
-    .map_err(|error| install_error(error, &new))?;
-    eprintln!();
+    .await;
+    line.finish();
     downloaded
+        .map_err(|error| install_error(error, &new))?
         .install(launcher, false)
         .map_err(|error| install_error(error, &new))?;
     match target.installation() {
@@ -84,10 +85,47 @@ async fn execute<F: Fetch>(
     Ok(())
 }
 
-fn print_progress(progress: Progress) {
-    match progress.percent() {
-        Some(percent) => eprint!("\rDownloading: {percent}%"),
-        None => eprint!("\rDownloading: {} bytes", progress.downloaded),
+struct ProgressLine<W: Write> {
+    out: W,
+    shown: Option<String>,
+}
+
+impl<W: Write> ProgressLine<W> {
+    fn new(out: W) -> ProgressLine<W> {
+        ProgressLine { out, shown: None }
+    }
+
+    fn show(&mut self, progress: Progress) {
+        let line = progress_text(progress);
+        if self.shown.as_ref() == Some(&line) {
+            return;
+        }
+        let _ = write!(self.out, "\r\x1b[2K{line}");
+        let _ = self.out.flush();
+        self.shown = Some(line);
+    }
+
+    fn finish(mut self) -> W {
+        if self.shown.is_some() {
+            let _ = write!(self.out, "\r\x1b[2K");
+            let _ = self.out.flush();
+        }
+        self.out
+    }
+}
+
+fn progress_text(progress: Progress) -> String {
+    let file = match progress.files {
+        0 | 1 => String::new(),
+        files => format!(" {} of {files}", progress.file + 1),
+    };
+    match progress.length {
+        Some(0) => format!("Downloading{file}: 100%"),
+        Some(length) => format!(
+            "Downloading{file}: {}%",
+            progress.downloaded.min(length) * 100 / length
+        ),
+        None => format!("Downloading{file}: {} bytes", progress.downloaded),
     }
 }
 
@@ -291,5 +329,56 @@ mod tests {
             fs::read_to_string(app.join("gamepalate.exe")).unwrap(),
             "old gui"
         );
+    }
+
+    fn progress(file: usize, files: usize, downloaded: u64, length: Option<u64>) -> Progress {
+        Progress {
+            file,
+            files,
+            downloaded,
+            length,
+        }
+    }
+
+    #[test]
+    fn the_progress_counts_each_file_on_its_own() {
+        assert_eq!(
+            progress_text(progress(0, 1, 40, Some(100))),
+            "Downloading: 40%"
+        );
+        assert_eq!(
+            progress_text(progress(1, 2, 13, Some(13))),
+            "Downloading 2 of 2: 100%"
+        );
+        assert_eq!(
+            progress_text(progress(0, 2, 0, Some(0))),
+            "Downloading 1 of 2: 100%"
+        );
+        assert_eq!(
+            progress_text(progress(0, 1, 2048, None)),
+            "Downloading: 2048 bytes"
+        );
+    }
+
+    #[test]
+    fn the_progress_line_is_written_only_when_it_changes() {
+        let mut line = ProgressLine::new(Vec::new());
+
+        line.show(progress(0, 1, 10, Some(1000)));
+        line.show(progress(0, 1, 15, Some(1000)));
+        line.show(progress(0, 1, 20, Some(1000)));
+        let out = String::from_utf8(line.finish()).unwrap();
+
+        assert_eq!(
+            out,
+            "\r\x1b[2KDownloading: 1%\r\x1b[2KDownloading: 2%\r\x1b[2K"
+        );
+    }
+
+    #[test]
+    fn finishing_without_progress_writes_nothing() {
+        let line = ProgressLine::new(Vec::new());
+
+        assert!(line.finish().is_empty());
     }
 }
