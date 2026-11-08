@@ -56,6 +56,7 @@ use crate::{
     profile::{ProfileView, profile_view},
     settings::{self, Settings},
     steam_client::steam_client_file_of,
+    tags::{GameTagsView, game_tags_view},
     update,
 };
 
@@ -280,6 +281,10 @@ impl Gamepalate {
 
     pub fn profile_view(&self) -> ProfileView {
         self.with_inputs(profile_view)
+    }
+
+    pub fn game_tags(&self, id: AppId) -> Option<GameTagsView> {
+        self.with_inputs(|inputs| game_tags_view(id, inputs))
     }
 
     pub fn library_view(&self) -> LibraryView {
