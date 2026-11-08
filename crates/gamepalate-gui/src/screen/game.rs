@@ -28,6 +28,7 @@ const BET_INSET: f32 = 8.0;
 const BADGE_PADDING: f32 = 2.0;
 pub const PRICE_GAP: f32 = 4.0;
 const COMPACT_VOTE_SIZE: f32 = 14.0;
+const VOTE_INSET: f32 = 16.0;
 const CHECK: char = '\u{E668}';
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -198,22 +199,27 @@ pub fn vote_button<'a, Message: Clone + 'a>(
         } else {
             font::VOTE_SIZE
         })
-        .font(font::SEMIBOLD);
-
-    container(
-        button(
-            container(row![keycap, label].spacing(10).align_y(Center))
-                .center_x(Fill)
-                .center_y(Fill),
+        .font(font::SEMIBOLD)
+        .wrapping(text::Wrapping::None);
+    // When the buttons share a narrow row, the longest label keeps its own width
+    // instead of wrapping onto two lines.
+    let content = container(row![keycap, label].spacing(10).align_y(Center)).center_y(Fill);
+    let (content, width) = if width == Length::Fill && kind == VoteKind::Known {
+        (
+            content.padding(padding::left(VOTE_INSET).right(VOTE_INSET)),
+            Length::Shrink,
         )
-        .width(Fill)
+    } else {
+        (content.center_x(Fill), width)
+    };
+
+    button(content)
+        .width(width)
         .height(VOTE_HEIGHT)
         .padding(0)
         .style(style::vote(flashed))
-        .on_press_maybe(on_press),
-    )
-    .width(width)
-    .into()
+        .on_press_maybe(on_press)
+        .into()
 }
 
 pub fn keycap<'a, Message: 'a>(key: &'a str) -> Container<'a, Message> {
