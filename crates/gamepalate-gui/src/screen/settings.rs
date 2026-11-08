@@ -21,6 +21,8 @@ use iced::{
 use crate::{
     app::Page,
     font, format,
+    new_version::{NewVersions, Offer},
+    screen::game::open_url,
     screen::setup::{
         KEY_DOMAIN_NOTE, PRIVACY_PAGE, PROFILE_PLACEHOLDER, connect_error_text, needs_privacy,
         note_link, steam_id_note,
@@ -132,6 +134,10 @@ pub enum Message {
     ConfigSaved(ConfigKey, Result<(), String>),
     Flushed(bool),
     Tick(Instant),
+    Install,
+    CheckNow,
+    CheckAtStartup(bool),
+    OpenRelease(String),
     Back,
     Escape,
 }
@@ -156,6 +162,9 @@ pub enum Action {
     Reopen,
     RegionChanged,
     Close(Page, Task<Message>),
+    CheckNewVersion,
+    InstallNewVersion,
+    CheckAtStartup(bool),
 }
 
 impl Settings {
@@ -373,6 +382,13 @@ impl Settings {
                     .collect();
                 Action::Run(Task::batch(tasks))
             }
+            Message::Install => Action::InstallNewVersion,
+            Message::CheckNow => Action::CheckNewVersion,
+            Message::CheckAtStartup(check) => Action::CheckAtStartup(check),
+            Message::OpenRelease(page) => {
+                open_url(&page);
+                Action::None
+            }
             Message::Back => self.close(),
             Message::Escape => {
                 if self.confirming.is_some() {
@@ -461,7 +477,11 @@ impl Settings {
         ))
     }
 
-    pub fn view(&self, theme: ThemeChoice) -> Element<'_, Message> {
+    pub fn view<'a>(
+        &'a self,
+        theme: ThemeChoice,
+        new_versions: &'a NewVersions,
+    ) -> Element<'a, Message> {
         let account = group(
             "Account",
             column![
@@ -550,7 +570,8 @@ impl Settings {
                         taste,
                         discover,
                         corrections,
-                        data
+                        data,
+                        about(new_versions),
                     ]
                     .spacing(32),
                 ]
@@ -1263,6 +1284,64 @@ fn setting<'a>(
     .spacing(16)
     .align_y(Center)
     .into()
+}
+
+fn about(new_versions: &NewVersions) -> Element<'_, Message> {
+    let offer =
+        new_versions
+            .offer()
+            .zip(new_versions.available())
+            .map(|((offer, enabled), new)| {
+                let page = Message::OpenRelease(new.release_page.clone());
+                let (label, message) = match offer {
+                    Offer::Install => ("Install", Message::Install),
+                    Offer::OpenReleasePage => ("Open release page", page.clone()),
+                };
+                row![
+                    button(text(label).size(font::BAR_SIZE))
+                        .style(style::primary)
+                        .padding([8, 20])
+                        .on_press_maybe(enabled.then_some(message)),
+                ]
+                .push((offer == Offer::Install).then(|| link("What's new", page)))
+                .spacing(16)
+                .align_y(Center)
+            });
+    let problem = new_versions
+        .problem_text()
+        .map(|problem| text(problem).size(font::NOTE_SIZE).style(text::danger));
+    let check = Some(new_versions.check_at_startup());
+    let choice = |label, flag| {
+        radio(label, flag, check, Message::CheckAtStartup)
+            .size(16)
+            .text_size(font::BAR_SIZE)
+    };
+
+    group(
+        "About",
+        column![
+            setting(
+                "Version",
+                column![value(new_versions.version_text())]
+                    .push(offer)
+                    .push(problem)
+                    .spacing(8)
+                    .into(),
+                None,
+            ),
+            setting(
+                "New versions",
+                row![
+                    choice("Check at startup", true),
+                    choice("Don't check", false)
+                ]
+                .spacing(24)
+                .into(),
+                Some(link("Check now", Message::CheckNow)),
+            ),
+        ]
+        .spacing(12),
+    )
 }
 
 fn catalog_text(games: usize, tags_updated: &str) -> String {

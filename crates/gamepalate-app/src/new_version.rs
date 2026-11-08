@@ -1,7 +1,7 @@
 use std::{env, fmt, path::Path, str::FromStr, time::Duration};
 
 use gamepalate_steam::transport::Fetch;
-use reqwest::{Method, Request, Url};
+use reqwest::{Client, Method, Request, Url};
 use serde_json::Value;
 
 const RELEASES_URL: &str =
@@ -109,6 +109,17 @@ pub async fn check<F: Fetch>(
     releases_url: &str,
 ) -> Result<Option<NewVersion>, CheckError> {
     check_against(fetch, releases_url, Version::current()).await
+}
+
+pub async fn check_releases() -> Result<Option<NewVersion>, CheckError> {
+    let releases_url = releases_url();
+    let client = Client::builder()
+        .build()
+        .map_err(|source| CheckError::Network {
+            url: releases_url.clone(),
+            source,
+        })?;
+    check(&client, &releases_url).await
 }
 
 async fn check_against<F: Fetch>(

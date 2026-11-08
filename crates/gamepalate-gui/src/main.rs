@@ -3,6 +3,7 @@
 mod app;
 mod font;
 mod format;
+mod new_version;
 mod progress;
 mod screen;
 mod smooth;
@@ -17,9 +18,11 @@ use crate::app::{App, window_settings};
 fn main() -> anyhow::Result<()> {
     let _ = start_log();
     tracing::info!("gamepalate {} started", env!("CARGO_PKG_VERSION"));
-    let saved = saved_gui_settings().window;
+    let gui = saved_gui_settings();
+    let saved = gui.window;
+    let check = gui.check_for_new_versions;
 
-    iced::application(move || App::new(saved), App::update, App::view)
+    iced::application(move || App::new(saved, check), App::update, App::view)
         .title("gamepalate")
         .theme(App::theme)
         .subscription(App::subscription)

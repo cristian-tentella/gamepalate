@@ -8,14 +8,16 @@ use std::{
 };
 
 use gamepalate_steam::transport::Fetch;
-use reqwest::{Method, Request, Response, StatusCode, Url};
+use reqwest::{Client, Method, Request, Response, StatusCode, Url};
 use sha2::{Digest, Sha256};
 use tokio::time::timeout;
 
 use crate::{
     lock::{LockError, UpdateLock},
     log::failed,
-    new_version::{CLI_EXE, GUI_EXE, Installation, TIMEOUT, Version, checksum, release_asset_url},
+    new_version::{
+        CLI_EXE, GUI_EXE, Installation, TIMEOUT, Version, checksum, release_asset_url, releases_url,
+    },
 };
 
 const SUMS_FILE: &str = "SHA256SUMS.txt";
@@ -288,6 +290,19 @@ pub async fn download<F: Fetch>(
             Err(error)
         }
     }
+}
+
+pub async fn download_release(
+    version: Version,
+    target: &Target,
+    data_dir: &Path,
+    progress: impl FnMut(Progress),
+) -> Result<Downloaded, InstallError> {
+    let releases_url = releases_url();
+    let client = Client::builder()
+        .build()
+        .map_err(|source| network(&releases_url, source))?;
+    download(&client, &releases_url, version, target, data_dir, progress).await
 }
 
 impl Downloaded {
