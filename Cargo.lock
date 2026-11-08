@@ -1921,9 +1921,12 @@ dependencies = [
  "gamepalate-core",
  "gamepalate-steam",
  "gamepalate-store",
+ "http",
  "jiff",
  "open",
+ "reqwest",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "tokio",
 ]
