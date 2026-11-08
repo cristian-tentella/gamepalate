@@ -4,6 +4,7 @@ mod data_dir;
 mod evaluate;
 mod format;
 mod names;
+mod new_version;
 mod profile;
 mod rebuild;
 mod recommend;
@@ -64,6 +65,8 @@ enum Command {
     Update,
     /// Rebuild catalog.sqlite from the last completed update, without network
     Rebuild,
+    /// Check GitHub for a new version of gamepalate, and install it with --install
+    NewVersion(new_version::NewVersionArgs),
 }
 
 fn main() -> ExitCode {
@@ -78,6 +81,9 @@ fn main() -> ExitCode {
         })
         .init();
     let cli = Cli::parse();
+    if let Some(target) = gamepalate_app::install::Target::current() {
+        target.clean_up();
+    }
 
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
@@ -145,6 +151,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Update => update::run(&data_dir)?,
         Command::Rebuild => rebuild::run(&data_dir)?,
+        Command::NewVersion(args) => new_version::run(&args, &data_dir)?,
     }
 
     Ok(())

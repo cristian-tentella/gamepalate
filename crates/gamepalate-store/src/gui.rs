@@ -24,12 +24,24 @@ pub struct SavedWindow {
     pub maximized: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GuiSettings {
     pub theme: ThemeChoice,
+    pub check_for_new_versions: bool,
     pub search: SearchOptions,
     pub window: Option<SavedWindow>,
+}
+
+impl Default for GuiSettings {
+    fn default() -> GuiSettings {
+        GuiSettings {
+            theme: ThemeChoice::default(),
+            check_for_new_versions: true,
+            search: SearchOptions::default(),
+            window: None,
+        }
+    }
 }
 
 pub fn load_gui_settings(path: &Path) -> GuiSettings {
@@ -54,6 +66,7 @@ mod tests {
         let path = dir.path().join("gui.toml");
         let mut settings = GuiSettings {
             theme: ThemeChoice::Dark,
+            check_for_new_versions: false,
             search: SearchOptions::default(),
             window: Some(SavedWindow {
                 width: 1440,
@@ -104,5 +117,22 @@ mod tests {
         assert_eq!(settings.theme, ThemeChoice::Dark);
         assert_eq!(settings.search, SearchOptions::default());
         assert_eq!(settings.window, None);
+        assert!(settings.check_for_new_versions);
+    }
+
+    #[test]
+    fn new_versions_are_checked_unless_the_file_says_otherwise() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.toml");
+        assert!(load_gui_settings(&path).check_for_new_versions);
+
+        std::fs::write(
+            &path,
+            "theme = \"light\"
+check_for_new_versions = false",
+        )
+        .unwrap();
+
+        assert!(!load_gui_settings(&path).check_for_new_versions);
     }
 }

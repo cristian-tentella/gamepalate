@@ -1,17 +1,19 @@
 use std::{
     path::Path,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use gamepalate_app::{
     AppId, Gamepalate, GuiSettings, PendingUpdate, Region, SavedWindow, ThemeChoice, Timestamp,
+    install::{Downloaded, Installed, SystemLaunch, Target, download_release},
+    new_version::{NewVersion, check_releases},
     refresh::{Plan, Step, refresh, startup_plan},
     setup::{FirstRun, error_chain},
     update::{ArchiveState, archive_state, wall_clock},
 };
 use iced::{
-    Center, Color, Element, Fill, Length, Shrink, Size, Subscription, Task, Theme,
+    Center, Color, Element, Fill, Length, Right, Shrink, Size, Subscription, Task, Theme, Top,
     futures::{
         SinkExt,
         channel::mpsc,
@@ -29,6 +31,7 @@ use iced::{
 
 use crate::{
     font, format,
+    new_version::{self, NewVersions, Problem},
     progress::{self, Stage, Tracker},
     screen::{
         Discover, Library, Profile, Screen, Settings, Votes, discover, library, profile, settings,
@@ -54,6 +57,7 @@ const MOON: char = '\u{E51C}';
 const REFRESH: char = '\u{E5D5}';
 const CANCEL: char = '\u{E5CD}';
 const GEAR: char = '\u{E8B8}';
+const DOT_SIZE: f32 = 7.0;
 const DEFAULT_SIZE: Size = Size::new(1280.0, 800.0);
 const MIN_SIZE: Size = Size::new(960.0, 600.0);
 const LIGHT_BACKGROUND: Color = Color::from_rgb8(0xff, 0xff, 0xff);
@@ -81,6 +85,9 @@ pub struct App {
     pending: Option<PendingUpdate>,
     renewal_due: bool,
     startup_error: Option<String>,
+    new_versions: NewVersions,
+    downloaded: Option<Downloaded>,
+    installed: Option<Installed>,
     logo: image::Handle,
 }
 
@@ -130,6 +137,10 @@ pub enum Message {
     CancelRefresh,
     DismissRefreshError,
     Reopened(Result<Arc<Gamepalate>, String>),
+    NewVersionChecked(Result<Option<NewVersion>, String>),
+    NewVersionDownloading(Option<u8>),
+    NewVersionDownloaded(Result<Arc<Mutex<Option<Downloaded>>>, Problem>),
+    InstallNewVersion,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -150,7 +161,8 @@ pub enum Page {
 }
 
 impl App {
-    pub fn new(saved: Option<SavedWindow>) -> (App, Task<Message>) {
+    pub fn new(saved: Option<SavedWindow>, check_for_new_versions: bool) -> (App, Task<Message>) {
+        let target = Target::current();
         let mut app = App {
             gamepalate: None,
             screen: Screen::Starting,
@@ -165,6 +177,9 @@ impl App {
             pending: None,
             renewal_due: false,
             startup_error: None,
+            new_versions: NewVersions::new(target, check_for_new_versions),
+            downloaded: None,
+            installed: None,
             logo: image::Handle::from_bytes(LOGO_BYTES),
         };
         let task = match setup::start(FirstRun::check(None)) {
@@ -180,9 +195,23 @@ impl App {
             }
         };
 
+        let clean = match app.new_versions.target() {
+            Some(target) => {
+                let target = target.clone();
+                Task::future(async move { target.clean_up() }).discard()
+            }
+            None => Task::none(),
+        };
+        let check = app.check_new_version(Start::Startup);
+
         (
             app,
-            Task::batch([task, window::latest().map(Message::WindowFound)]),
+            Task::batch([
+                task,
+                window::latest().map(Message::WindowFound),
+                clean,
+                check,
+            ]),
         )
     }
 
@@ -275,6 +304,14 @@ impl App {
                     ]),
                     settings::Action::Close(page, saving) => {
                         Task::batch([self.open(page), saving.map(Message::Settings)])
+                    }
+                    settings::Action::CheckNewVersion => self.check_new_version(Start::Button),
+                    settings::Action::InstallNewVersion => self.download_new_version(),
+                    settings::Action::CheckAtStartup(check) => {
+                        self.new_versions.set_check_at_startup(check);
+                        self.change_gui_settings(move |settings| {
+                            settings.check_for_new_versions = check;
+                        })
                     }
                 }
             }
@@ -417,7 +454,97 @@ impl App {
                 Task::none()
             }
             Message::ToggleTheme => self.set_theme(choice(&toggled(&self.theme))),
+            Message::NewVersionChecked(found) => {
+                if let Err(error) = &found {
+                    tracing::warn!("could not check for new versions: {error}");
+                }
+                self.new_versions.checked(found.map_err(drop));
+                Task::none()
+            }
+            Message::NewVersionDownloading(percent) => {
+                self.new_versions.downloading(percent);
+                Task::none()
+            }
+            Message::NewVersionDownloaded(Ok(downloaded)) => {
+                self.downloaded = downloaded
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take();
+                self.new_versions.installing();
+                let saving = match &mut self.screen {
+                    Screen::Settings(screen) => screen.leave().discard(),
+                    _ => Task::none(),
+                };
+                saving
+                    .chain(self.save_window())
+                    .chain(Task::done(Message::InstallNewVersion))
+            }
+            Message::NewVersionDownloaded(Err(problem)) => {
+                self.new_versions.failed(problem);
+                Task::none()
+            }
+            Message::InstallNewVersion => {
+                let Some(downloaded) = self.downloaded.take() else {
+                    return Task::none();
+                };
+                match downloaded.install(&SystemLaunch, true) {
+                    Ok(installed) => {
+                        self.installed = Some(installed);
+                        iced::exit()
+                    }
+                    Err(error) => {
+                        self.new_versions.failed(new_version::problem(&error));
+                        Task::none()
+                    }
+                }
+            }
         }
+    }
+
+    fn check_new_version(&mut self, start: Start) -> Task<Message> {
+        if !self.new_versions.start_check(start) {
+            return Task::none();
+        }
+
+        Task::perform(
+            async { check_releases().await.map_err(|error| error_chain(&error)) },
+            Message::NewVersionChecked,
+        )
+    }
+
+    fn download_new_version(&mut self) -> Task<Message> {
+        let Some(dir) = self
+            .gamepalate
+            .as_ref()
+            .map(|gamepalate| gamepalate.data_dir().to_path_buf())
+        else {
+            return Task::none();
+        };
+        let Some((new, target)) = self.new_versions.start_download() else {
+            return Task::none();
+        };
+
+        Task::run(
+            stream::channel(64, async move |mut output: mpsc::Sender<Message>| {
+                let mut events = output.clone();
+                let mut shown = None;
+                let downloaded = download_release(new.version, &target, &dir, move |progress| {
+                    let percent = progress.percent();
+                    if percent != shown {
+                        shown = percent;
+                        let _ = events.try_send(Message::NewVersionDownloading(percent));
+                    }
+                })
+                .await;
+                let message = Message::NewVersionDownloaded(
+                    downloaded
+                        .map(|downloaded| Arc::new(Mutex::new(Some(downloaded))))
+                        .map_err(|error| new_version::problem(&error)),
+                );
+                let _ = output.send(message).await;
+            }),
+            |message| message,
+        )
     }
 
     fn set_theme(&mut self, choice: ThemeChoice) -> Task<Message> {
@@ -535,11 +662,12 @@ impl App {
                             ),
                         )
                     }))
-                    .push(
-                        self.gamepalate
-                            .is_some()
-                            .then(|| settings_button(self.page() == Some(Page::Settings))),
-                    )
+                    .push(self.gamepalate.is_some().then(|| {
+                        settings_button(
+                            self.page() == Some(Page::Settings),
+                            self.new_versions.available().is_some(),
+                        )
+                    }))
                     .push(theme_button(&self.theme))
                     .push(window_button(MINIMIZE, WindowAction::Minimize))
                     .push(window_button(
@@ -565,7 +693,9 @@ impl App {
             Screen::Library(screen) => screen.view().map(Message::Library),
             Screen::Setup(screen) => screen.view().map(Message::Setup),
             Screen::Profile(screen) => screen.view().map(Message::Profile),
-            Screen::Settings(screen) => screen.view(choice(&self.theme)).map(Message::Settings),
+            Screen::Settings(screen) => screen
+                .view(choice(&self.theme), &self.new_versions)
+                .map(Message::Settings),
             Screen::Starting => column![].into(),
         };
 
@@ -586,16 +716,18 @@ impl App {
         self.theme.clone()
     }
 
+    fn save_window(&self) -> Task<Message> {
+        let window = SavedWindow {
+            width: self.size.width.round() as u32,
+            height: self.size.height.round() as u32,
+            maximized: self.maximized,
+        };
+        self.change_gui_settings(move |settings| settings.window = Some(window))
+    }
+
     fn window_action(&self, action: WindowAction) -> Task<Message> {
         if matches!(action, WindowAction::Close) {
-            let window = SavedWindow {
-                width: self.size.width.round() as u32,
-                height: self.size.height.round() as u32,
-                maximized: self.maximized,
-            };
-            return self
-                .change_gui_settings(move |settings| settings.window = Some(window))
-                .chain(iced::exit());
+            return self.save_window().chain(iced::exit());
         }
         let Some(id) = self.window else {
             return Task::none();
@@ -1176,23 +1308,45 @@ fn refresh_button<'a>(refresh: &Refresh, idle_tip: String) -> Element<'a, Messag
         Refresh::Idle | Refresh::Failed(_) => (REFRESH, Some(Message::Refresh), idle_tip),
     };
 
-    with_tooltip(bar_icon(icon, message), tip)
+    with_tooltip(bar_icon(icon, message).into(), tip)
 }
 
-fn settings_button<'a>(open: bool) -> Element<'a, Message> {
+fn settings_button<'a>(open: bool, new_version: bool) -> Element<'a, Message> {
     let button = bar_icon(GEAR, Some(Message::Navigate(Page::Settings)));
-    with_tooltip(
-        if open {
-            button.style(style::open_bar_icon)
-        } else {
-            button
-        },
-        settings_tip(open).to_string(),
-    )
+    let button = if open {
+        button.style(style::open_bar_icon)
+    } else {
+        button
+    };
+    let icon: Element<'a, Message> = if new_version {
+        stack![
+            button,
+            container(
+                container(space())
+                    .width(DOT_SIZE)
+                    .height(DOT_SIZE)
+                    .style(style::badge)
+            )
+            .width(Fill)
+            .height(Fill)
+            .align_x(Right)
+            .align_y(Top)
+            .padding(padding::top(11).right(12)),
+        ]
+        .into()
+    } else {
+        button.into()
+    };
+
+    with_tooltip(icon, settings_tip(open, new_version).to_string())
 }
 
-fn settings_tip(open: bool) -> &'static str {
-    if open { "Close Settings" } else { "Settings" }
+fn settings_tip(open: bool, new_version: bool) -> &'static str {
+    match (open, new_version) {
+        (true, _) => "Close Settings",
+        (false, true) => "Settings · New version available",
+        (false, false) => "Settings",
+    }
 }
 
 fn theme_button<'a>(theme: &Theme) -> Element<'a, Message> {
@@ -1218,7 +1372,7 @@ fn bar_icon<'a>(icon: char, message: Option<Message>) -> button::Button<'a, Mess
     .on_press_maybe(message)
 }
 
-fn with_tooltip<'a>(icon: button::Button<'a, Message>, tip: String) -> Element<'a, Message> {
+fn with_tooltip<'a>(icon: Element<'a, Message>, tip: String) -> Element<'a, Message> {
     tooltip(
         icon,
         container(text(tip).size(font::NOTE_SIZE))
@@ -1462,8 +1616,17 @@ mod tests {
 
     #[test]
     fn the_gear_offers_to_close_settings_while_they_are_open() {
-        assert_eq!(settings_tip(false), "Settings");
-        assert_eq!(settings_tip(true), "Close Settings");
+        assert_eq!(settings_tip(false, false), "Settings");
+        assert_eq!(settings_tip(true, false), "Close Settings");
+    }
+
+    #[test]
+    fn the_gear_says_when_a_new_version_is_available() {
+        assert_eq!(
+            settings_tip(false, true),
+            "Settings · New version available"
+        );
+        assert_eq!(settings_tip(true, true), "Close Settings");
     }
 
     #[test]

@@ -218,6 +218,17 @@ pub fn accent(theme: &Theme) -> text::Style {
     }
 }
 
+pub fn badge(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(theme.extended_palette().success.base.color.into()),
+        border: Border {
+            radius: 999.0.into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
+    }
+}
+
 pub fn tag(theme: &Theme) -> container::Style {
     let background = theme.extended_palette().background;
 

@@ -75,6 +75,8 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Version file
+        run: printf '{ "version": "%s" }\n' "${TAG#v}" > dist/version.json
       - name: Checksums
         working-directory: dist
         run: sha256sum * > SHA256SUMS.txt
