@@ -8,12 +8,12 @@ const RELEASES_URL: &str =
     "https://github.com/cristian-tentella/gamepalate/releases/latest/download";
 const RELEASES_URL_VARIABLE: &str = "GAMEPALATE_RELEASES_URL";
 const RELEASE_PAGE_URL: &str = "https://github.com/cristian-tentella/gamepalate/releases/tag";
-const TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(10);
 const UNINSTALLER: &str = "unins000.exe";
-const SETUP_FILE: &str = "gamepalate-setup.exe";
-const GUI_EXE: &str = "gamepalate.exe";
-const CLI_EXE: &str = "gamepalate-cli.exe";
-const LINUX_TAR: &str = "gamepalate-x86_64-linux.tar.gz";
+pub(crate) const SETUP_FILE: &str = "gamepalate-setup.exe";
+pub(crate) const GUI_EXE: &str = "gamepalate.exe";
+pub(crate) const CLI_EXE: &str = "gamepalate-cli.exe";
+pub(crate) const LINUX_TAR: &str = "gamepalate-x86_64-linux.tar.gz";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Version {

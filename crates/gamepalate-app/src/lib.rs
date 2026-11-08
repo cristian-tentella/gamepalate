@@ -6,6 +6,7 @@ mod data_dir;
 mod details;
 pub mod families;
 mod images;
+pub mod install;
 pub mod library;
 mod lock;
 pub mod log;
