@@ -33,7 +33,7 @@ pub use gamepalate_core::{
     effective_hours::HoursSource,
     filters::{Blame, FilterOptions},
     game::{Discount, Price, Reviews},
-    ids::{AppId, SteamId},
+    ids::{AppId, SteamId, TagId},
     opinion::Labels,
     region::Region,
     search::{Recommendation, RecommendedGame, SearchError, SearchOptions, SortBy},

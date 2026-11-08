@@ -6,14 +6,15 @@ use std::{collections::HashMap, sync::Arc};
 
 use ::image::imageops::FilterType;
 use gamepalate_app::{
-    AppId, Block, GameDetails, Gamepalate, ImageKind, Span, original_screenshot,
-    thumbnail_screenshot,
+    AppId, Block, GameDetails, GameTagsView, Gamepalate, ImageKind, Span, TagOfGame, UsedTag,
+    original_screenshot, thumbnail_screenshot,
 };
 use iced::{
     Center, ContentFit, Element, Fill, Task, mouse, padding,
     widget::{
         Column, Id, button, column, container, image, keyed_column, mouse_area, opaque, operation,
-        rich_text, row, scrollable, scrollable::AbsoluteOffset, space, span, stack, text,
+        progress_bar, rich_text, row, scrollable, scrollable::AbsoluteOffset, space, span, stack,
+        text,
     },
 };
 
@@ -29,7 +30,15 @@ pub const AHEAD: usize = 5;
 pub const BEHIND: usize = 5;
 const DETAILS_AHEAD: usize = 3;
 const SCREENSHOTS_AHEAD: usize = 2;
-const ABOUT: Id = Id::new("showcase-about");
+const SHEET: Id = Id::new("showcase-sheet");
+const FIRST_TAGS: usize = 10;
+const TAG_NAME_WIDTH: f32 = 200.0;
+const TAG_BAR_WIDTH: f32 = 360.0;
+const TAG_BAR_HEIGHT: f32 = 6.0;
+const TAG_PERCENT_WIDTH: f32 = 64.0;
+const TAG_SPACING: f32 = 10.0;
+const TAGS_SECTION_SPACING: f32 = 28.0;
+const USED_REASON: &str = "These tags add the most to this game's score. You play many games with them, and few games on Steam have them.";
 const SCROLL_STEP: f32 = 60.0;
 const MEASURE: f32 = 680.0;
 const SHEET_INSET: f32 = 40.0;
@@ -74,7 +83,8 @@ pub struct Showcase {
     shown: Option<AppId>,
     browsing: bool,
     zoomed: bool,
-    about_open: bool,
+    popups: Popups,
+    tags: Option<GameTagsView>,
     features_open: bool,
     hovered: bool,
     originals: HashMap<String, Picture>,
@@ -85,6 +95,43 @@ pub struct Showcase {
 pub enum Version {
     Original,
     Thumbnail,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Popup {
+    About,
+    Tags,
+}
+
+impl Popup {
+    fn label(self) -> &'static str {
+        match self {
+            Popup::About => "About this game",
+            Popup::Tags => "Tags",
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct Popups {
+    open: Option<Popup>,
+    all_tags: bool,
+}
+
+impl Popups {
+    fn toggle(&mut self, popup: Popup, allowed: bool) {
+        if allowed {
+            self.open = (self.open != Some(popup)).then_some(popup);
+        }
+    }
+
+    fn close(&mut self) {
+        self.open = None;
+    }
+
+    fn is(&self, popup: Popup) -> bool {
+        self.open == Some(popup)
+    }
 }
 
 enum Shown<'a> {
@@ -111,7 +158,9 @@ pub enum Message {
     Zoom,
     CloseZoom,
     ToggleAbout,
-    CloseAbout,
+    ToggleTags,
+    ToggleAllTags,
+    ClosePopup,
     ScrollUp,
     ScrollDown,
     Close,
@@ -132,7 +181,8 @@ impl Showcase {
             shown: None,
             browsing: false,
             zoomed: false,
-            about_open: false,
+            popups: Popups::default(),
+            tags: None,
             features_open: false,
             hovered: false,
             originals: HashMap::new(),
@@ -142,9 +192,9 @@ impl Showcase {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::ScrollUp | Message::ScrollDown if !self.about_open => {}
-            Message::ScrollUp => return scroll_about(-SCROLL_STEP),
-            Message::ScrollDown => return scroll_about(SCROLL_STEP),
+            Message::ScrollUp | Message::ScrollDown if self.popups.open.is_none() => {}
+            Message::ScrollUp => return scroll_sheet(-SCROLL_STEP),
+            Message::ScrollDown => return scroll_sheet(SCROLL_STEP),
             Message::ImageLoaded(url, None) => self.images.loaded(url, None),
             Message::ImageLoaded(url, Some(handle)) => {
                 return image::allocate(handle)
@@ -169,7 +219,8 @@ impl Showcase {
             }
             Message::ExtraAllocated(url, allocation) => self.extras.loaded(url, allocation),
             Message::OpenLink(url) => game::open_url(&url),
-            Message::PreviousScreenshot | Message::NextScreenshot if self.about_open => {}
+            Message::PreviousScreenshot | Message::NextScreenshot if self.popups.open.is_some() => {
+            }
             Message::PreviousScreenshot => self.show_screenshot(self.screenshot.saturating_sub(1)),
             Message::NextScreenshot => {
                 self.show_screenshot(next_index(self.screenshot, self.screenshot_count()));
@@ -182,15 +233,13 @@ impl Showcase {
             }
             Message::Zoom => self.zoomed = self.current_screenshot().is_some(),
             Message::CloseZoom => self.zoomed = false,
-            Message::ToggleAbout => {
-                if !self.zoomed && self.shown.is_some() {
-                    self.about_open = !self.about_open;
-                }
-            }
-            Message::CloseAbout => self.about_open = false,
+            Message::ToggleAbout => self.popups.toggle(Popup::About, self.can_open_popup()),
+            Message::ToggleTags => self.popups.toggle(Popup::Tags, self.can_open_popup()),
+            Message::ToggleAllTags => self.popups.all_tags = !self.popups.all_tags,
+            Message::ClosePopup => self.popups.close(),
             Message::Close => {
                 self.zoomed = false;
-                self.about_open = false;
+                self.popups.close();
             }
             Message::ToggleFeatures => self.features_open = !self.features_open,
             Message::Hover(hovered) => self.hovered = hovered,
@@ -201,6 +250,10 @@ impl Showcase {
             self.load_description(),
             self.load_extras(),
         ])
+    }
+
+    fn can_open_popup(&self) -> bool {
+        !self.zoomed && self.shown.is_some()
     }
 
     fn load_versions(&mut self) -> Task<Message> {
@@ -275,7 +328,8 @@ impl Showcase {
             self.last_screenshot = None;
             self.browsing = false;
             self.zoomed = false;
-            self.about_open = false;
+            self.popups.close();
+            self.tags = current.and_then(|id| self.gamepalate.game_tags(id));
             self.originals.clear();
             self.thumbnails.clear();
         }
@@ -343,11 +397,22 @@ impl Showcase {
             })
     }
 
-    pub fn about<'a>(&'a self, name: &'a str) -> Option<Element<'a, Message>> {
-        if !self.about_open {
-            return None;
-        }
-        let body: Element<'a, Message> = match self.descriptions.get(self.shown?) {
+    pub fn popup<'a>(&'a self, name: &'a str) -> Option<Element<'a, Message>> {
+        let popup = self.popups.open?;
+        let body = match popup {
+            Popup::About => self.about(self.shown?),
+            Popup::Tags => self.tags_body(),
+        };
+
+        Some(sheet(popup.label(), name, body))
+    }
+
+    pub fn used_tags(&self) -> Vec<String> {
+        used_names(self.tags.as_ref())
+    }
+
+    fn about(&self, id: AppId) -> Element<'_, Message> {
+        match self.descriptions.get(id) {
             Some(Description::Ready(blocks)) => column(
                 blocks
                     .iter()
@@ -357,61 +422,35 @@ impl Showcase {
             .spacing(BLOCK_SPACING)
             .into(),
             Some(Description::Missing) => {
-                about_note("The Steam store has no description for this game.")
+                sheet_note("The Steam store has no description for this game.")
             }
-            Some(Description::Failed) => about_note("Couldn't load the description."),
-            Some(Description::Loading) | None => about_note("Loading…"),
-        };
-        let close = button(text(CLOSE).font(font::ICONS).size(font::icon(12.0)))
-            .padding([8, 12])
-            .style(style::secondary)
-            .on_press(Message::CloseAbout);
-        let header = row![
-            column![
-                text("About this game")
-                    .size(font::NOTE_SIZE)
-                    .style(style::muted),
-                text(name).size(font::PRICE_SIZE).font(font::SEMIBOLD),
-            ]
-            .spacing(4)
-            .width(Fill),
-            close,
-        ];
-        let sheet = column![
-            container(header).padding(padding::top(24).bottom(20).left(SHEET_INSET).right(20)),
-            style::separator(),
-            scrollable(
-                container(body).padding(
-                    padding::top(24)
-                        .bottom(SHEET_INSET)
-                        .left(SHEET_INSET)
-                        .right(SHEET_INSET)
-                )
-            )
-            .id(ABOUT),
-        ];
+            Some(Description::Failed) => sheet_note("Couldn't load the description."),
+            Some(Description::Loading) | None => sheet_note("Loading…"),
+        }
+    }
 
-        Some(
-            stack![
-                opaque(
-                    mouse_area(
-                        container(space())
-                            .width(Fill)
-                            .height(Fill)
-                            .style(style::veil)
-                    )
-                    .on_press(Message::CloseAbout)
-                ),
-                container(opaque(
-                    container(sheet)
-                        .max_width(MEASURE + 2.0 * SHEET_INSET)
-                        .style(style::popup)
-                ))
-                .center(Fill)
-                .padding(SHEET_MARGIN),
-            ]
-            .into(),
+    fn tags_body(&self) -> Element<'_, Message> {
+        let Some(view) = self.tags.as_ref().filter(|view| !view.tags.is_empty()) else {
+            return sheet_note("No tags for this game");
+        };
+        let all = self.popups.all_tags;
+        let shown = shown_tags(view.tags.len(), all);
+        let list = column(
+            view.tags[..shown]
+                .iter()
+                .map(|tag| tag_line(tag, view.weighted)),
         )
+        .spacing(TAG_SPACING);
+        let more = show_all_label(view.tags.len(), all).map(|label| {
+            button(text(label).size(font::BAR_SIZE))
+                .padding(0)
+                .style(style::link)
+                .on_press(Message::ToggleAllTags)
+        });
+
+        column![used_block(&view.used), column![list].push(more).spacing(16)]
+            .spacing(TAGS_SECTION_SPACING)
+            .into()
     }
 
     fn block<'a>(&'a self, block: &'a Block, first: bool) -> Element<'a, Message> {
@@ -551,7 +590,7 @@ impl Showcase {
     }
 
     fn load_description(&mut self) -> Task<Message> {
-        let Some(id) = self.shown.filter(|_| self.about_open) else {
+        let Some(id) = self.shown.filter(|_| self.popups.is(Popup::About)) else {
             return Task::none();
         };
 
@@ -571,7 +610,7 @@ impl Showcase {
     }
 
     fn load_extras(&mut self) -> Task<Message> {
-        let Some(id) = self.shown.filter(|_| self.about_open) else {
+        let Some(id) = self.shown.filter(|_| self.popups.is(Popup::About)) else {
             return Task::none();
         };
         let urls = self.descriptions.image_urls(id);
@@ -797,11 +836,11 @@ impl Showcase {
     }
 
     pub fn is_open(&self) -> bool {
-        self.zoomed || self.about_open
+        self.zoomed || self.popups.open.is_some()
     }
 
-    pub fn is_about_open(&self) -> bool {
-        self.about_open
+    pub fn is_popup_open(&self) -> bool {
+        self.popups.open.is_some()
     }
 
     pub fn zoom(&self) -> Option<Element<'_, Message>> {
@@ -964,9 +1003,13 @@ fn facts<'a>(details: &'a GameDetails, tags: &[String], open: bool) -> Element<'
     )
     .map(|byline| text(byline).size(font::NOTE_SIZE).style(style::muted));
     let tags = (!tags.is_empty()).then(|| {
-        text(tags.join(" · "))
-            .size(font::NOTE_SIZE)
-            .style(style::muted)
+        mouse_area(
+            text(tags.join(" · "))
+                .size(font::NOTE_SIZE)
+                .style(style::muted),
+        )
+        .on_press(Message::ToggleTags)
+        .interaction(mouse::Interaction::Pointer)
     });
     let features = format::features(store.steam_deck, &details.modes, store.controller);
     let menu = (!features.is_empty()).then(|| {
@@ -1036,11 +1079,163 @@ fn paragraph(spans: &[Span]) -> Element<'_, Message> {
         .into()
 }
 
-fn scroll_about(y: f32) -> Task<Message> {
-    operation::scroll_by(ABOUT, AbsoluteOffset { x: 0.0, y })
+fn scroll_sheet(y: f32) -> Task<Message> {
+    operation::scroll_by(SHEET, AbsoluteOffset { x: 0.0, y })
 }
 
-fn about_note<'a>(label: &'static str) -> Element<'a, Message> {
+fn sheet<'a>(label: &'a str, name: &'a str, body: Element<'a, Message>) -> Element<'a, Message> {
+    let close = button(text(CLOSE).font(font::ICONS).size(font::icon(12.0)))
+        .padding([8, 12])
+        .style(style::secondary)
+        .on_press(Message::ClosePopup);
+    let header = row![
+        column![
+            text(label).size(font::NOTE_SIZE).style(style::muted),
+            text(name).size(font::PRICE_SIZE).font(font::SEMIBOLD),
+        ]
+        .spacing(4)
+        .width(Fill),
+        close,
+    ];
+    let sheet = column![
+        container(header).padding(padding::top(24).bottom(20).left(SHEET_INSET).right(20)),
+        style::separator(),
+        scrollable(
+            container(body).padding(
+                padding::top(24)
+                    .bottom(SHEET_INSET)
+                    .left(SHEET_INSET)
+                    .right(SHEET_INSET)
+            )
+        )
+        .id(SHEET),
+    ];
+
+    stack![
+        opaque(
+            mouse_area(
+                container(space())
+                    .width(Fill)
+                    .height(Fill)
+                    .style(style::veil)
+            )
+            .on_press(Message::ClosePopup)
+        ),
+        container(opaque(
+            container(sheet)
+                .max_width(MEASURE + 2.0 * SHEET_INSET)
+                .style(style::popup)
+        ))
+        .center(Fill)
+        .padding(SHEET_MARGIN),
+    ]
+    .into()
+}
+
+fn used_block<'a>(used: &[UsedTag]) -> Element<'a, Message> {
+    if used.is_empty() {
+        return sheet_note("None of these tags are in your taste");
+    }
+
+    column![
+        text("Used for your match")
+            .size(font::INFO_SIZE)
+            .font(font::SEMIBOLD),
+        text(USED_REASON).size(font::BAR_SIZE).style(style::muted),
+        column(
+            used.iter()
+                .map(|tag| text(used_line(tag)).size(font::BAR_SIZE).into())
+        )
+        .spacing(4),
+    ]
+    .spacing(8)
+    .into()
+}
+
+fn tag_line(tag: &TagOfGame, weighted: bool) -> Element<'_, Message> {
+    let counts = tag.used && !tag.banned;
+    let name = text(&tag.name)
+        .size(font::BAR_SIZE)
+        .font(if counts {
+            font::SEMIBOLD
+        } else {
+            font::REGULAR
+        })
+        .width(TAG_NAME_WIDTH);
+    let name = if tag.banned {
+        name.style(style::muted)
+    } else {
+        name
+    };
+    let bar = weighted.then(|| {
+        progress_bar(0.0..=1.0, tag.relative as f32)
+            .girth(TAG_BAR_HEIGHT)
+            .length(TAG_BAR_WIDTH)
+            .style(if counts {
+                style::meter
+            } else {
+                style::quiet_meter
+            })
+    });
+    let note = tag_note(tag, weighted).map(|note| {
+        container(text(note).size(font::NOTE_SIZE).style(style::muted))
+            .align_right(TAG_PERCENT_WIDTH)
+    });
+
+    row![name]
+        .push(bar)
+        .push(note)
+        .spacing(12)
+        .align_y(Center)
+        .into()
+}
+
+fn tag_note(tag: &TagOfGame, weighted: bool) -> Option<String> {
+    if tag.banned {
+        Some("Banned".to_string())
+    } else {
+        weighted.then(|| format!("{:.0}%", tag.weight * 100.0))
+    }
+}
+
+fn used_line(tag: &UsedTag) -> String {
+    format!(
+        "{} · in {} of your games · {} of Steam games",
+        tag.name,
+        tag.profile_games,
+        catalog_share(tag.catalog_share)
+    )
+}
+
+fn catalog_share(share: f64) -> String {
+    if share < 0.01 {
+        "<1%".to_string()
+    } else {
+        format!("{:.0}%", share * 100.0)
+    }
+}
+
+fn shown_tags(count: usize, all: bool) -> usize {
+    if all { count } else { count.min(FIRST_TAGS) }
+}
+
+fn show_all_label(count: usize, all: bool) -> Option<String> {
+    (count > FIRST_TAGS).then(|| {
+        if all {
+            "Show fewer".to_string()
+        } else {
+            format!("Show all {count}")
+        }
+    })
+}
+
+fn used_names(view: Option<&GameTagsView>) -> Vec<String> {
+    view.map_or_else(Vec::new, |view| {
+        view.used.iter().map(|tag| tag.name.clone()).collect()
+    })
+}
+
+fn sheet_note<'a>(label: &'static str) -> Element<'a, Message> {
     text(label).size(BODY_SIZE).style(style::muted).into()
 }
 
@@ -1124,6 +1319,8 @@ fn shown<'a, T, U>(
 
 #[cfg(test)]
 mod tests {
+    use gamepalate_app::TagId;
+
     use super::*;
 
     #[test]
@@ -1329,6 +1526,129 @@ mod tests {
 
         assert_eq!((width, height), (BLURRED_WIDTH, 179));
         assert!(blurred(b"not an image").is_none());
+    }
+
+    #[test]
+    fn about_keeps_its_header_in_the_shared_sheet() {
+        assert_eq!(Popup::About.label(), "About this game");
+        assert_eq!(Popup::Tags.label(), "Tags");
+    }
+
+    #[test]
+    fn t_opens_and_closes_the_tags() {
+        let mut popups = Popups::default();
+
+        popups.toggle(Popup::Tags, true);
+        assert_eq!(popups.open, Some(Popup::Tags));
+
+        popups.toggle(Popup::Tags, true);
+        assert_eq!(popups.open, None);
+    }
+
+    #[test]
+    fn opening_one_popup_closes_the_other() {
+        let mut popups = Popups::default();
+
+        popups.toggle(Popup::Tags, true);
+        popups.toggle(Popup::About, true);
+        assert_eq!(popups.open, Some(Popup::About));
+        assert!(!popups.is(Popup::Tags));
+
+        popups.toggle(Popup::Tags, true);
+        assert_eq!(popups.open, Some(Popup::Tags));
+    }
+
+    #[test]
+    fn no_popup_opens_over_the_zoomed_screenshot() {
+        let mut popups = Popups::default();
+
+        popups.toggle(Popup::Tags, false);
+        popups.toggle(Popup::About, false);
+
+        assert_eq!(popups.open, None);
+    }
+
+    #[test]
+    fn changing_game_closes_the_popup_and_keeps_all_the_tags_shown() {
+        let mut popups = Popups {
+            open: Some(Popup::Tags),
+            all_tags: true,
+        };
+
+        popups.close();
+
+        assert_eq!(popups.open, None);
+        assert!(popups.all_tags);
+    }
+
+    #[test]
+    fn shows_the_first_ten_tags_and_offers_the_rest() {
+        assert_eq!(shown_tags(18, false), 10);
+        assert_eq!(shown_tags(18, true), 18);
+        assert_eq!(shown_tags(7, false), 7);
+        assert_eq!(show_all_label(18, false).as_deref(), Some("Show all 18"));
+        assert_eq!(show_all_label(18, true).as_deref(), Some("Show fewer"));
+        assert_eq!(show_all_label(10, false), None);
+        assert_eq!(show_all_label(3, true), None);
+    }
+
+    #[test]
+    fn a_used_tag_says_how_many_games_have_it() {
+        let used = |profile_games, catalog_share| UsedTag {
+            id: TagId(1),
+            name: "Roguelite".to_string(),
+            profile_games,
+            catalog_share,
+        };
+
+        assert_eq!(
+            used_line(&used(14, 0.03)),
+            "Roguelite · in 14 of your games · 3% of Steam games"
+        );
+        assert_eq!(
+            used_line(&used(1, 0.004)),
+            "Roguelite · in 1 of your games · <1% of Steam games"
+        );
+        assert_eq!(catalog_share(0.01), "1%");
+        assert_eq!(catalog_share(0.0099), "<1%");
+    }
+
+    #[test]
+    fn a_banned_tag_says_banned_instead_of_its_weight() {
+        let tag = |banned| TagOfGame {
+            id: TagId(1),
+            name: "Horror".to_string(),
+            weight: 0.08,
+            relative: 1.0,
+            used: false,
+            banned,
+        };
+
+        assert_eq!(tag_note(&tag(false), true).as_deref(), Some("8%"));
+        assert_eq!(tag_note(&tag(true), true).as_deref(), Some("Banned"));
+        assert_eq!(tag_note(&tag(false), false), None);
+        assert_eq!(tag_note(&tag(true), false).as_deref(), Some("Banned"));
+    }
+
+    #[test]
+    fn the_facts_get_the_names_of_the_used_tags() {
+        let view = GameTagsView {
+            tags: Vec::new(),
+            weighted: false,
+            used: ["Roguelite", "Deckbuilder"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| UsedTag {
+                    id: TagId(index as u32),
+                    name: name.to_string(),
+                    profile_games: 1,
+                    catalog_share: 0.1,
+                })
+                .collect(),
+        };
+
+        assert_eq!(used_names(Some(&view)), ["Roguelite", "Deckbuilder"]);
+        assert!(used_names(None).is_empty());
     }
 
     #[test]

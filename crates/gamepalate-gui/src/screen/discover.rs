@@ -171,16 +171,11 @@ impl Discover {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         if self.showcase.is_open() {
-            match message {
-                Message::CloseFilters => {
-                    return self.update(Message::Showcase(showcase::Message::Close));
-                }
-                Message::Next
-                | Message::Previous
-                | Message::Vote(_)
-                | Message::Open(_)
-                | Message::ToggleFilters => return Task::none(),
-                _ => {}
+            if matches!(message, Message::CloseFilters) {
+                return self.update(Message::Showcase(showcase::Message::Close));
+            }
+            if stopped_by_popup(&message) {
+                return Task::none();
             }
         }
         if self.panel_open && acts_on_the_game(&message) {
@@ -345,8 +340,8 @@ impl Discover {
             .push(self.showcase.zoom().map(|zoom| zoom.map(Message::Showcase)))
             .push(
                 self.current()
-                    .and_then(|game| self.showcase.about(&game.name))
-                    .map(|about| about.map(Message::Showcase)),
+                    .and_then(|game| self.showcase.popup(&game.name))
+                    .map(|popup| popup.map(Message::Showcase)),
             )
             .into()
     }
@@ -492,6 +487,8 @@ impl Discover {
             |link| game.is_some().then_some(Message::Open(link)),
             game.is_some()
                 .then_some(Message::Showcase(showcase::Message::ToggleAbout)),
+            game.is_some()
+                .then_some(Message::Showcase(showcase::Message::ToggleTags)),
         );
         let (votes, spacing) = match layout {
             Layout::Beside(shot_width) => (votes.width(shot_width), CARD_SPACING),
@@ -922,6 +919,17 @@ fn after(duration: Duration, message: Message) -> Task<Message> {
     Task::perform(tokio::time::sleep(duration), move |_| message)
 }
 
+fn stopped_by_popup(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::Next
+            | Message::Previous
+            | Message::Vote(_)
+            | Message::Open(_)
+            | Message::ToggleFilters
+    )
+}
+
 fn acts_on_the_game(message: &Message) -> bool {
     matches!(
         message,
@@ -933,6 +941,7 @@ fn acts_on_the_game(message: &Message) -> bool {
                 showcase::Message::NextScreenshot
                     | showcase::Message::PreviousScreenshot
                     | showcase::Message::ToggleAbout
+                    | showcase::Message::ToggleTags
             )
     )
 }
@@ -968,6 +977,9 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         }
         Key::Character(key) if key.eq_ignore_ascii_case("d") => {
             Some(Message::Showcase(showcase::Message::ToggleAbout))
+        }
+        Key::Character(key) if key.eq_ignore_ascii_case("t") => {
+            Some(Message::Showcase(showcase::Message::ToggleTags))
         }
         Key::Character(key) if key.eq_ignore_ascii_case("k") => {
             Some(Message::Showcase(showcase::Message::ScrollUp))
@@ -1204,6 +1216,34 @@ mod tests {
         assert_eq!(options.family.as_deref(), Some("misteri"));
         assert!(!options.signals_only);
         assert_eq!(options.filters.max_price_cents, Some(1500));
+    }
+
+    #[test]
+    fn opens_the_tags_with_t() {
+        for key in ["t", "T"] {
+            assert!(matches!(
+                key_message(pressed(Key::Character(key.into()))),
+                Some(Message::Showcase(showcase::Message::ToggleTags))
+            ));
+        }
+    }
+
+    #[test]
+    fn the_open_filters_stop_the_tags() {
+        assert!(acts_on_the_game(&Message::Showcase(
+            showcase::Message::ToggleTags
+        )));
+    }
+
+    #[test]
+    fn an_open_popup_stops_the_votes_and_the_next_game() {
+        assert!(stopped_by_popup(&Message::Vote(VoteKind::WouldTry)));
+        assert!(stopped_by_popup(&Message::Next));
+        assert!(stopped_by_popup(&Message::Previous));
+        assert!(stopped_by_popup(&Message::Open(Link::Steam)));
+        assert!(!stopped_by_popup(&Message::Showcase(
+            showcase::Message::ToggleTags
+        )));
     }
 
     #[test]

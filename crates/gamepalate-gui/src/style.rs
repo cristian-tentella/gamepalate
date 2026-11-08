@@ -651,6 +651,19 @@ pub fn meter(theme: &Theme) -> progress_bar::Style {
     }
 }
 
+pub fn quiet_meter(theme: &Theme) -> progress_bar::Style {
+    let background = theme.extended_palette().background;
+
+    progress_bar::Style {
+        background: background.weak.color.into(),
+        bar: background.strong.color.into(),
+        border: Border {
+            radius: 3.0.into(),
+            ..Border::default()
+        },
+    }
+}
+
 pub fn weight_bar(theme: &Theme) -> progress_bar::Style {
     progress_bar::Style {
         background: Color::WHITE.scale_alpha(0.15).into(),
