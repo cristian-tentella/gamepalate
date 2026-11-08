@@ -564,6 +564,7 @@ impl Settings {
                 column![
                     column![].push(error),
                     column![
+                        about(new_versions),
                         account,
                         country,
                         appearance,
@@ -571,7 +572,6 @@ impl Settings {
                         discover,
                         corrections,
                         data,
-                        about(new_versions),
                     ]
                     .spacing(32),
                 ]
