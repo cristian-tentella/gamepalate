@@ -38,7 +38,8 @@ const TAG_BAR_HEIGHT: f32 = 6.0;
 const TAG_PERCENT_WIDTH: f32 = 64.0;
 const TAG_SPACING: f32 = 10.0;
 const TAGS_SECTION_SPACING: f32 = 28.0;
-const USED_REASON: &str = "These tags add the most to this game's score. You play many games with them, and few games on Steam have them.";
+const USED_REASON: &str = "A tag counts more when it's rare on Steam and common in the games you play. Tags like Indie or Singleplayer are on more than half of Steam, so they barely count. These are the ones that count most for this game.";
+const ALL_TAGS_ORDER: &str = "Ordered by how many Steam players picked each one";
 pub(super) const SCROLL_STEP: f32 = 60.0;
 const MEASURE: f32 = 680.0;
 const SHEET_INSET: f32 = 40.0;
@@ -1137,24 +1138,38 @@ pub(super) fn sheet<'a, M: Clone + 'a>(
     .into()
 }
 
-fn used_block<'a, M: 'a>(used: &[UsedTag]) -> Element<'a, M> {
+fn used_block<'a, M: 'a>(used: &'a [UsedTag]) -> Element<'a, M> {
     if used.is_empty() {
         return sheet_note("None of these tags are in your taste");
     }
 
     column![
-        text("Used for your match")
-            .size(font::INFO_SIZE)
-            .font(font::SEMIBOLD),
+        section_title("Used for your match"),
         text(USED_REASON).size(font::BAR_SIZE).style(style::muted),
-        column(
-            used.iter()
-                .map(|tag| text(used_line(tag)).size(font::BAR_SIZE).into())
-        )
+        column(used.iter().map(|tag| {
+            row![
+                text(&tag.name)
+                    .size(font::BAR_SIZE)
+                    .font(font::SEMIBOLD)
+                    .style(style::accent),
+                text(used_line(tag))
+                    .size(font::BAR_SIZE)
+                    .style(style::muted),
+            ]
+            .spacing(8)
+            .into()
+        }))
         .spacing(4),
     ]
     .spacing(8)
     .into()
+}
+
+fn section_title<'a, M: 'a>(label: &'static str) -> Element<'a, M> {
+    text(label)
+        .size(font::INFO_SIZE)
+        .font(font::SEMIBOLD)
+        .into()
 }
 
 fn tag_line<'a, M: 'a>(tag: &'a TagOfGame, weighted: bool) -> Element<'a, M> {
@@ -1176,10 +1191,12 @@ fn tag_line<'a, M: 'a>(tag: &'a TagOfGame, weighted: bool) -> Element<'a, M> {
         progress_bar(0.0..=1.0, tag.relative as f32)
             .girth(TAG_BAR_HEIGHT)
             .length(TAG_BAR_WIDTH)
-            .style(if counts {
-                style::meter
-            } else {
+            .style(if tag.banned {
                 style::quiet_meter
+            } else if counts {
+                style::accent_meter
+            } else {
+                style::meter
             })
     });
     let note = tag_note(tag, weighted).map(|note| {
@@ -1205,8 +1222,7 @@ fn tag_note(tag: &TagOfGame, weighted: bool) -> Option<String> {
 
 fn used_line(tag: &UsedTag) -> String {
     format!(
-        "{} · in {} of your games · {} of Steam games",
-        tag.name,
+        "in {} of your games · {} of Steam games",
         tag.profile_games,
         catalog_share(tag.catalog_share)
     )
@@ -1256,7 +1272,20 @@ pub(super) fn tags_body<'a, M: Clone + 'a>(
             .on_press(toggle_all)
     });
 
-    column![used_block(&view.used), column![list].push(more).spacing(16)]
+    let all_tags = column![
+        column![
+            section_title("All tags"),
+            text(ALL_TAGS_ORDER)
+                .size(font::BAR_SIZE)
+                .style(style::muted),
+        ]
+        .spacing(8),
+        list,
+    ]
+    .push(more)
+    .spacing(16);
+
+    column![used_block(&view.used), all_tags]
         .spacing(TAGS_SECTION_SPACING)
         .into()
 }
@@ -1635,11 +1664,11 @@ mod tests {
 
         assert_eq!(
             used_line(&used(14, 0.03)),
-            "Roguelite · in 14 of your games · 3% of Steam games"
+            "in 14 of your games · 3% of Steam games"
         );
         assert_eq!(
             used_line(&used(1, 0.004)),
-            "Roguelite · in 1 of your games · <1% of Steam games"
+            "in 1 of your games · <1% of Steam games"
         );
         assert_eq!(catalog_share(0.01), "1%");
         assert_eq!(catalog_share(0.0099), "<1%");

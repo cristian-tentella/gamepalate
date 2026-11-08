@@ -665,6 +665,19 @@ pub fn meter(theme: &Theme) -> progress_bar::Style {
     }
 }
 
+pub fn accent_meter(theme: &Theme) -> progress_bar::Style {
+    let palette = theme.extended_palette();
+
+    progress_bar::Style {
+        background: palette.background.weak.color.into(),
+        bar: palette.success.base.color.into(),
+        border: Border {
+            radius: 3.0.into(),
+            ..Border::default()
+        },
+    }
+}
+
 pub fn quiet_meter(theme: &Theme) -> progress_bar::Style {
     let background = theme.extended_palette().background;
 
