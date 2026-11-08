@@ -6,7 +6,7 @@ use std::{
 
 use gamepalate_app::{
     AppId, Gamepalate, GuiSettings, PendingUpdate, Region, SavedWindow, ThemeChoice, Timestamp,
-    install::{Downloaded, Installed, SystemLaunch, Target, clean_up, download_release},
+    install::{Downloaded, Installed, SystemLaunch, Target, download_release},
     new_version::{NewVersion, check_releases},
     refresh::{Plan, Step, refresh, startup_plan},
     setup::{FirstRun, error_chain},
@@ -197,8 +197,8 @@ impl App {
 
         let clean = match app.new_versions.target() {
             Some(target) => {
-                let exe = target.exe().to_path_buf();
-                Task::future(async move { clean_up(&exe) }).discard()
+                let target = target.clone();
+                Task::future(async move { target.clean_up() }).discard()
             }
             None => Task::none(),
         };

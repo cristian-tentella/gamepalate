@@ -3,7 +3,7 @@ use std::{io::Write, path::Path};
 use anyhow::bail;
 use clap::Args;
 use gamepalate_app::{
-    install::{InstallError, Launch, Progress, SystemLaunch, Target, clean_up, download},
+    install::{InstallError, Launch, Progress, SystemLaunch, Target, download},
     new_version::{Installation, NewVersion, Version, check, releases_url},
 };
 use gamepalate_steam::transport::Fetch;
@@ -79,9 +79,11 @@ async fn execute<F: Fetch>(
             "Installing gamepalate {} in the background.",
             new.version
         )?,
-        _ => writeln!(out, "Installed gamepalate {}.", new.version)?,
+        _ => {
+            writeln!(out, "Installed gamepalate {}.", new.version)?;
+            target.clean_up();
+        }
     }
-    clean_up(target.exe());
     Ok(())
 }
 

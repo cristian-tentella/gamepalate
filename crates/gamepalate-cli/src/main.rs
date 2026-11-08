@@ -81,8 +81,8 @@ fn main() -> ExitCode {
         })
         .init();
     let cli = Cli::parse();
-    if let Ok(exe) = std::env::current_exe() {
-        gamepalate_app::install::clean_up(&exe);
+    if let Some(target) = gamepalate_app::install::Target::current() {
+        target.clean_up();
     }
 
     match run(cli) {

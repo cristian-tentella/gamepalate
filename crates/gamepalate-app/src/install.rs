@@ -26,6 +26,7 @@ const SETUP_DIR: &str = "gamepalate-new-version";
 const LINUX_DIR: &str = ".gamepalate-new";
 const LINUX_FOLDER: &str = "gamepalate";
 const LINUX_GUI: &str = "gamepalate";
+const LINUX_KEPT: &str = "old";
 const NEW: &str = ".new";
 const OLD: &str = ".old";
 const SETUP_ARGS: [&str; 3] = ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART"];
@@ -403,26 +404,37 @@ impl Downloaded {
             .map(|entry| entry.path())
             .collect();
 
+        let kept = staging.join(LINUX_KEPT);
+        fs::create_dir_all(&kept).map_err(|source| disk(&kept, source))?;
         let dir = self.target.dir();
+        let mut swapped = Vec::new();
         for path in extracted {
             let Some(name) = path.file_name() else {
                 continue;
             };
-            let to = dir.join(name);
-            fs::rename(&path, &to).map_err(|source| InstallError::Rename { path: to, source })?;
+            let current = dir.join(name);
+            if let Err(source) = swap(&current, &kept.join(name), &path, &mut swapped) {
+                put_back(&swapped);
+                return Err(InstallError::Rename {
+                    path: current,
+                    source,
+                });
+            }
         }
         Ok(())
     }
 }
 
-pub fn clean_up(exe: &Path) {
-    let Some(dir) = exe.parent() else {
-        return;
-    };
-    for file in [GUI_EXE, CLI_EXE] {
-        let _ = fs::remove_file(dir.join(format!("{file}{OLD}")));
+impl Target {
+    pub fn clean_up(&self) {
+        let dir = self.dir();
+        for file in [GUI_EXE, CLI_EXE] {
+            let _ = fs::remove_file(dir.join(format!("{file}{OLD}")));
+            let _ = fs::remove_file(dir.join(format!("{file}{NEW}")));
+        }
+        let _ = fs::remove_dir_all(dir.join(LINUX_DIR));
+        let _ = fs::remove_dir_all(self.temp_dir.join(SETUP_DIR));
     }
-    let _ = fs::remove_dir_all(dir.join(LINUX_DIR));
 }
 
 async fn download_files<F: Fetch>(
@@ -1036,13 +1048,12 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn the_linux_archive_replaces_the_files_and_keeps_them_executable() {
+    fn linux_release(place: &Place) -> FakeRelease {
         use std::os::unix::fs::PermissionsExt;
 
-        let place = Place::new();
         place.write("gamepalate", "old gui");
         place.write("gamepalate-cli", "old cli");
+        place.write("gamepalate.desktop", "old entry");
         let source = place.root.path().join("source");
         let folder = source.join(LINUX_FOLDER);
         fs::create_dir_all(&folder).unwrap();
@@ -1070,9 +1081,24 @@ mod tests {
         let (mut fake, _) = release(&[], "");
         fake.files.insert(
             SUMS_FILE.to_string(),
-            format!("{}  {LINUX_TAR}\n", sha(&bytes)).into_bytes(),
+            format!(
+                "{}  {LINUX_TAR}
+",
+                sha(&bytes)
+            )
+            .into_bytes(),
         );
         fake.files.insert(LINUX_TAR.to_string(), bytes);
+        fake
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_linux_archive_replaces_the_files_and_keeps_them_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let place = Place::new();
+        let fake = linux_release(&place);
         let target = place.target(Installation::LinuxPortable, "gamepalate");
         let launcher = FakeLaunch::default();
 
@@ -1096,22 +1122,56 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_linux_replacement_that_fails_halfway_puts_the_old_files_back() {
+        let place = Place::new();
+        let fake = linux_release(&place);
+        let target = place.target(Installation::LinuxPortable, "gamepalate");
+        let launcher = FakeLaunch::default();
+
+        let downloaded = fetched(&fake, &target, &place).await.unwrap();
+        let blocker = place
+            .app()
+            .join(LINUX_DIR)
+            .join(LINUX_KEPT)
+            .join("gamepalate.desktop");
+        fs::create_dir_all(blocker.join("full")).unwrap();
+        let error = downloaded.install(&launcher, true).unwrap_err();
+
+        assert!(matches!(error, InstallError::Rename { .. }), "{error:?}");
+        assert_eq!(place.read("gamepalate"), "old gui");
+        assert_eq!(place.read("gamepalate-cli"), "old cli");
+        assert_eq!(place.read("gamepalate.desktop"), "old entry");
+        assert!(!place.app().join(LINUX_DIR).exists());
+        assert_eq!(launcher.launched(), []);
+    }
+
     #[test]
     fn the_clean_up_removes_what_the_last_installation_left() {
         let place = portable_place();
         place.write("gamepalate.exe.old", "old gui");
         place.write("gamepalate-cli.exe.old", "old cli");
+        place.write("gamepalate.exe.new", "half a download");
+        place.write("gamepalate-cli.exe.new", "half a download");
         place.write("other.exe.old", "not ours");
         fs::create_dir_all(place.app().join(LINUX_DIR).join(LINUX_FOLDER)).unwrap();
         place.write(&format!("{LINUX_DIR}/{LINUX_TAR}"), "archive");
+        let setup_dir = place.temp().join(SETUP_DIR);
+        fs::create_dir_all(&setup_dir).unwrap();
+        fs::write(setup_dir.join(SETUP_FILE), "setup").unwrap();
+        fs::write(place.temp().join("other"), "not ours").unwrap();
+        let target = place.target(Installation::WindowsPortable, GUI_EXE);
 
-        clean_up(&place.app().join(GUI_EXE));
+        target.clean_up();
 
         assert_eq!(
             place.files(),
             [CLI_EXE, GUI_EXE, "other.exe.old"].map(String::from)
         );
-        clean_up(&place.app().join(GUI_EXE));
+        assert!(!setup_dir.exists());
+        assert!(place.temp().join("other").exists());
+        target.clean_up();
         assert_eq!(
             place.files(),
             [CLI_EXE, GUI_EXE, "other.exe.old"].map(String::from)
