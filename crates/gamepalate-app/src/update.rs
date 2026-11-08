@@ -20,7 +20,7 @@ use gamepalate_steam::{
     apps::get_app_list,
     archive::{Archive, ArchivedUpdate, PendingUpdate},
     chain::{ChainError, chain, rotate},
-    items::{BATCH_SIZE, archived_batches, batch_count, item_batches},
+    items::{BATCH_SIZE, archived_asked, archived_batches, batch_count, item_batches},
     tags::get_tags,
     transport::{Get, SteamError, Transport},
 };
@@ -260,15 +260,16 @@ async fn update_with<S: Get + Sync>(
         });
     }
 
-    let max_renewed = update
-        .renewal()
-        .then(|| config.renewal_requests as usize * BATCH_SIZE);
+    let asking = match update.renewal() {
+        true => Asking::Renewal(config.renewal_requests as usize * BATCH_SIZE),
+        false => Asking::Changed,
+    };
     let result = build_catalog(
         &update.archiving(steam),
         now,
         &earlier,
         config.region,
-        max_renewed,
+        asking,
         &mut progress,
     )
     .await;
@@ -369,12 +370,16 @@ pub async fn rebuild_catalog(data_dir: &Path) -> Result<Rebuilt, UpdateError> {
         return Err(UpdateError::NoCompletedUpdate);
     };
 
+    let mut asked = Vec::new();
+    for batch in archived_asked(latest)? {
+        asked.extend(batch?);
+    }
     let built = build_catalog(
         latest,
         latest.started_at(),
         earlier,
         latest.region(),
-        None,
+        Asking::Archived(asked),
         &mut |_| {},
     )
     .await?;
@@ -395,12 +400,22 @@ fn not_marked_note(not_marked: &Option<io::Error>) -> String {
     }
 }
 
+/// Which apps a catalog build asks Steam for.
+enum Asking {
+    /// The apps whose price changed since the update before.
+    Changed,
+    /// The changed apps plus expired ones, up to this many apps in all.
+    Renewal(usize),
+    /// Exactly these apps: what an archived update really asked.
+    Archived(Vec<AppId>),
+}
+
 async fn build_catalog<S: Get>(
     steam: &S,
     now: Timestamp,
     earlier: &[ArchivedUpdate],
     region: Region,
-    max_renewed: Option<usize>,
+    asking: Asking,
     progress: &mut impl FnMut(Progress),
 ) -> Result<BuiltCatalog, SteamError> {
     progress(Progress::ReadingApps);
@@ -408,24 +423,29 @@ async fn build_catalog<S: Get>(
     let apps = get_app_list(steam).await?;
     let ids: Vec<AppId> = apps.iter().map(|app| app.id).collect();
     let current = apps.iter().map(|app| (app.id, app.price_change_number));
-    let changed = match earlier.first() {
-        None => ids.clone(),
-        Some(previous) => {
-            let previous: HashMap<AppId, u64> = get_app_list(previous)
-                .await?
-                .into_iter()
-                .map(|app| (app.id, app.price_change_number))
-                .collect();
-            changed_apps(current, &previous)
+    let (renewal, asked) = match asking {
+        Asking::Archived(asked) => (None, asked),
+        asking => {
+            let changed = match earlier.first() {
+                None => ids.clone(),
+                Some(previous) => {
+                    let previous: HashMap<AppId, u64> = get_app_list(previous)
+                        .await?
+                        .into_iter()
+                        .map(|app| (app.id, app.price_change_number))
+                        .collect();
+                    changed_apps(current, &previous)
+                }
+            };
+            match asking {
+                Asking::Renewal(max_apps) => {
+                    let renewal = answers(earlier)?.choose(&ids, &changed, now, max_apps);
+                    let asked = renewal.asked.clone();
+                    (Some(renewal), asked)
+                }
+                _ => (None, changed),
+            }
         }
-    };
-    let renewal = match max_renewed {
-        Some(max_apps) => Some(answers(earlier)?.choose(&ids, &changed, now, max_apps)),
-        None => None,
-    };
-    let asked = match &renewal {
-        Some(renewal) => renewal.asked.clone(),
-        None => changed,
     };
 
     let total = batch_count(asked.len());
@@ -979,6 +999,60 @@ mod tests {
         assert_eq!(
             load_catalog(&catalog).unwrap().games(),
             load_catalog(&updated).unwrap().games()
+        );
+    }
+
+    #[tokio::test]
+    async fn rebuild_after_a_renewal_gives_the_catalog_of_the_renewal() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(data.path(), &FakeSteam::new(&[(1, 10), (2, 20)]))
+            .await
+            .unwrap();
+        backdate(data.path(), "000001", 31);
+        renew(
+            data.path(),
+            &FakeSteam::new(&[(1, 10), (2, 21), (3, 30)]),
+            &Config::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(manifests(data.path())[1]["renewal"], true);
+        let catalog = data.path().join("catalog.sqlite");
+        let renewed = data.path().join("renewed.sqlite");
+        fs::rename(&catalog, &renewed).unwrap();
+
+        rebuild_catalog(data.path()).await.unwrap();
+
+        assert_eq!(game_ids(data.path()), [1, 2, 3]);
+        assert_eq!(
+            load_catalog(&catalog).unwrap().games(),
+            load_catalog(&renewed).unwrap().games()
+        );
+    }
+
+    #[tokio::test]
+    async fn rebuild_after_a_renewal_without_expired_apps() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(data.path(), &FakeSteam::new(&[(1, 10), (2, 20)]))
+            .await
+            .unwrap();
+        renew(
+            data.path(),
+            &FakeSteam::new(&[(1, 10), (2, 21)]),
+            &Config::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(manifests(data.path())[1]["renewal"], true);
+        let catalog = data.path().join("catalog.sqlite");
+        let renewed = data.path().join("renewed.sqlite");
+        fs::rename(&catalog, &renewed).unwrap();
+
+        rebuild_catalog(data.path()).await.unwrap();
+
+        assert_eq!(
+            load_catalog(&catalog).unwrap().games(),
+            load_catalog(&renewed).unwrap().games()
         );
     }
 
