@@ -39,7 +39,7 @@ const TAG_PERCENT_WIDTH: f32 = 64.0;
 const TAG_SPACING: f32 = 10.0;
 const TAGS_SECTION_SPACING: f32 = 28.0;
 const USED_REASON: &str = "These tags add the most to this game's score. You play many games with them, and few games on Steam have them.";
-const SCROLL_STEP: f32 = 60.0;
+pub(super) const SCROLL_STEP: f32 = 60.0;
 const MEASURE: f32 = 680.0;
 const SHEET_INSET: f32 = 40.0;
 const SHEET_MARGIN: f32 = 32.0;
@@ -404,7 +404,7 @@ impl Showcase {
             Popup::Tags => self.tags_body(),
         };
 
-        Some(sheet(popup.label(), name, body))
+        Some(sheet(popup.label(), name, body, Message::ClosePopup))
     }
 
     pub fn used_tags(&self) -> Vec<String> {
@@ -430,27 +430,11 @@ impl Showcase {
     }
 
     fn tags_body(&self) -> Element<'_, Message> {
-        let Some(view) = self.tags.as_ref().filter(|view| !view.tags.is_empty()) else {
-            return sheet_note("No tags for this game");
-        };
-        let all = self.popups.all_tags;
-        let shown = shown_tags(view.tags.len(), all);
-        let list = column(
-            view.tags[..shown]
-                .iter()
-                .map(|tag| tag_line(tag, view.weighted)),
+        tags_body(
+            self.tags.as_ref(),
+            self.popups.all_tags,
+            Message::ToggleAllTags,
         )
-        .spacing(TAG_SPACING);
-        let more = show_all_label(view.tags.len(), all).map(|label| {
-            button(text(label).size(font::BAR_SIZE))
-                .padding(0)
-                .style(style::link)
-                .on_press(Message::ToggleAllTags)
-        });
-
-        column![used_block(&view.used), column![list].push(more).spacing(16)]
-            .spacing(TAGS_SECTION_SPACING)
-            .into()
     }
 
     fn block<'a>(&'a self, block: &'a Block, first: bool) -> Element<'a, Message> {
@@ -1079,15 +1063,20 @@ fn paragraph(spans: &[Span]) -> Element<'_, Message> {
         .into()
 }
 
-fn scroll_sheet(y: f32) -> Task<Message> {
+pub(super) fn scroll_sheet<M: 'static>(y: f32) -> Task<M> {
     operation::scroll_by(SHEET, AbsoluteOffset { x: 0.0, y })
 }
 
-fn sheet<'a>(label: &'a str, name: &'a str, body: Element<'a, Message>) -> Element<'a, Message> {
-    let close = button(text(CLOSE).font(font::ICONS).size(font::icon(12.0)))
+pub(super) fn sheet<'a, M: Clone + 'a>(
+    label: &'a str,
+    name: &'a str,
+    body: Element<'a, M>,
+    close: M,
+) -> Element<'a, M> {
+    let close_button = button(text(CLOSE).font(font::ICONS).size(font::icon(12.0)))
         .padding([8, 12])
         .style(style::secondary)
-        .on_press(Message::ClosePopup);
+        .on_press(close.clone());
     let header = row![
         column![
             text(label).size(font::NOTE_SIZE).style(style::muted),
@@ -1095,7 +1084,7 @@ fn sheet<'a>(label: &'a str, name: &'a str, body: Element<'a, Message>) -> Eleme
         ]
         .spacing(4)
         .width(Fill),
-        close,
+        close_button,
     ];
     let sheet = column![
         container(header).padding(padding::top(24).bottom(20).left(SHEET_INSET).right(20)),
@@ -1119,7 +1108,7 @@ fn sheet<'a>(label: &'a str, name: &'a str, body: Element<'a, Message>) -> Eleme
                     .height(Fill)
                     .style(style::veil)
             )
-            .on_press(Message::ClosePopup)
+            .on_press(close)
         ),
         container(opaque(
             container(sheet)
@@ -1132,7 +1121,7 @@ fn sheet<'a>(label: &'a str, name: &'a str, body: Element<'a, Message>) -> Eleme
     .into()
 }
 
-fn used_block<'a>(used: &[UsedTag]) -> Element<'a, Message> {
+fn used_block<'a, M: 'a>(used: &[UsedTag]) -> Element<'a, M> {
     if used.is_empty() {
         return sheet_note("None of these tags are in your taste");
     }
@@ -1152,7 +1141,7 @@ fn used_block<'a>(used: &[UsedTag]) -> Element<'a, Message> {
     .into()
 }
 
-fn tag_line(tag: &TagOfGame, weighted: bool) -> Element<'_, Message> {
+fn tag_line<'a, M: 'a>(tag: &'a TagOfGame, weighted: bool) -> Element<'a, M> {
     let counts = tag.used && !tag.banned;
     let name = text(&tag.name)
         .size(font::BAR_SIZE)
@@ -1229,13 +1218,40 @@ fn show_all_label(count: usize, all: bool) -> Option<String> {
     })
 }
 
+pub(super) fn tags_body<'a, M: Clone + 'a>(
+    view: Option<&'a GameTagsView>,
+    all: bool,
+    toggle_all: M,
+) -> Element<'a, M> {
+    let Some(view) = view.filter(|view| !view.tags.is_empty()) else {
+        return sheet_note("No tags for this game");
+    };
+    let shown = shown_tags(view.tags.len(), all);
+    let list = column(
+        view.tags[..shown]
+            .iter()
+            .map(|tag| tag_line(tag, view.weighted)),
+    )
+    .spacing(TAG_SPACING);
+    let more = show_all_label(view.tags.len(), all).map(|label| {
+        button(text(label).size(font::BAR_SIZE))
+            .padding(0)
+            .style(style::link)
+            .on_press(toggle_all)
+    });
+
+    column![used_block(&view.used), column![list].push(more).spacing(16)]
+        .spacing(TAGS_SECTION_SPACING)
+        .into()
+}
+
 fn used_names(view: Option<&GameTagsView>) -> Vec<String> {
     view.map_or_else(Vec::new, |view| {
         view.used.iter().map(|tag| tag.name.clone()).collect()
     })
 }
 
-fn sheet_note<'a>(label: &'static str) -> Element<'a, Message> {
+fn sheet_note<'a, M: 'a>(label: &'static str) -> Element<'a, M> {
     text(label).size(BODY_SIZE).style(style::muted).into()
 }
 
