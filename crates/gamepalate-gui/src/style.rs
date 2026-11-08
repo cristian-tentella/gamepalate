@@ -88,6 +88,20 @@ pub fn link(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+pub fn key_action(theme: &Theme, status: button::Status) -> button::Style {
+    let text_color = match status {
+        button::Status::Hovered | button::Status::Pressed => {
+            theme.extended_palette().background.base.text
+        }
+        button::Status::Active | button::Status::Disabled => faded(theme, 0.7),
+    };
+
+    button::Style {
+        text_color,
+        ..button::Style::default()
+    }
+}
+
 pub fn window_button(theme: &Theme, status: button::Status) -> button::Style {
     let background = theme.extended_palette().background;
 

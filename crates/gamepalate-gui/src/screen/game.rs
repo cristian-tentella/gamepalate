@@ -19,7 +19,8 @@ pub const VOTES: [(&str, VoteKind); 4] = [
 pub const VOTE_HEIGHT: f32 = 36.0;
 const VOTE_WIDTH: f32 = 172.0;
 const VOTE_SPACING: f32 = 8.0;
-pub const LINKS_WIDTH: f32 = 470.0;
+pub const LINKS_WIDTH: f32 = 340.0;
+pub const ACTION_SPACING: f32 = 16.0;
 const KEYCAP_SIZE: f32 = 18.0;
 const KEYCAP_PADDING: f32 = 5.0;
 const KEY_SPACING: f32 = 6.0;
@@ -234,14 +235,33 @@ pub fn keycap<'a, Message: 'a>(key: &'a str) -> Container<'a, Message> {
     }
 }
 
-pub fn hint<'a, Message: 'a>(key: &'a str, label: &'a str) -> Element<'a, Message> {
-    row![
-        keycap(key),
-        text(label).size(font::NOTE_SIZE).style(style::muted)
-    ]
-    .spacing(KEY_SPACING)
-    .align_y(Center)
+pub fn key_button<'a, Message: Clone + 'a>(
+    key: &'a str,
+    label: &'a str,
+    size: f32,
+    on_press: Option<Message>,
+) -> Element<'a, Message> {
+    button(
+        row![keycap(key), text(label).size(size)]
+            .spacing(KEY_SPACING)
+            .align_y(Center),
+    )
+    .padding(0)
+    .style(style::key_action)
+    .on_press_maybe(on_press)
     .into()
+}
+
+pub fn moves<'a, Message: Clone + 'a>(
+    skip: Option<Message>,
+    back: Option<Message>,
+) -> Row<'a, Message> {
+    row![
+        key_button("Space", "Skip", font::BAR_SIZE, skip),
+        key_button("⌫", "Back", font::BAR_SIZE, back),
+    ]
+    .spacing(ACTION_SPACING)
+    .align_y(Center)
 }
 
 pub fn vote_buttons<'a, Message: 'a>(
@@ -265,35 +285,17 @@ pub fn vote_width(available: f32, beside: f32) -> Length {
     }
 }
 
-pub fn link_button<'a, Message: Clone + 'a>(
-    key: &'a str,
-    label: &'a str,
-    on_press: Option<Message>,
-) -> Element<'a, Message> {
-    button(
-        row![keycap(key), text(label).size(font::BAR_SIZE)]
-            .spacing(KEY_SPACING)
-            .align_y(Center),
-    )
-    .padding(0)
-    .style(style::link)
-    .on_press_maybe(on_press)
-    .into()
-}
-
 pub fn links<'a, Message: Clone + 'a>(
     on_press: impl Fn(Link) -> Option<Message>,
-    about: Option<Message>,
-    tags: Option<Message>,
 ) -> Element<'a, Message> {
     row![
-        link_button("D", "About", about),
-        link_button("T", "Tags", tags),
-        link_button("5", "Steam ↗", on_press(Link::Steam)),
-        link_button("6", "Eneba ↗", on_press(Link::Eneba)),
-        link_button("7", "HLTB ↗", on_press(Link::Hltb)),
+        style::divider(),
+        key_button("5", "Steam ↗", font::BAR_SIZE, on_press(Link::Steam)),
+        key_button("6", "Eneba ↗", font::BAR_SIZE, on_press(Link::Eneba)),
+        key_button("7", "HLTB ↗", font::BAR_SIZE, on_press(Link::Hltb)),
     ]
-    .spacing(20)
+    .spacing(ACTION_SPACING)
+    .align_y(Center)
     .into()
 }
 

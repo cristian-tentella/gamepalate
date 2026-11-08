@@ -495,13 +495,7 @@ impl Votes {
 
         row![
             votes,
-            game::links(
-                |link| game.is_some().then_some(Message::Open(link)),
-                game.is_some()
-                    .then_some(Message::Showcase(showcase::Message::ToggleAbout)),
-                game.is_some()
-                    .then_some(Message::Showcase(showcase::Message::ToggleTags)),
-            ),
+            game::links(|link| game.is_some().then_some(Message::Open(link))),
         ]
         .spacing(8)
         .height(Fill)

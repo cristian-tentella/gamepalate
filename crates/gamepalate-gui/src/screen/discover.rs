@@ -53,8 +53,7 @@ const GAME_PADDING: f32 = 16.0;
 const FILTERS_HEIGHT: f32 = 34.0;
 const VOTES_PADDING: f32 = 10.0;
 const SEPARATOR: f32 = 1.0;
-const HINT_WIDTH: f32 = 180.0;
-const HINT_SPACING: f32 = 12.0;
+const HINT_WIDTH: f32 = 200.0;
 const MEDIA_BELOW: f32 = 80.0;
 const SIDE_HEIGHT: f32 = 560.0;
 const STACKED_BELOW: f32 = 440.0;
@@ -466,9 +465,12 @@ impl Discover {
         let hints = (!compact).then(|| {
             row![
                 style::divider(),
-                row![game::hint("Space", "Skip"), game::hint("⌫", "Back")].spacing(HINT_SPACING),
+                game::moves(
+                    game.is_some().then_some(Message::Next),
+                    Some(Message::Previous)
+                ),
             ]
-            .spacing(8)
+            .spacing(game::ACTION_SPACING)
             .align_y(Center)
         });
         let flashed = self.flash.as_ref().map(|flash| flash.kind);
@@ -483,13 +485,7 @@ impl Discover {
             )
         })
         .push(hints);
-        let links = game::links(
-            |link| game.is_some().then_some(Message::Open(link)),
-            game.is_some()
-                .then_some(Message::Showcase(showcase::Message::ToggleAbout)),
-            game.is_some()
-                .then_some(Message::Showcase(showcase::Message::ToggleTags)),
-        );
+        let links = game::links(|link| game.is_some().then_some(Message::Open(link)));
         let (votes, spacing) = match layout {
             Layout::Beside(shot_width) => (votes.width(shot_width), CARD_SPACING),
             Layout::Stacked(_) => (votes.width(Fill), 8.0),

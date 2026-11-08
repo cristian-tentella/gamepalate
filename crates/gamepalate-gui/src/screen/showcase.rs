@@ -986,7 +986,13 @@ fn facts<'a>(details: &'a GameDetails, tags: &[String], open: bool) -> Element<'
         format::developers(&store.developers),
     )
     .map(|byline| text(byline).size(font::NOTE_SIZE).style(style::muted));
-    let tags = (!tags.is_empty()).then(|| {
+    let about = game::key_button(
+        "D",
+        "About this game",
+        font::NOTE_SIZE,
+        Some(Message::ToggleAbout),
+    );
+    let used = (!tags.is_empty()).then(|| {
         mouse_area(
             text(tags.join(" · "))
                 .size(font::NOTE_SIZE)
@@ -995,6 +1001,16 @@ fn facts<'a>(details: &'a GameDetails, tags: &[String], open: bool) -> Element<'
         .on_press(Message::ToggleTags)
         .interaction(mouse::Interaction::Pointer)
     });
+    let tags = row![]
+        .push(used)
+        .push(game::key_button(
+            "T",
+            "All tags",
+            font::NOTE_SIZE,
+            Some(Message::ToggleTags),
+        ))
+        .spacing(game::ACTION_SPACING)
+        .align_y(Center);
     let features = format::features(store.steam_deck, &details.modes, store.controller);
     let menu = (!features.is_empty()).then(|| {
         let header = button(
@@ -1025,7 +1041,7 @@ fn facts<'a>(details: &'a GameDetails, tags: &[String], open: bool) -> Element<'
         column![header].push(chips).spacing(8)
     });
 
-    column![]
+    column![about]
         .push(byline)
         .push(tags)
         .push(menu)
