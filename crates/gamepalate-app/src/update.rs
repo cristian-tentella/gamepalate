@@ -664,6 +664,10 @@ mod tests {
             "type": 0,
             "release": { "steam_release_date": 1_600_000_000 },
             "tags": [{ "tagid": 19, "weight": 100 }],
+            "basic_info": {
+                "developers": [{ "name": format!("Studio {appid}") }],
+                "franchises": [{ "name": "Saga" }],
+            },
             "best_purchase_option": {
                 "packageid": appid,
                 "final_price_in_cents": "999",
@@ -1101,6 +1105,37 @@ mod tests {
         rebuild_catalog(data.path()).await.unwrap();
 
         assert_eq!(game_ids(data.path()), [1, 2]);
+    }
+
+    #[tokio::test]
+    async fn developers_and_franchises_reach_the_catalog_even_from_the_archive() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(data.path(), &FakeSteam::new(&[(1, 10), (2, 20)]))
+            .await
+            .unwrap();
+        run_update(data.path(), &FakeSteam::new(&[(1, 11), (2, 20)]))
+            .await
+            .unwrap();
+        let steam = FakeSteam::new(&[(1, 11), (2, 20)]);
+        let earlier = archive(data.path()).completed().unwrap();
+
+        let built = build_catalog(
+            &steam,
+            wall_clock(),
+            &earlier,
+            Region::ITALY,
+            Asking::Changed,
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+
+        assert!(steam.asked_items().is_empty());
+        for id in [1, 2] {
+            let game = built.catalog.game(AppId(id)).unwrap();
+            assert_eq!(game.developers, [format!("Studio {id}")]);
+            assert_eq!(game.franchises, ["Saga"]);
+        }
     }
 
     fn tags_updated_at(data_dir: &Path) -> Timestamp {

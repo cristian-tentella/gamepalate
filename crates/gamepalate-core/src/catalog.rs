@@ -125,6 +125,8 @@ mod tests {
                     weight,
                 })
                 .collect(),
+            developers: Vec::new(),
+            franchises: Vec::new(),
         }
     }
 

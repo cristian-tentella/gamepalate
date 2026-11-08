@@ -3,6 +3,7 @@ pub mod best_match;
 pub mod catalog;
 pub mod config;
 pub mod corrections;
+pub mod creators;
 pub mod currency;
 pub mod effective_hours;
 pub mod evaluation;

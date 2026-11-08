@@ -163,6 +163,8 @@ mod tests {
                 positive: 9,
             },
             tags: Vec::new(),
+            developers: Vec::new(),
+            franchises: Vec::new(),
         }
     }
 

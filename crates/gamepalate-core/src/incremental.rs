@@ -84,6 +84,8 @@ mod tests {
                 id: TagId(19),
                 weight: 1.0,
             }],
+            developers: Vec::new(),
+            franchises: Vec::new(),
         }
     }
 

@@ -408,6 +408,8 @@ mod tests {
                     weight: 1.0,
                 })
                 .collect(),
+            developers: Vec::new(),
+            franchises: Vec::new(),
         }
     }
 

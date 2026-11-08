@@ -66,6 +66,21 @@ struct SteamItem {
     best_purchase_option: Option<PurchaseOption>,
     #[serde(default)]
     purchase_options: Vec<PurchaseOption>,
+    basic_info: Option<BasicInfo>,
+}
+
+#[derive(Deserialize)]
+struct BasicInfo {
+    #[serde(default)]
+    developers: Vec<Named>,
+    #[serde(default)]
+    franchises: Vec<Named>,
+}
+
+#[derive(Deserialize)]
+struct Named {
+    #[serde(default)]
+    name: String,
 }
 
 #[derive(Deserialize)]
@@ -245,6 +260,10 @@ fn to_store_item(index: usize, item: SteamItem) -> Result<StoreItem, SteamError>
         .and_then(|release| release.steam_release_date)
         .map(seconds);
 
+    let (developers, franchises) = item.basic_info.map_or_else(Default::default, |info| {
+        (names(info.developers), names(info.franchises))
+    });
+
     let option = game_option(item.best_purchase_option, item.purchase_options);
 
     Ok(StoreItem {
@@ -266,7 +285,17 @@ fn to_store_item(index: usize, item: SteamItem) -> Result<StoreItem, SteamError>
                 weight: tag.weight,
             })
             .collect(),
+        developers,
+        franchises,
     })
+}
+
+fn names(named: Vec<Named>) -> Vec<String> {
+    named
+        .into_iter()
+        .map(|named| named.name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect()
 }
 
 fn game_option(
@@ -385,8 +414,46 @@ mod tests {
                     id: TagId(19),
                     weight: 604.0,
                 }],
+                developers: Vec::new(),
+                franchises: Vec::new(),
             }
         );
+    }
+
+    #[test]
+    fn reads_developers_and_franchises_in_order() {
+        let item = one(item(json!({
+            "basic_info": {
+                "developers": [{ "name": " Valve " }, { "name": "Other" }],
+                "franchises": [{ "name": "Portal" }],
+            },
+        })));
+
+        assert_eq!(item.developers, vec!["Valve", "Other"]);
+        assert_eq!(item.franchises, vec!["Portal"]);
+    }
+
+    #[test]
+    fn a_missing_basic_info_gives_empty_lists() {
+        let without = one(item(json!({})));
+        let partial = one(item(
+            json!({ "basic_info": { "developers": [{ "name": "Valve" }] } }),
+        ));
+
+        assert!(without.developers.is_empty() && without.franchises.is_empty());
+        assert_eq!(partial.developers, vec!["Valve"]);
+        assert!(partial.franchises.is_empty());
+    }
+
+    #[test]
+    fn blank_names_are_dropped() {
+        let item = one(item(json!({
+            "basic_info": {
+                "developers": [{ "name": "   " }, { "name": "" }, {}, { "name": "Valve" }],
+            },
+        })));
+
+        assert_eq!(item.developers, vec!["Valve"]);
     }
 
     #[test]
