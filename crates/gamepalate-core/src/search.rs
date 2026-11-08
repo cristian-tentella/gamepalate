@@ -4,6 +4,7 @@ use crate::{
     catalog::{Catalog, Freshness},
     config::Config,
     corrections::Corrections,
+    creators::{LikedCreators, liked_creators},
     effective_hours::hours_by_source,
     explanation::{similar_to, top_tags},
     families::{Families, Family},
@@ -60,6 +61,17 @@ pub struct SearchInputs<'a> {
     pub families: &'a Families,
     pub off_catalog: &'a OffCatalogGames,
     pub config: &'a Config,
+}
+
+impl SearchInputs<'_> {
+    pub fn liked_creators(&self) -> LikedCreators {
+        liked_creators(
+            self.signals,
+            &self.corrections.played_elsewhere,
+            &self.config.signals,
+            self.catalog,
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -289,7 +301,7 @@ pub fn recommend(
 
     let opinion_needed = needs_opinion(inputs.config, options);
     let model = if opinion_needed {
-        opinion_model(inputs.votes, inputs.catalog)
+        opinion_model(inputs.votes, inputs.catalog, &inputs.liked_creators())
     } else {
         None
     };

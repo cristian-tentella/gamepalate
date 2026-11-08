@@ -33,7 +33,7 @@ pub fn best_matches(inputs: &SearchInputs) -> HashMap<AppId, f64> {
     };
     let relevance_config = &inputs.config.relevance;
     let opinions = if relevance_config.votes_weight > 0.0 {
-        held_out_opinions(inputs.votes, inputs.catalog)
+        held_out_opinions(inputs.votes, inputs.catalog, &inputs.liked_creators())
     } else {
         HashMap::new()
     };

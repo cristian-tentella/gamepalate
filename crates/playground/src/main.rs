@@ -8,6 +8,7 @@ use anyhow::Context;
 use gamepalate_core::{
     catalog::Catalog,
     config::{Config, RelevanceConfig},
+    creators::{LikedCreators, liked_creators},
     currency::Currency,
     effective_hours::hours_by_source,
     evaluation::{GroupSummary, evaluate},
@@ -72,7 +73,13 @@ fn main() -> anyhow::Result<()> {
     println!("not for me: {}", count(VoteKind::NotForMe));
     println!("known: {}", count(VoteKind::Known));
     println!("bets: {}", votes.values().filter(|vote| vote.bet).count());
-    print_opinions(&votes, &catalog, &off_catalog);
+    let liked = liked_creators(
+        &signals,
+        &corrections.played_elsewhere,
+        &config.signals,
+        &catalog,
+    );
+    print_opinions(&votes, &catalog, &off_catalog, &liked);
 
     let hours_by_source = hours_by_source(
         &signals,
@@ -248,18 +255,26 @@ fn time_game_vectors(catalog: &Catalog) {
     println!("mean: {:?}", times.iter().sum::<Duration>() / RUNS);
 }
 
-fn print_opinions(votes: &Votes, catalog: &Catalog, off_catalog: &OffCatalogGames) {
+fn print_opinions(
+    votes: &Votes,
+    catalog: &Catalog,
+    off_catalog: &OffCatalogGames,
+    liked: &LikedCreators,
+) {
     const RUNS: u32 = 10;
 
     println!("\n== opinions");
 
     let start = Instant::now();
-    let Some(model) = opinion_model(votes, catalog) else {
+    let Some(model) = opinion_model(votes, catalog, liked) else {
         println!("not enough votes");
         return;
     };
     println!("training: {:?}", start.elapsed());
     println!("used tags: {}", model.tags.len());
+    println!("liked games: {}", liked.games.len());
+    println!("liked developers: {}", liked.developers.len());
+    println!("liked franchises: {}", liked.franchises.len());
 
     let mut times = Vec::new();
     let mut all = Vec::new();

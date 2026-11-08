@@ -4,6 +4,7 @@ use rayon::prelude::*;
 
 use crate::{
     catalog::Catalog,
+    creators::LikedCreators,
     game::Game,
     ids::{AppId, TagId},
     votes::{VoteKind, Votes},
@@ -42,13 +43,14 @@ impl Standardization {
 #[derive(Debug, Clone)]
 pub struct OpinionModel {
     pub tags: Vec<TagId>,
+    pub liked: LikedCreators,
     pub standardization: Standardization,
     pub weights: Vec<f64>,
 }
 
 impl OpinionModel {
     pub fn opinion(&self, game: &Game) -> f64 {
-        let features = features(game, &self.tags);
+        let features = features(game, &self.tags, &self.liked);
         let standardized_features = self.standardization.apply(&features);
 
         dot(&standardized_features, &self.weights)
@@ -85,21 +87,27 @@ fn used_tags(training_rows: &[TrainingRow]) -> Vec<TagId> {
         .collect()
 }
 
-fn features(game: &Game, tag_ids: &[TagId]) -> Vec<f64> {
+fn features(game: &Game, tag_ids: &[TagId], liked: &LikedCreators) -> Vec<f64> {
     let positive_share = if game.reviews.total == 0 {
         0.0
     } else {
         game.reviews.positive as f64 / game.reviews.total as f64
     };
 
-    let mut features = vec![0.0; 3 + tag_ids.len()];
+    let mut features = vec![0.0; 5 + tag_ids.len()];
     features[0] = (1.0 + game.reviews.total as f64).log10();
     features[1] = positive_share;
     features[2] = (1.0 + game.price.original_cents as f64).log10();
+    if liked.has_liked_developer(game) {
+        features[3] = 1.0;
+    }
+    if liked.has_liked_franchise(game) {
+        features[4] = 1.0;
+    }
 
     for tag in &game.tags {
         if let Ok(i) = tag_ids.binary_search(&tag.id) {
-            features[3 + i] = tag.weight;
+            features[5 + i] = tag.weight;
         }
     }
 
@@ -187,13 +195,21 @@ pub fn labels(votes: &Votes, catalog: &Catalog) -> Labels {
     }
 }
 
-pub fn opinion_model(votes: &Votes, catalog: &Catalog) -> Option<OpinionModel> {
-    model(&training_rows(votes, catalog))
+pub fn opinion_model(
+    votes: &Votes,
+    catalog: &Catalog,
+    liked: &LikedCreators,
+) -> Option<OpinionModel> {
+    model(&training_rows(votes, catalog), liked)
 }
 
-pub fn held_out_opinions(votes: &Votes, catalog: &Catalog) -> HashMap<AppId, f64> {
+pub fn held_out_opinions(
+    votes: &Votes,
+    catalog: &Catalog,
+    liked: &LikedCreators,
+) -> HashMap<AppId, f64> {
     let training_rows = training_rows(votes, catalog);
-    let Some(full_model) = model(&training_rows) else {
+    let Some(full_model) = model(&training_rows, liked) else {
         return HashMap::new();
     };
 
@@ -212,7 +228,7 @@ pub fn held_out_opinions(votes: &Votes, catalog: &Catalog) -> HashMap<AppId, f64
                 .filter(|(i, _)| i % FOLDS != fold)
                 .map(|(_, row)| row.clone())
                 .collect();
-            let fold_model = model(&kept);
+            let fold_model = model(&kept, liked);
 
             training_rows
                 .iter()
@@ -238,7 +254,7 @@ pub fn held_out_opinions(votes: &Votes, catalog: &Catalog) -> HashMap<AppId, f64
     opinions
 }
 
-fn model(training_rows: &[TrainingRow]) -> Option<OpinionModel> {
+fn model(training_rows: &[TrainingRow], liked: &LikedCreators) -> Option<OpinionModel> {
     let positive_labels = training_rows.iter().filter(|row| row.label == 1.0).count();
     let negative_labels = training_rows.len() - positive_labels;
     if positive_labels < MIN_LABELS || negative_labels < MIN_LABELS {
@@ -248,7 +264,7 @@ fn model(training_rows: &[TrainingRow]) -> Option<OpinionModel> {
     let tags = used_tags(training_rows);
     let features = training_rows
         .iter()
-        .map(|row| features(row.game, &tags))
+        .map(|row| features(row.game, &tags, liked))
         .collect::<Vec<_>>();
     let standardization = standardization(&features);
     let standardized_features = features
@@ -264,6 +280,7 @@ fn model(training_rows: &[TrainingRow]) -> Option<OpinionModel> {
 
     Some(OpinionModel {
         tags,
+        liked: liked.clone(),
         standardization,
         weights,
     })
@@ -415,8 +432,8 @@ mod tests {
         let mut changed = votes.clone();
         changed.insert(AppId(12), vote(VoteKind::NotForMe));
 
-        let before = held_out_opinions(&votes, &catalog);
-        let after = held_out_opinions(&changed, &catalog);
+        let before = held_out_opinions(&votes, &catalog, &LikedCreators::default());
+        let after = held_out_opinions(&changed, &catalog, &LikedCreators::default());
 
         assert_eq!(before.len(), 40);
         assert_eq!(before[&AppId(12)], after[&AppId(12)]);
@@ -429,8 +446,8 @@ mod tests {
         let votes = alternate_votes(40);
 
         assert_eq!(
-            held_out_opinions(&votes, &catalog),
-            held_out_opinions(&votes, &catalog)
+            held_out_opinions(&votes, &catalog, &LikedCreators::default()),
+            held_out_opinions(&votes, &catalog, &LikedCreators::default())
         );
     }
 
@@ -440,8 +457,8 @@ mod tests {
         let mut votes = alternate_votes(40);
         votes.insert(AppId(41), vote(VoteKind::Maybe));
 
-        let opinions = held_out_opinions(&votes, &catalog);
-        let model = opinion_model(&votes, &catalog).unwrap();
+        let opinions = held_out_opinions(&votes, &catalog, &LikedCreators::default());
+        let model = opinion_model(&votes, &catalog, &LikedCreators::default()).unwrap();
 
         assert_eq!(
             opinions[&AppId(41)],
@@ -449,10 +466,124 @@ mod tests {
         );
     }
 
+    fn liked_developer(name: &str, games: &[u32]) -> LikedCreators {
+        LikedCreators {
+            games: games.iter().map(|&id| AppId(id)).collect(),
+            developers: BTreeMap::from([(name.to_string(), games.len())]),
+            franchises: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn a_new_game_of_a_liked_developer_gets_a_higher_opinion() {
+        let developer = |id: u32| {
+            if id <= 18 || id == 39 || id == 50 {
+                "Liked Studio"
+            } else {
+                "Other Studio"
+            }
+        };
+        let games = (1..=51)
+            .map(|id| Game {
+                tags: vec![GameTag {
+                    id: TagId(1),
+                    weight: 1.0,
+                }],
+                developers: vec![developer(id).to_string()],
+                ..game(id)
+            })
+            .collect();
+        let catalog = Catalog::new(
+            games,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            Freshness {
+                prices_updated_at: Timestamp(0),
+                tags_updated_at: Timestamp(0),
+                region: Region::ITALY,
+            },
+            Currency::italian(),
+        );
+        let votes: Votes = (1..=40)
+            .map(|id| {
+                let kind = if id <= 20 {
+                    VoteKind::WouldTry
+                } else {
+                    VoteKind::NotForMe
+                };
+                (AppId(id), vote(kind))
+            })
+            .collect();
+
+        let model =
+            opinion_model(&votes, &catalog, &liked_developer("liked studio", &[100])).unwrap();
+        let opinion = |id| model.opinion(catalog.game(AppId(id)).unwrap());
+
+        assert!(model.weights[3] > 0.0);
+        assert!(opinion(50) > opinion(51));
+    }
+
+    #[test]
+    fn without_signals_the_opinion_is_the_one_without_the_creator_features() {
+        let tagged = tagged_catalog(41);
+        let games = tagged
+            .games()
+            .iter()
+            .map(|game| Game {
+                developers: vec![format!("studio {}", game.id.0 % 4)],
+                franchises: vec![format!("saga {}", game.id.0 % 5)],
+                ..game.clone()
+            })
+            .collect();
+        let catalog = Catalog::new(
+            games,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            Freshness {
+                prices_updated_at: Timestamp(0),
+                tags_updated_at: Timestamp(0),
+                region: Region::ITALY,
+            },
+            Currency::italian(),
+        );
+        let votes = alternate_votes(40);
+        let liked = LikedCreators::default();
+
+        let model = opinion_model(&votes, &catalog, &liked).unwrap();
+
+        let rows = training_rows(&votes, &catalog);
+        let without_creators = |game: &Game| {
+            let mut features = features(game, &model.tags, &liked);
+            features.drain(3..5);
+            features
+        };
+        let old_features: Vec<Vec<f64>> =
+            rows.iter().map(|row| without_creators(row.game)).collect();
+        let old_standardization = standardization(&old_features);
+        let old_weights = train(
+            &old_features
+                .iter()
+                .map(|features| old_standardization.apply(features))
+                .collect::<Vec<_>>(),
+            &rows.iter().map(|row| row.label).collect::<Vec<_>>(),
+        );
+
+        assert_eq!(&model.weights[3..5], &[0.0, 0.0]);
+        for game in catalog.games() {
+            let old_opinion = dot(
+                &old_standardization.apply(&without_creators(game)),
+                &old_weights,
+            );
+            assert!((model.opinion(game) - old_opinion).abs() < 1e-12);
+        }
+    }
+
     #[test]
     fn without_enough_labels_there_are_no_held_out_opinions() {
         let catalog = tagged_catalog(10);
 
-        assert!(held_out_opinions(&alternate_votes(10), &catalog).is_empty());
+        assert!(
+            held_out_opinions(&alternate_votes(10), &catalog, &LikedCreators::default()).is_empty()
+        );
     }
 }
