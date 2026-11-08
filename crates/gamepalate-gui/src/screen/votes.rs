@@ -47,7 +47,8 @@ const LIST_WIDTH: f32 = 340.0;
 const ROW_HEIGHT: f32 = 32.0;
 const HEADER_WIDTH: f32 = 230.0;
 const HEADER_HEIGHT: f32 = HEADER_WIDTH * 215.0 / 460.0;
-const TOP_HEIGHT: f32 = 140.0;
+const TOP_HEIGHT: f32 = 160.0;
+const MIN_SHOT_WIDTH: f32 = 480.0;
 const CONTENT_SPACING: f32 = 18.0;
 const SCROLLBAR_GAP: f32 = 12.0;
 const TOAST_DURATION: Duration = Duration::from_secs(4);
@@ -420,6 +421,7 @@ impl Votes {
         let shot_width = showcase::screenshot_width(
             size.width - SCROLLBAR_GAP,
             size.height - TOP_HEIGHT - CONTENT_SPACING,
+            MIN_SHOT_WIDTH,
             showcase::max_screenshot_width(scale),
         );
         let today = jiff::Zoned::now().date();

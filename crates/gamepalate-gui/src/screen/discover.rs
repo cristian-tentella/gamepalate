@@ -867,7 +867,9 @@ enum Layout {
 impl Layout {
     fn new(size: Size, max_shot: f32) -> Self {
         let width = size.width - SIDE_WIDTH - CARD_SPACING - SCROLLBAR_GAP;
-        let beside = showcase::screenshot_width(width, size.height, max_shot).max(MIN_SHOT_WIDTH);
+        let beside =
+            showcase::screenshot_width(width, size.height, showcase::SCREENSHOT_WIDTH, max_shot)
+                .max(MIN_SHOT_WIDTH);
         let stacked = (size.width - SCROLLBAR_GAP)
             .min(max_shot)
             .min((size.height - STACKED_BELOW) * 16.0 / 9.0);
