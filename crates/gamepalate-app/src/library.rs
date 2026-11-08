@@ -353,6 +353,8 @@ mod tests {
                     weight: 1.0 - i as f64 * 0.1,
                 })
                 .collect(),
+            developers: Vec::new(),
+            franchises: Vec::new(),
         }
     }
 

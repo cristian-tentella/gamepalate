@@ -709,6 +709,8 @@ mod tests {
             },
             is_early_access: false,
             tags: Vec::new(),
+            developers: Vec::new(),
+            franchises: Vec::new(),
         };
         let catalog = catalog(vec![catalog_game.clone()]);
 

@@ -161,6 +161,8 @@ mod tests {
             },
             is_early_access: false,
             tags: tags(tag_count),
+            developers: Vec::new(),
+            franchises: Vec::new(),
         };
         Catalog::new(
             vec![game(1, 2), game(2, 0)],

@@ -95,6 +95,8 @@ mod tests {
                 },
                 is_early_access: false,
                 tags: Vec::new(),
+                developers: Vec::new(),
+                franchises: Vec::new(),
             })
             .collect();
         Catalog::new(

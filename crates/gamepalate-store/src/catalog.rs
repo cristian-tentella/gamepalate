@@ -256,6 +256,8 @@ fn game_from_row(row: &Row) -> rusqlite::Result<Game> {
             positive: row.get(7)?,
         },
         tags: Vec::new(),
+        developers: Vec::new(),
+        franchises: Vec::new(),
     })
 }
 
@@ -460,6 +462,8 @@ mod tests {
                 id: TagId(2),
                 weight: 1.0,
             }],
+            developers: Vec::new(),
+            franchises: Vec::new(),
         };
         assert_eq!(catalog.game(AppId(20)), Some(&expected));
     }

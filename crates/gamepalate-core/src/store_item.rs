@@ -20,6 +20,8 @@ pub struct StoreItem {
     pub formatted_price: Option<String>,
     pub reviews: Reviews,
     pub tags: Vec<ItemTag>,
+    pub developers: Vec<String>,
+    pub franchises: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +61,8 @@ impl StoreItem {
             reviews: self.reviews,
             is_early_access: self.is_early_access,
             tags: normalize(self.tags),
+            developers: self.developers,
+            franchises: self.franchises,
         })
     }
 }
@@ -140,6 +144,8 @@ mod tests {
                     weight: 300.0,
                 },
             ],
+            developers: Vec::new(),
+            franchises: Vec::new(),
         }
     }
 
@@ -163,6 +169,20 @@ mod tests {
         assert_eq!(game.price.final_cents(), 969);
         assert_eq!(game.price.discount, None);
         assert_eq!(game.reviews.positive, 98);
+    }
+
+    #[test]
+    fn developers_and_franchises_reach_the_game() {
+        let game = StoreItem {
+            developers: vec!["Valve".to_string()],
+            franchises: vec!["Portal".to_string()],
+            ..item()
+        }
+        .into_game(NOW)
+        .unwrap();
+
+        assert_eq!(game.developers, ["Valve"]);
+        assert_eq!(game.franchises, ["Portal"]);
     }
 
     #[test]

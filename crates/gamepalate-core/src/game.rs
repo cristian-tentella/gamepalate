@@ -12,6 +12,8 @@ pub struct Game {
     pub reviews: Reviews,
     pub is_early_access: bool,
     pub tags: Vec<GameTag>,
+    pub developers: Vec<String>,
+    pub franchises: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]

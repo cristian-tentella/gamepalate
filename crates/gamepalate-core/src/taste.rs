@@ -223,6 +223,8 @@ mod tests {
             },
             is_early_access: false,
             tags: tags(game_tags),
+            developers: Vec::new(),
+            franchises: Vec::new(),
         };
         Catalog::new(
             vec![
