@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::Path};
 
 use clap::{Args, Subcommand};
 use gamepalate_app::families::{
-    AutomaticFamilies, MAX_FAMILIES, RemadeFamilies, create_automatic_families,
+    AutomaticFamilies, MAX_FAMILIES_WITH_OWN, RemadeFamilies, create_automatic_families,
     remake_automatic_families,
 };
 use gamepalate_core::{
@@ -120,7 +120,7 @@ fn not_remade_reason(outcome: &RemadeFamilies) -> String {
         RemadeFamilies::NoNewFamilies => {
             "No new families: your families already cover the games you play".to_string()
         }
-        RemadeFamilies::AlreadyMany => format!("You already have {MAX_FAMILIES} families"),
+        RemadeFamilies::AlreadyMany => format!("You already have {MAX_FAMILIES_WITH_OWN} families"),
     }
 }
 
@@ -161,7 +161,7 @@ mod tests {
         );
         assert_eq!(
             not_remade_reason(&RemadeFamilies::AlreadyMany),
-            "You already have 8 families"
+            "You already have 4 families"
         );
     }
 

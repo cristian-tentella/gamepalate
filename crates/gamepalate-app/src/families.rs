@@ -278,6 +278,8 @@ fn add_automatic(editor: &mut FamiliesEditor, made: &[Family], inputs: &SearchIn
 }
 
 pub const MAX_FAMILIES: usize = 8;
+// Measured on the user's data: next to their own families, more automatic ones dilute the turns.
+pub const MAX_FAMILIES_WITH_OWN: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemadeFamilies {
@@ -333,10 +335,15 @@ pub fn remake_automatic_families(
         .iter()
         .map(|family| family.name.to_lowercase())
         .collect();
+    let most = if own.is_empty() {
+        MAX_FAMILIES
+    } else {
+        MAX_FAMILIES_WITH_OWN
+    };
     let added: Vec<Family> = automatic_families(&taste, inputs.signals, inputs.catalog)
         .into_iter()
         .filter(|family| !covered(family, &in_own))
-        .take(MAX_FAMILIES.saturating_sub(own.len()))
+        .take(most.saturating_sub(own.len()))
         .map(|family| Family {
             name: free_name(&family.name, &mut taken),
             automatic: Some(date.to_string()),
@@ -345,7 +352,7 @@ pub fn remake_automatic_families(
         .collect();
 
     if removed.is_empty() && added.is_empty() {
-        return Ok(if own.len() >= MAX_FAMILIES {
+        return Ok(if !own.is_empty() && own.len() >= most {
             RemadeFamilies::AlreadyMany
         } else {
             RemadeFamilies::NoNewFamilies
@@ -1022,17 +1029,28 @@ games = [
         }
 
         #[test]
-        fn there_are_never_more_than_eight_families() {
+        fn with_your_own_families_there_are_never_more_than_four() {
             let own = |count: u32| -> String {
                 (1..=count)
-                    .map(|i| format!("[families.mine{i}]\ngames = [{}]\n", 990 + i))
+                    .map(|i| {
+                        format!(
+                            "[families.mine{i}]
+games = [{}]
+",
+                            990 + i
+                        )
+                    })
                     .collect::<Vec<String>>()
-                    .join("\n")
+                    .join(
+                        "
+",
+                    )
             };
 
-            let (_dir, path) = written(&own(3));
+            let (_dir, path) = written(&own(2));
             let remade = remade_ok(&path, &mut genres(6, 21));
-            assert_eq!(remade.added.len(), 5);
+            assert_eq!(remade.added.len(), 2);
+            assert_eq!(remade.families.families.len(), 4);
             assert!(
                 remade
                     .added
@@ -1040,12 +1058,29 @@ games = [
                     .all(|family| family.games.iter().all(|game| game.0 / 100 != 1))
             );
 
-            let (_dir, path) = written(&own(8));
+            let (_dir, path) = written(&own(4));
             assert_eq!(
                 remake(&path, &mut genres(6, 21)),
                 RemadeFamilies::AlreadyMany
             );
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), own(8));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), own(4));
+        }
+
+        #[test]
+        fn without_your_own_families_there_are_up_to_eight() {
+            let (_dir, path) = written(
+                "[families.old]
+games = [101]
+automatic = \"2026-11-10\"
+",
+            );
+            let remade = remade_ok(&path, &mut genres(9, 21));
+            assert_eq!(family_names(&remade.removed), ["old"]);
+            assert_eq!(remade.added.len(), 7);
+
+            let (_dir, path) = written("");
+            let remade = remade_ok(&path, &mut genres(16, 16));
+            assert_eq!(remade.added.len(), MAX_FAMILIES);
         }
 
         #[test]
