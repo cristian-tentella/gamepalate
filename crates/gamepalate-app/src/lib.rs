@@ -19,6 +19,7 @@ pub mod settings;
 pub mod setup;
 pub mod signals;
 pub mod steam_client;
+pub mod tags;
 pub mod update;
 pub use app::{Gamepalate, OpenError, RecommendError, VoteError, VotedGame};
 pub use capsules::{CAPSULE_HEIGHT, CAPSULE_WIDTH, Capsule};
@@ -32,7 +33,7 @@ pub use gamepalate_core::{
     effective_hours::HoursSource,
     filters::{Blame, FilterOptions},
     game::{Discount, Price, Reviews},
-    ids::{AppId, SteamId},
+    ids::{AppId, SteamId, TagId},
     opinion::Labels,
     region::Region,
     search::{Recommendation, RecommendedGame, SearchError, SearchOptions, SortBy},
@@ -58,3 +59,4 @@ pub use profile::{
     CorrectedGameView, CorrectionsView, FamilyView, HoursGame, ProfileView, SourceView, TagView,
     TasteView, VotesView,
 };
+pub use tags::{GameTagsView, TagOfGame, UsedTag};

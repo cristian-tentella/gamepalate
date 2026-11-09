@@ -47,7 +47,8 @@ const LIST_WIDTH: f32 = 340.0;
 const ROW_HEIGHT: f32 = 32.0;
 const HEADER_WIDTH: f32 = 230.0;
 const HEADER_HEIGHT: f32 = HEADER_WIDTH * 215.0 / 460.0;
-const TOP_HEIGHT: f32 = 140.0;
+const TOP_HEIGHT: f32 = 160.0;
+const MIN_SHOT_WIDTH: f32 = 480.0;
 const CONTENT_SPACING: f32 = 18.0;
 const SCROLLBAR_GAP: f32 = 12.0;
 const TOAST_DURATION: Duration = Duration::from_secs(4);
@@ -158,25 +159,8 @@ impl Votes {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
-        let message = match message {
-            Message::Previous if self.showcase.is_about_open() => {
-                Message::Showcase(showcase::Message::ScrollUp)
-            }
-            Message::Next if self.showcase.is_about_open() => {
-                Message::Showcase(showcase::Message::ScrollDown)
-            }
-            message => message,
-        };
-        if self.showcase.is_open()
-            && matches!(
-                message,
-                Message::Previous
-                    | Message::Next
-                    | Message::Vote(_)
-                    | Message::Open(_)
-                    | Message::FocusSearch
-            )
-        {
+        let message = scrolled_by_popup(message, self.showcase.is_popup_open());
+        if self.showcase.is_open() && stopped_by_popup(&message) {
             return Task::none();
         }
         let task = self.handle(message);
@@ -293,8 +277,8 @@ impl Votes {
         .push(self.showcase.zoom().map(|zoom| zoom.map(Message::Showcase)))
         .push(
             self.current()
-                .and_then(|game| self.showcase.about(&game.name))
-                .map(|about| about.map(Message::Showcase)),
+                .and_then(|game| self.showcase.popup(&game.name))
+                .map(|popup| popup.map(Message::Showcase)),
         )
         .into()
     }
@@ -437,6 +421,7 @@ impl Votes {
         let shot_width = showcase::screenshot_width(
             size.width - SCROLLBAR_GAP,
             size.height - TOP_HEIGHT - CONTENT_SPACING,
+            MIN_SHOT_WIDTH,
             showcase::max_screenshot_width(scale),
         );
         let today = jiff::Zoned::now().date();
@@ -480,7 +465,7 @@ impl Votes {
         ]
         .push(
             self.showcase
-                .facts(game.id, &[])
+                .facts(game.id, &self.showcase.used_tags())
                 .map(|facts| facts.map(Message::Showcase)),
         )
         .spacing(CONTENT_SPACING)
@@ -512,11 +497,7 @@ impl Votes {
 
         row![
             votes,
-            game::links(
-                |link| game.is_some().then_some(Message::Open(link)),
-                game.is_some()
-                    .then_some(Message::Showcase(showcase::Message::ToggleAbout)),
-            ),
+            game::links(|link| game.is_some().then_some(Message::Open(link))),
         ]
         .spacing(8)
         .height(Fill)
@@ -776,6 +757,25 @@ fn scroll_target(index: usize, offset: f32, height: f32) -> Option<f32> {
     }
 }
 
+fn scrolled_by_popup(message: Message, popup_open: bool) -> Message {
+    match message {
+        Message::Previous if popup_open => Message::Showcase(showcase::Message::ScrollUp),
+        Message::Next if popup_open => Message::Showcase(showcase::Message::ScrollDown),
+        message => message,
+    }
+}
+
+fn stopped_by_popup(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::Previous
+            | Message::Next
+            | Message::Vote(_)
+            | Message::Open(_)
+            | Message::FocusSearch
+    )
+}
+
 fn key_message(event: keyboard::Event) -> Option<Message> {
     let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
         return None;
@@ -795,6 +795,9 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         }
         Key::Character(character) if character.eq_ignore_ascii_case("d") => {
             Some(Message::Showcase(showcase::Message::ToggleAbout))
+        }
+        Key::Character(character) if character.eq_ignore_ascii_case("t") => {
+            Some(Message::Showcase(showcase::Message::ToggleTags))
         }
         Key::Character(character) if character.eq_ignore_ascii_case("k") => {
             Some(Message::Showcase(showcase::Message::ScrollUp))
@@ -1058,6 +1061,42 @@ mod tests {
                 Some(Message::Showcase(showcase::Message::ToggleAbout))
             ));
         }
+    }
+
+    #[test]
+    fn opens_the_tags_with_t() {
+        for key in ["t", "T"] {
+            assert!(matches!(
+                key_message(pressed(Key::Character(key.into()))),
+                Some(Message::Showcase(showcase::Message::ToggleTags))
+            ));
+        }
+    }
+
+    #[test]
+    fn the_arrows_scroll_an_open_popup() {
+        assert!(matches!(
+            scrolled_by_popup(Message::Previous, true),
+            Message::Showcase(showcase::Message::ScrollUp)
+        ));
+        assert!(matches!(
+            scrolled_by_popup(Message::Next, true),
+            Message::Showcase(showcase::Message::ScrollDown)
+        ));
+        assert!(matches!(
+            scrolled_by_popup(Message::Next, false),
+            Message::Next
+        ));
+    }
+
+    #[test]
+    fn an_open_popup_stops_the_votes_and_the_links() {
+        assert!(stopped_by_popup(&Message::Vote(VoteKind::Maybe)));
+        assert!(stopped_by_popup(&Message::Open(Link::Hltb)));
+        assert!(stopped_by_popup(&Message::FocusSearch));
+        assert!(!stopped_by_popup(&Message::Showcase(
+            showcase::Message::ToggleTags
+        )));
     }
 
     #[test]

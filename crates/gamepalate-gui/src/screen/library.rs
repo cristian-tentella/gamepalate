@@ -2,7 +2,7 @@ use std::{fmt, ops::Range, path::PathBuf, sync::Arc, time::Duration};
 
 use gamepalate_app::{
     AppId, Capsule, CatalogMatch, FamiliesChanged, FamiliesUndo, FamilyChange, GameCorrection,
-    Gamepalate, HoursSource, LibraryGameView, LibraryView, names::folded,
+    GameTagsView, Gamepalate, HoursSource, LibraryGameView, LibraryView, names::folded,
 };
 use iced::{
     Center, ContentFit, Element, Fill, Padding, Point, Size, Subscription, Task,
@@ -21,7 +21,11 @@ use super::{
     Toasts,
     profile::HELD_OUT_TIP,
     sentence,
-    showcase::images::{Images, Picture},
+    showcase::{
+        SCROLL_STEP,
+        images::{Images, Picture},
+        scroll_sheet, sheet, tags_body,
+    },
     steam_client::{ElsewhereHint, SteamClientQuestion},
 };
 use crate::{
@@ -74,6 +78,8 @@ pub struct Library {
     heaviest: f64,
     question: Option<SteamClientQuestion>,
     open: Option<AppId>,
+    tags: Option<(AppId, Option<GameTagsView>)>,
+    tags_popup: TagsPopup,
     selected: Option<AppId>,
     reveal_pending: bool,
     undo: Option<Undo>,
@@ -89,6 +95,44 @@ pub struct Library {
     upward: bool,
     area: Size,
     capsules: Images<image::Allocation, AppId>,
+}
+
+#[derive(Debug, Default)]
+struct TagsPopup {
+    open: bool,
+    all: bool,
+}
+
+#[derive(Debug, PartialEq)]
+enum Over {
+    Scroll(f32),
+    Ignore,
+    Through,
+}
+
+impl TagsPopup {
+    fn is_open(&self) -> bool {
+        self.open
+    }
+
+    fn close(&mut self) {
+        self.open = false;
+    }
+
+    fn toggle(&mut self, available: bool) {
+        self.open = !self.open && available;
+    }
+
+    fn over(&self, message: &Message) -> Over {
+        match message {
+            Message::Move(Move::Up) | Message::ScrollUp => Over::Scroll(-SCROLL_STEP),
+            Message::Move(Move::Down) | Message::ScrollDown => Over::Scroll(SCROLL_STEP),
+            Message::Move(_) | Message::OpenSelected | Message::Pick(_) | Message::Undo => {
+                Over::Ignore
+            }
+            _ => Over::Through,
+        }
+    }
 }
 
 enum Undo {
@@ -171,6 +215,11 @@ pub enum Message {
     CapsuleAllocated(AppId, Option<image::Allocation>),
     Open(AppId),
     Close,
+    ToggleTags,
+    ToggleAllTags,
+    CloseTags,
+    ScrollUp,
+    ScrollDown,
     Move(Move),
     OpenSelected,
     Pick(usize),
@@ -215,6 +264,8 @@ impl Library {
             heaviest: 0.0,
             question: SteamClientQuestion::ask(gamepalate.data_dir()),
             open: None,
+            tags: None,
+            tags_popup: TagsPopup::default(),
             selected: None,
             reveal_pending: false,
             undo: None,
@@ -254,12 +305,43 @@ impl Library {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.handle(message);
+        self.sync_tags();
 
         Task::batch([task, self.load()])
     }
 
+    fn sync_tags(&mut self) {
+        let Some(id) = self.open else {
+            self.tags_popup.close();
+            return;
+        };
+        if self.tags.as_ref().is_none_or(|(shown, _)| *shown != id) {
+            self.tags = Some((id, self.gamepalate.game_tags(id)));
+        }
+    }
+
+    fn game_tags(&self) -> Option<&GameTagsView> {
+        self.tags.as_ref().and_then(|(_, view)| view.as_ref())
+    }
+
     fn handle(&mut self, message: Message) -> Task<Message> {
+        if self.tags_popup.is_open() {
+            match self.tags_popup.over(&message) {
+                Over::Scroll(y) => return scroll_sheet(y),
+                Over::Ignore => return Task::none(),
+                Over::Through => {}
+            }
+        }
+
         match message {
+            Message::ScrollUp | Message::ScrollDown => {}
+            Message::ToggleTags => {
+                self.sync_tags();
+                self.tags_popup.toggle(self.game_tags().is_some());
+            }
+            Message::ToggleAllTags => self.tags_popup.all = !self.tags_popup.all,
+            Message::CloseTags => self.tags_popup.close(),
+            Message::Close if self.tags_popup.is_open() => self.tags_popup.close(),
             Message::Filter(filter) => {
                 self.filter = filter;
                 self.search.clear();
@@ -333,6 +415,7 @@ impl Library {
             Message::CapsuleAllocated(id, allocation) => self.capsules.loaded(id, allocation),
             Message::Open(id) => {
                 self.open = Some(id);
+                self.tags_popup.close();
                 self.selected = Some(id);
                 self.new_family = None;
                 self.adding = false;
@@ -540,6 +623,7 @@ impl Library {
 
     fn read_view(&mut self) {
         self.view = self.gamepalate.library_view();
+        self.tags = None;
         self.heaviest = heaviest(&self.view.games);
         self.shown = shown(&self.view.games, self.filter, self.sort, &self.search);
         self.found.games = self.gamepalate.search_catalog(&self.search);
@@ -746,6 +830,22 @@ impl Library {
                 responsive(move |size| self.placed_popup(game, size)),
             ]
         });
+        let tags = self
+            .open
+            .and_then(|id| self.game(id))
+            .filter(|_| self.tags_popup.is_open())
+            .map(|game| {
+                sheet(
+                    "Tags",
+                    &game.name,
+                    tags_body(
+                        self.game_tags(),
+                        self.tags_popup.all,
+                        Message::ToggleAllTags,
+                    ),
+                    Message::CloseTags,
+                )
+            });
         let toast = self.toasts.view(Message::Undo);
 
         let question = self.question.as_ref().map(|question| {
@@ -760,7 +860,7 @@ impl Library {
             style::separator(),
         ]
         .push(question)
-        .push(stack![body].push(popup).push(toast))
+        .push(stack![body].push(popup).push(tags).push(toast))
         .into()
     }
 
@@ -1038,11 +1138,19 @@ impl Library {
                     .style(style::muted),
                 text(weight_line(game, view)).size(font::BAR_SIZE),
             ]
-            .push((!game.tags.is_empty()).then(|| {
-                text!("Brings {}", game.tags.join(", "))
-                    .size(font::NOTE_SIZE)
-                    .style(style::muted)
-            }))
+            .push(
+                (!game.tags.is_empty() || self.game_tags().is_some()).then(|| {
+                    row![(!game.tags.is_empty()).then(|| {
+                        text!("Brings {}", game.tags.join(", "))
+                            .size(font::NOTE_SIZE)
+                            .style(style::muted)
+                            .width(Fill)
+                    })]
+                    .push(tags_button(self.game_tags()))
+                    .spacing(12)
+                    .align_y(Center)
+                }),
+            )
             .spacing(2),
             text("Counts for your taste")
                 .size(font::NOTE_SIZE)
@@ -1172,6 +1280,16 @@ fn families_text(change: &FamilyChange, game: &LibraryGameView, gone: &[String])
     }
 }
 
+fn tags_button<'a>(view: Option<&GameTagsView>) -> Option<Element<'a, Message>> {
+    view.map(|_| {
+        button(text("Tags").size(font::NOTE_SIZE))
+            .padding(0)
+            .style(style::link)
+            .on_press(Message::ToggleTags)
+            .into()
+    })
+}
+
 fn key_message(event: keyboard::Event) -> Option<Message> {
     let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
         return None;
@@ -1192,6 +1310,9 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         Key::Named(Named::ArrowDown) => Some(Message::Move(Move::Down)),
         Key::Named(Named::Enter) => Some(Message::OpenSelected),
         Key::Named(Named::Escape) => Some(Message::Close),
+        Key::Character("t" | "T") => Some(Message::ToggleTags),
+        Key::Character("j" | "J") => Some(Message::ScrollDown),
+        Key::Character("k" | "K") => Some(Message::ScrollUp),
         Key::Character("1") => Some(Message::Pick(0)),
         Key::Character("2") => Some(Message::Pick(1)),
         Key::Character("3") => Some(Message::Pick(2)),
@@ -2249,6 +2370,79 @@ mod tests {
 
     fn named(named: Named) -> Option<Message> {
         key_message(pressed(Key::Named(named), keyboard::Modifiers::empty()))
+    }
+
+    fn tags_view() -> GameTagsView {
+        GameTagsView {
+            tags: Vec::new(),
+            weighted: false,
+            used: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_tags_button_is_there_only_for_a_game_in_the_catalog() {
+        assert!(tags_button(Some(&tags_view())).is_some());
+        assert!(tags_button(None).is_none());
+    }
+
+    #[test]
+    fn t_opens_and_closes_the_tags_only_when_there_are_some() {
+        let mut popup = TagsPopup::default();
+
+        popup.toggle(false);
+        assert!(!popup.is_open());
+        popup.toggle(true);
+        assert!(popup.is_open());
+        popup.toggle(true);
+        assert!(!popup.is_open());
+        assert!(matches!(
+            character("t", keyboard::Modifiers::empty()),
+            Some(Message::ToggleTags)
+        ));
+        assert!(matches!(
+            character("T", keyboard::Modifiers::empty()),
+            Some(Message::ToggleTags)
+        ));
+    }
+
+    #[test]
+    fn with_the_tags_open_the_game_underneath_does_not_act() {
+        let popup = TagsPopup {
+            open: true,
+            all: false,
+        };
+
+        for message in [
+            Message::Pick(0),
+            Message::Pick(1),
+            Message::Pick(2),
+            Message::Undo,
+            Message::OpenSelected,
+            Message::Move(Move::Left),
+            Message::Move(Move::Right),
+        ] {
+            assert_eq!(popup.over(&message), Over::Ignore);
+        }
+        assert_eq!(
+            popup.over(&Message::Move(Move::Down)),
+            Over::Scroll(SCROLL_STEP)
+        );
+        assert_eq!(
+            popup.over(&Message::Move(Move::Up)),
+            Over::Scroll(-SCROLL_STEP)
+        );
+        assert_eq!(popup.over(&Message::ScrollDown), Over::Scroll(SCROLL_STEP));
+        assert_eq!(popup.over(&Message::ScrollUp), Over::Scroll(-SCROLL_STEP));
+        assert_eq!(popup.over(&Message::Close), Over::Through);
+    }
+
+    #[test]
+    fn j_and_k_scroll_the_tags() {
+        let none = keyboard::Modifiers::empty();
+
+        assert!(matches!(character("j", none), Some(Message::ScrollDown)));
+        assert!(matches!(character("k", none), Some(Message::ScrollUp)));
     }
 
     #[test]

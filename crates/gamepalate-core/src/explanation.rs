@@ -2,10 +2,21 @@ use crate::{
     affinity::ReferenceMatch,
     catalog::Catalog,
     game::Game,
+    ids::TagId,
     tag_vector::{TagVector, tf_idf_vector},
 };
 
 pub fn top_tags(game: &Game, profile: &TagVector, catalog: &Catalog) -> Vec<String> {
+    top_tag_ids(game, profile, catalog)
+        .into_iter()
+        .map(|id| match catalog.tags.get(&id) {
+            Some(name) => name.english.clone(),
+            None => format!("#{}", id.0),
+        })
+        .collect()
+}
+
+pub fn top_tag_ids(game: &Game, profile: &TagVector, catalog: &Catalog) -> Vec<TagId> {
     let vector = tf_idf_vector(&game.tags, &catalog.idf);
     let mut contributions: Vec<_> = vector
         .iter()
@@ -14,14 +25,7 @@ pub fn top_tags(game: &Game, profile: &TagVector, catalog: &Catalog) -> Vec<Stri
         .collect();
     contributions.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
 
-    contributions
-        .iter()
-        .take(3)
-        .map(|(id, _)| match catalog.tags.get(id) {
-            Some(name) => name.english.clone(),
-            None => format!("#{}", id.0),
-        })
-        .collect()
+    contributions.iter().take(3).map(|&(id, _)| id).collect()
 }
 
 pub fn similar_to(references: &[ReferenceMatch]) -> Option<&ReferenceMatch> {

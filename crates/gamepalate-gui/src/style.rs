@@ -88,6 +88,20 @@ pub fn link(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+pub fn key_action(theme: &Theme, status: button::Status) -> button::Style {
+    let text_color = match status {
+        button::Status::Hovered | button::Status::Pressed => {
+            theme.extended_palette().background.base.text
+        }
+        button::Status::Active | button::Status::Disabled => faded(theme, 0.7),
+    };
+
+    button::Style {
+        text_color,
+        ..button::Style::default()
+    }
+}
+
 pub fn window_button(theme: &Theme, status: button::Status) -> button::Style {
     let background = theme.extended_palette().background;
 
@@ -644,6 +658,32 @@ pub fn meter(theme: &Theme) -> progress_bar::Style {
     progress_bar::Style {
         background: palette.background.weak.color.into(),
         bar: palette.primary.base.color.into(),
+        border: Border {
+            radius: 3.0.into(),
+            ..Border::default()
+        },
+    }
+}
+
+pub fn accent_meter(theme: &Theme) -> progress_bar::Style {
+    let palette = theme.extended_palette();
+
+    progress_bar::Style {
+        background: palette.background.weak.color.into(),
+        bar: palette.success.base.color.into(),
+        border: Border {
+            radius: 3.0.into(),
+            ..Border::default()
+        },
+    }
+}
+
+pub fn quiet_meter(theme: &Theme) -> progress_bar::Style {
+    let background = theme.extended_palette().background;
+
+    progress_bar::Style {
+        background: background.weak.color.into(),
+        bar: background.strong.color.into(),
         border: Border {
             radius: 3.0.into(),
             ..Border::default()
