@@ -714,6 +714,18 @@ pub fn capsule_strip(_theme: &Theme) -> container::Style {
     }
 }
 
+pub fn cover_count(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::BLACK.scale_alpha(0.55).into()),
+        text_color: Some(Color::WHITE),
+        border: Border {
+            radius: 8.0.into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
+    }
+}
+
 pub fn capsule_badge(theme: &Theme) -> container::Style {
     let primary = theme.extended_palette().primary.base;
 
