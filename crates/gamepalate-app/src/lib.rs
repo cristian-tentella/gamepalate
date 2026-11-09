@@ -26,8 +26,8 @@ pub use capsules::{CAPSULE_HEIGHT, CAPSULE_WIDTH, Capsule};
 pub use catalog_search::{CatalogMatch, MAX_MATCHES, MIN_SEARCH_CHARS};
 pub use details::GameDetails;
 pub use families::{
-    AutomaticFamilies, CreatedFamilies, FamiliesChanged, FamiliesUndo, FamilyChange,
-    FamilyChangeError, FamilyGame,
+    AutomaticFamilies, CreatedFamilies, FamiliesChanged, FamiliesRemade, FamiliesUndo,
+    FamilyChange, FamilyChangeError, FamilyGame, MAX_FAMILIES, Remade, RemadeFamilies,
 };
 pub use gamepalate_core::{
     config::{Config, SignalsConfig},

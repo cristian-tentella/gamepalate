@@ -44,8 +44,9 @@ use crate::{
     data_dir,
     details::{GameDetails, StoreDetails},
     families::{
-        CreatedFamilies, FamiliesChanged, FamiliesUndo, FamilyChange, FamilyChangeError,
-        FamilyGame, changed_families, families_on_open, family_games, renamed_choice,
+        CreatedFamilies, FamiliesChanged, FamiliesRemade, FamiliesUndo, FamilyChange,
+        FamilyChangeError, FamilyGame, RemadeFamilies, changed_families, families_on_open,
+        family_games, open_error, remake_automatic_families, renamed_choice,
     },
     images::{DecodedImage, ImageCache, ImageKind, LoadImageError, MAX_CACHE_BYTES, cache_dir},
     library::{
@@ -372,20 +373,10 @@ impl Gamepalate {
         .inspect_err(failed("could not save the families"))?;
         *families = changed.families;
 
-        let mut discover_family = None;
-        if !changed.renamed.is_empty() {
-            let _ = self.change_gui_settings(|settings| {
-                let choice = renamed_choice(&settings.search.family, &changed.renamed);
-                if choice != settings.search.family {
-                    discover_family = Some(std::mem::replace(&mut settings.search.family, choice));
-                }
-            });
-        }
-
         Ok(FamiliesChanged {
             undo: FamiliesUndo {
                 snapshot: changed.snapshot,
-                discover_family,
+                discover_family: self.follow_renamed(&changed.renamed),
             },
             gone: changed
                 .renamed
@@ -394,6 +385,55 @@ impl Gamepalate {
                 .map(|(from, _)| from)
                 .collect(),
         })
+    }
+
+    // Only the automatic families change; the undo puts back the file as it was.
+    pub fn remake_families(&self) -> Result<FamiliesRemade, FamilyChangeError> {
+        let votes = self.lock_votes();
+        let corrections = self.lock_corrections();
+        let mut families = self.lock_families();
+        let outcome = remake_automatic_families(
+            &self.data_dir.join(FAMILIES_FILE),
+            &SearchInputs {
+                votes: &votes,
+                corrections: &corrections,
+                families: &families,
+                ..self.files.search_inputs(&self.vectors)
+            },
+            &jiff::Zoned::now().date().to_string(),
+        )
+        .map_err(open_error)
+        .inspect_err(failed("could not remake the families"))?;
+
+        let RemadeFamilies::Remade(remade) = outcome else {
+            return Ok(FamiliesRemade {
+                outcome,
+                undo: None,
+            });
+        };
+        *families = remade.families.clone();
+        let undo = FamiliesUndo {
+            snapshot: remade.snapshot.clone(),
+            discover_family: self.follow_renamed(&remade.renamed()),
+        };
+        Ok(FamiliesRemade {
+            outcome: RemadeFamilies::Remade(remade),
+            undo: Some(undo),
+        })
+    }
+
+    // The family chosen in Discover follows a rename, or goes back to all when it is gone.
+    fn follow_renamed(&self, renamed: &[(String, Option<String>)]) -> Option<Option<String>> {
+        let mut discover_family = None;
+        if !renamed.is_empty() {
+            let _ = self.change_gui_settings(|settings| {
+                let choice = renamed_choice(&settings.search.family, renamed);
+                if choice != settings.search.family {
+                    discover_family = Some(std::mem::replace(&mut settings.search.family, choice));
+                }
+            });
+        }
+        discover_family
     }
 
     pub fn undo_families(&self, undo: &FamiliesUndo) -> Result<(), FamilyChangeError> {

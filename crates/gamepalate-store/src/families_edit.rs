@@ -107,6 +107,57 @@ impl FamiliesEditor {
         self.families().remove(family).is_some()
     }
 
+    // Takes out the families gamepalate made; the comments at the top of the file stay.
+    pub fn delete_automatic(&mut self) -> Vec<String> {
+        let names: Vec<String> = self
+            .families()
+            .iter()
+            .filter(|(_, item)| {
+                item.as_table_like()
+                    .is_some_and(|table| table.contains_key(AUTOMATIC))
+            })
+            .map(|(name, _)| name.to_string())
+            .collect();
+        let top = self.first_table();
+
+        let mut heading = String::new();
+        for name in &names {
+            let removed = self.families().remove(name);
+            let Some(Item::Table(table)) = removed else {
+                continue;
+            };
+            if top.as_deref() == Some(&["families".to_string(), name.clone()][..]) {
+                heading = table
+                    .decor()
+                    .prefix()
+                    .and_then(|prefix| prefix.as_str())
+                    .unwrap_or("")
+                    .trim_end_matches('\n')
+                    .to_string();
+            }
+        }
+
+        if !heading.is_empty() {
+            match self.first_table().and_then(|next| self.table_mut(&next)) {
+                Some(next) => {
+                    let rest = next
+                        .decor()
+                        .prefix()
+                        .and_then(|prefix| prefix.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    next.decor_mut().set_prefix(format!("{heading}\n{rest}"));
+                }
+                None => self.leading = format!("{heading}\n"),
+            }
+        }
+
+        if self.families().is_empty() {
+            self.document.remove("families");
+        }
+        names
+    }
+
     pub fn hold_out(&mut self, id: AppId, comment: &str) {
         if let Some(games) = self.held_out_games() {
             push_game(games, id, comment);
@@ -156,6 +207,39 @@ impl FamiliesEditor {
         if let Some(table) = self.family_table(family) {
             table.remove(AUTOMATIC);
         }
+    }
+
+    // The table written first in the file, as the keys that lead to it.
+    fn first_table(&self) -> Option<Vec<String>> {
+        let mut tables: Vec<(isize, Vec<String>)> = Vec::new();
+        for (key, item) in self.document.iter() {
+            let Some(table) = item.as_table() else {
+                continue;
+            };
+            if !table.is_implicit() {
+                tables.push((position(table), vec![key.to_string()]));
+            }
+            if key != "families" {
+                continue;
+            }
+            for (name, family) in table.iter() {
+                if let Some(family) = family.as_table() {
+                    tables.push((position(family), vec![key.to_string(), name.to_string()]));
+                }
+            }
+        }
+        tables
+            .into_iter()
+            .min_by_key(|(position, _)| *position)
+            .map(|(_, path)| path)
+    }
+
+    fn table_mut(&mut self, path: &[String]) -> Option<&mut Table> {
+        let mut table = self.document.as_table_mut();
+        for key in path {
+            table = table.get_mut(key)?.as_table_mut()?;
+        }
+        Some(table)
     }
 
     fn held_out_games(&mut self) -> Option<&mut Array> {
@@ -263,6 +347,10 @@ fn remove_game(games: &mut Array, id: AppId) -> bool {
         }
     }
     true
+}
+
+fn position(table: &Table) -> isize {
+    table.position().unwrap_or(isize::MAX)
 }
 
 fn prefix(value: &Value) -> &str {
@@ -517,6 +605,89 @@ automatic = \"2026-11-10\"
         assert!(
             text.starts_with("[families.cozy]\ngames = [\n    2, # Two\n]\n\n[families.mysteries]")
         );
+    }
+
+    const MADE_FILE: &str = "\
+# Your families.
+# Made on 2026-11-10.
+
+[families.cozy]
+games = [
+    1, # One
+]
+automatic = \"2026-11-10\"
+
+# Mine
+[families.mine]
+games = [5]
+
+[families.mysteries]
+games = [10, 20]
+automatic = \"2026-11-10\"
+
+[held_out]
+games = [30]
+";
+
+    #[test]
+    fn deleting_the_automatic_families_keeps_the_others_and_the_top_comments() {
+        let text = edited(MADE_FILE, |editor| {
+            assert_eq!(editor.delete_automatic(), ["cozy", "mysteries"]);
+            editor.add_game("riddles", AppId(40), "Forty");
+            editor.set_automatic("riddles", "2026-12-01");
+        });
+        assert_eq!(
+            text,
+            "\
+# Your families.
+# Made on 2026-11-10.
+
+# Mine
+[families.mine]
+games = [5]
+
+[families.riddles]
+games = [
+    40, # Forty
+]
+automatic = \"2026-12-01\"
+
+[held_out]
+games = [30]
+"
+        );
+    }
+
+    #[test]
+    fn deleting_only_automatic_families_leaves_the_comments() {
+        let text = edited(AUTOMATIC_FILE, |editor| {
+            editor.delete_automatic();
+        });
+        assert_eq!(text, "");
+
+        let made = format!("{NEW_FILE}\n{AUTOMATIC_FILE}");
+        let text = edited(&made, |editor| {
+            editor.delete_automatic();
+        });
+        assert_eq!(text, NEW_FILE);
+
+        let text = edited(&made, |editor| {
+            editor.delete_automatic();
+            editor.add_game("riddles", AppId(40), "Forty");
+        });
+        assert_eq!(
+            text,
+            format!("{NEW_FILE}\n[families.riddles]\ngames = [\n    40, # Forty\n]\n")
+        );
+    }
+
+    #[test]
+    fn deleting_the_automatic_families_after_yours_leaves_yours_as_they_are() {
+        let mine = "# My tastes\n[families.mine]\ngames = [\n    5, # Five\n]\n";
+        let text = edited(&format!("{mine}\n{AUTOMATIC_FILE}"), |editor| {
+            editor.delete_automatic();
+        });
+        assert_eq!(text, mine);
     }
 
     #[test]

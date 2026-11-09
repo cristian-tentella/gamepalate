@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::BTreeSet, path::Path};
 
 use gamepalate_core::{
     automatic_families::{automatic_families, grouped_games},
@@ -6,7 +6,7 @@ use gamepalate_core::{
     families::{Families, Family},
     ids::AppId,
     search::SearchInputs,
-    taste::signals_taste,
+    taste::{Taste, signals_taste},
 };
 use gamepalate_store::{
     data_files::DataFiles,
@@ -36,6 +36,12 @@ pub struct FamiliesUndo {
 pub struct FamiliesChanged {
     pub undo: FamiliesUndo,
     pub gone: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FamiliesRemade {
+    pub outcome: RemadeFamilies,
+    pub undo: Option<FamiliesUndo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,7 +183,7 @@ fn checked_name(
     }
 }
 
-fn open_error(error: FamiliesError) -> FamilyChangeError {
+pub(crate) fn open_error(error: FamiliesError) -> FamilyChangeError {
     match error {
         FamiliesError::Io(_) | FamiliesError::Write(_) => FamilyChangeError::Save(error),
         FamiliesError::Toml(_) | FamiliesError::Edit(_) | FamiliesError::Family { .. } => {
@@ -214,6 +220,24 @@ pub fn create_automatic_families(
         return Ok(AutomaticFamilies::Off);
     }
 
+    let taste = played_taste(inputs, &[]);
+    let made = automatic_families(&taste, inputs.signals, inputs.catalog);
+    if made.is_empty() {
+        return Ok(AutomaticFamilies::TooFewGames);
+    }
+
+    let mut editor = FamiliesEditor::open(path)?;
+    add_heading(&mut editor, date);
+    add_automatic(&mut editor, &made, inputs, date);
+    let (families, _) = editor.save()?;
+
+    Ok(AutomaticFamilies::Created(CreatedFamilies {
+        families,
+        played: grouped_games(&taste, inputs.signals, inputs.catalog),
+    }))
+}
+
+fn played_taste(inputs: &SearchInputs, held_out: &[AppId]) -> Taste {
     let config = &inputs.config.signals;
     let hours = hours_by_source(
         inputs.signals,
@@ -221,23 +245,26 @@ pub fn create_automatic_families(
         &inputs.corrections.played_elsewhere,
         config,
     );
-    let taste = signals_taste(
+    let mut taste = signals_taste(
         &hours,
         inputs.catalog,
         inputs.off_catalog,
         inputs.corrections,
         config,
     );
-    let made = automatic_families(&taste, inputs.signals, inputs.catalog);
-    if made.is_empty() {
-        return Ok(AutomaticFamilies::TooFewGames);
-    }
+    taste.games.retain(|game| !held_out.contains(&game.id));
+    taste
+}
 
-    let mut editor = FamiliesEditor::open(path)?;
+// Only a new file gets the heading: one that is there already keeps its own.
+fn add_heading(editor: &mut FamiliesEditor, date: &str) {
     editor.add_heading(&format!(
         "Made from the games you play on {date}. Change them as you like."
     ));
-    for family in &made {
+}
+
+fn add_automatic(editor: &mut FamiliesEditor, made: &[Family], inputs: &SearchInputs, date: &str) {
+    for family in made {
         for &game in &family.games {
             let name = inputs
                 .catalog
@@ -248,12 +275,116 @@ pub fn create_automatic_families(
         }
         editor.set_automatic(&family.name, date);
     }
-    let (families, _) = editor.save()?;
+}
 
-    Ok(AutomaticFamilies::Created(CreatedFamilies {
+pub const MAX_FAMILIES: usize = 8;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemadeFamilies {
+    Remade(Remade),
+    NoNewFamilies,
+    AlreadyMany,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Remade {
+    pub removed: Vec<Family>,
+    pub added: Vec<Family>,
+    pub families: Families,
+    // The played games of that day, to tell later how many are new.
+    pub played: Vec<AppId>,
+    pub(crate) snapshot: FamiliesSnapshot,
+}
+
+impl Remade {
+    // The removed families whose name is not back, for the one chosen in Discover.
+    pub(crate) fn renamed(&self) -> Vec<(String, Option<String>)> {
+        self.removed
+            .iter()
+            .filter(|old| {
+                self.families
+                    .families
+                    .iter()
+                    .all(|new| new.name != old.name)
+            })
+            .map(|old| (old.name.clone(), None))
+            .collect()
+    }
+}
+
+// Replaces the automatic families with new ones for the tastes the user's own don't cover.
+pub fn remake_automatic_families(
+    path: &Path,
+    inputs: &SearchInputs,
+    date: &str,
+) -> Result<RemadeFamilies, FamiliesError> {
+    let families = inputs.families;
+    let (removed, own): (Vec<&Family>, Vec<&Family>) = families
+        .families
+        .iter()
+        .partition(|family| family.automatic.is_some());
+
+    let taste = played_taste(inputs, &families.held_out);
+    let in_own: BTreeSet<AppId> = own
+        .iter()
+        .flat_map(|family| family.games.iter().copied())
+        .collect();
+    let mut taken: BTreeSet<String> = own
+        .iter()
+        .map(|family| family.name.to_lowercase())
+        .collect();
+    let added: Vec<Family> = automatic_families(&taste, inputs.signals, inputs.catalog)
+        .into_iter()
+        .filter(|family| !covered(family, &in_own))
+        .take(MAX_FAMILIES.saturating_sub(own.len()))
+        .map(|family| Family {
+            name: free_name(&family.name, &mut taken),
+            automatic: Some(date.to_string()),
+            ..family
+        })
+        .collect();
+
+    if removed.is_empty() && added.is_empty() {
+        return Ok(if own.len() >= MAX_FAMILIES {
+            RemadeFamilies::AlreadyMany
+        } else {
+            RemadeFamilies::NoNewFamilies
+        });
+    }
+
+    let mut editor = FamiliesEditor::open(path)?;
+    add_heading(&mut editor, date);
+    editor.delete_automatic();
+    add_automatic(&mut editor, &added, inputs, date);
+    let (families, snapshot) = editor.save()?;
+
+    Ok(RemadeFamilies::Remade(Remade {
+        removed: removed.into_iter().cloned().collect(),
+        added,
         families,
         played: grouped_games(&taste, inputs.signals, inputs.catalog),
+        snapshot,
     }))
+}
+
+// A group is covered when at least half of its games are in the user's own families.
+fn covered(family: &Family, in_own: &BTreeSet<AppId>) -> bool {
+    let inside = family
+        .games
+        .iter()
+        .filter(|game| in_own.contains(game))
+        .count();
+    2 * inside >= family.games.len()
+}
+
+fn free_name(name: &str, taken: &mut BTreeSet<String>) -> String {
+    let mut free = name.to_string();
+    let mut number = 2;
+    while !taken.insert(free.to_lowercase()) {
+        free = format!("{name} {number}");
+        number += 1;
+    }
+    free
 }
 
 // On opening, the families just made replace the empty ones that were read.
@@ -558,17 +689,14 @@ games = [
         use super::super::*;
 
         const DATE: &str = "2026-11-10";
-        const PUZZLE: [u32; 2] = [1, 2];
-        const FIGHTING: [u32; 2] = [3, 4];
+        const LATER: &str = "2026-12-01";
 
-        // Puzzles are 101 to 105, fighting games 201 to 205; each has the hours of its appid.
+        // Game g01, g02, … is of genre g, with tags 2g − 1 and 2g, and has 10g + its number hours.
         fn files(played: &[u32]) -> DataFiles {
-            let tag_names = [
-                (1, "Puzzle"),
-                (2, "Relaxing"),
-                (3, "Fighting"),
-                (4, "2D Fighter"),
-            ];
+            let genres = played.iter().map(|id| id / 100).max().unwrap_or(0);
+            let tag_names: Vec<(u32, String)> = (1..=2 * genres)
+                .map(|id| (id, format!("Tag {id}")))
+                .collect();
             let games = played
                 .iter()
                 .map(|&id| Game {
@@ -583,7 +711,7 @@ games = [
                         positive: 0,
                     },
                     is_early_access: false,
-                    tags: if id < 200 { PUZZLE } else { FIGHTING }
+                    tags: [2 * (id / 100) - 1, 2 * (id / 100)]
                         .iter()
                         .map(|&tag| GameTag {
                             id: TagId(tag),
@@ -598,12 +726,12 @@ games = [
                 games,
                 tag_names
                     .iter()
-                    .map(|&(id, name)| {
+                    .map(|(id, name)| {
                         (
-                            TagId(id),
+                            TagId(*id),
                             TagName {
-                                english: name.to_string(),
-                                italian: name.to_string(),
+                                english: name.clone(),
+                                italian: name.clone(),
                             },
                         )
                     })
@@ -628,7 +756,7 @@ games = [
                         .iter()
                         .map(|&id| LibraryGame {
                             id: AppId(id),
-                            total_hours: f64::from(id % 100) * 10.0,
+                            total_hours: f64::from(id / 100 * 10 + id % 100),
                             last_played: None,
                         })
                         .collect(),
@@ -643,7 +771,39 @@ games = [
         }
 
         fn ten_games() -> DataFiles {
-            files(&[101, 102, 103, 104, 105, 201, 202, 203, 204, 205])
+            genres(2, 5)
+        }
+
+        fn genres(genres: u32, games: u32) -> DataFiles {
+            let played: Vec<u32> = (1..=genres)
+                .flat_map(|genre| (1..=games).map(move |game| genre * 100 + game))
+                .collect();
+            files(&played)
+        }
+
+        fn written(text: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("families.toml");
+            if !text.is_empty() {
+                std::fs::write(&path, text).unwrap();
+            }
+            (dir, path)
+        }
+
+        fn remake(path: &Path, files: &mut DataFiles) -> RemadeFamilies {
+            files.families = load_families(path).unwrap();
+            remake_automatic_families(path, &files.search_inputs(&[]), LATER).unwrap()
+        }
+
+        fn remade_ok(path: &Path, files: &mut DataFiles) -> Remade {
+            match remake(path, files) {
+                RemadeFamilies::Remade(remade) => remade,
+                other => panic!("not remade: {other:?}"),
+            }
+        }
+
+        fn family_names(families: &[Family]) -> Vec<&str> {
+            families.iter().map(|family| family.name.as_str()).collect()
         }
 
         fn created(path: &Path, files: &DataFiles) -> AutomaticFamilies {
@@ -793,6 +953,161 @@ games = [
             for game in &first.games[1..] {
                 assert!(text.contains(&format!("    {}, # Game {}\n", game.0, game.0)));
             }
+        }
+
+        const MIXED: &str = "\
+# Mine
+[families.mine]
+games = [
+    999, # Not played
+]
+
+[families.old]
+games = [101, 201]
+automatic = \"2026-11-10\"
+
+# Also mine
+[families.\"Tag 3 · Tag 4\"]
+games = [998]
+
+[held_out]
+games = [
+    105, # Game 105
+]
+";
+
+        #[test]
+        fn a_remake_replaces_only_the_automatic_families() {
+            let (_dir, path) = written(MIXED);
+            let remade = remade_ok(&path, &mut ten_games());
+
+            assert_eq!(family_names(&remade.removed), ["old"]);
+            assert_eq!(
+                family_names(&remade.families.families),
+                ["mine", "Tag 3 · Tag 4", "Tag 3 · Tag 4 2", "Tag 1 · Tag 2"]
+            );
+            assert_eq!(remade.added, remade.families.families[2..]);
+            assert!(
+                remade
+                    .added
+                    .iter()
+                    .all(|family| family.automatic.as_deref() == Some(LATER))
+            );
+            assert_eq!(sorted(&remade.added[1].games), [101, 102, 103, 104]);
+            assert_eq!(remade.families.held_out, [AppId(105)]);
+            assert!(!remade.played.contains(&AppId(105)));
+
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(text.starts_with(
+                "# Mine\n[families.mine]\ngames = [\n    999, # Not played\n]\n\n# Also mine\n[families.\"Tag 3 · Tag 4\"]\ngames = [998]\n\n[families."
+            ));
+            assert!(text.ends_with("\n\n[held_out]\ngames = [\n    105, # Game 105\n]\n"));
+            assert!(!text.contains("[families.old]"));
+            assert!(text.contains("    205, # Game 205\n"));
+        }
+
+        #[test]
+        fn a_group_with_half_its_games_in_your_families_is_left_out() {
+            let (_dir, path) = written("[families.mine]\ngames = [110, 109, 108, 107]\n");
+            let remade = remade_ok(&path, &mut genres(2, 10));
+            assert_eq!(family_names(&remade.added), ["Tag 3 · Tag 4"]);
+
+            let (_dir, path) = written("[families.mine]\ngames = [110, 109, 108]\n");
+            let remade = remade_ok(&path, &mut genres(2, 10));
+            assert_eq!(
+                family_names(&remade.added),
+                ["Tag 3 · Tag 4", "Tag 1 · Tag 2"]
+            );
+            assert!(remade.removed.is_empty());
+        }
+
+        #[test]
+        fn there_are_never_more_than_eight_families() {
+            let own = |count: u32| -> String {
+                (1..=count)
+                    .map(|i| format!("[families.mine{i}]\ngames = [{}]\n", 990 + i))
+                    .collect::<Vec<String>>()
+                    .join("\n")
+            };
+
+            let (_dir, path) = written(&own(3));
+            let remade = remade_ok(&path, &mut genres(6, 21));
+            assert_eq!(remade.added.len(), 5);
+            assert!(
+                remade
+                    .added
+                    .iter()
+                    .all(|family| family.games.iter().all(|game| game.0 / 100 != 1))
+            );
+
+            let (_dir, path) = written(&own(8));
+            assert_eq!(
+                remake(&path, &mut genres(6, 21)),
+                RemadeFamilies::AlreadyMany
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), own(8));
+        }
+
+        #[test]
+        fn without_a_file_the_remake_makes_it_even_with_the_switch_off() {
+            let (_dir, path) = written("");
+            let mut files = ten_games();
+            files.config.families.automatic = false;
+
+            let remade = remade_ok(&path, &mut files);
+
+            assert!(remade.removed.is_empty());
+            assert_eq!(remade.added.len(), 2);
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(text.starts_with(&format!(
+                "{}# Made from the games you play on {LATER}.",
+                gamepalate_store::families_edit::NEW_FILE
+            )));
+        }
+
+        #[test]
+        fn nothing_new_leaves_the_file_as_it_is() {
+            let own = "# Mine\n[families.mine]\ngames = [101, 102, 103, 104, 105, 201, 202, 203]\n";
+            let (_dir, path) = written(own);
+            assert_eq!(
+                remake(&path, &mut ten_games()),
+                RemadeFamilies::NoNewFamilies
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), own);
+
+            let (_dir, path) = written("");
+            assert_eq!(
+                remake(&path, &mut files(&[101, 102, 201])),
+                RemadeFamilies::NoNewFamilies
+            );
+            assert!(!path.exists());
+        }
+
+        #[test]
+        fn the_undo_puts_back_the_file_and_the_family_chosen_in_discover() {
+            let (_dir, path) = written(MIXED);
+            let remade = remade_ok(&path, &mut ten_games());
+
+            let renamed = remade.renamed();
+            assert_eq!(renamed, [("old".to_string(), None)]);
+            assert_eq!(renamed_choice(&Some("old".to_string()), &renamed), None);
+            assert_eq!(
+                renamed_choice(&Some("mine".to_string()), &renamed),
+                Some("mine".to_string())
+            );
+
+            let families =
+                gamepalate_store::families_edit::restore_families(&path, &remade.snapshot).unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), MIXED);
+            assert_eq!(
+                family_names(&families.families),
+                ["mine", "old", "Tag 3 · Tag 4"]
+            );
+
+            remade_ok(&path, &mut ten_games());
+            let again = remade_ok(&path, &mut ten_games());
+            assert_eq!(again.removed, again.added);
+            assert!(again.renamed().is_empty());
         }
     }
 }
