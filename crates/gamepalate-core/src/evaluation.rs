@@ -8,7 +8,7 @@ use crate::{
         references_similarity,
     },
     catalog::Catalog,
-    effective_hours::hours_by_source,
+    effective_hours::{HoursSource, hours_by_source},
     families::Families,
     filters::FilterContext,
     game_vector::GameVector,
@@ -19,7 +19,7 @@ use crate::{
     signals::Signals,
     tag_vector::{CompactTagVector, TagIndex, dense_dot, norm},
     taste::{Taste, family_taste, game_name, signals_taste},
-    turns::in_turns,
+    turns::{ListKind, in_turns, turn_shares},
 };
 
 const REFERENCES: usize = 3;
@@ -44,6 +44,7 @@ impl PreparedTaste {
 // A family with its normal relevances and ranking, computed once.
 #[derive(Debug, Clone)]
 pub struct PreparedFamily {
+    pub kind: ListKind,
     pub taste: PreparedTaste,
     pub relevances: Vec<f64>,
     pub ranking: Vec<RankedGame>,
@@ -245,9 +246,13 @@ pub fn position(x: AppId, inputs: &EvaluationInputs) -> Option<usize> {
     };
 
     let mut lists = vec![ranking_without_x(&inputs.signals)?];
+    let mut kinds = vec![ListKind::Signals];
     for family in &inputs.families {
         if family.taste.contains(x) {
-            lists.extend(ranking_without_x(&family.taste));
+            if let Some(ranking) = ranking_without_x(&family.taste) {
+                lists.push(ranking);
+                kinds.push(family.kind);
+            }
             continue;
         }
 
@@ -258,9 +263,10 @@ pub fn position(x: AppId, inputs: &EvaluationInputs) -> Option<usize> {
             ranking.insert(at, game);
         }
         lists.push(ranking);
+        kinds.push(family.kind);
     }
 
-    in_turns(&lists)
+    in_turns(&lists, &turn_shares(&kinds))
         .iter()
         .position(|pick| pick.game.id == x)
         .map(|i| i + 1)
@@ -388,22 +394,14 @@ pub fn summarize(games: Vec<EvaluatedGame>) -> GroupSummary {
     }
 }
 
-// Ignores hidden games, votes, banned tags and the opinion: it measures tastes, not the list.
-pub fn evaluate(inputs: &SearchInputs) -> Evaluation {
+fn evaluation_inputs<'a>(
+    inputs: &SearchInputs<'a>,
+    hours_by_source: &BTreeMap<AppId, (f64, HoursSource)>,
+) -> EvaluationInputs<'a> {
     let config = inputs.config;
     let quality_weight = config.relevance.quality_weight;
-    let hours_by_source = hours_by_source(
-        inputs.signals,
-        inputs.votes,
-        &inputs.corrections.played_elsewhere,
-        &config.signals,
-    );
-    let hours: BTreeMap<AppId, f64> = hours_by_source
-        .iter()
-        .map(|(&id, &(hours, _))| (id, hours))
-        .collect();
     let taste = signals_taste(
-        &hours_by_source,
+        hours_by_source,
         inputs.catalog,
         inputs.off_catalog,
         inputs.corrections,
@@ -436,6 +434,7 @@ pub fn evaluate(inputs: &SearchInputs) -> Evaluation {
                 competitor_ranking(inputs.game_vectors, &relevances, &competitor_indices, None);
 
             Some(PreparedFamily {
+                kind: ListKind::of_family(family),
                 taste,
                 relevances,
                 ranking,
@@ -443,7 +442,7 @@ pub fn evaluate(inputs: &SearchInputs) -> Evaluation {
         })
         .collect();
 
-    let evaluation_inputs = EvaluationInputs {
+    EvaluationInputs {
         catalog: inputs.catalog,
         game_vectors: inputs.game_vectors,
         compact,
@@ -452,7 +451,22 @@ pub fn evaluate(inputs: &SearchInputs) -> Evaluation {
         competitors: competitor_indices,
         quality_weight,
         min_reviews: config.relevance.min_reviews,
-    };
+    }
+}
+
+// Ignores hidden games, votes, banned tags and the opinion: it measures tastes, not the list.
+pub fn evaluate(inputs: &SearchInputs) -> Evaluation {
+    let hours_by_source = hours_by_source(
+        inputs.signals,
+        inputs.votes,
+        &inputs.corrections.played_elsewhere,
+        &inputs.config.signals,
+    );
+    let hours: BTreeMap<AppId, f64> = hours_by_source
+        .iter()
+        .map(|(&id, &(hours, _))| (id, hours))
+        .collect();
+    let evaluation_inputs = evaluation_inputs(inputs, &hours_by_source);
 
     let mut groups = [
         kept_aside_group(inputs.families, inputs.catalog, inputs.off_catalog),
@@ -483,5 +497,112 @@ pub fn evaluate(inputs: &SearchInputs) -> Evaluation {
         guardrail,
         families,
         catalog_size: inputs.catalog.games().len(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        catalog::Freshness,
+        config::Config,
+        corrections::Corrections,
+        currency::Currency,
+        families::Family,
+        game::{Game, GameTag, Price, Reviews},
+        game_vector::game_vectors,
+        ids::TagId,
+        region::Region,
+        signals::LibraryGame,
+        timestamp::Timestamp,
+        votes::Votes,
+    };
+
+    const NOW: Timestamp = Timestamp(1_793_638_800_000);
+
+    fn game(id: u32, tag: u32) -> Game {
+        Game {
+            id: AppId(id),
+            name: format!("game {id}"),
+            price: Price {
+                original_cents: 999,
+                discount: None,
+            },
+            reviews: Reviews {
+                total: 5000,
+                positive: 4500,
+            },
+            is_early_access: false,
+            tags: vec![GameTag {
+                id: TagId(tag),
+                weight: 1.0,
+            }],
+            developers: Vec::new(),
+            franchises: Vec::new(),
+        }
+    }
+
+    fn position_with(x: u32, automatic: Option<&str>) -> Option<usize> {
+        let catalog = Catalog::new(
+            vec![game(1, 1), game(2, 1), game(3, 2), game(4, 2), game(5, 1)],
+            BTreeMap::new(),
+            BTreeMap::from([(TagId(1), 1.0), (TagId(2), 1.0)]),
+            Freshness {
+                prices_updated_at: NOW,
+                tags_updated_at: NOW,
+                region: Region::ITALY,
+            },
+            Currency::italian(),
+        );
+        let vectors = game_vectors(&catalog);
+        let signals = Signals {
+            read_at: NOW,
+            library: vec![LibraryGame {
+                id: AppId(1),
+                total_hours: 20.0,
+                last_played: None,
+            }],
+            borrowed: vec![],
+            recent: Vec::new(),
+            wishlist: Vec::new(),
+            followed: Vec::new(),
+        };
+        let config = Config::default();
+        let votes = Votes::new();
+        let corrections = Corrections::default();
+        let families = Families {
+            families: vec![Family {
+                name: "Puzzle".to_string(),
+                games: vec![AppId(3)],
+                automatic: automatic.map(str::to_string),
+            }],
+            held_out: Vec::new(),
+        };
+        let off_catalog = OffCatalogGames::new();
+        let inputs = SearchInputs {
+            catalog: &catalog,
+            game_vectors: &vectors,
+            signals: &signals,
+            votes: &votes,
+            corrections: &corrections,
+            families: &families,
+            off_catalog: &off_catalog,
+            config: &config,
+        };
+        let hours_by_source = hours_by_source(
+            &signals,
+            &votes,
+            &corrections.played_elsewhere,
+            &config.signals,
+        );
+
+        position(AppId(x), &evaluation_inputs(&inputs, &hours_by_source))
+    }
+
+    #[test]
+    fn positions_take_turns_with_the_same_shares_as_the_list() {
+        assert_eq!(position_with(2, None), Some(1));
+        assert_eq!(position_with(4, None), Some(2));
+        assert_eq!(position_with(4, Some("2026-11-10")), Some(3));
     }
 }

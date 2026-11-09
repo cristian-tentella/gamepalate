@@ -27,8 +27,8 @@ pub use catalog_search::{CatalogMatch, MAX_MATCHES, MIN_SEARCH_CHARS};
 pub use details::GameDetails;
 pub use families::{
     AutomaticFamilies, CreatedFamilies, FamiliesChanged, FamiliesRemade, FamiliesUndo,
-    FamilyChange, FamilyChangeError, FamilyGame, MAX_FAMILIES, MAX_FAMILIES_WITH_OWN, Remade,
-    RemadeFamilies, RemakeChanges, RemakePreview,
+    FamilyChange, FamilyChangeError, FamilyGame, MAX_FAMILIES, Remade, RemadeFamilies,
+    RemakeChanges, RemakePreview,
 };
 pub use gamepalate_core::{
     config::{Config, SignalsConfig},
