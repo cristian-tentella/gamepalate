@@ -2,9 +2,9 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use gamepalate_app::{
     AppId, Ban, CorrectedGameView, CorrectionsView, FamiliesChanged, FamiliesRemade, FamiliesUndo,
-    FamilyChange, FamilyGame, FamilyView, Gamepalate, HoursGame, HoursSource,
-    MAX_FAMILIES_WITH_OWN, ProfileView, RemadeFamilies, RemakeChanges, RemakePreview,
-    SignalsConfig, SourceView, TagView, TasteView, VoteKind, VotesView,
+    FamilyChange, FamilyGame, FamilyView, Gamepalate, HoursGame, HoursSource, MAX_FAMILIES,
+    ProfileView, RemadeFamilies, RemakeChanges, RemakePreview, SignalsConfig, SourceView, TagView,
+    TasteView, VoteKind, VotesView,
 };
 use iced::{
     Center, Color, Element, Fill, Length, Subscription, Task, Theme,
@@ -1086,7 +1086,7 @@ fn remake_sections(changes: &RemakeChanges) -> Vec<(&'static str, &[String])> {
 }
 
 fn already_many() -> String {
-    format!("You already have {MAX_FAMILIES_WITH_OWN} families")
+    format!("You already have {MAX_FAMILIES} families")
 }
 
 fn remade_text(outcome: &RemadeFamilies) -> String {
