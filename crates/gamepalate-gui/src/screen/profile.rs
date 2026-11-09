@@ -46,6 +46,7 @@ const EDITOR_WIDTH: f32 = 460.0;
 const EDITOR_GAMES_HEIGHT: f32 = 320.0;
 const REMOVE: char = '\u{E5CD}';
 const UPDATE: char = '\u{E5D5}';
+const UPDATE_TIP: &str = "Make the automatic families again from the games you play";
 const EDITOR_HEIGHT: f32 = 560.0;
 const NO_NEW_FAMILIES: &str = "No new families: your families already cover the games you play";
 pub(crate) const HELD_OUT_TIP: &str =
@@ -646,7 +647,7 @@ impl Profile {
             )
         });
 
-        column![section_title("Families"), self.remake_row()]
+        column![self.families_title()]
             .push(problems)
             .push(body)
             .push(held_out)
@@ -654,31 +655,42 @@ impl Profile {
             .into()
     }
 
-    fn remake_row(&self) -> Element<'_, Message> {
+    fn families_title(&self) -> Element<'_, Message> {
         let working = self.remake != Remake::Idle;
-        row![
-            button(
-                row![
-                    text(UPDATE)
-                        .font(font::ICONS)
-                        .size(font::icon(font::BAR_SIZE)),
-                    text("Update families").size(font::BAR_SIZE),
-                ]
-                .spacing(6)
-                .align_y(Center)
-            )
-            .padding([5, 12])
-            .style(style::secondary)
-            .on_press_maybe((!working).then_some(Message::AskRemake)),
-            self.new_games.map(|new| {
-                text(new_games_text(new))
-                    .size(font::NOTE_SIZE)
-                    .style(style::muted)
-                    .width(Fill)
-            }),
+        let update = button(
+            row![
+                text(UPDATE)
+                    .font(font::ICONS)
+                    .size(font::icon(font::BAR_SIZE)),
+                text("Update").size(font::BAR_SIZE),
+            ]
+            .spacing(4)
+            .align_y(Center),
+        )
+        .padding([4, 8])
+        .style(style::quiet_action)
+        .on_press_maybe((!working).then_some(Message::AskRemake));
+
+        column![
+            row![
+                section_title("Families"),
+                space().width(Fill),
+                tooltip(
+                    update,
+                    container(text(UPDATE_TIP).size(font::NOTE_SIZE))
+                        .padding([6, 10])
+                        .style(style::popup),
+                    tooltip::Position::Bottom,
+                ),
+            ]
+            .align_y(Center),
         ]
-        .spacing(12)
-        .align_y(Center)
+        .push(self.new_games.map(|new| {
+            text(new_games_text(new))
+                .size(font::NOTE_SIZE)
+                .style(style::muted)
+        }))
+        .spacing(4)
         .into()
     }
 

@@ -88,6 +88,29 @@ pub fn link(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+// An action in the accent color that shows its edges only under the pointer.
+pub fn quiet_action(theme: &Theme, status: button::Status) -> button::Style {
+    let link = link(theme, status);
+    let tint = |alpha: f32| Some(link.text_color.scale_alpha(alpha).into());
+
+    button::Style {
+        background: match status {
+            button::Status::Hovered => tint(0.12),
+            button::Status::Pressed => tint(0.2),
+            button::Status::Active | button::Status::Disabled => None,
+        },
+        text_color: match status {
+            button::Status::Disabled => link.text_color.scale_alpha(0.5),
+            _ => link.text_color,
+        },
+        border: Border {
+            radius: 6.0.into(),
+            ..Border::default()
+        },
+        ..link
+    }
+}
+
 pub fn key_action(theme: &Theme, status: button::Status) -> button::Style {
     let text_color = match status {
         button::Status::Hovered | button::Status::Pressed => {
