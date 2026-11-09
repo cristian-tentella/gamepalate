@@ -28,6 +28,30 @@ fn when_in(at: Timestamp, now: Timestamp, zone: &TimeZone) -> String {
     }
 }
 
+// Whole filters while they fit, then …; None when the summary fits as it is.
+pub fn short_filters(summary: &str, most: usize) -> Option<String> {
+    if summary.chars().count() <= most {
+        return None;
+    }
+    let mut kept: Vec<&str> = Vec::new();
+    let mut length = 0;
+    for part in summary.split(" · ") {
+        let added = part.chars().count() + if kept.is_empty() { 0 } else { 3 };
+        if length + added > most {
+            break;
+        }
+        length += added;
+        kept.push(part);
+    }
+
+    Some(if kept.is_empty() {
+        let cut: String = summary.chars().take(most).collect();
+        format!("{}…", cut.trim_end())
+    } else {
+        format!("{} · …", kept.join(" · "))
+    })
+}
+
 pub fn filters(options: &SearchOptions, currency: &Currency) -> Option<String> {
     let filters = &options.filters;
     let mut parts = Vec::new();
@@ -405,6 +429,21 @@ mod tests {
         assert_eq!(voted_day("2026-10-12", today), "12 Oct");
         assert_eq!(voted_day("2025-03-01", today), "1 Mar 2025");
         assert_eq!(voted_day("someday", today), "someday");
+    }
+
+    #[test]
+    fn a_long_filter_summary_keeps_the_whole_filters_that_fit() {
+        let summary = "≥ 1,350 reviews · ≥ 78% positive · No early access · Without: Anime, Dating Sim, Noir, Visual Novel";
+
+        assert_eq!(
+            short_filters(summary, 60).as_deref(),
+            Some("≥ 1,350 reviews · ≥ 78% positive · No early access · …")
+        );
+        assert_eq!(short_filters("On sale · Bets only", 60), None);
+        assert_eq!(
+            short_filters("Without: Anime, Dating Sim, Noir", 10).as_deref(),
+            Some("Without: A…")
+        );
     }
 
     #[test]

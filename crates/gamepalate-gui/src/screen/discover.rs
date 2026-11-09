@@ -19,7 +19,7 @@ use iced::{
     mouse, padding,
     widget::{
         Column, button, column, container, mouse_area, opaque, pick_list, responsive, row,
-        scrollable, space, stack, text,
+        scrollable, space, stack, text, tooltip,
     },
 };
 
@@ -35,6 +35,7 @@ use crate::{font, format, style};
 
 static SEARCHES: AtomicU64 = AtomicU64::new(0);
 const FROM_MAX_WIDTH: f32 = 240.0;
+const SUMMARY_CHARS: usize = 60;
 const COMPACT_WIDTH: f32 = 1100.0;
 const TOAST_DURATION: Duration = Duration::from_secs(4);
 const FLASH_DURATION: Duration = Duration::from_millis(600);
@@ -390,10 +391,24 @@ impl Discover {
         ]
         .push(
             container(summary.map(|summary| {
-                text(summary)
-                    .size(font::NOTE_SIZE)
-                    .style(style::muted)
-                    .wrapping(text::Wrapping::None)
+                let line = |line: String| {
+                    text(line)
+                        .size(font::NOTE_SIZE)
+                        .style(style::muted)
+                        .wrapping(text::Wrapping::None)
+                };
+                match format::short_filters(&summary, SUMMARY_CHARS) {
+                    Some(short) => tooltip(
+                        line(short),
+                        container(text(summary).size(font::NOTE_SIZE))
+                            .padding([6, 10])
+                            .max_width(SIDE_WIDTH)
+                            .style(style::popup),
+                        tooltip::Position::Bottom,
+                    )
+                    .into(),
+                    None => Element::from(line(summary)),
+                }
             }))
             .width(Fill)
             .clip(true),

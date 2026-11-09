@@ -470,7 +470,7 @@ impl Profile {
             ]
             .spacing(10)
             .align_y(Center),
-            container(scrollable(games)).max_height(EDITOR_GAMES_HEIGHT),
+            container(scrollable(games).spacing(8)).max_height(EDITOR_GAMES_HEIGHT),
             row![
                 button(text("Delete family").size(font::BAR_SIZE))
                     .padding(0)
