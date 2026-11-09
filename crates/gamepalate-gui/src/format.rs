@@ -322,7 +322,7 @@ pub fn automatic_note(date: &str, today: Date) -> String {
         Err(_) => "Made".to_string(),
     };
 
-    format!("{made} from your games. Edit it to make it yours")
+    format!("{made} from your games. Edit it to keep it")
 }
 
 pub fn bets_summary(would_try: usize, bets: usize, others: Option<f64>) -> String {
@@ -422,19 +422,19 @@ mod tests {
 
         assert_eq!(
             automatic_note("2026-11-10", today),
-            "Made on 10 Nov from your games. Edit it to make it yours"
+            "Made on 10 Nov from your games. Edit it to keep it"
         );
         assert_eq!(
             automatic_note("2026-11-12", today),
-            "Made today from your games. Edit it to make it yours"
+            "Made today from your games. Edit it to keep it"
         );
         assert_eq!(
             automatic_note("2025-03-01", today),
-            "Made on 1 Mar 2025 from your games. Edit it to make it yours"
+            "Made on 1 Mar 2025 from your games. Edit it to keep it"
         );
         assert_eq!(
             automatic_note("someday", today),
-            "Made from your games. Edit it to make it yours"
+            "Made from your games. Edit it to keep it"
         );
     }
 

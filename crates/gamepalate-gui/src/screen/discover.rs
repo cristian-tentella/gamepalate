@@ -34,6 +34,7 @@ use super::{
 use crate::{font, format, style};
 
 static SEARCHES: AtomicU64 = AtomicU64::new(0);
+const FROM_MAX_WIDTH: f32 = 240.0;
 const COMPACT_WIDTH: f32 = 1100.0;
 const TOAST_DURATION: Duration = Duration::from_secs(4);
 const FLASH_DURATION: Duration = Duration::from_millis(600);
@@ -63,7 +64,6 @@ pub struct Discover {
     gamepalate: Arc<Gamepalate>,
     options: SearchOptions,
     sources: Vec<Source>,
-    automatic_families: Vec<String>,
     panel: Panel,
     panel_open: bool,
     undo: Option<SearchOptions>,
@@ -141,12 +141,10 @@ impl Discover {
             &options,
         );
         let changed = options != saved;
-        let automatic_families = gamepalate.automatic_family_names();
         let mut discover = Discover {
             gamepalate: Arc::clone(gamepalate),
             options,
-            sources: filters::sources(gamepalate.family_names(), &automatic_families),
-            automatic_families,
+            sources: filters::sources(gamepalate.family_names()),
             panel,
             panel_open: false,
             undo: changed.then_some(saved),
@@ -368,15 +366,18 @@ impl Discover {
         let arrow = if self.panel_open { '▴' } else { '▾' };
         let line = row![
             text("From").size(font::NOTE_SIZE).style(style::muted),
-            pick_list(
-                self.sources.as_slice(),
-                Some(filters::source(&self.options, &self.automatic_families)),
-                Message::Source
+            container(
+                pick_list(
+                    self.sources.as_slice(),
+                    Some(filters::source(&self.options)),
+                    Message::Source
+                )
+                .text_size(font::NOTE_SIZE)
+                .padding([4, 8])
+                .style(style::dropdown)
+                .menu_style(style::menu)
             )
-            .text_size(font::NOTE_SIZE)
-            .padding([4, 8])
-            .style(style::dropdown)
-            .menu_style(style::menu),
+            .max_width(FROM_MAX_WIDTH),
             pick_list(SORTS, Some(Sort(self.options.sort)), Message::Sort)
                 .text_size(font::NOTE_SIZE)
                 .padding([4, 8])
