@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use gamepalate_core::{
-    config::{Config, CorrectionsConfig, RelevanceConfig, ResultsConfig, SignalsConfig},
+    config::{
+        Config, CorrectionsConfig, FamiliesConfig, RelevanceConfig, ResultsConfig, SignalsConfig,
+    },
     ids::SteamId,
     region::Region,
 };
@@ -57,6 +59,7 @@ struct ConfigFile {
     relevance: RelevanceSection,
     corrections: CorrectionsSection,
     results: ResultsSection,
+    families: FamiliesSection,
     update: UpdateSection,
 }
 
@@ -96,6 +99,12 @@ struct ResultsSection {
     early_access: Option<bool>,
     min_positive_percent: Option<i64>,
     bet_every: Option<i64>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct FamiliesSection {
+    automatic: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -341,6 +350,10 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
         )?,
     };
 
+    let families = FamiliesConfig {
+        automatic: file.families.automatic.unwrap_or(base.families.automatic),
+    };
+
     let prices_max_age_hours = integer(
         "update.prices_max_age_hours",
         file.update.prices_max_age_hours,
@@ -375,6 +388,7 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
         relevance,
         results,
         corrections,
+        families,
         prices_max_age_hours,
         tags_max_age_days,
         kept_updates,
@@ -843,6 +857,13 @@ wishlist_cap = {text}"
             ));
             assert_eq!(invalid_field(result), "signals.wishlist_cap");
         }
+    }
+
+    #[test]
+    fn parse_config_reads_the_automatic_families_switch() {
+        assert!(parse_with("").unwrap().families.automatic);
+        let config = parse_with("[families]\nautomatic = false").unwrap();
+        assert!(!config.families.automatic);
     }
 
     #[test]

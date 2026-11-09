@@ -19,7 +19,7 @@ use iced::{
     mouse, padding,
     widget::{
         Column, button, column, container, mouse_area, opaque, pick_list, responsive, row,
-        scrollable, space, stack, text,
+        scrollable, space, stack, text, tooltip,
     },
 };
 
@@ -34,6 +34,8 @@ use super::{
 use crate::{font, format, style};
 
 static SEARCHES: AtomicU64 = AtomicU64::new(0);
+const FROM_MAX_WIDTH: f32 = 240.0;
+const SUMMARY_CHARS: usize = 60;
 const COMPACT_WIDTH: f32 = 1100.0;
 const TOAST_DURATION: Duration = Duration::from_secs(4);
 const FLASH_DURATION: Duration = Duration::from_millis(600);
@@ -365,15 +367,18 @@ impl Discover {
         let arrow = if self.panel_open { '▴' } else { '▾' };
         let line = row![
             text("From").size(font::NOTE_SIZE).style(style::muted),
-            pick_list(
-                self.sources.as_slice(),
-                Some(filters::source(&self.options)),
-                Message::Source
+            container(
+                pick_list(
+                    self.sources.as_slice(),
+                    Some(filters::source(&self.options)),
+                    Message::Source
+                )
+                .text_size(font::NOTE_SIZE)
+                .padding([4, 8])
+                .style(style::dropdown)
+                .menu_style(style::menu)
             )
-            .text_size(font::NOTE_SIZE)
-            .padding([4, 8])
-            .style(style::dropdown)
-            .menu_style(style::menu),
+            .max_width(FROM_MAX_WIDTH),
             pick_list(SORTS, Some(Sort(self.options.sort)), Message::Sort)
                 .text_size(font::NOTE_SIZE)
                 .padding([4, 8])
@@ -384,20 +389,38 @@ impl Discover {
                 .style(style::text_button)
                 .on_press(Message::ToggleFilters),
         ]
-        .push(summary.map(|summary| {
-            text(summary)
-                .size(font::NOTE_SIZE)
-                .style(style::muted)
-                .wrapping(text::Wrapping::None)
-        }))
-        .push(space().width(Fill))
+        .push(
+            container(summary.map(|summary| {
+                let line = |line: String| {
+                    text(line)
+                        .size(font::NOTE_SIZE)
+                        .style(style::muted)
+                        .wrapping(text::Wrapping::None)
+                };
+                match format::short_filters(&summary, SUMMARY_CHARS) {
+                    Some(short) => tooltip(
+                        line(short),
+                        container(text(summary).size(font::NOTE_SIZE))
+                            .padding([6, 10])
+                            .max_width(SIDE_WIDTH)
+                            .style(style::popup),
+                        tooltip::Position::Bottom,
+                    )
+                    .into(),
+                    None => Element::from(line(summary)),
+                }
+            }))
+            .width(Fill)
+            .clip(true),
+        )
         .push(
             text(format::votes_this_session(
                 self.votes_this_session,
                 self.votes_last_day,
             ))
             .size(font::NOTE_SIZE)
-            .style(style::muted),
+            .style(style::muted)
+            .wrapping(text::Wrapping::None),
         )
         .spacing(8)
         .align_y(Center);

@@ -44,8 +44,10 @@ use crate::{
     data_dir,
     details::{GameDetails, StoreDetails},
     families::{
-        FamiliesChanged, FamiliesUndo, FamilyChange, FamilyChangeError, FamilyGame,
-        changed_families, family_games, renamed_choice,
+        CreatedFamilies, FamiliesChanged, FamiliesRemade, FamiliesUndo, FamilyChange,
+        FamilyChangeError, FamilyGame, RemadeFamilies, RemakePreview, automatic_family_names,
+        changed_families, families_on_open, family_games, new_played_games, open_error,
+        remake_automatic_families, remake_preview, renamed_choice,
     },
     images::{DecodedImage, ImageCache, ImageKind, LoadImageError, MAX_CACHE_BYTES, cache_dir},
     library::{
@@ -70,6 +72,7 @@ pub struct Gamepalate {
     votes: Mutex<Votes>,
     corrections: Mutex<Corrections>,
     families: Mutex<Families>,
+    created_families: Option<CreatedFamilies>,
     gui_saving: Mutex<()>,
     vectors: Vec<GameVector>,
     names: NameIndex,
@@ -93,7 +96,13 @@ impl Gamepalate {
         let dir = data_dir
             .or_else(data_dir::resolve)
             .ok_or(OpenError::DataDirNotFound)?;
-        let files = load_data_files(&dir).inspect_err(failed("could not read the data files"))?;
+        let mut files =
+            load_data_files(&dir).inspect_err(failed("could not read the data files"))?;
+        let created_families = families_on_open(
+            &dir.join(FAMILIES_FILE),
+            &mut files,
+            &jiff::Zoned::now().date().to_string(),
+        );
         let vectors = game_vectors(&files.catalog);
         let names = NameIndex::new(&files.catalog);
         let images = ImageCache::new(cache_dir(), ImageDownloader::new()?);
@@ -120,6 +129,7 @@ impl Gamepalate {
             votes: Mutex::new(files.votes.clone()),
             corrections: Mutex::new(files.corrections.clone()),
             families: Mutex::new(files.families.clone()),
+            created_families,
             gui_saving: Mutex::new(()),
             files,
             vectors,
@@ -364,20 +374,11 @@ impl Gamepalate {
         .inspect_err(failed("could not save the families"))?;
         *families = changed.families;
 
-        let mut discover_family = None;
-        if !changed.renamed.is_empty() {
-            let _ = self.change_gui_settings(|settings| {
-                let choice = renamed_choice(&settings.search.family, &changed.renamed);
-                if choice != settings.search.family {
-                    discover_family = Some(std::mem::replace(&mut settings.search.family, choice));
-                }
-            });
-        }
-
         Ok(FamiliesChanged {
             undo: FamiliesUndo {
                 snapshot: changed.snapshot,
-                discover_family,
+                discover_family: self.follow_renamed(&changed.renamed),
+                families_played: None,
             },
             gone: changed
                 .renamed
@@ -388,6 +389,69 @@ impl Gamepalate {
         })
     }
 
+    pub fn remake_preview(&self) -> RemakePreview {
+        self.with_inputs(remake_preview)
+    }
+
+    // Only the automatic families change; the undo puts back the file as it was.
+    pub fn remake_families(&self) -> Result<FamiliesRemade, FamilyChangeError> {
+        let votes = self.lock_votes();
+        let corrections = self.lock_corrections();
+        let mut families = self.lock_families();
+        let outcome = remake_automatic_families(
+            &self.data_dir.join(FAMILIES_FILE),
+            &SearchInputs {
+                votes: &votes,
+                corrections: &corrections,
+                families: &families,
+                ..self.files.search_inputs(&self.vectors)
+            },
+            &jiff::Zoned::now().date().to_string(),
+        )
+        .map_err(open_error)
+        .inspect_err(failed("could not remake the families"))?;
+
+        let RemadeFamilies::Remade(remade) = outcome else {
+            return Ok(FamiliesRemade {
+                outcome,
+                undo: None,
+            });
+        };
+        *families = remade.families.clone();
+        let undo = FamiliesUndo {
+            snapshot: remade.snapshot.clone(),
+            discover_family: self.follow_renamed(&remade.renamed()),
+            families_played: self.remember_played(&remade.played),
+        };
+        Ok(FamiliesRemade {
+            outcome: RemadeFamilies::Remade(remade),
+            undo: Some(undo),
+        })
+    }
+
+    // The played games of the day the families were made, to tell later how many are new.
+    fn remember_played(&self, played: &[AppId]) -> Option<Option<Vec<AppId>>> {
+        let mut before = None;
+        let _ = self.change_gui_settings(|settings| {
+            before = Some(settings.families_played.replace(played.to_vec()));
+        });
+        before
+    }
+
+    // The family chosen in Discover follows a rename, or goes back to all when it is gone.
+    fn follow_renamed(&self, renamed: &[(String, Option<String>)]) -> Option<Option<String>> {
+        let mut discover_family = None;
+        if !renamed.is_empty() {
+            let _ = self.change_gui_settings(|settings| {
+                let choice = renamed_choice(&settings.search.family, renamed);
+                if choice != settings.search.family {
+                    discover_family = Some(std::mem::replace(&mut settings.search.family, choice));
+                }
+            });
+        }
+        discover_family
+    }
+
     pub fn undo_families(&self, undo: &FamiliesUndo) -> Result<(), FamilyChangeError> {
         let mut families = self.lock_families();
         *families = restore_families(&self.data_dir.join(FAMILIES_FILE), &undo.snapshot)
@@ -396,7 +460,21 @@ impl Gamepalate {
         if let Some(family) = &undo.discover_family {
             let _ = self.change_gui_settings(|settings| settings.search.family = family.clone());
         }
+        if let Some(played) = &undo.families_played {
+            let _ = self.change_gui_settings(|settings| settings.families_played = played.clone());
+        }
         Ok(())
+    }
+
+    // The families made from the played games when this session opened the data, if any.
+    pub fn created_families(&self) -> Option<&CreatedFamilies> {
+        self.created_families.as_ref()
+    }
+
+    // How many played games are new since the families were made, once there are enough.
+    pub fn new_played_games(&self) -> Option<usize> {
+        let seen = self.gui_settings().families_played?;
+        self.with_inputs(|inputs| new_played_games(inputs, Some(&seen)))
     }
 
     pub fn family_games(&self, family: &str) -> Vec<FamilyGame> {
@@ -415,6 +493,10 @@ impl Gamepalate {
             .iter()
             .map(|family| family.name.clone())
             .collect()
+    }
+
+    pub fn automatic_family_names(&self) -> Vec<String> {
+        automatic_family_names(&self.lock_families())
     }
 
     pub fn tag_names(&self) -> Vec<String> {

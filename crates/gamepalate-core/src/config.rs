@@ -7,6 +7,7 @@ pub struct Config {
     pub relevance: RelevanceConfig,
     pub results: ResultsConfig,
     pub corrections: CorrectionsConfig,
+    pub families: FamiliesConfig,
     pub prices_max_age_hours: u32,
     pub tags_max_age_days: f64,
     pub kept_updates: u32,
@@ -22,6 +23,7 @@ impl Default for Config {
             relevance: RelevanceConfig::default(),
             results: ResultsConfig::default(),
             corrections: CorrectionsConfig::default(),
+            families: FamiliesConfig::default(),
             prices_max_age_hours: 24,
             tags_max_age_days: 7.0,
             kept_updates: 3,
@@ -108,5 +110,16 @@ impl Default for CorrectionsConfig {
             boost: 2.0,
             dampen: 0.5,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FamiliesConfig {
+    pub automatic: bool,
+}
+
+impl Default for FamiliesConfig {
+    fn default() -> Self {
+        FamiliesConfig { automatic: true }
     }
 }

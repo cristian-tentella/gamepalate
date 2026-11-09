@@ -1,9 +1,10 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use gamepalate_app::{
-    AppId, Ban, CorrectedGameView, CorrectionsView, FamiliesChanged, FamiliesUndo, FamilyChange,
-    FamilyGame, FamilyView, Gamepalate, HoursGame, HoursSource, ProfileView, SignalsConfig,
-    SourceView, TagView, TasteView, VoteKind, VotesView,
+    AppId, Ban, CorrectedGameView, CorrectionsView, FamiliesChanged, FamiliesRemade, FamiliesUndo,
+    FamilyChange, FamilyGame, FamilyView, Gamepalate, HoursGame, HoursSource,
+    MAX_FAMILIES_WITH_OWN, ProfileView, RemadeFamilies, RemakeChanges, RemakePreview,
+    SignalsConfig, SourceView, TagView, TasteView, VoteKind, VotesView,
 };
 use iced::{
     Center, Color, Element, Fill, Length, Subscription, Task, Theme,
@@ -20,7 +21,7 @@ use super::{
     showcase::{self, Showcase},
     votes::Filter,
 };
-use crate::{font, style};
+use crate::{font, format, style};
 
 const FIRST_TAGS: usize = 12;
 const STACK_WIDTH: f32 = 1100.0;
@@ -33,13 +34,21 @@ const HEADER_HEIGHT: f32 = HEADER_WIDTH * 215.0 / 460.0;
 const SIDE_WIDTH: f32 = 380.0;
 const COLUMN_GAP: f32 = 32.0;
 const PAGE_WIDTH: f32 = COLUMN_WIDTH + COLUMN_GAP + SIDE_WIDTH;
-const FAMILY_HEADERS: usize = 4;
+const FAMILY_HEADERS: usize = 3;
 const FAMILY_HEADER_WIDTH: f32 = 80.0;
 const FAMILY_HEADER_HEIGHT: f32 = FAMILY_HEADER_WIDTH * 215.0 / 460.0;
+const FAMILY_COVER_GAP: f32 = 6.0;
+const FAMILY_COVER_MAX: f32 = 180.0;
+const CARD_PADDING: f32 = 12.0;
+const PAGE_PADDING: f32 = 24.0;
 const FAMILY_TAGS: usize = 3;
 const EDITOR_WIDTH: f32 = 460.0;
 const EDITOR_GAMES_HEIGHT: f32 = 320.0;
 const REMOVE: char = '\u{E5CD}';
+const UPDATE: char = '\u{E5D5}';
+const UPDATE_TIP: &str = "Make the automatic families again from the games you play";
+const EDITOR_HEIGHT: f32 = 560.0;
+const NO_NEW_FAMILIES: &str = "No new families: your families already cover the games you play";
 pub(crate) const HELD_OUT_TIP: &str =
     "Games you like, kept out of families on purpose to see if Discover finds them";
 const TAG_NAME_WIDTH: f32 = 150.0;
@@ -63,8 +72,33 @@ pub struct Profile {
     all_tags: bool,
     showcase: Showcase,
     editing: Option<Editing>,
+    remake: Remake,
+    remake_changes: Option<RemakeChanges>,
+    new_games: Option<usize>,
     undo: Option<FamiliesUndo>,
     toasts: Toasts,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Remake {
+    Idle,
+    Planning,
+    Asking,
+    Working,
+}
+
+impl Remake {
+    fn after(self, message: &Message) -> Remake {
+        match (self, message) {
+            (Remake::Idle, Message::AskRemake) => Remake::Planning,
+            (Remake::Planning, Message::Planned(RemakePreview::Changes(_))) => Remake::Asking,
+            (Remake::Planning, Message::Planned(_)) => Remake::Idle,
+            (Remake::Asking, Message::ConfirmRemake) => Remake::Working,
+            (Remake::Asking, Message::CancelRemake | Message::CloseEditor) => Remake::Idle,
+            (Remake::Working, Message::Remade(_)) => Remake::Idle,
+            (state, _) => state,
+        }
+    }
 }
 
 struct Editing {
@@ -88,6 +122,11 @@ pub enum Message {
     RenameFamily,
     DoneEditing,
     CloseEditor,
+    AskRemake,
+    Planned(RemakePreview),
+    ConfirmRemake,
+    CancelRemake,
+    Remade(Result<FamiliesRemade, String>),
     ChangeFamilies(FamilyChange),
     FamiliesSaved(FamilyChange, Result<FamiliesChanged, String>),
     Undo,
@@ -111,6 +150,9 @@ impl Profile {
             all_tags: false,
             showcase: Showcase::new(gamepalate),
             editing: None,
+            remake: Remake::Idle,
+            remake_changes: None,
+            new_games: gamepalate.new_played_games(),
             undo: None,
             toasts: Toasts::default(),
         };
@@ -126,6 +168,8 @@ impl Profile {
     }
 
     fn handle(&mut self, message: Message) -> Task<Message> {
+        let before = self.remake;
+        self.remake = before.after(&message);
         match message {
             Message::ToggleAllTags => self.all_tags = !self.all_tags,
             Message::DiscoverFamily(_)
@@ -159,6 +203,41 @@ impl Profile {
                 return task;
             }
             Message::CloseEditor => self.editing = None,
+            Message::AskRemake => {
+                if before == Remake::Idle {
+                    return self.preview_remake();
+                }
+            }
+            Message::Planned(RemakePreview::Changes(changes)) => {
+                self.remake_changes = Some(changes);
+            }
+            Message::Planned(RemakePreview::NoNewFamilies) => {
+                return self
+                    .toasts
+                    .show(NO_NEW_FAMILIES.to_string(), false, Message::HideToast);
+            }
+            Message::Planned(RemakePreview::AlreadyMany) => {
+                return self.toasts.show(already_many(), false, Message::HideToast);
+            }
+            Message::CancelRemake => self.remake_changes = None,
+            Message::ConfirmRemake => {
+                if before == Remake::Asking {
+                    self.remake_changes = None;
+                    return self.remake_families();
+                }
+            }
+            Message::Remade(Ok(remade)) => {
+                let text = remade_text(&remade.outcome);
+                let undoable = remade.undo.is_some();
+                if let Some(undo) = remade.undo {
+                    self.undo = Some(undo);
+                }
+                self.reload();
+                return self.toasts.show(text, undoable, Message::HideToast);
+            }
+            Message::Remade(Err(error)) => {
+                return self.toasts.show(error, false, Message::HideToast);
+            }
             Message::ChangeFamilies(change) => return self.change_families(change),
             Message::FamiliesSaved(change, Ok(changed)) => {
                 let games = self
@@ -217,6 +296,23 @@ impl Profile {
         )
     }
 
+    fn remake_families(&self) -> Task<Message> {
+        let gamepalate = Arc::clone(&self.gamepalate);
+        Task::perform(
+            async move {
+                gamepalate
+                    .remake_families()
+                    .map_err(|error| sentence(&error.to_string()))
+            },
+            Message::Remade,
+        )
+    }
+
+    fn preview_remake(&self) -> Task<Message> {
+        let gamepalate = Arc::clone(&self.gamepalate);
+        Task::perform(async move { gamepalate.remake_preview() }, Message::Planned)
+    }
+
     fn rename(&self) -> Task<Message> {
         match &self.editing {
             Some(editing) if editing.name.trim() != editing.family => {
@@ -231,6 +327,7 @@ impl Profile {
 
     fn reload(&mut self) {
         self.view = self.gamepalate.profile_view();
+        self.new_games = self.gamepalate.new_played_games();
         let names = self.gamepalate.family_names();
         self.editing = self
             .editing
@@ -294,7 +391,12 @@ impl Profile {
             .spacing(14)
             .max_width(COLUMN_WIDTH);
 
-        let side = column![self.families()]
+        let side_width = if stacked(width) {
+            width.min(PAGE_WIDTH + 2.0 * PAGE_PADDING) - 2.0 * PAGE_PADDING
+        } else {
+            SIDE_WIDTH
+        };
+        let side = column![self.families(cover_width(side_width))]
             .push(self.votes())
             .push((!self.view.corrections.is_empty()).then(|| self.corrections()))
             .spacing(32);
@@ -312,13 +414,19 @@ impl Profile {
 
         let page = scrollable(
             container(container(columns).width(Fill).max_width(PAGE_WIDTH))
-                .padding(24)
+                .padding(PAGE_PADDING)
                 .center_x(Fill),
         )
         .height(Fill);
 
         stack![page]
             .push(self.editing.as_ref().map(|editing| self.editor(editing)))
+            .push(
+                self.remake_changes
+                    .as_ref()
+                    .filter(|_| self.remake == Remake::Asking)
+                    .map(remake_dialog),
+            )
             .push(self.toasts.view(Message::Undo))
             .into()
     }
@@ -364,7 +472,7 @@ impl Profile {
             ]
             .spacing(10)
             .align_y(Center),
-            container(scrollable(games)).max_height(EDITOR_GAMES_HEIGHT),
+            container(scrollable(games).spacing(8)).max_height(EDITOR_GAMES_HEIGHT),
             row![
                 button(text("Delete family").size(font::BAR_SIZE))
                     .padding(0)
@@ -485,7 +593,7 @@ impl Profile {
 }
 
 impl Profile {
-    fn families(&self) -> Element<'_, Message> {
+    fn families(&self, cover: f32) -> Element<'_, Message> {
         let view = &self.view;
         let problems = (!view.family_problems.is_empty()).then(|| {
             container(
@@ -520,9 +628,13 @@ impl Profile {
             .spacing(8)
             .into()
         } else {
-            column(view.families.iter().map(|family| self.family_card(family)))
-                .spacing(10)
-                .into()
+            column(
+                view.families
+                    .iter()
+                    .map(|family| self.family_card(family, cover)),
+            )
+            .spacing(10)
+            .into()
         };
 
         let held_out = held_out_text(view.held_out).map(|held_out| {
@@ -535,7 +647,7 @@ impl Profile {
             )
         });
 
-        column![section_title("Families")]
+        column![self.families_title()]
             .push(problems)
             .push(body)
             .push(held_out)
@@ -543,39 +655,96 @@ impl Profile {
             .into()
     }
 
-    fn family_card<'a>(&'a self, family: &'a FamilyView) -> Element<'a, Message> {
-        let headers = row(family.games.iter().take(FAMILY_HEADERS).map(|&id| {
-            self.showcase
-                .header(id, FAMILY_HEADER_WIDTH, FAMILY_HEADER_HEIGHT)
-                .map(Message::Showcase)
-        }))
-        .push(
-            more_games(family.games.len())
-                .map(|more| text(more).size(font::NOTE_SIZE).style(style::muted)),
+    fn families_title(&self) -> Element<'_, Message> {
+        let working = self.remake != Remake::Idle;
+        let update = button(
+            row![
+                text(UPDATE)
+                    .font(font::ICONS)
+                    .size(font::icon(font::BAR_SIZE)),
+                text("Update").size(font::BAR_SIZE),
+            ]
+            .spacing(4)
+            .align_y(Center),
         )
-        .spacing(6)
-        .align_y(Center);
+        .padding([4, 8])
+        .style(style::quiet_action)
+        .on_press_maybe((!working).then_some(Message::AskRemake));
 
-        let tags = family
-            .tags
-            .iter()
-            .take(FAMILY_TAGS)
-            .map(String::as_str)
+        column![
+            row![
+                section_title("Families"),
+                space().width(Fill),
+                tooltip(
+                    update,
+                    container(text(UPDATE_TIP).size(font::NOTE_SIZE))
+                        .padding([6, 10])
+                        .style(style::popup),
+                    tooltip::Position::Bottom,
+                ),
+            ]
+            .align_y(Center),
+        ]
+        .push(self.new_games.map(|new| {
+            text(new_games_text(new))
+                .size(font::NOTE_SIZE)
+                .style(style::muted)
+        }))
+        .spacing(4)
+        .into()
+    }
+
+    fn family_card<'a>(&'a self, family: &'a FamilyView, cover: f32) -> Element<'a, Message> {
+        let height = cover * 215.0 / 460.0;
+        let more = more_games(family.games.len());
+        let shown = family.games.iter().take(FAMILY_HEADERS).count();
+        let covers =
+            row(family
+                .games
+                .iter()
+                .take(FAMILY_HEADERS)
+                .enumerate()
+                .map(move |(i, &id)| {
+                    let header = self
+                        .showcase
+                        .header(id, cover, height)
+                        .map(Message::Showcase);
+                    match more.clone() {
+                        Some(more) if i + 1 == shown => stack![
+                            header,
+                            container(text(more).size(font::BAR_SIZE).font(font::SEMIBOLD))
+                                .center(Fill)
+                                .style(style::cover_count),
+                        ]
+                        .width(cover)
+                        .height(height)
+                        .into(),
+                        _ => header,
+                    }
+                }))
+            .spacing(FAMILY_COVER_GAP);
+
+        let details = std::iter::once(games_count(family.games.len()))
+            .chain(family.tags.iter().take(FAMILY_TAGS).cloned())
             .collect::<Vec<_>>()
             .join(" · ");
 
         container(
             column![
-                headers,
-                row![
-                    text(&family.name).size(font::BAR_SIZE).font(font::SEMIBOLD),
-                    text(games_count(family.games.len()))
-                        .size(font::NOTE_SIZE)
-                        .style(style::muted),
-                ]
-                .spacing(8)
-                .align_y(Center),
-                text(tags).size(font::NOTE_SIZE).style(style::muted),
+                covers,
+                text(&family.name).size(font::BAR_SIZE).font(font::SEMIBOLD),
+                text(details).size(font::NOTE_SIZE).style(style::muted),
+                family.automatic.as_deref().map(|date| {
+                    row![
+                        super::automatic_mark(),
+                        text(format::automatic_note(date, jiff::Zoned::now().date()))
+                            .size(font::NOTE_SIZE)
+                            .style(style::muted)
+                            .width(Fill),
+                    ]
+                    .spacing(8)
+                    .align_y(Center)
+                }),
                 row![
                     button(text("Edit").size(font::BAR_SIZE))
                         .padding(0)
@@ -591,7 +760,7 @@ impl Profile {
             ]
             .spacing(6),
         )
-        .padding([10, 12])
+        .padding([10.0, CARD_PADDING])
         .width(Fill)
         .style(style::card)
         .into()
@@ -838,8 +1007,121 @@ fn families_text(change: &FamilyChange, games: &[FamilyGame], gone: &[String]) -
     }
 }
 
+fn remake_dialog(changes: &RemakeChanges) -> Element<'_, Message> {
+    let (title, confirm) = remake_title(changes);
+    let sections = remake_sections(changes).into_iter().map(|(label, names)| {
+        column![text(label).size(font::NOTE_SIZE).style(style::muted)]
+            .extend(
+                names
+                    .iter()
+                    .map(|name| text(name).size(font::BAR_SIZE).into()),
+            )
+            .spacing(2)
+            .into()
+    });
+
+    let content = column![text(title).size(font::INFO_SIZE).font(font::SEMIBOLD)]
+        .extend(sections)
+        .push(
+            row![
+                space().width(Fill),
+                button(text("Cancel").size(font::BAR_SIZE))
+                    .padding([6, 16])
+                    .style(style::secondary)
+                    .on_press(Message::CancelRemake),
+                button(text(confirm).size(font::BAR_SIZE))
+                    .padding([6, 16])
+                    .style(style::primary)
+                    .on_press(Message::ConfirmRemake),
+            ]
+            .spacing(10)
+            .align_y(Center),
+        )
+        .spacing(14)
+        .padding(20);
+
+    stack![
+        opaque(
+            mouse_area(
+                container(space())
+                    .width(Fill)
+                    .height(Fill)
+                    .style(style::veil)
+            )
+            .on_press(Message::CancelRemake)
+        ),
+        container(opaque(
+            container(scrollable(content))
+                .width(EDITOR_WIDTH)
+                .max_height(EDITOR_HEIGHT)
+                .style(style::popup)
+        ))
+        .center(Fill),
+    ]
+    .into()
+}
+
+// Only adding needs no word on what goes away.
+fn remake_title(changes: &RemakeChanges) -> (&'static str, &'static str) {
+    if changes.made_again.is_empty() && changes.removed.is_empty() {
+        ("Add families?", "Add")
+    } else {
+        ("Update families?", "Update")
+    }
+}
+
+fn remake_sections(changes: &RemakeChanges) -> Vec<(&'static str, &[String])> {
+    [
+        ("New, from the games you play", changes.added.as_slice()),
+        (
+            "Updated from the games you play",
+            changes.made_again.as_slice(),
+        ),
+        ("Removed", changes.removed.as_slice()),
+        ("Stay as they are", changes.kept.as_slice()),
+    ]
+    .into_iter()
+    .filter(|(_, names)| !names.is_empty())
+    .collect()
+}
+
+fn already_many() -> String {
+    format!("You already have {MAX_FAMILIES_WITH_OWN} families")
+}
+
+fn remade_text(outcome: &RemadeFamilies) -> String {
+    let families = |count: usize| {
+        if count == 1 {
+            "1 family".to_string()
+        } else {
+            format!("{count} families")
+        }
+    };
+    match outcome {
+        RemadeFamilies::Remade(remade) => match (remade.added.len(), remade.removed.len()) {
+            (0, removed) => format!("Removed {}", families(removed)),
+            (added, 0) => format!("Added {}", families(added)),
+            (added, _) => format!("Updated {}", families(added)),
+        },
+        RemadeFamilies::NoNewFamilies => NO_NEW_FAMILIES.to_string(),
+        RemadeFamilies::AlreadyMany => already_many(),
+    }
+}
+
+fn new_games_text(new: usize) -> String {
+    format!("{new} new games since your families were made")
+}
+
 fn stacked(width: f32) -> bool {
     width < STACK_WIDTH
+}
+
+// Three covers as wide as the card allows, not wider than a header looks good.
+fn cover_width(side: f32) -> f32 {
+    let inside = side - 2.0 * CARD_PADDING - 2.0;
+    ((inside - 2.0 * FAMILY_COVER_GAP) / 3.0)
+        .min(FAMILY_COVER_MAX)
+        .floor()
 }
 
 fn more_games(games: usize) -> Option<String> {
@@ -1327,6 +1609,109 @@ mod tests {
         );
     }
 
+    fn changes() -> RemakeChanges {
+        RemakeChanges {
+            kept: vec!["Mystery".to_string(), "JRPG".to_string()],
+            made_again: Vec::new(),
+            removed: vec!["Puzzle · Mystery".to_string()],
+            added: vec!["Roguelike".to_string()],
+        }
+    }
+
+    #[test]
+    fn the_remake_asks_first_and_cancel_changes_nothing() {
+        let planning = Remake::Idle.after(&Message::AskRemake);
+        assert_eq!(planning, Remake::Planning);
+        let asking = planning.after(&Message::Planned(RemakePreview::Changes(changes())));
+        assert_eq!(asking, Remake::Asking);
+
+        assert_eq!(asking.after(&Message::CancelRemake), Remake::Idle);
+        assert_eq!(asking.after(&Message::CloseEditor), Remake::Idle);
+        assert_eq!(asking.after(&Message::Undo), Remake::Asking);
+        assert_eq!(Remake::Idle.after(&Message::ConfirmRemake), Remake::Idle);
+    }
+
+    #[test]
+    fn nothing_to_change_asks_nothing() {
+        let planning = Remake::Idle.after(&Message::AskRemake);
+
+        assert_eq!(
+            planning.after(&Message::Planned(RemakePreview::NoNewFamilies)),
+            Remake::Idle
+        );
+        assert_eq!(
+            planning.after(&Message::Planned(RemakePreview::AlreadyMany)),
+            Remake::Idle
+        );
+    }
+
+    #[test]
+    fn the_remake_works_until_it_is_done_and_asks_once() {
+        let working = Remake::Asking.after(&Message::ConfirmRemake);
+        assert_eq!(working, Remake::Working);
+
+        assert_eq!(working.after(&Message::AskRemake), Remake::Working);
+        assert_eq!(working.after(&Message::CancelRemake), Remake::Working);
+        assert_eq!(
+            working.after(&Message::Remade(Err("failed".to_string()))),
+            Remake::Idle
+        );
+    }
+
+    #[test]
+    fn the_question_lists_what_comes_goes_and_stays() {
+        let changes = changes();
+
+        assert_eq!(remake_title(&changes), ("Update families?", "Update"));
+        assert_eq!(
+            remake_sections(&changes)
+                .into_iter()
+                .map(|(label, names)| (label, names.to_vec()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "New, from the games you play",
+                    vec!["Roguelike".to_string()]
+                ),
+                ("Removed", vec!["Puzzle · Mystery".to_string()]),
+                (
+                    "Stay as they are",
+                    vec!["Mystery".to_string(), "JRPG".to_string()]
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn only_adding_asks_to_add() {
+        let adding = RemakeChanges {
+            removed: Vec::new(),
+            ..changes()
+        };
+
+        assert_eq!(remake_title(&adding), ("Add families?", "Add"));
+    }
+
+    #[test]
+    fn the_outcome_of_a_remake_says_what_happened() {
+        assert_eq!(
+            remade_text(&RemadeFamilies::NoNewFamilies),
+            "No new families: your families already cover the games you play"
+        );
+        assert_eq!(
+            remade_text(&RemadeFamilies::AlreadyMany),
+            "You already have 4 families"
+        );
+    }
+
+    #[test]
+    fn the_hint_counts_the_new_games() {
+        assert_eq!(
+            new_games_text(12),
+            "12 new games since your families were made"
+        );
+    }
+
     fn game(name: &str, hours: f64, source: HoursSource) -> HoursGame {
         HoursGame {
             id: AppId(202990),
@@ -1600,10 +1985,17 @@ mod tests {
 
     #[test]
     fn a_family_card_counts_the_games_beyond_its_headers() {
-        assert_eq!(more_games(9).as_deref(), Some("+5"));
-        assert_eq!(more_games(4), None);
+        assert_eq!(more_games(9).as_deref(), Some("+6"));
+        assert_eq!(more_games(4).as_deref(), Some("+1"));
+        assert_eq!(more_games(3), None);
         assert_eq!(games_count(1), "1 game");
         assert_eq!(games_count(9), "9 games");
+    }
+
+    #[test]
+    fn three_covers_fill_the_card_up_to_a_limit() {
+        assert_eq!(cover_width(SIDE_WIDTH), 114.0);
+        assert_eq!(cover_width(1100.0), FAMILY_COVER_MAX);
     }
 
     #[test]

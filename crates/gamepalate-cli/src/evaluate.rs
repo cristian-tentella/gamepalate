@@ -5,13 +5,14 @@ use comfy_table::{CellAlignment, ContentArrangement, Table, presets::UTF8_FULL_C
 use gamepalate_core::{
     config::Config,
     evaluation::{EvaluatedGame, GroupSummary, evaluate},
+    families::Families,
     game_vector::game_vectors,
 };
 use gamepalate_store::data_files::DataFiles;
 
 use crate::{
     format::{decimal, integer, parse_number},
-    names::check_families,
+    names::{check_families, family_label},
 };
 
 #[derive(Args)]
@@ -181,13 +182,18 @@ pub fn run(
             println!("{empty}.");
             continue;
         }
-        print_group(group, summary, base);
+        print_group(group, summary, base, &files.families);
     }
 
     Ok(())
 }
 
-fn print_group(group: Group, summary: &GroupSummary, base: Option<&GroupSummary>) {
+fn print_group(
+    group: Group,
+    summary: &GroupSummary,
+    base: Option<&GroupSummary>,
+    families: &Families,
+) {
     let base_position = |game: &EvaluatedGame| {
         base.and_then(|base| base.games.iter().find(|other| other.id == game.id))
             .and_then(|other| other.position)
@@ -230,7 +236,13 @@ fn print_group(group: Group, summary: &GroupSummary, base: Option<&GroupSummary>
         row.push(game.name.clone());
         match group {
             Group::Guardrail => row.push(game.effective_hours.map_or("-".to_string(), decimal)),
-            Group::Families => row.push(game.families.join(", ")),
+            Group::Families => row.push(
+                game.families
+                    .iter()
+                    .map(|family| family_label(family, families))
+                    .collect::<Vec<String>>()
+                    .join(", "),
+            ),
             Group::KeptAside => {}
         }
         table.add_row(row);

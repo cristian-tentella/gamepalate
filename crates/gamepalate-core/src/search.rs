@@ -447,6 +447,7 @@ mod tests {
                 families: vec![Family {
                     name: "Puzzle".to_string(),
                     games: vec![AppId(3)],
+                    automatic: None,
                 }],
                 held_out: Vec::new(),
             },

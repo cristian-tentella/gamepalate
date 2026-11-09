@@ -17,6 +17,8 @@ const TAG_WIDTH: f32 = 196.0;
 const SPACING: f32 = 12.0;
 const PANEL_WIDTH: f32 = 520.0;
 const INFO: char = '\u{E88E}';
+// A longer family name ends in … so the From menu keeps its width.
+const FAMILY_NAME_CHARS: usize = 26;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Source {
@@ -30,7 +32,7 @@ impl fmt::Display for Source {
         match self {
             Source::AllTastes => formatter.write_str("All tastes"),
             Source::Signals => formatter.write_str("Signals only"),
-            Source::Family(name) => formatter.write_str(name),
+            Source::Family(name) => formatter.write_str(&short_name(name)),
         }
     }
 }
@@ -59,6 +61,14 @@ pub fn sources(families: Vec<String>) -> Vec<Source> {
         .into_iter()
         .chain(families.into_iter().map(Source::Family))
         .collect()
+}
+
+fn short_name(name: &str) -> String {
+    if name.chars().count() <= FAMILY_NAME_CHARS {
+        return name.to_string();
+    }
+    let kept: String = name.chars().take(FAMILY_NAME_CHARS - 1).collect();
+    format!("{}…", kept.trim_end())
 }
 
 pub fn source(options: &SearchOptions) -> Source {
@@ -565,6 +575,22 @@ mod tests {
                 Source::Signals,
                 Source::Family("Puzzle".to_string())
             ]
+        );
+    }
+
+    #[test]
+    fn a_long_family_name_is_shortened_in_the_menu_only() {
+        let long = "Metroidvania · Open World Survival Craft".to_string();
+        let family = Source::Family(long.clone());
+
+        assert_eq!(family.to_string(), "Metroidvania · Open World…");
+        assert_eq!(
+            with_source(&SearchOptions::default(), family).family,
+            Some(long)
+        );
+        assert_eq!(
+            Source::Family("Puzzle · Mystery".to_string()).to_string(),
+            "Puzzle · Mystery"
         );
     }
 

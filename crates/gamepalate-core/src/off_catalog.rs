@@ -129,6 +129,7 @@ mod tests {
             families: vec![Family {
                 name: "Roguelike".to_string(),
                 games: vec![AppId(3), AppId(5), AppId(2)],
+                automatic: None,
             }],
             held_out: vec![AppId(6)],
         };

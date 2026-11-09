@@ -1187,13 +1187,23 @@ impl Library {
     fn family_chips<'a>(&'a self, game: &'a LibraryGameView) -> Element<'a, Message> {
         let chips = self.view.families.iter().map(|family| {
             let inside = game.families.contains(family);
-            button(text(family).size(font::NOTE_SIZE))
-                .padding([4, 12])
-                .style(style::choice(inside))
-                .on_press(Message::ChangeFamilies(chip_change(
-                    family, game.id, inside,
-                )))
-                .into()
+            let automatic = self.view.automatic_families.contains(family);
+            button(
+                row![text(family).size(font::NOTE_SIZE)]
+                    .push(automatic.then(|| {
+                        text("Automatic")
+                            .size(font::NOTE_SIZE * 0.85)
+                            .style(style::muted)
+                    }))
+                    .spacing(6)
+                    .align_y(Center),
+            )
+            .padding([4, 12])
+            .style(style::choice(inside))
+            .on_press(Message::ChangeFamilies(chip_change(
+                family, game.id, inside,
+            )))
+            .into()
         });
         let new: Element<'a, Message> = match &self.new_family {
             Some(name) => text_input("Family name", name)
@@ -2061,6 +2071,7 @@ mod tests {
         LibraryView {
             games,
             families: Vec::new(),
+            automatic_families: Vec::new(),
             min_hours: 2.0,
             wishlist_hours: 5.0,
             followed_hours: 3.0,

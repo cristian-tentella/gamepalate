@@ -2,6 +2,7 @@ mod correct;
 mod corrections;
 mod data_dir;
 mod evaluate;
+mod families;
 mod format;
 mod names;
 mod new_version;
@@ -40,6 +41,8 @@ enum Command {
     Recommend(recommend::RecommendArgs),
     /// Measure how well your tastes are recognized
     Evaluate(evaluate::EvaluateArgs),
+    /// Make your families from the games you play
+    Families(families::FamiliesArgs),
     /// List the active corrections
     Corrections,
     /// Hide a game from the recommendations
@@ -113,6 +116,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 signals::load_for(&data_dir, args.offline, |config| args.apply(config))?;
             evaluate::run(&args, &files, &config, &data_dir)?;
         }
+        Command::Families(args) => families::run(&args, &data_dir)?,
         Command::Corrections => {
             let files = load_data_files(&data_dir)?;
             corrections::run(&files);

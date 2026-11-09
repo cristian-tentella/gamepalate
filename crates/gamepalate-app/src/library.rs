@@ -16,7 +16,10 @@ use gamepalate_store::{
     corrections_edit::{CorrectionsEditor, EntryValue, Section},
 };
 
-use crate::names::{game_label, tag_name};
+use crate::{
+    families::automatic_family_names,
+    names::{game_label, tag_name},
+};
 
 const GAME_TAGS: usize = 3;
 
@@ -24,6 +27,7 @@ const GAME_TAGS: usize = 3;
 pub struct LibraryView {
     pub games: Vec<LibraryGameView>,
     pub families: Vec<String>,
+    pub automatic_families: Vec<String>,
     pub min_hours: f64,
     pub wishlist_hours: f64,
     pub followed_hours: f64,
@@ -180,6 +184,7 @@ pub(crate) fn library_view(inputs: &SearchInputs) -> LibraryView {
             .iter()
             .map(|family| family.name.clone())
             .collect(),
+        automatic_families: automatic_family_names(inputs.families),
         min_hours: config.min_hours,
         wishlist_hours: config.wishlist_hours,
         followed_hours: config.followed_hours,
@@ -547,6 +552,30 @@ mod tests {
     }
 
     #[test]
+    fn the_view_says_which_families_are_automatic() {
+        let mut fixture = Fixture::new();
+        fixture.families = Families {
+            families: vec![
+                Family {
+                    name: "mysteries".to_string(),
+                    games: vec![AppId(1)],
+                    automatic: Some("2026-11-10".to_string()),
+                },
+                Family {
+                    name: "space".to_string(),
+                    games: vec![AppId(1)],
+                    automatic: None,
+                },
+            ],
+            held_out: Vec::new(),
+        };
+
+        let view = library_view(&fixture.inputs());
+
+        assert_eq!(view.automatic_families, ["mysteries"]);
+    }
+
+    #[test]
     fn a_game_says_its_families_and_if_it_is_held_out() {
         let mut fixture = Fixture::new();
         fixture.families = Families {
@@ -554,10 +583,12 @@ mod tests {
                 Family {
                     name: "mysteries".to_string(),
                     games: vec![AppId(1), AppId(2)],
+                    automatic: None,
                 },
                 Family {
                     name: "space".to_string(),
                     games: vec![AppId(1)],
+                    automatic: None,
                 },
             ],
             held_out: vec![AppId(5)],
@@ -780,6 +811,7 @@ mod tests {
             families: vec![Family {
                 name: "roguelikes".to_string(),
                 games: vec![AppId(7)],
+                automatic: None,
             }],
             held_out: vec![],
         };

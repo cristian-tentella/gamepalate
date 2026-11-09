@@ -5,7 +5,7 @@ use clap::{Args, ValueEnum};
 use comfy_table::{CellAlignment, ContentArrangement, Table, presets::UTF8_FULL_CONDENSED};
 use gamepalate_core::{
     catalog::Freshness,
-    currency::{Currency, parse_price},
+    currency::parse_price,
     filters::FilterOptions,
     game::Reviews,
     game_vector::game_vectors,
@@ -17,7 +17,7 @@ use gamepalate_store::data_files::DataFiles;
 
 use crate::{
     format::{date, date_time, decimal, integer, multiplier},
-    names::{check_families, tag_name_error_text},
+    names::{check_families, family_label, tag_name_error_text},
 };
 
 const NAME_WIDTH: usize = 60;
@@ -202,7 +202,7 @@ pub fn run(args: &RecommendArgs, files: &DataFiles, data_dir: &Path) -> anyhow::
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(header);
     for game in &recommendation.games {
-        table.add_row(row(game, one_family, &files.catalog.currency));
+        table.add_row(row(game, one_family, files));
     }
     for column in right_aligned {
         if let Some(column) = table.column_mut(column) {
@@ -238,7 +238,8 @@ fn stale_prices_text(freshness: &Freshness, region: Region) -> String {
     )
 }
 
-fn row(game: &RecommendedGame, one_family: bool, currency: &Currency) -> Vec<String> {
+fn row(game: &RecommendedGame, one_family: bool, files: &DataFiles) -> Vec<String> {
+    let currency = &files.catalog.currency;
     let discount = game.price.discount;
     let mut cells = vec![
         game.position.to_string(),
@@ -257,8 +258,10 @@ fn row(game: &RecommendedGame, one_family: bool, currency: &Currency) -> Vec<Str
     } else {
         cells.push(
             game.from_family
-                .clone()
-                .unwrap_or_else(|| "Signals".to_string()),
+                .as_deref()
+                .map_or("Signals".to_string(), |family| {
+                    family_label(family, &files.families)
+                }),
         );
     }
     cells.extend([game.top_tags.join(", "), similar_cell(game)]);

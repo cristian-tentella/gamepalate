@@ -17,6 +17,8 @@ pub struct Families {
 pub struct Family {
     pub name: String,
     pub games: Vec<AppId>,
+    // The day gamepalate made it, "YYYY-MM-DD", until the user changes it.
+    pub automatic: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,6 +191,7 @@ mod tests {
         Family {
             name: name.to_string(),
             games: games.iter().copied().map(AppId).collect(),
+            automatic: None,
         }
     }
 

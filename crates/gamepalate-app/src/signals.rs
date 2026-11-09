@@ -330,6 +330,7 @@ mod tests {
             families: vec![Family {
                 name: "Roguelike".to_string(),
                 games: vec![AppId(20)],
+                automatic: None,
             }],
             held_out: Vec::new(),
         }

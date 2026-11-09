@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use gamepalate_core::search::SearchOptions;
+use gamepalate_core::{ids::AppId, search::SearchOptions};
 use serde::{Deserialize, Serialize};
 
 use crate::atomic::write_atomically;
@@ -31,6 +31,8 @@ pub struct GuiSettings {
     pub check_for_new_versions: bool,
     pub search: SearchOptions,
     pub window: Option<SavedWindow>,
+    // The played games when the families were made from them.
+    pub families_played: Option<Vec<AppId>>,
 }
 
 impl Default for GuiSettings {
@@ -40,6 +42,7 @@ impl Default for GuiSettings {
             check_for_new_versions: true,
             search: SearchOptions::default(),
             window: None,
+            families_played: None,
         }
     }
 }
@@ -73,6 +76,7 @@ mod tests {
                 height: 900,
                 maximized: true,
             }),
+            families_played: Some(vec![AppId(220), AppId(730)]),
         };
         settings.search.family = Some("Puzzle".to_string());
         settings.search.filters.max_price_cents = Some(1500);
@@ -85,6 +89,16 @@ mod tests {
         assert!(text.starts_with(HEADER));
         assert!(text.contains("theme = \"dark\"\n"));
         assert!(text.contains("[window]\nwidth = 1440\nheight = 900\nmaximized = true\n"));
+        assert!(text.contains("families_played = [220, 730]\n"));
+    }
+
+    #[test]
+    fn a_file_without_the_played_games_reads_as_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.toml");
+        std::fs::write(&path, "theme = \"dark\"").unwrap();
+
+        assert_eq!(load_gui_settings(&path).families_played, None);
     }
 
     #[test]

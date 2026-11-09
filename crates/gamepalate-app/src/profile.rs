@@ -70,6 +70,8 @@ pub struct FamilyView {
     pub name: String,
     pub games: Vec<AppId>,
     pub tags: Vec<String>,
+    // The day gamepalate made it, until the user changes it.
+    pub automatic: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,6 +174,12 @@ pub(crate) fn profile_view(inputs: &SearchInputs) -> ProfileView {
         families: family_profiles(inputs, &family_problems)
             .into_iter()
             .map(|family| FamilyView {
+                automatic: inputs
+                    .families
+                    .families
+                    .iter()
+                    .find(|made| made.name == family.name)
+                    .and_then(|made| made.automatic.clone()),
                 name: family.name,
                 games: family.games,
                 tags: family
@@ -422,10 +430,12 @@ mod tests {
                 Family {
                     name: "misteri".to_string(),
                     games: vec![AppId(1), AppId(3)],
+                    automatic: None,
                 },
                 Family {
                     name: "vuota".to_string(),
                     games: Vec::new(),
+                    automatic: None,
                 },
             ],
             held_out: vec![AppId(2)],
