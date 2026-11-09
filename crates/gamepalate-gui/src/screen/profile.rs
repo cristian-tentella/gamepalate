@@ -1,9 +1,10 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use gamepalate_app::{
-    AppId, Ban, CorrectedGameView, CorrectionsView, FamiliesChanged, FamiliesUndo, FamilyChange,
-    FamilyGame, FamilyView, Gamepalate, HoursGame, HoursSource, ProfileView, SignalsConfig,
-    SourceView, TagView, TasteView, VoteKind, VotesView,
+    AppId, Ban, CorrectedGameView, CorrectionsView, FamiliesChanged, FamiliesRemade, FamiliesUndo,
+    FamilyChange, FamilyGame, FamilyView, Gamepalate, HoursGame, HoursSource,
+    MAX_FAMILIES_WITH_OWN, ProfileView, RemadeFamilies, SignalsConfig, SourceView, TagView,
+    TasteView, VoteKind, VotesView,
 };
 use iced::{
     Center, Color, Element, Fill, Length, Subscription, Task, Theme,
@@ -63,8 +64,29 @@ pub struct Profile {
     all_tags: bool,
     showcase: Showcase,
     editing: Option<Editing>,
+    remake: Remake,
+    new_games: Option<usize>,
     undo: Option<FamiliesUndo>,
     toasts: Toasts,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Remake {
+    Idle,
+    Asking,
+    Working,
+}
+
+impl Remake {
+    fn after(self, message: &Message) -> Remake {
+        match (self, message) {
+            (Remake::Idle, Message::AskRemake) => Remake::Asking,
+            (Remake::Asking, Message::ConfirmRemake) => Remake::Working,
+            (Remake::Asking, Message::CancelRemake | Message::CloseEditor) => Remake::Idle,
+            (Remake::Working, Message::Remade(_)) => Remake::Idle,
+            (state, _) => state,
+        }
+    }
 }
 
 struct Editing {
@@ -88,6 +110,10 @@ pub enum Message {
     RenameFamily,
     DoneEditing,
     CloseEditor,
+    AskRemake,
+    ConfirmRemake,
+    CancelRemake,
+    Remade(Result<FamiliesRemade, String>),
     ChangeFamilies(FamilyChange),
     FamiliesSaved(FamilyChange, Result<FamiliesChanged, String>),
     Undo,
@@ -111,6 +137,8 @@ impl Profile {
             all_tags: false,
             showcase: Showcase::new(gamepalate),
             editing: None,
+            remake: Remake::Idle,
+            new_games: gamepalate.new_played_games(),
             undo: None,
             toasts: Toasts::default(),
         };
@@ -126,6 +154,8 @@ impl Profile {
     }
 
     fn handle(&mut self, message: Message) -> Task<Message> {
+        let before = self.remake;
+        self.remake = before.after(&message);
         match message {
             Message::ToggleAllTags => self.all_tags = !self.all_tags,
             Message::DiscoverFamily(_)
@@ -159,6 +189,24 @@ impl Profile {
                 return task;
             }
             Message::CloseEditor => self.editing = None,
+            Message::AskRemake | Message::CancelRemake => {}
+            Message::ConfirmRemake => {
+                if before == Remake::Asking {
+                    return self.remake_families();
+                }
+            }
+            Message::Remade(Ok(remade)) => {
+                let text = remade_text(&remade.outcome);
+                let undoable = remade.undo.is_some();
+                if let Some(undo) = remade.undo {
+                    self.undo = Some(undo);
+                }
+                self.reload();
+                return self.toasts.show(text, undoable, Message::HideToast);
+            }
+            Message::Remade(Err(error)) => {
+                return self.toasts.show(error, false, Message::HideToast);
+            }
             Message::ChangeFamilies(change) => return self.change_families(change),
             Message::FamiliesSaved(change, Ok(changed)) => {
                 let games = self
@@ -217,6 +265,26 @@ impl Profile {
         )
     }
 
+    fn remake_families(&self) -> Task<Message> {
+        let gamepalate = Arc::clone(&self.gamepalate);
+        Task::perform(
+            async move {
+                gamepalate
+                    .remake_families()
+                    .map_err(|error| sentence(&error.to_string()))
+            },
+            Message::Remade,
+        )
+    }
+
+    fn automatic_families(&self) -> usize {
+        self.view
+            .families
+            .iter()
+            .filter(|family| family.automatic.is_some())
+            .count()
+    }
+
     fn rename(&self) -> Task<Message> {
         match &self.editing {
             Some(editing) if editing.name.trim() != editing.family => {
@@ -231,6 +299,7 @@ impl Profile {
 
     fn reload(&mut self) {
         self.view = self.gamepalate.profile_view();
+        self.new_games = self.gamepalate.new_played_games();
         let names = self.gamepalate.family_names();
         self.editing = self
             .editing
@@ -319,8 +388,52 @@ impl Profile {
 
         stack![page]
             .push(self.editing.as_ref().map(|editing| self.editor(editing)))
+            .push((self.remake == Remake::Asking).then(|| self.remake_dialog()))
             .push(self.toasts.view(Message::Undo))
             .into()
+    }
+
+    fn remake_dialog(&self) -> Element<'_, Message> {
+        let automatic = self.automatic_families();
+        let (title, note) = remake_prompt(automatic);
+        let confirm = if automatic == 0 { "Add" } else { "Remake" };
+
+        let content = column![
+            text(title).size(font::INFO_SIZE).font(font::SEMIBOLD),
+            note.map(|note| text(note).size(font::BAR_SIZE)),
+            row![
+                space().width(Fill),
+                button(text("Cancel").size(font::BAR_SIZE))
+                    .padding([6, 16])
+                    .style(style::secondary)
+                    .on_press(Message::CancelRemake),
+                button(text(confirm).size(font::BAR_SIZE))
+                    .padding([6, 16])
+                    .style(style::primary)
+                    .on_press(Message::ConfirmRemake),
+            ]
+            .spacing(10)
+            .align_y(Center),
+        ]
+        .spacing(14)
+        .padding(20);
+
+        stack![
+            opaque(
+                mouse_area(
+                    container(space())
+                        .width(Fill)
+                        .height(Fill)
+                        .style(style::veil)
+                )
+                .on_press(Message::CancelRemake)
+            ),
+            container(opaque(
+                container(content).width(EDITOR_WIDTH).style(style::popup)
+            ))
+            .center(Fill),
+        ]
+        .into()
     }
 
     fn editor<'a>(&'a self, editing: &'a Editing) -> Element<'a, Message> {
@@ -535,12 +648,40 @@ impl Profile {
             )
         });
 
-        column![section_title("Families")]
+        column![section_title("Families"), self.remake_row()]
             .push(problems)
             .push(body)
             .push(held_out)
             .spacing(14)
             .into()
+    }
+
+    fn remake_row(&self) -> Element<'_, Message> {
+        let working = self.remake == Remake::Working;
+        row![
+            button(text("Remake families").size(font::BAR_SIZE))
+                .padding(0)
+                .style(|theme: &Theme, status| {
+                    let link = style::link(theme, status);
+                    match status {
+                        button::Status::Disabled => button::Style {
+                            text_color: link.text_color.scale_alpha(0.5),
+                            ..link
+                        },
+                        _ => link,
+                    }
+                })
+                .on_press_maybe((!working).then_some(Message::AskRemake)),
+            self.new_games.map(|new| {
+                text(new_games_text(new))
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted)
+                    .width(Fill)
+            }),
+        ]
+        .spacing(12)
+        .align_y(Center)
+        .into()
     }
 
     fn family_card<'a>(&'a self, family: &'a FamilyView) -> Element<'a, Message> {
@@ -842,6 +983,55 @@ fn families_text(change: &FamilyChange, games: &[FamilyGame], gone: &[String]) -
         | FamilyChange::HoldOut { .. }
         | FamilyChange::Release { .. } => String::new(),
     }
+}
+
+fn remake_prompt(automatic: usize) -> (String, Option<String>) {
+    let replaced = |which: String| {
+        format!(
+            "{which} replaced with new ones made from the games you play. Your own families stay as they are."
+        )
+    };
+    match automatic {
+        0 => (
+            "Add families for the games your own families don't cover?".to_string(),
+            None,
+        ),
+        1 => (
+            "Remake families?".to_string(),
+            Some(replaced("The automatic family is".to_string())),
+        ),
+        n => (
+            "Remake families?".to_string(),
+            Some(replaced(format!("The {n} automatic families are"))),
+        ),
+    }
+}
+
+fn remade_text(outcome: &RemadeFamilies) -> String {
+    let families = |count: usize| {
+        if count == 1 {
+            "1 family".to_string()
+        } else {
+            format!("{count} families")
+        }
+    };
+    match outcome {
+        RemadeFamilies::Remade(remade) => match (remade.added.len(), remade.removed.len()) {
+            (0, removed) => format!("Removed {}", families(removed)),
+            (added, 0) => format!("Added {}", families(added)),
+            (added, _) => format!("Remade {}", families(added)),
+        },
+        RemadeFamilies::NoNewFamilies => {
+            "No new families: your families already cover the games you play".to_string()
+        }
+        RemadeFamilies::AlreadyMany => {
+            format!("You already have {MAX_FAMILIES_WITH_OWN} families")
+        }
+    }
+}
+
+fn new_games_text(new: usize) -> String {
+    format!("{new} new games since your families were made")
 }
 
 fn stacked(width: f32) -> bool {
@@ -1330,6 +1520,74 @@ mod tests {
         assert_eq!(
             families_text(&remove(2), &games, &[]),
             "Removed #2 from cozy"
+        );
+    }
+
+    #[test]
+    fn the_remake_asks_first_and_cancel_changes_nothing() {
+        let asking = Remake::Idle.after(&Message::AskRemake);
+        assert_eq!(asking, Remake::Asking);
+
+        assert_eq!(asking.after(&Message::CancelRemake), Remake::Idle);
+        assert_eq!(asking.after(&Message::CloseEditor), Remake::Idle);
+        assert_eq!(asking.after(&Message::Undo), Remake::Asking);
+        assert_eq!(Remake::Idle.after(&Message::ConfirmRemake), Remake::Idle);
+    }
+
+    #[test]
+    fn the_remake_works_until_it_is_done_and_asks_once() {
+        let working = Remake::Asking.after(&Message::ConfirmRemake);
+        assert_eq!(working, Remake::Working);
+
+        assert_eq!(working.after(&Message::AskRemake), Remake::Working);
+        assert_eq!(working.after(&Message::CancelRemake), Remake::Working);
+        assert_eq!(
+            working.after(&Message::Remade(Err("failed".to_string()))),
+            Remake::Idle
+        );
+    }
+
+    #[test]
+    fn the_question_depends_on_having_automatic_families() {
+        assert_eq!(
+            remake_prompt(3),
+            (
+                "Remake families?".to_string(),
+                Some("The 3 automatic families are replaced with new ones made from the games you play. Your own families stay as they are.".to_string())
+            )
+        );
+        assert_eq!(
+            remake_prompt(1).1.as_deref(),
+            Some(
+                "The automatic family is replaced with new ones made from the games you play. Your own families stay as they are."
+            )
+        );
+        assert_eq!(
+            remake_prompt(0),
+            (
+                "Add families for the games your own families don't cover?".to_string(),
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn the_outcome_of_a_remake_says_what_happened() {
+        assert_eq!(
+            remade_text(&RemadeFamilies::NoNewFamilies),
+            "No new families: your families already cover the games you play"
+        );
+        assert_eq!(
+            remade_text(&RemadeFamilies::AlreadyMany),
+            "You already have 4 families"
+        );
+    }
+
+    #[test]
+    fn the_hint_counts_the_new_games() {
+        assert_eq!(
+            new_games_text(12),
+            "12 new games since your families were made"
         );
     }
 

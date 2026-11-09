@@ -30,6 +30,7 @@ pub enum FamilyChange {
 pub struct FamiliesUndo {
     pub(crate) snapshot: FamiliesSnapshot,
     pub(crate) discover_family: Option<Option<String>>,
+    pub(crate) families_played: Option<Option<Vec<AppId>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,6 +278,8 @@ fn add_automatic(editor: &mut FamiliesEditor, made: &[Family], inputs: &SearchIn
     }
 }
 
+// How many played games the families have not seen before the remake is worth a hint.
+const NEW_GAMES_HINT: usize = 10;
 pub const MAX_FAMILIES: usize = 8;
 // Measured on the user's data: next to their own families, more automatic ones dilute the turns.
 pub const MAX_FAMILIES_WITH_OWN: usize = 4;
@@ -372,6 +375,19 @@ pub fn remake_automatic_families(
         played: grouped_games(&taste, inputs.signals, inputs.catalog),
         snapshot,
     }))
+}
+
+// The played games of today that the families did not see, once there are enough of them.
+// Without the list of that day there is no way to tell.
+pub(crate) fn new_played_games(inputs: &SearchInputs, seen: Option<&[AppId]>) -> Option<usize> {
+    let seen: BTreeSet<AppId> = seen?.iter().copied().collect();
+    let taste = played_taste(inputs, &inputs.families.held_out);
+    let new = grouped_games(&taste, inputs.signals, inputs.catalog)
+        .into_iter()
+        .filter(|game| !seen.contains(game))
+        .count();
+
+    (new >= NEW_GAMES_HINT).then_some(new)
 }
 
 // A group is covered when at least half of its games are in the user's own families.
@@ -1176,6 +1192,56 @@ automatic = \"2026-11-10\"
             let again = remade_ok(&path, &mut ten_games());
             assert_eq!(again.removed, again.added);
             assert!(again.renamed().is_empty());
+        }
+
+        fn seen(games: &[u32]) -> Vec<AppId> {
+            games.iter().map(|&game| AppId(game)).collect()
+        }
+
+        #[test]
+        fn ten_new_played_games_are_a_hint_and_nine_are_not() {
+            let files = genres(2, 10);
+            let inputs = files.search_inputs(&[]);
+            let first_ten: Vec<u32> = (101..=110).collect();
+
+            assert_eq!(new_played_games(&inputs, Some(&seen(&first_ten))), Some(10));
+
+            let eleven: Vec<u32> = (101..=110).chain([201]).collect();
+            assert_eq!(new_played_games(&inputs, Some(&seen(&eleven))), None);
+        }
+
+        #[test]
+        fn without_the_list_of_the_day_there_is_no_hint() {
+            let files = genres(2, 10);
+
+            assert_eq!(new_played_games(&files.search_inputs(&[]), None), None);
+            assert_eq!(
+                new_played_games(&files.search_inputs(&[]), Some(&[])),
+                Some(20)
+            );
+        }
+
+        #[test]
+        fn a_remake_brings_the_hint_down_to_nothing() {
+            let (_dir, path) = written("");
+            let mut files = genres(2, 10);
+            let remade = remade_ok(&path, &mut files);
+
+            assert_eq!(
+                new_played_games(&files.search_inputs(&[]), Some(&remade.played)),
+                None
+            );
+        }
+
+        #[test]
+        fn a_game_held_out_is_not_a_new_one() {
+            let mut files = genres(2, 10);
+            files.families.held_out = (101..=110).map(AppId).collect();
+
+            assert_eq!(
+                new_played_games(&files.search_inputs(&[]), Some(&[])),
+                Some(10)
+            );
         }
     }
 }

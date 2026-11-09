@@ -46,7 +46,8 @@ use crate::{
     families::{
         CreatedFamilies, FamiliesChanged, FamiliesRemade, FamiliesUndo, FamilyChange,
         FamilyChangeError, FamilyGame, RemadeFamilies, automatic_family_names, changed_families,
-        families_on_open, family_games, open_error, remake_automatic_families, renamed_choice,
+        families_on_open, family_games, new_played_games, open_error, remake_automatic_families,
+        renamed_choice,
     },
     images::{DecodedImage, ImageCache, ImageKind, LoadImageError, MAX_CACHE_BYTES, cache_dir},
     library::{
@@ -377,6 +378,7 @@ impl Gamepalate {
             undo: FamiliesUndo {
                 snapshot: changed.snapshot,
                 discover_family: self.follow_renamed(&changed.renamed),
+                families_played: None,
             },
             gone: changed
                 .renamed
@@ -415,11 +417,21 @@ impl Gamepalate {
         let undo = FamiliesUndo {
             snapshot: remade.snapshot.clone(),
             discover_family: self.follow_renamed(&remade.renamed()),
+            families_played: self.remember_played(&remade.played),
         };
         Ok(FamiliesRemade {
             outcome: RemadeFamilies::Remade(remade),
             undo: Some(undo),
         })
+    }
+
+    // The played games of the day the families were made, to tell later how many are new.
+    fn remember_played(&self, played: &[AppId]) -> Option<Option<Vec<AppId>>> {
+        let mut before = None;
+        let _ = self.change_gui_settings(|settings| {
+            before = Some(settings.families_played.replace(played.to_vec()));
+        });
+        before
     }
 
     // The family chosen in Discover follows a rename, or goes back to all when it is gone.
@@ -444,12 +456,21 @@ impl Gamepalate {
         if let Some(family) = &undo.discover_family {
             let _ = self.change_gui_settings(|settings| settings.search.family = family.clone());
         }
+        if let Some(played) = &undo.families_played {
+            let _ = self.change_gui_settings(|settings| settings.families_played = played.clone());
+        }
         Ok(())
     }
 
     // The families made from the played games when this session opened the data, if any.
     pub fn created_families(&self) -> Option<&CreatedFamilies> {
         self.created_families.as_ref()
+    }
+
+    // How many played games are new since the families were made, once there are enough.
+    pub fn new_played_games(&self) -> Option<usize> {
+        let seen = self.gui_settings().families_played?;
+        self.with_inputs(|inputs| new_played_games(inputs, Some(&seen)))
     }
 
     pub fn family_games(&self, family: &str) -> Vec<FamilyGame> {
