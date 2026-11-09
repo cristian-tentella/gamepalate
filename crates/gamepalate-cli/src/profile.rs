@@ -10,7 +10,7 @@ use gamepalate_store::data_files::DataFiles;
 
 use crate::{
     format::{decimal, integer, multiplier},
-    names::{family_problem_text, game_label, tag_name},
+    names::{family_problem_text, game_label, is_automatic, tag_name},
 };
 
 #[derive(Args)]
@@ -86,7 +86,12 @@ pub fn run(args: &ProfileArgs, files: &DataFiles, data_dir: &Path) -> anyhow::Re
     }
     for family in &profile.families {
         println!();
-        println!("Family \"{}\":", family.name);
+        let note = if is_automatic(&family.name, &files.families) {
+            " (automatic)"
+        } else {
+            ""
+        };
+        println!("Family \"{}\"{note}:", family.name);
         println!("  Games:");
         for &game in &family.games {
             println!(

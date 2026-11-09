@@ -51,6 +51,14 @@ pub fn automatic_families(taste: &Taste, signals: &Signals, catalog: &Catalog) -
     families(&games, &groups, &centers, &catalog.tags)
 }
 
+// The played games the groups are made of, to tell later which ones are new.
+pub fn grouped_games(taste: &Taste, signals: &Signals, catalog: &Catalog) -> Vec<AppId> {
+    played_games(taste, signals, catalog)
+        .into_iter()
+        .map(|game| game.id)
+        .collect()
+}
+
 pub fn group_count(games: usize) -> usize {
     ((games as f64).sqrt() / 2.0)
         .round()
@@ -269,7 +277,11 @@ fn families(
     let names = unique_names(kept.iter().map(|(_, name, _)| name.clone()).collect());
     kept.into_iter()
         .zip(names)
-        .map(|((_, _, games), name)| Family { name, games })
+        .map(|((_, _, games), name)| Family {
+            name,
+            games,
+            automatic: None,
+        })
         .collect()
 }
 

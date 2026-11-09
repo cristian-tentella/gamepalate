@@ -17,6 +17,7 @@ pub const NEW_FILE: &str = "\
 ";
 
 const INDENT: &str = "    ";
+const AUTOMATIC: &str = "automatic";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FamiliesSnapshot(Option<String>);
@@ -59,6 +60,7 @@ impl FamiliesEditor {
     pub fn add_game(&mut self, family: &str, id: AppId, comment: &str) {
         if let Some(games) = self.family_games(family) {
             push_game(games, id, comment);
+            self.make_own(family);
             return;
         }
         let table = self.new_table(id, comment);
@@ -66,8 +68,13 @@ impl FamiliesEditor {
     }
 
     pub fn remove_game(&mut self, family: &str, id: AppId) -> bool {
-        self.family_games(family)
-            .is_some_and(|games| remove_game(games, id))
+        let removed = self
+            .family_games(family)
+            .is_some_and(|games| remove_game(games, id));
+        if removed {
+            self.make_own(family);
+        }
+        removed
     }
 
     pub fn rename(&mut self, from: &str, to: &str) -> bool {
@@ -76,7 +83,24 @@ impl FamiliesEditor {
             return false;
         };
         families.insert(to, item);
+        self.make_own(to);
         true
+    }
+
+    pub fn set_automatic(&mut self, family: &str, date: &str) -> bool {
+        let Some(table) = self.family_table(family) else {
+            return false;
+        };
+        table.insert(AUTOMATIC, toml_edit::value(date));
+        true
+    }
+
+    // A comment line at the top of a new file, under the usual ones.
+    pub fn add_heading(&mut self, line: &str) {
+        if self.document.is_empty() {
+            self.leading
+                .push_str(&format!("# {}\n", line.replace(['\r', '\n'], " ")));
+        }
     }
 
     pub fn delete(&mut self, family: &str) -> bool {
@@ -119,9 +143,19 @@ impl FamiliesEditor {
             .expect("families that parsed are a table")
     }
 
+    fn family_table(&mut self, family: &str) -> Option<&mut dyn TableLike> {
+        self.families().get_mut(family)?.as_table_like_mut()
+    }
+
     fn family_games(&mut self, family: &str) -> Option<&mut Array> {
-        let table = self.families().get_mut(family)?.as_table_like_mut()?;
-        games(table)
+        games(self.family_table(family)?)
+    }
+
+    // A family the user changed is theirs: it loses the day gamepalate made it.
+    fn make_own(&mut self, family: &str) {
+        if let Some(table) = self.family_table(family) {
+            table.remove(AUTOMATIC);
+        }
     }
 
     fn held_out_games(&mut self) -> Option<&mut Array> {
@@ -406,6 +440,83 @@ games = [
             editor.add_game("empty", AppId(1), "One");
         });
         assert!(text.contains("[families.empty]\ngames = [\n    1, # One\n]"));
+    }
+
+    const AUTOMATIC_FILE: &str = "\
+[families.cozy]
+games = [
+    1, # One
+    2, # Two
+]
+automatic = \"2026-11-10\"
+
+[families.mysteries]
+games = [10, 20]
+automatic = \"2026-11-10\"
+";
+
+    #[test]
+    fn a_new_file_gets_its_heading_and_the_day_of_the_automatic_families() {
+        let text = edited("", |editor| {
+            editor.add_heading("Made from the games you play on 2026-11-10.");
+            editor.add_game("cozy", AppId(1), "One");
+            editor.add_game("cozy", AppId(2), "Two");
+            assert!(editor.set_automatic("cozy", "2026-11-10"));
+            assert!(!editor.set_automatic("roguelike", "2026-11-10"));
+        });
+        assert_eq!(
+            text,
+            format!(
+                "{NEW_FILE}# Made from the games you play on 2026-11-10.\n\n[families.cozy]\ngames = [\n    1, # One\n    2, # Two\n]\nautomatic = \"2026-11-10\"\n"
+            )
+        );
+    }
+
+    #[test]
+    fn changing_an_automatic_family_makes_it_your_own() {
+        let without_day = |edit: fn(&mut FamiliesEditor)| {
+            let text = edited(AUTOMATIC_FILE, edit);
+            parse_families(&text)
+                .unwrap()
+                .families
+                .iter()
+                .map(|family| family.automatic.is_none())
+                .collect::<Vec<bool>>()
+        };
+
+        assert_eq!(
+            without_day(|editor| editor.add_game("cozy", AppId(3), "Three")),
+            [true, false]
+        );
+        assert_eq!(
+            without_day(|editor| {
+                editor.remove_game("cozy", AppId(1));
+            }),
+            [true, false]
+        );
+        assert_eq!(
+            without_day(|editor| {
+                editor.rename("mysteries", "riddles");
+            }),
+            [false, true]
+        );
+        assert_eq!(
+            without_day(|editor| {
+                editor.remove_game("cozy", AppId(99));
+                editor.hold_out(AppId(30), "Outer Wilds");
+            }),
+            [false, false]
+        );
+    }
+
+    #[test]
+    fn a_change_keeps_the_comments_of_an_automatic_family() {
+        let text = edited(AUTOMATIC_FILE, |editor| {
+            editor.remove_game("cozy", AppId(1));
+        });
+        assert!(
+            text.starts_with("[families.cozy]\ngames = [\n    2, # Two\n]\n\n[families.mysteries]")
+        );
     }
 
     #[test]

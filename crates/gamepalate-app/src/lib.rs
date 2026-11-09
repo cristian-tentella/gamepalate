@@ -25,7 +25,10 @@ pub use app::{Gamepalate, OpenError, RecommendError, VoteError, VotedGame};
 pub use capsules::{CAPSULE_HEIGHT, CAPSULE_WIDTH, Capsule};
 pub use catalog_search::{CatalogMatch, MAX_MATCHES, MIN_SEARCH_CHARS};
 pub use details::GameDetails;
-pub use families::{FamiliesChanged, FamiliesUndo, FamilyChange, FamilyChangeError, FamilyGame};
+pub use families::{
+    AutomaticFamilies, CreatedFamilies, FamiliesChanged, FamiliesUndo, FamilyChange,
+    FamilyChangeError, FamilyGame,
+};
 pub use gamepalate_core::{
     config::{Config, SignalsConfig},
     corrections::Ban,

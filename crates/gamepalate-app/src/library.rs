@@ -554,10 +554,12 @@ mod tests {
                 Family {
                     name: "mysteries".to_string(),
                     games: vec![AppId(1), AppId(2)],
+                    automatic: None,
                 },
                 Family {
                     name: "space".to_string(),
                     games: vec![AppId(1)],
+                    automatic: None,
                 },
             ],
             held_out: vec![AppId(5)],
@@ -780,6 +782,7 @@ mod tests {
             families: vec![Family {
                 name: "roguelikes".to_string(),
                 games: vec![AppId(7)],
+                automatic: None,
             }],
             held_out: vec![],
         };

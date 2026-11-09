@@ -364,6 +364,7 @@ mod tests {
         let family = Family {
             name: "mysteries".to_string(),
             games: [3, 1, 3, 2, 99, 10, 20].map(AppId).to_vec(),
+            automatic: None,
         };
         let taste = family_taste(
             &family,

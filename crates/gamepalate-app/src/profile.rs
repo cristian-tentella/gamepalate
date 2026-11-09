@@ -422,10 +422,12 @@ mod tests {
                 Family {
                     name: "misteri".to_string(),
                     games: vec![AppId(1), AppId(3)],
+                    automatic: None,
                 },
                 Family {
                     name: "vuota".to_string(),
                     games: Vec::new(),
+                    automatic: None,
                 },
             ],
             held_out: vec![AppId(2)],

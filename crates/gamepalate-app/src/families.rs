@@ -1,13 +1,20 @@
 use std::path::Path;
 
 use gamepalate_core::{
+    automatic_families::{automatic_families, grouped_games},
+    effective_hours::hours_by_source,
     families::{Families, Family},
     ids::AppId,
+    search::SearchInputs,
+    taste::signals_taste,
 };
 use gamepalate_store::{
+    data_files::DataFiles,
     families::FamiliesError,
     families_edit::{FamiliesEditor, FamiliesSnapshot},
 };
+
+use crate::log::failed;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FamilyChange {
@@ -177,6 +184,92 @@ fn open_error(error: FamiliesError) -> FamilyChangeError {
             FamilyChangeError::Invalid(error)
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutomaticFamilies {
+    Created(CreatedFamilies),
+    FileExists,
+    Off,
+    TooFewGames,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatedFamilies {
+    pub families: Families,
+    // The played games of that day, to tell later how many are new.
+    pub played: Vec<AppId>,
+}
+
+// Writes families.toml from the played games, only where there is none yet.
+pub fn create_automatic_families(
+    path: &Path,
+    inputs: &SearchInputs,
+    date: &str,
+) -> Result<AutomaticFamilies, FamiliesError> {
+    if path.exists() {
+        return Ok(AutomaticFamilies::FileExists);
+    }
+    if !inputs.config.families.automatic {
+        return Ok(AutomaticFamilies::Off);
+    }
+
+    let config = &inputs.config.signals;
+    let hours = hours_by_source(
+        inputs.signals,
+        inputs.votes,
+        &inputs.corrections.played_elsewhere,
+        config,
+    );
+    let taste = signals_taste(
+        &hours,
+        inputs.catalog,
+        inputs.off_catalog,
+        inputs.corrections,
+        config,
+    );
+    let made = automatic_families(&taste, inputs.signals, inputs.catalog);
+    if made.is_empty() {
+        return Ok(AutomaticFamilies::TooFewGames);
+    }
+
+    let mut editor = FamiliesEditor::open(path)?;
+    editor.add_heading(&format!(
+        "Made from the games you play on {date}. Change them as you like."
+    ));
+    for family in &made {
+        for &game in &family.games {
+            let name = inputs
+                .catalog
+                .game(game)
+                .map(|game| game.name.as_str())
+                .unwrap_or_default();
+            editor.add_game(&family.name, game, name);
+        }
+        editor.set_automatic(&family.name, date);
+    }
+    let (families, _) = editor.save()?;
+
+    Ok(AutomaticFamilies::Created(CreatedFamilies {
+        families,
+        played: grouped_games(&taste, inputs.signals, inputs.catalog),
+    }))
+}
+
+// On opening, the families just made replace the empty ones that were read.
+pub(crate) fn families_on_open(
+    path: &Path,
+    files: &mut DataFiles,
+    date: &str,
+) -> Option<CreatedFamilies> {
+    let outcome = create_automatic_families(path, &files.search_inputs(&[]), date)
+        .inspect_err(failed("could not create the families"))
+        .ok()?;
+    let AutomaticFamilies::Created(created) = outcome else {
+        return None;
+    };
+    files.families = created.families.clone();
+    Some(created)
 }
 
 pub(crate) fn family_games(
@@ -443,5 +536,263 @@ games = [
             Some("roguelike".to_string())
         );
         assert_eq!(renamed_choice(&None, &renamed), None);
+    }
+
+    mod automatic {
+        use std::collections::BTreeMap;
+
+        use gamepalate_core::{
+            catalog::{Catalog, Freshness, TagName},
+            config::Config,
+            corrections::Corrections,
+            currency::Currency,
+            game::{Game, GameTag, Price, Reviews},
+            ids::TagId,
+            region::Region,
+            signals::{LibraryGame, Signals},
+            timestamp::Timestamp,
+            votes::Votes,
+        };
+        use gamepalate_store::{data_files::DataFiles, families::load_families};
+
+        use super::super::*;
+
+        const DATE: &str = "2026-11-10";
+        const PUZZLE: [u32; 2] = [1, 2];
+        const FIGHTING: [u32; 2] = [3, 4];
+
+        // Puzzles are 101 to 105, fighting games 201 to 205; each has the hours of its appid.
+        fn files(played: &[u32]) -> DataFiles {
+            let tag_names = [
+                (1, "Puzzle"),
+                (2, "Relaxing"),
+                (3, "Fighting"),
+                (4, "2D Fighter"),
+            ];
+            let games = played
+                .iter()
+                .map(|&id| Game {
+                    id: AppId(id),
+                    name: format!("Game {id}"),
+                    price: Price {
+                        original_cents: 0,
+                        discount: None,
+                    },
+                    reviews: Reviews {
+                        total: 0,
+                        positive: 0,
+                    },
+                    is_early_access: false,
+                    tags: if id < 200 { PUZZLE } else { FIGHTING }
+                        .iter()
+                        .map(|&tag| GameTag {
+                            id: TagId(tag),
+                            weight: 1.0,
+                        })
+                        .collect(),
+                    developers: Vec::new(),
+                    franchises: Vec::new(),
+                })
+                .collect();
+            let catalog = Catalog::new(
+                games,
+                tag_names
+                    .iter()
+                    .map(|&(id, name)| {
+                        (
+                            TagId(id),
+                            TagName {
+                                english: name.to_string(),
+                                italian: name.to_string(),
+                            },
+                        )
+                    })
+                    .collect(),
+                tag_names.iter().map(|&(id, _)| (TagId(id), 1.0)).collect(),
+                Freshness {
+                    prices_updated_at: Timestamp(0),
+                    tags_updated_at: Timestamp(0),
+                    region: Region::ITALY,
+                },
+                Currency::italian(),
+            );
+
+            DataFiles {
+                config: Config::default(),
+                catalog,
+                corrections: Corrections::default(),
+                families: Families::default(),
+                signals: Signals {
+                    read_at: Timestamp(0),
+                    library: played
+                        .iter()
+                        .map(|&id| LibraryGame {
+                            id: AppId(id),
+                            total_hours: f64::from(id % 100) * 10.0,
+                            last_played: None,
+                        })
+                        .collect(),
+                    borrowed: Vec::new(),
+                    recent: Vec::new(),
+                    wishlist: Vec::new(),
+                    followed: Vec::new(),
+                },
+                votes: Votes::new(),
+                off_catalog: BTreeMap::new(),
+            }
+        }
+
+        fn ten_games() -> DataFiles {
+            files(&[101, 102, 103, 104, 105, 201, 202, 203, 204, 205])
+        }
+
+        fn created(path: &Path, files: &DataFiles) -> AutomaticFamilies {
+            create_automatic_families(path, &files.search_inputs(&[]), DATE).unwrap()
+        }
+
+        fn sorted(games: &[AppId]) -> Vec<u32> {
+            let mut games: Vec<u32> = games.iter().map(|game| game.0).collect();
+            games.sort();
+            games
+        }
+
+        #[test]
+        fn without_a_file_the_families_are_written_with_their_day() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("families.toml");
+            let files = ten_games();
+
+            let AutomaticFamilies::Created(created) = created(&path, &files) else {
+                panic!("no families made");
+            };
+
+            let read = load_families(&path).unwrap();
+            assert_eq!(read, created.families);
+            assert_eq!(read.families.len(), 2);
+            let groups: Vec<Vec<u32>> = read
+                .families
+                .iter()
+                .map(|family| sorted(&family.games))
+                .collect();
+            assert!(groups.contains(&vec![101, 102, 103, 104, 105]));
+            assert!(groups.contains(&vec![201, 202, 203, 204, 205]));
+            assert!(
+                read.families
+                    .iter()
+                    .all(|family| family.automatic.as_deref() == Some(DATE))
+            );
+            assert_eq!(sorted(&created.played), sorted(&files.signals.ids()));
+
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(text.starts_with(&format!(
+                "{}# Made from the games you play on {DATE}. Change them as you like.\n\n[families.",
+                gamepalate_store::families_edit::NEW_FILE
+            )));
+            assert!(text.contains("    105, # Game 105\n"));
+        }
+
+        #[test]
+        fn a_file_even_empty_is_left_as_it_is() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("families.toml");
+            std::fs::write(&path, "").unwrap();
+
+            assert_eq!(created(&path, &ten_games()), AutomaticFamilies::FileExists);
+            assert_eq!(std::fs::read(&path).unwrap(), b"");
+        }
+
+        #[test]
+        fn fewer_than_six_played_games_make_no_file() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("families.toml");
+
+            let files = files(&[101, 102, 103, 201, 202]);
+            assert_eq!(created(&path, &files), AutomaticFamilies::TooFewGames);
+            assert!(!path.exists());
+        }
+
+        #[test]
+        fn the_switch_off_makes_no_file() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("families.toml");
+            let mut files = ten_games();
+            files.config.families.automatic = false;
+
+            assert_eq!(created(&path, &files), AutomaticFamilies::Off);
+            assert!(!path.exists());
+        }
+
+        #[test]
+        fn the_families_are_there_at_once_and_made_only_once() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("families.toml");
+            let mut files = ten_games();
+
+            let created = families_on_open(&path, &mut files, DATE).unwrap();
+            assert_eq!(files.families, created.families);
+            assert_eq!(files.families.families.len(), 2);
+
+            for family in &created.families.families {
+                let families = load_families(&path).unwrap();
+                changed_families(
+                    &path,
+                    &families,
+                    &FamilyChange::Delete {
+                        family: family.name.clone(),
+                    },
+                    |_| None,
+                )
+                .unwrap();
+            }
+            let mut files = ten_games();
+            assert_eq!(families_on_open(&path, &mut files, DATE), None);
+            assert_eq!(files.families, Families::default());
+            assert_eq!(load_families(&path).unwrap(), Families::default());
+        }
+
+        #[test]
+        fn the_made_families_change_like_the_others() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("families.toml");
+            let AutomaticFamilies::Created(created) = created(&path, &ten_games()) else {
+                panic!("no families made");
+            };
+            let first = created.families.families[0].clone();
+            let second = created.families.families[1].clone();
+            let change = |change: FamilyChange| {
+                let families = load_families(&path).unwrap();
+                changed_families(&path, &families, &change, |id| {
+                    Some(format!("Game {}", id.0))
+                })
+                .unwrap()
+                .families
+            };
+
+            let families = change(FamilyChange::RemoveGame {
+                family: first.name.clone(),
+                game: first.games[0],
+            });
+            assert_eq!(families.families[0].games, first.games[1..]);
+            assert_eq!(families.families[0].automatic, None);
+            assert_eq!(families.families[1].automatic.as_deref(), Some(DATE));
+
+            let families = change(FamilyChange::Rename {
+                from: second.name.clone(),
+                to: "Brawlers".to_string(),
+            });
+            assert_eq!(families.families[1].name, "Brawlers");
+            assert_eq!(families.families[1].automatic, None);
+
+            let families = change(FamilyChange::Delete {
+                family: "Brawlers".to_string(),
+            });
+            assert_eq!(families.families.len(), 1);
+
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(text.contains("Made from the games you play on 2026-11-10."));
+            for game in &first.games[1..] {
+                assert!(text.contains(&format!("    {}, # Game {}\n", game.0, game.0)));
+            }
+        }
     }
 }

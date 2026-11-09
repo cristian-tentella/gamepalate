@@ -44,8 +44,8 @@ use crate::{
     data_dir,
     details::{GameDetails, StoreDetails},
     families::{
-        FamiliesChanged, FamiliesUndo, FamilyChange, FamilyChangeError, FamilyGame,
-        changed_families, family_games, renamed_choice,
+        CreatedFamilies, FamiliesChanged, FamiliesUndo, FamilyChange, FamilyChangeError,
+        FamilyGame, changed_families, families_on_open, family_games, renamed_choice,
     },
     images::{DecodedImage, ImageCache, ImageKind, LoadImageError, MAX_CACHE_BYTES, cache_dir},
     library::{
@@ -70,6 +70,7 @@ pub struct Gamepalate {
     votes: Mutex<Votes>,
     corrections: Mutex<Corrections>,
     families: Mutex<Families>,
+    created_families: Option<CreatedFamilies>,
     gui_saving: Mutex<()>,
     vectors: Vec<GameVector>,
     names: NameIndex,
@@ -93,7 +94,13 @@ impl Gamepalate {
         let dir = data_dir
             .or_else(data_dir::resolve)
             .ok_or(OpenError::DataDirNotFound)?;
-        let files = load_data_files(&dir).inspect_err(failed("could not read the data files"))?;
+        let mut files =
+            load_data_files(&dir).inspect_err(failed("could not read the data files"))?;
+        let created_families = families_on_open(
+            &dir.join(FAMILIES_FILE),
+            &mut files,
+            &jiff::Zoned::now().date().to_string(),
+        );
         let vectors = game_vectors(&files.catalog);
         let names = NameIndex::new(&files.catalog);
         let images = ImageCache::new(cache_dir(), ImageDownloader::new()?);
@@ -120,6 +127,7 @@ impl Gamepalate {
             votes: Mutex::new(files.votes.clone()),
             corrections: Mutex::new(files.corrections.clone()),
             families: Mutex::new(files.families.clone()),
+            created_families,
             gui_saving: Mutex::new(()),
             files,
             vectors,
@@ -397,6 +405,11 @@ impl Gamepalate {
             let _ = self.change_gui_settings(|settings| settings.search.family = family.clone());
         }
         Ok(())
+    }
+
+    // The families made from the played games when this session opened the data, if any.
+    pub fn created_families(&self) -> Option<&CreatedFamilies> {
+        self.created_families.as_ref()
     }
 
     pub fn family_games(&self, family: &str) -> Vec<FamilyGame> {
