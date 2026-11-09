@@ -306,6 +306,25 @@ pub fn voted_day(date: &str, today: Date) -> String {
     }
 }
 
+pub fn families_made(count: usize) -> String {
+    let families = if count == 1 { "family" } else { "families" };
+    format!(
+        "Made {count} {families} from the games you play. You can rename, change or remove them in Profile"
+    )
+}
+
+pub fn automatic_note(date: &str, today: Date) -> String {
+    let made = match date.parse::<Date>() {
+        Ok(_) => match voted_day(date, today).as_str() {
+            "today" => "Made today".to_string(),
+            day => format!("Made on {day}"),
+        },
+        Err(_) => "Made".to_string(),
+    };
+
+    format!("{made} from your games. Edit it to make it yours")
+}
+
 pub fn bets_summary(would_try: usize, bets: usize, others: Option<f64>) -> String {
     let share = would_try as f64 / bets as f64;
     let mut summary = format!("Bets: {would_try} of {bets} Would try ({})", percent(share));
@@ -386,6 +405,37 @@ mod tests {
         assert_eq!(voted_day("2026-10-12", today), "12 Oct");
         assert_eq!(voted_day("2025-03-01", today), "1 Mar 2025");
         assert_eq!(voted_day("someday", today), "someday");
+    }
+
+    #[test]
+    fn the_families_notice_counts_them() {
+        assert_eq!(
+            families_made(4),
+            "Made 4 families from the games you play. You can rename, change or remove them in Profile"
+        );
+        assert!(families_made(1).starts_with("Made 1 family from"));
+    }
+
+    #[test]
+    fn the_automatic_note_says_the_day() {
+        let today = Date::constant(2026, 11, 12);
+
+        assert_eq!(
+            automatic_note("2026-11-10", today),
+            "Made on 10 Nov from your games. Edit it to make it yours"
+        );
+        assert_eq!(
+            automatic_note("2026-11-12", today),
+            "Made today from your games. Edit it to make it yours"
+        );
+        assert_eq!(
+            automatic_note("2025-03-01", today),
+            "Made on 1 Mar 2025 from your games. Edit it to make it yours"
+        );
+        assert_eq!(
+            automatic_note("someday", today),
+            "Made from your games. Edit it to make it yours"
+        );
     }
 
     #[test]

@@ -22,7 +22,7 @@ const INFO: char = '\u{E88E}';
 pub enum Source {
     AllTastes,
     Signals,
-    Family(String),
+    Family(String, bool),
 }
 
 impl fmt::Display for Source {
@@ -30,7 +30,8 @@ impl fmt::Display for Source {
         match self {
             Source::AllTastes => formatter.write_str("All tastes"),
             Source::Signals => formatter.write_str("Signals only"),
-            Source::Family(name) => formatter.write_str(name),
+            Source::Family(name, true) => write!(formatter, "{name} · Automatic"),
+            Source::Family(name, false) => formatter.write_str(name),
         }
     }
 }
@@ -54,16 +55,19 @@ pub const SORTS: [Sort; 3] = [
     Sort(SortBy::Price),
 ];
 
-pub fn sources(families: Vec<String>) -> Vec<Source> {
+pub fn sources(families: Vec<String>, automatic: &[String]) -> Vec<Source> {
     [Source::AllTastes, Source::Signals]
         .into_iter()
-        .chain(families.into_iter().map(Source::Family))
+        .chain(families.into_iter().map(|name| {
+            let made = automatic.contains(&name);
+            Source::Family(name, made)
+        }))
         .collect()
 }
 
-pub fn source(options: &SearchOptions) -> Source {
+pub fn source(options: &SearchOptions, automatic: &[String]) -> Source {
     match (&options.family, options.signals_only) {
-        (Some(name), _) => Source::Family(name.clone()),
+        (Some(name), _) => Source::Family(name.clone(), automatic.contains(name)),
         (None, true) => Source::Signals,
         (None, false) => Source::AllTastes,
     }
@@ -73,7 +77,7 @@ pub fn with_source(options: &SearchOptions, source: Source) -> SearchOptions {
     let (family, signals_only) = match source {
         Source::AllTastes => (None, false),
         Source::Signals => (None, true),
-        Source::Family(name) => (Some(name), false),
+        Source::Family(name, _) => (Some(name), false),
     };
 
     SearchOptions {
@@ -559,12 +563,31 @@ mod tests {
     #[test]
     fn the_sources_are_all_tastes_signals_and_the_families() {
         assert_eq!(
-            sources(vec!["Puzzle".to_string()]),
+            sources(vec!["Puzzle".to_string()], &[]),
             [
                 Source::AllTastes,
                 Source::Signals,
-                Source::Family("Puzzle".to_string())
+                Source::Family("Puzzle".to_string(), false)
             ]
+        );
+    }
+
+    #[test]
+    fn an_automatic_family_says_so_in_the_menu() {
+        let automatic = ["Cozy".to_string()];
+        let found = sources(vec!["Cozy".to_string(), "Puzzle".to_string()], &automatic);
+
+        assert_eq!(found[2].to_string(), "Cozy · Automatic");
+        assert_eq!(found[3].to_string(), "Puzzle");
+        assert_eq!(
+            source(
+                &SearchOptions {
+                    family: Some("Cozy".to_string()),
+                    ..SearchOptions::default()
+                },
+                &automatic
+            ),
+            found[2]
         );
     }
 
@@ -575,7 +598,7 @@ mod tests {
             ..SearchOptions::default()
         };
 
-        let family = with_source(&options, Source::Family("Puzzle".to_string()));
+        let family = with_source(&options, Source::Family("Puzzle".to_string(), false));
         let signals = with_source(&family, Source::Signals);
 
         assert_eq!(
@@ -583,7 +606,10 @@ mod tests {
             (Some("Puzzle"), false)
         );
         assert_eq!((signals.family, signals.signals_only), (None, true));
-        assert_eq!(source(&family), Source::Family("Puzzle".to_string()));
+        assert_eq!(
+            source(&family, &[]),
+            Source::Family("Puzzle".to_string(), false)
+        );
     }
 
     #[test]

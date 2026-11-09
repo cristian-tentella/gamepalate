@@ -63,6 +63,7 @@ pub struct Discover {
     gamepalate: Arc<Gamepalate>,
     options: SearchOptions,
     sources: Vec<Source>,
+    automatic_families: Vec<String>,
     panel: Panel,
     panel_open: bool,
     undo: Option<SearchOptions>,
@@ -140,10 +141,12 @@ impl Discover {
             &options,
         );
         let changed = options != saved;
+        let automatic_families = gamepalate.automatic_family_names();
         let mut discover = Discover {
             gamepalate: Arc::clone(gamepalate),
             options,
-            sources: filters::sources(gamepalate.family_names()),
+            sources: filters::sources(gamepalate.family_names(), &automatic_families),
+            automatic_families,
             panel,
             panel_open: false,
             undo: changed.then_some(saved),
@@ -367,7 +370,7 @@ impl Discover {
             text("From").size(font::NOTE_SIZE).style(style::muted),
             pick_list(
                 self.sources.as_slice(),
-                Some(filters::source(&self.options)),
+                Some(filters::source(&self.options, &self.automatic_families)),
                 Message::Source
             )
             .text_size(font::NOTE_SIZE)

@@ -16,7 +16,10 @@ use gamepalate_store::{
     corrections_edit::{CorrectionsEditor, EntryValue, Section},
 };
 
-use crate::names::{game_label, tag_name};
+use crate::{
+    families::automatic_family_names,
+    names::{game_label, tag_name},
+};
 
 const GAME_TAGS: usize = 3;
 
@@ -24,6 +27,7 @@ const GAME_TAGS: usize = 3;
 pub struct LibraryView {
     pub games: Vec<LibraryGameView>,
     pub families: Vec<String>,
+    pub automatic_families: Vec<String>,
     pub min_hours: f64,
     pub wishlist_hours: f64,
     pub followed_hours: f64,
@@ -180,6 +184,7 @@ pub(crate) fn library_view(inputs: &SearchInputs) -> LibraryView {
             .iter()
             .map(|family| family.name.clone())
             .collect(),
+        automatic_families: automatic_family_names(inputs.families),
         min_hours: config.min_hours,
         wishlist_hours: config.wishlist_hours,
         followed_hours: config.followed_hours,
@@ -544,6 +549,30 @@ mod tests {
         assert_eq!(game.owned_hours, None);
         assert_eq!((game.hours, game.source), (12.0, HoursSource::Played));
         assert!(!find(&view, 1).borrowed);
+    }
+
+    #[test]
+    fn the_view_says_which_families_are_automatic() {
+        let mut fixture = Fixture::new();
+        fixture.families = Families {
+            families: vec![
+                Family {
+                    name: "mysteries".to_string(),
+                    games: vec![AppId(1)],
+                    automatic: Some("2026-11-10".to_string()),
+                },
+                Family {
+                    name: "space".to_string(),
+                    games: vec![AppId(1)],
+                    automatic: None,
+                },
+            ],
+            held_out: Vec::new(),
+        };
+
+        let view = library_view(&fixture.inputs());
+
+        assert_eq!(view.automatic_families, ["mysteries"]);
     }
 
     #[test]

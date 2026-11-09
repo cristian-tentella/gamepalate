@@ -410,6 +410,15 @@ pub(crate) fn families_on_open(
     Some(created)
 }
 
+pub(crate) fn automatic_family_names(families: &Families) -> Vec<String> {
+    families
+        .families
+        .iter()
+        .filter(|family| family.automatic.is_some())
+        .map(|family| family.name.clone())
+        .collect()
+}
+
 pub(crate) fn family_games(
     families: &Families,
     family: &str,
@@ -821,6 +830,30 @@ games = [
             let mut games: Vec<u32> = games.iter().map(|game| game.0).collect();
             games.sort();
             games
+        }
+
+        #[test]
+        fn a_family_stops_being_automatic_when_the_user_changes_it() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("families.toml");
+            let AutomaticFamilies::Created(created) = created(&path, &ten_games()) else {
+                panic!("no families made");
+            };
+            let first = created.families.families[0].name.clone();
+            let second = created.families.families[1].name.clone();
+
+            let changed = changed_families(
+                &path,
+                &created.families,
+                &FamilyChange::Rename {
+                    from: first,
+                    to: "mine".to_string(),
+                },
+                |_| None,
+            )
+            .unwrap();
+
+            assert_eq!(automatic_family_names(&changed.families), [second]);
         }
 
         #[test]

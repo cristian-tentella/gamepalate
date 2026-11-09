@@ -111,6 +111,13 @@ impl Toasts {
     }
 }
 
+pub(crate) fn automatic_mark<'a, M: 'a>() -> Element<'a, M> {
+    container(text("Automatic").size(font::NOTE_SIZE))
+        .padding([1, 8])
+        .style(style::tag)
+        .into()
+}
+
 pub(crate) fn sentence(text: &str) -> String {
     let mut chars = text.chars();
     chars.next().map_or_else(String::new, |first| {

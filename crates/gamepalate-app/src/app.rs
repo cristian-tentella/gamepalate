@@ -45,8 +45,8 @@ use crate::{
     details::{GameDetails, StoreDetails},
     families::{
         CreatedFamilies, FamiliesChanged, FamiliesRemade, FamiliesUndo, FamilyChange,
-        FamilyChangeError, FamilyGame, RemadeFamilies, changed_families, families_on_open,
-        family_games, open_error, remake_automatic_families, renamed_choice,
+        FamilyChangeError, FamilyGame, RemadeFamilies, automatic_family_names, changed_families,
+        families_on_open, family_games, open_error, remake_automatic_families, renamed_choice,
     },
     images::{DecodedImage, ImageCache, ImageKind, LoadImageError, MAX_CACHE_BYTES, cache_dir},
     library::{
@@ -468,6 +468,10 @@ impl Gamepalate {
             .iter()
             .map(|family| family.name.clone())
             .collect()
+    }
+
+    pub fn automatic_family_names(&self) -> Vec<String> {
+        automatic_family_names(&self.lock_families())
     }
 
     pub fn tag_names(&self) -> Vec<String> {

@@ -58,6 +58,7 @@ const REFRESH: char = '\u{E5D5}';
 const CANCEL: char = '\u{E5CD}';
 const GEAR: char = '\u{E8B8}';
 const DOT_SIZE: f32 = 7.0;
+const NOTICE_DURATION: Duration = Duration::from_secs(12);
 const DEFAULT_SIZE: Size = Size::new(1280.0, 800.0);
 const MIN_SIZE: Size = Size::new(960.0, 600.0);
 const LIGHT_BACKGROUND: Color = Color::from_rgb8(0xff, 0xff, 0xff);
@@ -89,6 +90,7 @@ pub struct App {
     downloaded: Option<Downloaded>,
     installed: Option<Installed>,
     logo: image::Handle,
+    families_notice: Option<usize>,
 }
 
 #[derive(Debug, Default)]
@@ -136,6 +138,8 @@ pub enum Message {
     Refreshed(Start, Result<Option<Arc<Gamepalate>>, String>),
     CancelRefresh,
     DismissRefreshError,
+    HideFamiliesNotice,
+    OpenProfileFromNotice,
     Reopened(Result<Arc<Gamepalate>, String>),
     NewVersionChecked(Result<Option<NewVersion>, String>),
     NewVersionDownloading(Option<u8>),
@@ -181,6 +185,7 @@ impl App {
             downloaded: None,
             installed: None,
             logo: image::Handle::from_bytes(LOGO_BYTES),
+            families_notice: None,
         };
         let task = match setup::start(FirstRun::check(None)) {
             Ok(gamepalate) => {
@@ -447,6 +452,14 @@ impl App {
                 }
                 Task::none()
             }
+            Message::HideFamiliesNotice => {
+                self.families_notice = None;
+                Task::none()
+            }
+            Message::OpenProfileFromNotice => {
+                self.families_notice = None;
+                self.update(Message::Navigate(Page::Profile))
+            }
             Message::DismissRefreshError => {
                 if matches!(self.refresh, Refresh::Failed(_)) {
                     self.refresh = Refresh::Idle;
@@ -688,7 +701,12 @@ impl App {
         let bar = mouse_area(bar).on_press(Message::BarPressed);
 
         let content = match &self.screen {
-            Screen::Discover(screen) => screen.view(self.scale).map(Message::Discover),
+            Screen::Discover(screen) => {
+                let notice = self.families_notice.map(families_notice);
+                stack![screen.view(self.scale).map(Message::Discover)]
+                    .push(notice)
+                    .into()
+            }
             Screen::Votes(screen) => screen.view(self.scale).map(Message::Votes),
             Screen::Library(screen) => screen.view().map(Message::Library),
             Screen::Setup(screen) => screen.view().map(Message::Setup),
@@ -869,7 +887,27 @@ impl App {
         self.gamepalate = Some(gamepalate);
         self.find_pending();
 
-        Task::batch([self.open(Page::Discover), prune_images])
+        let notice = match self
+            .gamepalate
+            .as_deref()
+            .and_then(|gamepalate| gamepalate.created_families())
+        {
+            Some(created) => {
+                let (count, played) = (created.families.families.len(), created.played.clone());
+                self.families_notice = Some(count);
+                Task::batch([
+                    self.change_gui_settings(move |settings| {
+                        settings.families_played = Some(played)
+                    }),
+                    Task::perform(tokio::time::sleep(NOTICE_DURATION), |_| {
+                        Message::HideFamiliesNotice
+                    }),
+                ])
+            }
+            None => Task::none(),
+        };
+
+        Task::batch([self.open(Page::Discover), prune_images, notice])
     }
 
     fn page(&self) -> Option<Page> {
@@ -1269,6 +1307,42 @@ fn refresh_tooltip(
         None if renewal_due => "Update prices and Signals, then renew tags and reviews".to_string(),
         None => "Update prices and Signals".to_string(),
     }
+}
+
+fn families_notice<'a>(count: usize) -> Element<'a, Message> {
+    let close = button(
+        text(CLOSE)
+            .font(font::ICONS)
+            .size(font::icon(9.0) * BAR_ICON_SCALE),
+    )
+    .padding(0)
+    .style(style::toast_link)
+    .on_press(Message::HideFamiliesNotice);
+
+    container(
+        container(
+            row![
+                text(format::families_made(count)),
+                button(
+                    text("Open Profile")
+                        .size(font::NOTE_SIZE)
+                        .font(font::SEMIBOLD)
+                )
+                .padding(0)
+                .style(style::toast_link)
+                .on_press(Message::OpenProfileFromNotice),
+                close,
+            ]
+            .spacing(14)
+            .align_y(Center),
+        )
+        .padding([8, 14])
+        .style(style::toast),
+    )
+    .center_x(Fill)
+    .align_bottom(Fill)
+    .padding(16)
+    .into()
 }
 
 fn refresh_failed<'a>(error: &str) -> Element<'a, Message> {

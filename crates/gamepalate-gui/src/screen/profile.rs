@@ -20,7 +20,7 @@ use super::{
     showcase::{self, Showcase},
     votes::Filter,
 };
-use crate::{font, style};
+use crate::{font, format, style};
 
 const FIRST_TAGS: usize = 12;
 const STACK_WIDTH: f32 = 1100.0;
@@ -569,6 +569,7 @@ impl Profile {
                 headers,
                 row![
                     text(&family.name).size(font::BAR_SIZE).font(font::SEMIBOLD),
+                    family.automatic.is_some().then(super::automatic_mark),
                     text(games_count(family.games.len()))
                         .size(font::NOTE_SIZE)
                         .style(style::muted),
@@ -576,6 +577,11 @@ impl Profile {
                 .spacing(8)
                 .align_y(Center),
                 text(tags).size(font::NOTE_SIZE).style(style::muted),
+                family.automatic.as_deref().map(|date| {
+                    text(format::automatic_note(date, jiff::Zoned::now().date()))
+                        .size(font::NOTE_SIZE)
+                        .style(style::muted)
+                }),
                 row![
                     button(text("Edit").size(font::BAR_SIZE))
                         .padding(0)
