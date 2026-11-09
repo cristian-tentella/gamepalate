@@ -45,6 +45,7 @@ const FAMILY_TAGS: usize = 3;
 const EDITOR_WIDTH: f32 = 460.0;
 const EDITOR_GAMES_HEIGHT: f32 = 320.0;
 const REMOVE: char = '\u{E5CD}';
+const UPDATE: char = '\u{E5D5}';
 const EDITOR_HEIGHT: f32 = 560.0;
 const NO_NEW_FAMILIES: &str = "No new families: your families already cover the games you play";
 pub(crate) const HELD_OUT_TIP: &str =
@@ -656,19 +657,19 @@ impl Profile {
     fn remake_row(&self) -> Element<'_, Message> {
         let working = self.remake != Remake::Idle;
         row![
-            button(text("Remake families").size(font::BAR_SIZE))
-                .padding(0)
-                .style(|theme: &Theme, status| {
-                    let link = style::link(theme, status);
-                    match status {
-                        button::Status::Disabled => button::Style {
-                            text_color: link.text_color.scale_alpha(0.5),
-                            ..link
-                        },
-                        _ => link,
-                    }
-                })
-                .on_press_maybe((!working).then_some(Message::AskRemake)),
+            button(
+                row![
+                    text(UPDATE)
+                        .font(font::ICONS)
+                        .size(font::icon(font::BAR_SIZE)),
+                    text("Update families").size(font::BAR_SIZE),
+                ]
+                .spacing(6)
+                .align_y(Center)
+            )
+            .padding([5, 12])
+            .style(style::secondary)
+            .on_press_maybe((!working).then_some(Message::AskRemake)),
             self.new_games.map(|new| {
                 text(new_games_text(new))
                     .size(font::NOTE_SIZE)
@@ -1053,7 +1054,7 @@ fn remake_title(changes: &RemakeChanges) -> (&'static str, &'static str) {
     if changes.made_again.is_empty() && changes.removed.is_empty() {
         ("Add families?", "Add")
     } else {
-        ("Remake families?", "Remake")
+        ("Update families?", "Update")
     }
 }
 
@@ -1061,7 +1062,7 @@ fn remake_sections(changes: &RemakeChanges) -> Vec<(&'static str, &[String])> {
     [
         ("New, from the games you play", changes.added.as_slice()),
         (
-            "Made again from the games you play",
+            "Updated from the games you play",
             changes.made_again.as_slice(),
         ),
         ("Removed", changes.removed.as_slice()),
@@ -1088,7 +1089,7 @@ fn remade_text(outcome: &RemadeFamilies) -> String {
         RemadeFamilies::Remade(remade) => match (remade.added.len(), remade.removed.len()) {
             (0, removed) => format!("Removed {}", families(removed)),
             (added, 0) => format!("Added {}", families(added)),
-            (added, _) => format!("Remade {}", families(added)),
+            (added, _) => format!("Updated {}", families(added)),
         },
         RemadeFamilies::NoNewFamilies => NO_NEW_FAMILIES.to_string(),
         RemadeFamilies::AlreadyMany => already_many(),
@@ -1649,7 +1650,7 @@ mod tests {
     fn the_question_lists_what_comes_goes_and_stays() {
         let changes = changes();
 
-        assert_eq!(remake_title(&changes), ("Remake families?", "Remake"));
+        assert_eq!(remake_title(&changes), ("Update families?", "Update"));
         assert_eq!(
             remake_sections(&changes)
                 .into_iter()
