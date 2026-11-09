@@ -19,7 +19,7 @@ use crate::{
     signals::Signals,
     taste::{Taste, family_taste, game_name, signals_taste},
     timestamp::Timestamp,
-    turns::{Pick, in_turns, with_bets},
+    turns::{ListKind, Pick, in_turns, turn_shares, with_bets},
     votes::Votes,
 };
 
@@ -90,6 +90,7 @@ impl From<TagNameError> for SearchError {
 #[derive(Debug, Clone)]
 pub struct SearchTaste {
     pub family: Option<String>,
+    pub kind: ListKind,
     pub taste: Taste,
 }
 
@@ -155,6 +156,7 @@ pub fn search_tastes(
 ) -> Result<Vec<SearchTaste>, SearchError> {
     let taste_of = |family: &Family| SearchTaste {
         family: Some(family.name.clone()),
+        kind: ListKind::of_family(family),
         taste: family_taste(
             family,
             inputs.catalog,
@@ -185,6 +187,7 @@ pub fn search_tastes(
 
             let mut search_tastes = vec![SearchTaste {
                 family: None,
+                kind: ListKind::Signals,
                 taste,
             }];
 
@@ -266,6 +269,29 @@ pub fn recommended_game(
     }
 }
 
+fn merged_lists<'a>(
+    voted: &'a [Vec<RankedGame>],
+    bet_lists: &'a [Vec<RankedGame>],
+    shares: &[u32],
+    only_bets: bool,
+    bet_every: usize,
+) -> Vec<Pick<'a>> {
+    if only_bets {
+        in_turns(bet_lists, shares)
+            .into_iter()
+            .map(|pick| Pick { bet: true, ..pick })
+            .collect()
+    } else if bet_every > 0 {
+        with_bets(
+            in_turns(voted, shares),
+            in_turns(bet_lists, shares),
+            bet_every,
+        )
+    } else {
+        in_turns(voted, shares)
+    }
+}
+
 pub fn recommend(
     inputs: &SearchInputs,
     options: &SearchOptions,
@@ -329,17 +355,22 @@ pub fn recommend(
         None => (rankings, Vec::new()),
     };
 
-    let bet_every = inputs.config.results.bet_every;
-    let mut picks = if options.only_bets {
-        in_turns(&bet_lists)
-            .into_iter()
-            .map(|pick| Pick { bet: true, ..pick })
-            .collect()
-    } else if opinion_by_id.is_some() && bet_every > 0 {
-        with_bets(in_turns(&voted), in_turns(&bet_lists), bet_every)
+    let bet_every = if opinion_by_id.is_some() {
+        inputs.config.results.bet_every
     } else {
-        in_turns(&voted)
+        0
     };
+    let kinds: Vec<ListKind> = tastes
+        .iter()
+        .map(|search_taste| search_taste.kind)
+        .collect();
+    let mut picks = merged_lists(
+        &voted,
+        &bet_lists,
+        &turn_shares(&kinds),
+        options.only_bets,
+        bet_every,
+    );
 
     sort_picks(&mut picks, options.sort, inputs.catalog, now);
     picks.truncate(options.limit.unwrap_or(inputs.config.results.count));
@@ -408,9 +439,20 @@ mod tests {
         }
     }
 
-    fn recommendation(region: Region, options: &SearchOptions) -> Recommendation {
+    fn recommendation_with(
+        region: Region,
+        options: &SearchOptions,
+        automatic: Option<&str>,
+    ) -> Recommendation {
         let catalog = Catalog::new(
-            vec![game(1, 1), game(2, 1), game(3, 2), game(4, 2)],
+            vec![
+                game(1, 1),
+                game(2, 1),
+                game(3, 2),
+                game(4, 2),
+                game(5, 1),
+                game(6, 2),
+            ],
             BTreeMap::new(),
             BTreeMap::from([(TagId(1), 1.0), (TagId(2), 1.0)]),
             Freshness {
@@ -447,7 +489,7 @@ mod tests {
                 families: vec![Family {
                     name: "Puzzle".to_string(),
                     games: vec![AppId(3)],
-                    automatic: None,
+                    automatic: automatic.map(str::to_string),
                 }],
                 held_out: Vec::new(),
             },
@@ -458,24 +500,87 @@ mod tests {
         recommend(&inputs, options, NOW).unwrap()
     }
 
+    fn recommendation(region: Region, options: &SearchOptions) -> Recommendation {
+        recommendation_with(region, options, None)
+    }
+
     fn stale_prices(region: Region) -> bool {
         recommendation(region, &SearchOptions::default()).stale_prices
     }
 
-    fn families_of(options: &SearchOptions) -> Vec<Option<String>> {
-        recommendation(Region::ITALY, options)
+    fn families_in(recommendation: Recommendation) -> Vec<Option<String>> {
+        recommendation
             .games
             .into_iter()
             .map(|game| game.from_family)
             .collect()
     }
 
+    fn families_of(options: &SearchOptions) -> Vec<Option<String>> {
+        families_in(recommendation(Region::ITALY, options))
+    }
+
+    fn ranked(id: u32) -> RankedGame {
+        RankedGame {
+            id: AppId(id),
+            relevance: 0.0,
+            references: Vec::new(),
+            affinity: 0.0,
+        }
+    }
+
     #[test]
     fn all_tastes_mix_the_signals_and_the_families() {
+        let puzzle = || Some("Puzzle".to_string());
+
         assert_eq!(
             families_of(&SearchOptions::default()),
-            [None, Some("Puzzle".to_string())]
+            [None, puzzle(), None, puzzle()]
         );
+    }
+
+    #[test]
+    fn an_automatic_family_gets_a_smaller_share() {
+        let recommendation =
+            recommendation_with(Region::ITALY, &SearchOptions::default(), Some("2026-11-10"));
+
+        assert_eq!(
+            families_in(recommendation),
+            [None, None, Some("Puzzle".to_string()), None]
+        );
+    }
+
+    #[test]
+    fn the_bets_take_turns_with_the_same_shares_as_the_list() {
+        let shares = turn_shares(&[ListKind::Signals, ListKind::AutomaticFamily]);
+        let voted = [
+            (1..=10).map(ranked).collect(),
+            (11..=20).map(ranked).collect(),
+        ];
+        let bet_lists = [
+            (21..=30).map(ranked).collect(),
+            (31..=40).map(ranked).collect(),
+        ];
+        let bets_from = |picks: Vec<Pick>| -> Vec<usize> {
+            picks
+                .iter()
+                .filter(|pick| pick.bet)
+                .map(|pick| pick.from)
+                .take(5)
+                .collect()
+        };
+
+        let only_bets = merged_lists(&voted, &bet_lists, &shares, true, 0);
+        let mixed = merged_lists(&voted, &bet_lists, &shares, false, 2);
+        let list: Vec<usize> = merged_lists(&voted, &bet_lists, &shares, false, 0)
+            .iter()
+            .map(|pick| pick.from)
+            .take(5)
+            .collect();
+
+        assert_eq!(list, [0, 0, 1, 0, 0]);
+        assert_eq!(bets_from(only_bets), [0, 0, 1, 0, 0]);
+        assert_eq!(bets_from(mixed), [0, 0, 1, 0, 0]);
     }
 
     #[test]
