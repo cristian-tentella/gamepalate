@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    catalog::TagName,
+    catalog::{Catalog, TagName},
     families::Family,
     ids::{AppId, TagId},
     signals::Signals,
@@ -16,6 +16,8 @@ const MIN_GROUP_GAMES: usize = 3;
 const FAMILY_GAMES: usize = 8;
 const MAX_ROUNDS: usize = 30;
 const NAME_TAGS: usize = 3;
+const STARTS: usize = 8;
+const SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
 struct PlayedGame {
     id: AppId,
@@ -25,20 +27,28 @@ struct PlayedGame {
 }
 
 // Groups the played games of the Signals taste by their tags, one Family per group.
-pub fn automatic_families(
-    taste: &Taste,
-    signals: &Signals,
-    tag_names: &BTreeMap<TagId, TagName>,
-) -> Vec<Family> {
-    let games = played_games(taste, signals);
+pub fn automatic_families(taste: &Taste, signals: &Signals, catalog: &Catalog) -> Vec<Family> {
+    let games = played_games(taste, signals, catalog);
     if games.len() < MIN_GAMES {
         return Vec::new();
     }
 
-    let mut centers = first_centers(&games, group_count(games.len()));
-    let groups = assign_groups(&games, &mut centers);
+    let count = group_count(games.len());
+    let mut random = Xorshift(SEED);
+    let mut best: Option<(f64, Vec<usize>, Vec<TagVector>)> = None;
+    for _ in 0..STARTS {
+        let mut centers = first_centers(&games, count, &mut random);
+        let groups = assign_groups(&games, &mut centers);
+        let score = fit(&games, &groups, &centers);
+        if best.as_ref().is_none_or(|(best, _, _)| score > *best) {
+            best = Some((score, groups, centers));
+        }
+    }
 
-    families(&games, &groups, &centers, tag_names)
+    let Some((_, groups, centers)) = best else {
+        return Vec::new();
+    };
+    families(&games, &groups, &centers, &catalog.tags)
 }
 
 pub fn group_count(games: usize) -> usize {
@@ -65,12 +75,14 @@ fn played_hours(signals: &Signals) -> BTreeMap<AppId, f64> {
     hours
 }
 
-fn played_games(taste: &Taste, signals: &Signals) -> Vec<PlayedGame> {
+// Only Catalog games: the ones off it are mostly free to play and make groups of their own.
+fn played_games(taste: &Taste, signals: &Signals, catalog: &Catalog) -> Vec<PlayedGame> {
     let hours = played_hours(signals);
 
     let mut games: Vec<PlayedGame> = taste
         .games
         .iter()
+        .filter(|game| catalog.game(game.id).is_some())
         .filter_map(|game| {
             let hours = *hours.get(&game.id)?;
             let unit = unit(&game.tag_vector)?;
@@ -102,36 +114,71 @@ fn unit(tag_vector: &TagVector) -> Option<TagVector> {
     )
 }
 
-// The heaviest game first, then each time the game furthest from the centers chosen so far.
-fn first_centers(games: &[PlayedGame], count: usize) -> Vec<TagVector> {
+struct Xorshift(u64);
+
+impl Xorshift {
+    fn next(&mut self) -> f64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    fn pick(&mut self, odds: &[f64]) -> Option<usize> {
+        let total: f64 = odds.iter().sum();
+        if total <= 0.0 {
+            return None;
+        }
+
+        let mut target = self.next() * total;
+        for (i, &odd) in odds.iter().enumerate() {
+            target -= odd;
+            if target < 0.0 {
+                return Some(i);
+            }
+        }
+        odds.iter().rposition(|&odd| odd > 0.0)
+    }
+}
+
+// k-means++: each center is drawn with odds of weight × distance from the centers chosen so far.
+fn first_centers(games: &[PlayedGame], count: usize, random: &mut Xorshift) -> Vec<TagVector> {
     let mut chosen: Vec<usize> = Vec::new();
 
     while chosen.len() < count.min(games.len()) {
-        let value = |game: &PlayedGame| {
-            if chosen.is_empty() {
-                return game.weight;
-            }
-            let closest = chosen
-                .iter()
-                .map(|&c| dot(&game.unit, &games[c].unit))
-                .fold(f64::NEG_INFINITY, f64::max);
-            game.weight * (1.0 - closest)
-        };
-
-        let next = games
+        let odds: Vec<f64> = games
             .iter()
             .enumerate()
-            .filter(|(i, _)| !chosen.contains(i))
-            .map(|(i, game)| (i, value(game)))
-            .max_by(|a, b| a.1.total_cmp(&b.1).then(games[b.0].id.cmp(&games[a.0].id)));
+            .map(|(i, game)| {
+                if chosen.contains(&i) {
+                    return 0.0;
+                }
+                let closest = chosen
+                    .iter()
+                    .map(|&c| dot(&game.unit, &games[c].unit))
+                    .fold(0.0, f64::max);
+                game.weight * (1.0 - closest).max(0.0)
+            })
+            .collect();
 
-        let Some((i, _)) = next else {
+        let next = random
+            .pick(&odds)
+            .or_else(|| (0..games.len()).find(|i| !chosen.contains(i)));
+        let Some(i) = next else {
             break;
         };
         chosen.push(i);
     }
 
     chosen.iter().map(|&i| games[i].unit.clone()).collect()
+}
+
+fn fit(games: &[PlayedGame], groups: &[usize], centers: &[TagVector]) -> f64 {
+    games
+        .iter()
+        .zip(groups)
+        .map(|(game, &group)| game.weight * dot(&game.unit, &centers[group]))
+        .sum()
 }
 
 fn assign_groups(games: &[PlayedGame], centers: &mut [TagVector]) -> Vec<usize> {
@@ -288,6 +335,7 @@ mod tests {
         currency::Currency,
         effective_hours::hours_by_source,
         game::{Game, GameTag, Price, Reviews},
+        off_catalog::OffCatalogGame,
         region::Region,
         signals::LibraryGame,
         taste::signals_taste,
@@ -394,7 +442,7 @@ mod tests {
         automatic_families(
             &taste(library, corrections),
             &library.signals,
-            &library.catalog.tags,
+            &library.catalog,
         )
     }
 
@@ -492,9 +540,9 @@ mod tests {
         let mut reversed = taste.clone();
         reversed.games.reverse();
 
-        let first = automatic_families(&taste, &library.signals, &library.catalog.tags);
-        let again = automatic_families(&taste, &library.signals, &library.catalog.tags);
-        let from_reversed = automatic_families(&reversed, &library.signals, &library.catalog.tags);
+        let first = automatic_families(&taste, &library.signals, &library.catalog);
+        let again = automatic_families(&taste, &library.signals, &library.catalog);
+        let from_reversed = automatic_families(&reversed, &library.signals, &library.catalog);
 
         assert!(!first.is_empty());
         assert_eq!(first, again);
@@ -549,6 +597,55 @@ mod tests {
         let families = families_of(&library, &Corrections::default());
 
         assert_eq!(families[0].games, ids(&[4, 2, 3, 5, 6, 7, 8, 9]));
+    }
+
+    #[test]
+    fn a_game_off_the_catalog_is_in_no_family() {
+        let mut library = library(
+            &[
+                (1, 10.0, PUZZLE),
+                (2, 10.0, PUZZLE),
+                (3, 10.0, PUZZLE),
+                (4, 10.0, FIGHTING),
+                (5, 10.0, FIGHTING),
+                (6, 10.0, FIGHTING),
+            ],
+            &[],
+        );
+        library.signals.library.push(LibraryGame {
+            id: AppId(7),
+            total_hours: 500.0,
+            last_played: None,
+        });
+        let off_catalog = BTreeMap::from([(
+            AppId(7),
+            OffCatalogGame {
+                tags: vec![GameTag {
+                    id: TagId(1),
+                    weight: 1.0,
+                }],
+                name: None,
+            },
+        )]);
+        let config = SignalsConfig::default();
+        let hours = hours_by_source(&library.signals, &Votes::new(), &BTreeSet::new(), &config);
+        let taste = signals_taste(
+            &hours,
+            &library.catalog,
+            &off_catalog,
+            &Corrections::default(),
+            &config,
+        );
+        assert!(taste.games.iter().any(|game| game.id == AppId(7)));
+
+        let families = automatic_families(&taste, &library.signals, &library.catalog);
+
+        assert_eq!(families.len(), 2);
+        assert!(
+            families
+                .iter()
+                .all(|family| !family.games.contains(&AppId(7)))
+        );
     }
 
     #[test]
