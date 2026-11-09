@@ -1101,7 +1101,7 @@ games = [101, 201]
 automatic = \"2026-11-10\"
 
 # Also mine
-[families.\"Tag 3 · Tag 4\"]
+[families.\"Tag 3\"]
 games = [998]
 
 [held_out]
@@ -1118,7 +1118,7 @@ games = [
             assert_eq!(family_names(&remade.removed), ["old"]);
             assert_eq!(
                 family_names(&remade.families.families),
-                ["mine", "Tag 3 · Tag 4", "Tag 3 · Tag 4 2", "Tag 1 · Tag 2"]
+                ["mine", "Tag 3", "Tag 3 2", "Tag 1"]
             );
             assert_eq!(remade.added, remade.families.families[2..]);
             assert!(
@@ -1133,7 +1133,7 @@ games = [
 
             let text = std::fs::read_to_string(&path).unwrap();
             assert!(text.starts_with(
-                "# Mine\n[families.mine]\ngames = [\n    999, # Not played\n]\n\n# Also mine\n[families.\"Tag 3 · Tag 4\"]\ngames = [998]\n\n[families."
+                "# Mine\n[families.mine]\ngames = [\n    999, # Not played\n]\n\n# Also mine\n[families.\"Tag 3\"]\ngames = [998]\n\n[families."
             ));
             assert!(text.ends_with("\n\n[held_out]\ngames = [\n    105, # Game 105\n]\n"));
             assert!(!text.contains("[families.old]"));
@@ -1144,14 +1144,11 @@ games = [
         fn a_group_with_half_its_games_in_your_families_is_left_out() {
             let (_dir, path) = written("[families.mine]\ngames = [110, 109, 108, 107]\n");
             let remade = remade_ok(&path, &mut genres(2, 10));
-            assert_eq!(family_names(&remade.added), ["Tag 3 · Tag 4"]);
+            assert_eq!(family_names(&remade.added), ["Tag 3"]);
 
             let (_dir, path) = written("[families.mine]\ngames = [110, 109, 108]\n");
             let remade = remade_ok(&path, &mut genres(2, 10));
-            assert_eq!(
-                family_names(&remade.added),
-                ["Tag 3 · Tag 4", "Tag 1 · Tag 2"]
-            );
+            assert_eq!(family_names(&remade.added), ["Tag 3", "Tag 1"]);
             assert!(remade.removed.is_empty());
         }
 
@@ -1261,10 +1258,7 @@ automatic = \"2026-11-10\"
             let families =
                 gamepalate_store::families_edit::restore_families(&path, &remade.snapshot).unwrap();
             assert_eq!(std::fs::read_to_string(&path).unwrap(), MIXED);
-            assert_eq!(
-                family_names(&families.families),
-                ["mine", "old", "Tag 3 · Tag 4"]
-            );
+            assert_eq!(family_names(&families.families), ["mine", "old", "Tag 3"]);
 
             remade_ok(&path, &mut ten_games());
             let again = remade_ok(&path, &mut ten_games());
@@ -1281,10 +1275,10 @@ automatic = \"2026-11-10\"
             assert_eq!(
                 remake_preview(&files.search_inputs(&[])),
                 RemakePreview::Changes(RemakeChanges {
-                    kept: vec!["mine".to_string(), "Tag 3 · Tag 4".to_string()],
+                    kept: vec!["mine".to_string(), "Tag 3".to_string()],
                     made_again: Vec::new(),
                     removed: vec!["old".to_string()],
-                    added: vec!["Tag 3 · Tag 4 2".to_string(), "Tag 1 · Tag 2".to_string()],
+                    added: vec!["Tag 3 2".to_string(), "Tag 1".to_string()],
                 })
             );
             assert_eq!(std::fs::read_to_string(&path).unwrap(), MIXED);
@@ -1294,7 +1288,7 @@ automatic = \"2026-11-10\"
             let RemakePreview::Changes(again) = remake_preview(&files.search_inputs(&[])) else {
                 panic!("no changes");
             };
-            assert_eq!(again.made_again, ["Tag 3 · Tag 4 2", "Tag 1 · Tag 2"]);
+            assert_eq!(again.made_again, ["Tag 3 2", "Tag 1"]);
             assert!(again.removed.is_empty() && again.added.is_empty());
         }
 

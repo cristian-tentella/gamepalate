@@ -15,7 +15,9 @@ const MAX_GROUPS: usize = 8;
 const MIN_GROUP_GAMES: usize = 3;
 const FAMILY_GAMES: usize = 8;
 const MAX_ROUNDS: usize = 30;
-const NAME_TAGS: usize = 3;
+const NAME_TAGS: usize = 2;
+// The second tag joins the name only when it weighs almost as much as the first.
+const SECOND_TAG_SHARE: f64 = 0.8;
 const STARTS: usize = 8;
 const SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
@@ -308,16 +310,53 @@ fn group_name(
 
     scores.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
 
-    scores
-        .iter()
-        .take(NAME_TAGS)
-        .map(|(tag, _)| {
-            tag_names
-                .get(tag)
-                .map_or_else(|| format!("#{}", tag.0), |name| name.english.clone())
+    let named: Vec<(String, f64)> = scores
+        .into_iter()
+        .map(|(tag, score)| {
+            let name = tag_names
+                .get(&tag)
+                .map_or_else(|| format!("#{}", tag.0), |name| name.english.clone());
+            (name, score)
         })
-        .collect::<Vec<String>>()
-        .join(" · ")
+        .collect();
+    name_from(&named)
+}
+
+// The first tag, and a second one that weighs almost as much and does not repeat it.
+fn name_from(tags: &[(String, f64)]) -> String {
+    let Some((first, top)) = tags.first() else {
+        return String::new();
+    };
+    let mut picked = vec![first.as_str()];
+    for (name, score) in &tags[1..] {
+        if picked.len() == NAME_TAGS || *score < SECOND_TAG_SHARE * top {
+            break;
+        }
+        if picked.iter().all(|other| !repeats(other, name)) {
+            picked.push(name);
+        }
+    }
+    picked.join(" · ")
+}
+
+// Roguelike and Roguelite, RPG and JRPG, Co-op and Online Co-Op say the same thing.
+fn repeats(a: &str, b: &str) -> bool {
+    let words = |name: &str| -> Vec<String> {
+        name.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(String::from)
+            .collect()
+    };
+    let (a, b) = (words(a), words(b));
+    a.iter().any(|x| {
+        b.iter().any(|y| {
+            let (short, long) = if x.len() <= y.len() { (x, y) } else { (y, x) };
+            short == long
+                || (short.len() >= 3 && long.contains(short.as_str()))
+                || (short.len() >= 5 && x[..5] == y[..5])
+        })
+    })
 }
 
 fn unique_names(names: Vec<String>) -> Vec<String> {
@@ -745,7 +784,7 @@ mod tests {
             .map(|family| family.name)
             .collect();
 
-        assert_eq!(names, ["tag 2 · tag 3 · tag 4", "tag 5 · tag 6 · tag 7"]);
+        assert_eq!(names, ["tag 2", "tag 5"]);
     }
 
     #[test]
@@ -765,8 +804,58 @@ mod tests {
         let families = families_of(&library, &Corrections::default());
 
         assert_eq!(families.len(), 1);
-        assert_eq!(families[0].name, "tag 2 · tag 4 · tag 3");
+        assert_eq!(families[0].name, "tag 2");
         assert_eq!(families[0].games, ids(&[1, 2, 3, 4, 5, 6]));
+    }
+
+    fn scored(tags: &[(&str, f64)]) -> Vec<(String, f64)> {
+        tags.iter()
+            .map(|&(name, score)| (name.to_string(), score))
+            .collect()
+    }
+
+    #[test]
+    fn a_second_tag_joins_only_when_it_weighs_almost_as_much() {
+        assert_eq!(
+            name_from(&scored(&[
+                ("Puzzle", 0.339),
+                ("Mystery", 0.304),
+                ("Point & Click", 0.3)
+            ])),
+            "Puzzle · Mystery"
+        );
+        assert_eq!(
+            name_from(&scored(&[("Souls-like", 0.558), ("Metroidvania", 0.33)])),
+            "Souls-like"
+        );
+        assert_eq!(name_from(&scored(&[("JRPG", 0.5)])), "JRPG");
+        assert_eq!(name_from(&[]), "");
+    }
+
+    #[test]
+    fn a_tag_that_repeats_the_first_is_skipped() {
+        assert_eq!(
+            name_from(&scored(&[
+                ("Action Roguelike", 0.41),
+                ("Roguelike", 0.36),
+                ("Roguelite", 0.33),
+            ])),
+            "Action Roguelike"
+        );
+        assert_eq!(
+            name_from(&scored(&[
+                ("Fighting", 0.47),
+                ("2D Fighter", 0.4),
+                ("PvP", 0.39)
+            ])),
+            "Fighting · PvP"
+        );
+        assert!(repeats("RPG", "JRPG"));
+        assert!(repeats("Loot", "Looter Shooter"));
+        assert!(repeats("Co-op", "Online Co-Op"));
+        assert!(repeats("Turn-Based Combat", "Turn-Based"));
+        assert!(!repeats("Puzzle", "Mystery"));
+        assert!(!repeats("Point & Click", "Episodic"));
     }
 
     #[test]
