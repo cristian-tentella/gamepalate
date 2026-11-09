@@ -45,9 +45,9 @@ use crate::{
     details::{GameDetails, StoreDetails},
     families::{
         CreatedFamilies, FamiliesChanged, FamiliesRemade, FamiliesUndo, FamilyChange,
-        FamilyChangeError, FamilyGame, RemadeFamilies, automatic_family_names, changed_families,
-        families_on_open, family_games, new_played_games, open_error, remake_automatic_families,
-        renamed_choice,
+        FamilyChangeError, FamilyGame, RemadeFamilies, RemakePreview, automatic_family_names,
+        changed_families, families_on_open, family_games, new_played_games, open_error,
+        remake_automatic_families, remake_preview, renamed_choice,
     },
     images::{DecodedImage, ImageCache, ImageKind, LoadImageError, MAX_CACHE_BYTES, cache_dir},
     library::{
@@ -387,6 +387,10 @@ impl Gamepalate {
                 .map(|(from, _)| from)
                 .collect(),
         })
+    }
+
+    pub fn remake_preview(&self) -> RemakePreview {
+        self.with_inputs(remake_preview)
     }
 
     // Only the automatic families change; the undo puts back the file as it was.

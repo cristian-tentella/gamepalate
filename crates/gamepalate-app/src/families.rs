@@ -317,12 +317,31 @@ impl Remade {
     }
 }
 
+// What a remake would do, to ask before writing anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemakePreview {
+    Changes(RemakeChanges),
+    NoNewFamilies,
+    AlreadyMany,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RemakeChanges {
+    pub kept: Vec<String>,
+    pub made_again: Vec<String>,
+    pub removed: Vec<String>,
+    pub added: Vec<String>,
+}
+
+struct Planned<'a> {
+    removed: Vec<&'a Family>,
+    added: Vec<Family>,
+    taste: Taste,
+    unchanged: Option<RemadeFamilies>,
+}
+
 // Replaces the automatic families with new ones for the tastes the user's own don't cover.
-pub fn remake_automatic_families(
-    path: &Path,
-    inputs: &SearchInputs,
-    date: &str,
-) -> Result<RemadeFamilies, FamiliesError> {
+fn planned<'a>(inputs: &SearchInputs<'a>, date: &str) -> Planned<'a> {
     let families = inputs.families;
     let (removed, own): (Vec<&Family>, Vec<&Family>) = families
         .families
@@ -354,12 +373,71 @@ pub fn remake_automatic_families(
         })
         .collect();
 
-    if removed.is_empty() && added.is_empty() {
-        return Ok(if !own.is_empty() && own.len() >= most {
+    let unchanged = (removed.is_empty() && added.is_empty()).then_some(
+        if !own.is_empty() && own.len() >= most {
             RemadeFamilies::AlreadyMany
         } else {
             RemadeFamilies::NoNewFamilies
-        });
+        },
+    );
+
+    Planned {
+        removed,
+        added,
+        taste,
+        unchanged,
+    }
+}
+
+pub fn remake_preview(inputs: &SearchInputs) -> RemakePreview {
+    let planned = planned(inputs, "");
+    match planned.unchanged {
+        Some(RemadeFamilies::AlreadyMany) => return RemakePreview::AlreadyMany,
+        Some(_) => return RemakePreview::NoNewFamilies,
+        None => {}
+    }
+
+    let added: Vec<String> = planned
+        .added
+        .iter()
+        .map(|family| family.name.clone())
+        .collect();
+    let (made_again, removed): (Vec<String>, Vec<String>) = planned
+        .removed
+        .iter()
+        .map(|family| family.name.clone())
+        .partition(|name| added.contains(name));
+
+    RemakePreview::Changes(RemakeChanges {
+        kept: inputs
+            .families
+            .families
+            .iter()
+            .filter(|family| family.automatic.is_none())
+            .map(|family| family.name.clone())
+            .collect(),
+        added: added
+            .into_iter()
+            .filter(|name| !made_again.contains(name))
+            .collect(),
+        made_again,
+        removed,
+    })
+}
+
+pub fn remake_automatic_families(
+    path: &Path,
+    inputs: &SearchInputs,
+    date: &str,
+) -> Result<RemadeFamilies, FamiliesError> {
+    let Planned {
+        removed,
+        added,
+        taste,
+        unchanged,
+    } = planned(inputs, date);
+    if let Some(unchanged) = unchanged {
+        return Ok(unchanged);
     }
 
     let mut editor = FamiliesEditor::open(path)?;
@@ -1192,6 +1270,47 @@ automatic = \"2026-11-10\"
             let again = remade_ok(&path, &mut ten_games());
             assert_eq!(again.removed, again.added);
             assert!(again.renamed().is_empty());
+        }
+
+        #[test]
+        fn the_preview_tells_what_stays_goes_and_comes_and_writes_nothing() {
+            let (_dir, path) = written(MIXED);
+            let mut files = ten_games();
+            files.families = load_families(&path).unwrap();
+
+            assert_eq!(
+                remake_preview(&files.search_inputs(&[])),
+                RemakePreview::Changes(RemakeChanges {
+                    kept: vec!["mine".to_string(), "Tag 3 · Tag 4".to_string()],
+                    made_again: Vec::new(),
+                    removed: vec!["old".to_string()],
+                    added: vec!["Tag 3 · Tag 4 2".to_string(), "Tag 1 · Tag 2".to_string()],
+                })
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), MIXED);
+
+            remade_ok(&path, &mut files);
+            files.families = load_families(&path).unwrap();
+            let RemakePreview::Changes(again) = remake_preview(&files.search_inputs(&[])) else {
+                panic!("no changes");
+            };
+            assert_eq!(again.made_again, ["Tag 3 · Tag 4 2", "Tag 1 · Tag 2"]);
+            assert!(again.removed.is_empty() && again.added.is_empty());
+        }
+
+        #[test]
+        fn the_preview_says_when_nothing_would_change() {
+            let (_dir, path) = written(
+                "[families.mine]
+games = [101, 102, 103, 104, 105, 201, 202, 203]
+",
+            );
+            let mut files = ten_games();
+            files.families = load_families(&path).unwrap();
+            assert_eq!(
+                remake_preview(&files.search_inputs(&[])),
+                RemakePreview::NoNewFamilies
+            );
         }
 
         fn seen(games: &[u32]) -> Vec<AppId> {

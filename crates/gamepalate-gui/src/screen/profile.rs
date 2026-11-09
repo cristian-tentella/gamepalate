@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use gamepalate_app::{
     AppId, Ban, CorrectedGameView, CorrectionsView, FamiliesChanged, FamiliesRemade, FamiliesUndo,
     FamilyChange, FamilyGame, FamilyView, Gamepalate, HoursGame, HoursSource,
-    MAX_FAMILIES_WITH_OWN, ProfileView, RemadeFamilies, SignalsConfig, SourceView, TagView,
-    TasteView, VoteKind, VotesView,
+    MAX_FAMILIES_WITH_OWN, ProfileView, RemadeFamilies, RemakeChanges, RemakePreview,
+    SignalsConfig, SourceView, TagView, TasteView, VoteKind, VotesView,
 };
 use iced::{
     Center, Color, Element, Fill, Length, Subscription, Task, Theme,
@@ -45,6 +45,8 @@ const FAMILY_TAGS: usize = 3;
 const EDITOR_WIDTH: f32 = 460.0;
 const EDITOR_GAMES_HEIGHT: f32 = 320.0;
 const REMOVE: char = '\u{E5CD}';
+const EDITOR_HEIGHT: f32 = 560.0;
+const NO_NEW_FAMILIES: &str = "No new families: your families already cover the games you play";
 pub(crate) const HELD_OUT_TIP: &str =
     "Games you like, kept out of families on purpose to see if Discover finds them";
 const TAG_NAME_WIDTH: f32 = 150.0;
@@ -69,6 +71,7 @@ pub struct Profile {
     showcase: Showcase,
     editing: Option<Editing>,
     remake: Remake,
+    remake_changes: Option<RemakeChanges>,
     new_games: Option<usize>,
     undo: Option<FamiliesUndo>,
     toasts: Toasts,
@@ -77,6 +80,7 @@ pub struct Profile {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Remake {
     Idle,
+    Planning,
     Asking,
     Working,
 }
@@ -84,7 +88,9 @@ enum Remake {
 impl Remake {
     fn after(self, message: &Message) -> Remake {
         match (self, message) {
-            (Remake::Idle, Message::AskRemake) => Remake::Asking,
+            (Remake::Idle, Message::AskRemake) => Remake::Planning,
+            (Remake::Planning, Message::Planned(RemakePreview::Changes(_))) => Remake::Asking,
+            (Remake::Planning, Message::Planned(_)) => Remake::Idle,
             (Remake::Asking, Message::ConfirmRemake) => Remake::Working,
             (Remake::Asking, Message::CancelRemake | Message::CloseEditor) => Remake::Idle,
             (Remake::Working, Message::Remade(_)) => Remake::Idle,
@@ -115,6 +121,7 @@ pub enum Message {
     DoneEditing,
     CloseEditor,
     AskRemake,
+    Planned(RemakePreview),
     ConfirmRemake,
     CancelRemake,
     Remade(Result<FamiliesRemade, String>),
@@ -142,6 +149,7 @@ impl Profile {
             showcase: Showcase::new(gamepalate),
             editing: None,
             remake: Remake::Idle,
+            remake_changes: None,
             new_games: gamepalate.new_played_games(),
             undo: None,
             toasts: Toasts::default(),
@@ -193,9 +201,26 @@ impl Profile {
                 return task;
             }
             Message::CloseEditor => self.editing = None,
-            Message::AskRemake | Message::CancelRemake => {}
+            Message::AskRemake => {
+                if before == Remake::Idle {
+                    return self.preview_remake();
+                }
+            }
+            Message::Planned(RemakePreview::Changes(changes)) => {
+                self.remake_changes = Some(changes);
+            }
+            Message::Planned(RemakePreview::NoNewFamilies) => {
+                return self
+                    .toasts
+                    .show(NO_NEW_FAMILIES.to_string(), false, Message::HideToast);
+            }
+            Message::Planned(RemakePreview::AlreadyMany) => {
+                return self.toasts.show(already_many(), false, Message::HideToast);
+            }
+            Message::CancelRemake => self.remake_changes = None,
             Message::ConfirmRemake => {
                 if before == Remake::Asking {
+                    self.remake_changes = None;
                     return self.remake_families();
                 }
             }
@@ -281,12 +306,9 @@ impl Profile {
         )
     }
 
-    fn automatic_families(&self) -> usize {
-        self.view
-            .families
-            .iter()
-            .filter(|family| family.automatic.is_some())
-            .count()
+    fn preview_remake(&self) -> Task<Message> {
+        let gamepalate = Arc::clone(&self.gamepalate);
+        Task::perform(async move { gamepalate.remake_preview() }, Message::Planned)
     }
 
     fn rename(&self) -> Task<Message> {
@@ -397,52 +419,14 @@ impl Profile {
 
         stack![page]
             .push(self.editing.as_ref().map(|editing| self.editor(editing)))
-            .push((self.remake == Remake::Asking).then(|| self.remake_dialog()))
+            .push(
+                self.remake_changes
+                    .as_ref()
+                    .filter(|_| self.remake == Remake::Asking)
+                    .map(remake_dialog),
+            )
             .push(self.toasts.view(Message::Undo))
             .into()
-    }
-
-    fn remake_dialog(&self) -> Element<'_, Message> {
-        let automatic = self.automatic_families();
-        let (title, note) = remake_prompt(automatic);
-        let confirm = if automatic == 0 { "Add" } else { "Remake" };
-
-        let content = column![
-            text(title).size(font::INFO_SIZE).font(font::SEMIBOLD),
-            note.map(|note| text(note).size(font::BAR_SIZE)),
-            row![
-                space().width(Fill),
-                button(text("Cancel").size(font::BAR_SIZE))
-                    .padding([6, 16])
-                    .style(style::secondary)
-                    .on_press(Message::CancelRemake),
-                button(text(confirm).size(font::BAR_SIZE))
-                    .padding([6, 16])
-                    .style(style::primary)
-                    .on_press(Message::ConfirmRemake),
-            ]
-            .spacing(10)
-            .align_y(Center),
-        ]
-        .spacing(14)
-        .padding(20);
-
-        stack![
-            opaque(
-                mouse_area(
-                    container(space())
-                        .width(Fill)
-                        .height(Fill)
-                        .style(style::veil)
-                )
-                .on_press(Message::CancelRemake)
-            ),
-            container(opaque(
-                container(content).width(EDITOR_WIDTH).style(style::popup)
-            ))
-            .center(Fill),
-        ]
-        .into()
     }
 
     fn editor<'a>(&'a self, editing: &'a Editing) -> Element<'a, Message> {
@@ -670,7 +654,7 @@ impl Profile {
     }
 
     fn remake_row(&self) -> Element<'_, Message> {
-        let working = self.remake == Remake::Working;
+        let working = self.remake != Remake::Idle;
         row![
             button(text("Remake families").size(font::BAR_SIZE))
                 .padding(0)
@@ -1010,26 +994,86 @@ fn families_text(change: &FamilyChange, games: &[FamilyGame], gone: &[String]) -
     }
 }
 
-fn remake_prompt(automatic: usize) -> (String, Option<String>) {
-    let replaced = |which: String| {
-        format!(
-            "{which} replaced with new ones made from the games you play. Your own families stay as they are."
+fn remake_dialog(changes: &RemakeChanges) -> Element<'_, Message> {
+    let (title, confirm) = remake_title(changes);
+    let sections = remake_sections(changes).into_iter().map(|(label, names)| {
+        column![text(label).size(font::NOTE_SIZE).style(style::muted)]
+            .extend(
+                names
+                    .iter()
+                    .map(|name| text(name).size(font::BAR_SIZE).into()),
+            )
+            .spacing(2)
+            .into()
+    });
+
+    let content = column![text(title).size(font::INFO_SIZE).font(font::SEMIBOLD)]
+        .extend(sections)
+        .push(
+            row![
+                space().width(Fill),
+                button(text("Cancel").size(font::BAR_SIZE))
+                    .padding([6, 16])
+                    .style(style::secondary)
+                    .on_press(Message::CancelRemake),
+                button(text(confirm).size(font::BAR_SIZE))
+                    .padding([6, 16])
+                    .style(style::primary)
+                    .on_press(Message::ConfirmRemake),
+            ]
+            .spacing(10)
+            .align_y(Center),
         )
-    };
-    match automatic {
-        0 => (
-            "Add families for the games your own families don't cover?".to_string(),
-            None,
+        .spacing(14)
+        .padding(20);
+
+    stack![
+        opaque(
+            mouse_area(
+                container(space())
+                    .width(Fill)
+                    .height(Fill)
+                    .style(style::veil)
+            )
+            .on_press(Message::CancelRemake)
         ),
-        1 => (
-            "Remake families?".to_string(),
-            Some(replaced("The automatic family is".to_string())),
-        ),
-        n => (
-            "Remake families?".to_string(),
-            Some(replaced(format!("The {n} automatic families are"))),
-        ),
+        container(opaque(
+            container(scrollable(content))
+                .width(EDITOR_WIDTH)
+                .max_height(EDITOR_HEIGHT)
+                .style(style::popup)
+        ))
+        .center(Fill),
+    ]
+    .into()
+}
+
+// Only adding needs no word on what goes away.
+fn remake_title(changes: &RemakeChanges) -> (&'static str, &'static str) {
+    if changes.made_again.is_empty() && changes.removed.is_empty() {
+        ("Add families?", "Add")
+    } else {
+        ("Remake families?", "Remake")
     }
+}
+
+fn remake_sections(changes: &RemakeChanges) -> Vec<(&'static str, &[String])> {
+    [
+        ("New, from the games you play", changes.added.as_slice()),
+        (
+            "Made again from the games you play",
+            changes.made_again.as_slice(),
+        ),
+        ("Removed", changes.removed.as_slice()),
+        ("Stay as they are", changes.kept.as_slice()),
+    ]
+    .into_iter()
+    .filter(|(_, names)| !names.is_empty())
+    .collect()
+}
+
+fn already_many() -> String {
+    format!("You already have {MAX_FAMILIES_WITH_OWN} families")
 }
 
 fn remade_text(outcome: &RemadeFamilies) -> String {
@@ -1046,12 +1090,8 @@ fn remade_text(outcome: &RemadeFamilies) -> String {
             (added, 0) => format!("Added {}", families(added)),
             (added, _) => format!("Remade {}", families(added)),
         },
-        RemadeFamilies::NoNewFamilies => {
-            "No new families: your families already cover the games you play".to_string()
-        }
-        RemadeFamilies::AlreadyMany => {
-            format!("You already have {MAX_FAMILIES_WITH_OWN} families")
-        }
+        RemadeFamilies::NoNewFamilies => NO_NEW_FAMILIES.to_string(),
+        RemadeFamilies::AlreadyMany => already_many(),
     }
 }
 
@@ -1556,15 +1596,40 @@ mod tests {
         );
     }
 
+    fn changes() -> RemakeChanges {
+        RemakeChanges {
+            kept: vec!["Mystery".to_string(), "JRPG".to_string()],
+            made_again: Vec::new(),
+            removed: vec!["Puzzle · Mystery".to_string()],
+            added: vec!["Roguelike".to_string()],
+        }
+    }
+
     #[test]
     fn the_remake_asks_first_and_cancel_changes_nothing() {
-        let asking = Remake::Idle.after(&Message::AskRemake);
+        let planning = Remake::Idle.after(&Message::AskRemake);
+        assert_eq!(planning, Remake::Planning);
+        let asking = planning.after(&Message::Planned(RemakePreview::Changes(changes())));
         assert_eq!(asking, Remake::Asking);
 
         assert_eq!(asking.after(&Message::CancelRemake), Remake::Idle);
         assert_eq!(asking.after(&Message::CloseEditor), Remake::Idle);
         assert_eq!(asking.after(&Message::Undo), Remake::Asking);
         assert_eq!(Remake::Idle.after(&Message::ConfirmRemake), Remake::Idle);
+    }
+
+    #[test]
+    fn nothing_to_change_asks_nothing() {
+        let planning = Remake::Idle.after(&Message::AskRemake);
+
+        assert_eq!(
+            planning.after(&Message::Planned(RemakePreview::NoNewFamilies)),
+            Remake::Idle
+        );
+        assert_eq!(
+            planning.after(&Message::Planned(RemakePreview::AlreadyMany)),
+            Remake::Idle
+        );
     }
 
     #[test]
@@ -1581,27 +1646,37 @@ mod tests {
     }
 
     #[test]
-    fn the_question_depends_on_having_automatic_families() {
+    fn the_question_lists_what_comes_goes_and_stays() {
+        let changes = changes();
+
+        assert_eq!(remake_title(&changes), ("Remake families?", "Remake"));
         assert_eq!(
-            remake_prompt(3),
-            (
-                "Remake families?".to_string(),
-                Some("The 3 automatic families are replaced with new ones made from the games you play. Your own families stay as they are.".to_string())
-            )
+            remake_sections(&changes)
+                .into_iter()
+                .map(|(label, names)| (label, names.to_vec()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "New, from the games you play",
+                    vec!["Roguelike".to_string()]
+                ),
+                ("Removed", vec!["Puzzle · Mystery".to_string()]),
+                (
+                    "Stay as they are",
+                    vec!["Mystery".to_string(), "JRPG".to_string()]
+                ),
+            ]
         );
-        assert_eq!(
-            remake_prompt(1).1.as_deref(),
-            Some(
-                "The automatic family is replaced with new ones made from the games you play. Your own families stay as they are."
-            )
-        );
-        assert_eq!(
-            remake_prompt(0),
-            (
-                "Add families for the games your own families don't cover?".to_string(),
-                None
-            )
-        );
+    }
+
+    #[test]
+    fn only_adding_asks_to_add() {
+        let adding = RemakeChanges {
+            removed: Vec::new(),
+            ..changes()
+        };
+
+        assert_eq!(remake_title(&adding), ("Add families?", "Add"));
     }
 
     #[test]

@@ -28,7 +28,7 @@ pub use details::GameDetails;
 pub use families::{
     AutomaticFamilies, CreatedFamilies, FamiliesChanged, FamiliesRemade, FamiliesUndo,
     FamilyChange, FamilyChangeError, FamilyGame, MAX_FAMILIES, MAX_FAMILIES_WITH_OWN, Remade,
-    RemadeFamilies,
+    RemadeFamilies, RemakeChanges, RemakePreview,
 };
 pub use gamepalate_core::{
     config::{Config, SignalsConfig},
