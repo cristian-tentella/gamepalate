@@ -387,20 +387,24 @@ impl Discover {
                 .style(style::text_button)
                 .on_press(Message::ToggleFilters),
         ]
-        .push(summary.map(|summary| {
-            text(summary)
-                .size(font::NOTE_SIZE)
-                .style(style::muted)
-                .wrapping(text::Wrapping::None)
-        }))
-        .push(space().width(Fill))
+        .push(
+            container(summary.map(|summary| {
+                text(summary)
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted)
+                    .wrapping(text::Wrapping::None)
+            }))
+            .width(Fill)
+            .clip(true),
+        )
         .push(
             text(format::votes_this_session(
                 self.votes_this_session,
                 self.votes_last_day,
             ))
             .size(font::NOTE_SIZE)
-            .style(style::muted),
+            .style(style::muted)
+            .wrapping(text::Wrapping::None),
         )
         .spacing(8)
         .align_y(Center);
