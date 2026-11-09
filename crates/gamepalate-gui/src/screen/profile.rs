@@ -34,7 +34,8 @@ const HEADER_HEIGHT: f32 = HEADER_WIDTH * 215.0 / 460.0;
 const SIDE_WIDTH: f32 = 380.0;
 const COLUMN_GAP: f32 = 32.0;
 const PAGE_WIDTH: f32 = COLUMN_WIDTH + COLUMN_GAP + SIDE_WIDTH;
-const FAMILY_HEADERS: usize = 4;
+const FAMILY_HEADERS: usize = 3;
+const FAMILY_NAME_CHARS: usize = 26;
 const FAMILY_HEADER_WIDTH: f32 = 80.0;
 const FAMILY_HEADER_HEIGHT: f32 = FAMILY_HEADER_WIDTH * 215.0 / 460.0;
 const FAMILY_TAGS: usize = 3;
@@ -709,7 +710,7 @@ impl Profile {
             column![
                 headers,
                 row![
-                    text(&family.name).size(font::BAR_SIZE).font(font::SEMIBOLD),
+                    family_name(&family.name),
                     family.automatic.is_some().then(super::automatic_mark),
                     text(games_count(family.games.len()))
                         .size(font::NOTE_SIZE)
@@ -1036,6 +1037,39 @@ fn new_games_text(new: usize) -> String {
 
 fn stacked(width: f32) -> bool {
     width < STACK_WIDTH
+}
+
+fn family_name(name: &str) -> Element<'_, Message> {
+    let title = |name: String| text(name).size(font::BAR_SIZE).font(font::SEMIBOLD);
+    match shortened(name, FAMILY_NAME_CHARS) {
+        Some(short) => tooltip(
+            title(short),
+            container(text(name).size(font::NOTE_SIZE))
+                .padding([6, 10])
+                .style(style::popup),
+            tooltip::Position::Bottom,
+        )
+        .into(),
+        None => title(name.to_string()).into(),
+    }
+}
+
+// Cut at a word, so a name of tags does not end in the middle of one.
+fn shortened(name: &str, most: usize) -> Option<String> {
+    if name.chars().count() <= most {
+        return None;
+    }
+    let cut: String = name.chars().take(most).collect();
+    let in_a_word = name.chars().nth(most).is_some_and(|next| next != ' ');
+    let words = match cut.rfind(' ') {
+        Some(end) if in_a_word => &cut[..end],
+        _ => &cut,
+    };
+
+    Some(format!(
+        "{}…",
+        words.trim_end_matches([' ', '·']).trim_end()
+    ))
 }
 
 fn more_games(games: usize) -> Option<String> {
@@ -1864,10 +1898,28 @@ mod tests {
 
     #[test]
     fn a_family_card_counts_the_games_beyond_its_headers() {
-        assert_eq!(more_games(9).as_deref(), Some("+5"));
-        assert_eq!(more_games(4), None);
+        assert_eq!(more_games(9).as_deref(), Some("+6"));
+        assert_eq!(more_games(4).as_deref(), Some("+1"));
+        assert_eq!(more_games(3), None);
         assert_eq!(games_count(1), "1 game");
         assert_eq!(games_count(9), "9 games");
+    }
+
+    #[test]
+    fn a_long_family_name_is_cut_at_a_word() {
+        assert_eq!(shortened("Puzzle · Mystery", 26), None);
+        assert_eq!(
+            shortened("Action Roguelike · Roguelike · Roguelite", 26).as_deref(),
+            Some("Action Roguelike…")
+        );
+        assert_eq!(
+            shortened("Souls-like · Metroidvania · Difficult", 26).as_deref(),
+            Some("Souls-like · Metroidvania…")
+        );
+        assert_eq!(
+            shortened("Supercalifragilisticexpialidocious", 26).as_deref(),
+            Some("Supercalifragilisticexpial…")
+        );
     }
 
     #[test]
