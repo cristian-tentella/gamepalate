@@ -90,7 +90,7 @@ pub struct ResultsConfig {
 impl Default for ResultsConfig {
     fn default() -> Self {
         ResultsConfig {
-            count: 20,
+            count: 16,
             early_access: true,
             min_positive_percent: 75,
             bet_every: 10,
