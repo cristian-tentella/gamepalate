@@ -1,4 +1,7 @@
-use std::{cmp::Reverse, collections::HashMap};
+use std::{
+    cmp::Reverse,
+    collections::{HashMap, HashSet},
+};
 
 use crate::{
     catalog::{Catalog, Freshness},
@@ -19,7 +22,7 @@ use crate::{
     signals::Signals,
     taste::{Taste, family_taste, game_name, signals_taste},
     timestamp::Timestamp,
-    turns::{ListKind, Pick, in_turns, turn_shares, with_bets},
+    turns::{ListKind, Pick, Turns, turn_shares, with_bets},
     votes::Votes,
 };
 
@@ -123,6 +126,8 @@ pub struct Recommendation {
     pub stale_prices: bool,
     pub empty_because: Option<Blame>,
     pub without_vote_model: bool,
+    // To pass as it is to the next page
+    pub continuation: Continuation,
 }
 
 pub fn find_family<'f>(families: &'f Families, name: &str) -> Result<&'f Family, SearchError> {
@@ -269,32 +274,76 @@ pub fn recommended_game(
     }
 }
 
+// Where the last page stopped: the next page goes on from here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Continuation {
+    pub shown: HashSet<AppId>,
+    // The place in turn_order of the next turn of the list, or of the bets
+    // with only bets
+    pub turn: usize,
+    pub bet_turn: usize,
+    // The places already given, to keep a bet every bet_every places
+    pub places: usize,
+}
+
 fn merged_lists<'a>(
     voted: &'a [Vec<RankedGame>],
     bet_lists: &'a [Vec<RankedGame>],
     shares: &[u32],
     only_bets: bool,
     bet_every: usize,
+    continuation: &mut Continuation,
+    limit: usize,
 ) -> Vec<Pick<'a>> {
-    if only_bets {
-        in_turns(bet_lists, shares)
-            .into_iter()
-            .map(|pick| Pick { bet: true, ..pick })
-            .collect()
-    } else if bet_every > 0 {
-        with_bets(
-            in_turns(voted, shares),
-            in_turns(bet_lists, shares),
-            bet_every,
-        )
+    let mut seen = continuation.shown.clone();
+    let mut picks = Vec::new();
+
+    if only_bets || bet_every == 0 {
+        let (lists, bet) = if only_bets {
+            (bet_lists, true)
+        } else {
+            (voted, false)
+        };
+        let mut turns = Turns::new(lists, shares, continuation.turn);
+        while picks.len() < limit {
+            let Some(pick) = turns.next(&seen) else {
+                break;
+            };
+            seen.insert(pick.game.id);
+            picks.push(Pick { bet, ..pick });
+        }
+        continuation.turn = turns.turn();
     } else {
-        in_turns(voted, shares)
+        let mut list = Turns::new(voted, shares, continuation.turn);
+        let mut bets = Turns::new(bet_lists, shares, continuation.bet_turn);
+        picks = with_bets(
+            &mut list,
+            &mut bets,
+            bet_every,
+            continuation.places,
+            &mut seen,
+            limit,
+        );
+        continuation.turn = list.turn();
+        continuation.bet_turn = bets.turn();
     }
+
+    continuation.places += picks.len();
+    picks
 }
 
 pub fn recommend(
     inputs: &SearchInputs,
     options: &SearchOptions,
+    now: Timestamp,
+) -> Result<Recommendation, SearchError> {
+    recommend_from(inputs, options, Continuation::default(), now)
+}
+
+pub fn recommend_from(
+    inputs: &SearchInputs,
+    options: &SearchOptions,
+    continuation: Continuation,
     now: Timestamp,
 ) -> Result<Recommendation, SearchError> {
     let filters = active_filters(&options.filters, inputs.config, inputs.catalog)?;
@@ -364,25 +413,50 @@ pub fn recommend(
         .iter()
         .map(|search_taste| search_taste.kind)
         .collect();
-    let mut picks = merged_lists(
-        &voted,
-        &bet_lists,
-        &turn_shares(&kinds),
-        options.only_bets,
-        bet_every,
-    );
-
-    sort_picks(&mut picks, options.sort, inputs.catalog, now);
-    picks.truncate(options.limit.unwrap_or(inputs.config.results.count));
+    let limit = options.limit.unwrap_or(inputs.config.results.count);
+    let mut next = continuation.clone();
+    let picks = if options.sort == SortBy::Relevance {
+        merged_lists(
+            &voted,
+            &bet_lists,
+            &turn_shares(&kinds),
+            options.only_bets,
+            bet_every,
+            &mut next,
+            limit,
+        )
+    } else {
+        // The turns don't decide the order: only the games shown are left out
+        let mut from_start = Continuation {
+            shown: continuation.shown.clone(),
+            ..Continuation::default()
+        };
+        let mut picks = merged_lists(
+            &voted,
+            &bet_lists,
+            &turn_shares(&kinds),
+            options.only_bets,
+            bet_every,
+            &mut from_start,
+            usize::MAX,
+        );
+        sort_picks(&mut picks, options.sort, inputs.catalog, now);
+        picks.truncate(limit);
+        picks
+    };
+    next.shown.extend(picks.iter().map(|pick| pick.game.id));
 
     let games: Vec<RecommendedGame> = picks
         .iter()
         .enumerate()
-        .map(|(i, pick)| recommended_game(pick, i + 1, &tastes, inputs, now))
+        .map(|(i, pick)| {
+            recommended_game(pick, continuation.shown.len() + i + 1, &tastes, inputs, now)
+        })
         .collect();
 
     Ok(Recommendation {
-        empty_because: if games.is_empty() {
+        continuation: next,
+        empty_because: if games.is_empty() && continuation.shown.is_empty() {
             filter_outcome.blame
         } else {
             None
@@ -444,6 +518,15 @@ mod tests {
         options: &SearchOptions,
         automatic: Option<&str>,
     ) -> Recommendation {
+        recommendation_from(region, options, automatic, Continuation::default())
+    }
+
+    fn recommendation_from(
+        region: Region,
+        options: &SearchOptions,
+        automatic: Option<&str>,
+        continuation: Continuation,
+    ) -> Recommendation {
         let catalog = Catalog::new(
             vec![
                 game(1, 1),
@@ -497,7 +580,32 @@ mod tests {
             config: &config,
         };
 
-        recommend(&inputs, options, NOW).unwrap()
+        recommend_from(&inputs, options, continuation, NOW).unwrap()
+    }
+
+    fn recommendation_pages(options: &SearchOptions, page: usize) -> Vec<RecommendedGame> {
+        let options = SearchOptions {
+            limit: Some(page),
+            ..options.clone()
+        };
+        let mut continuation = Continuation::default();
+        let mut games = Vec::new();
+
+        loop {
+            let recommendation = recommendation_from(Region::ITALY, &options, None, continuation);
+            if recommendation.games.is_empty() {
+                return games;
+            }
+            continuation = recommendation.continuation;
+            games.extend(recommendation.games);
+        }
+    }
+
+    fn summary(games: &[RecommendedGame]) -> Vec<(usize, u32, Option<String>)> {
+        games
+            .iter()
+            .map(|game| (game.position, game.id.0, game.from_family.clone()))
+            .collect()
     }
 
     fn recommendation(region: Region, options: &SearchOptions) -> Recommendation {
@@ -570,9 +678,22 @@ mod tests {
                 .collect()
         };
 
-        let only_bets = merged_lists(&voted, &bet_lists, &shares, true, 0);
-        let mixed = merged_lists(&voted, &bet_lists, &shares, false, 2);
-        let list: Vec<usize> = merged_lists(&voted, &bet_lists, &shares, false, 0)
+        let merged = |only_bets, bet_every| {
+            let mut continuation = Continuation::default();
+            merged_lists(
+                &voted,
+                &bet_lists,
+                &shares,
+                only_bets,
+                bet_every,
+                &mut continuation,
+                usize::MAX,
+            )
+        };
+
+        let only_bets = merged(true, 0);
+        let mixed = merged(false, 2);
+        let list: Vec<usize> = merged(false, 0)
             .iter()
             .map(|pick| pick.from)
             .take(5)
@@ -581,6 +702,197 @@ mod tests {
         assert_eq!(list, [0, 0, 1, 0, 0]);
         assert_eq!(bets_from(only_bets), [0, 0, 1, 0, 0]);
         assert_eq!(bets_from(mixed), [0, 0, 1, 0, 0]);
+    }
+
+    type Placed = (u32, usize, bool);
+
+    fn placed(picks: &[Pick]) -> Vec<Placed> {
+        picks
+            .iter()
+            .map(|pick| (pick.game.id.0, pick.from, pick.bet))
+            .collect()
+    }
+
+    // The pages one after the other, without new votes in between
+    fn in_pages(
+        voted: &[Vec<RankedGame>],
+        bet_lists: &[Vec<RankedGame>],
+        kinds: &[ListKind],
+        (only_bets, bet_every): (bool, usize),
+        page: usize,
+        places: usize,
+    ) -> Vec<Placed> {
+        let shares = turn_shares(kinds);
+        let mut continuation = Continuation::default();
+        let mut all = Vec::new();
+
+        while all.len() < places {
+            let limit = page.min(places - all.len());
+            let picks = merged_lists(
+                voted,
+                bet_lists,
+                &shares,
+                only_bets,
+                bet_every,
+                &mut continuation,
+                limit,
+            );
+            if picks.is_empty() {
+                break;
+            }
+            continuation
+                .shown
+                .extend(picks.iter().map(|pick| pick.game.id));
+            all.extend(placed(&picks));
+        }
+
+        all
+    }
+
+    fn ranked_list(ids: impl IntoIterator<Item = u32>) -> Vec<RankedGame> {
+        ids.into_iter().map(ranked).collect()
+    }
+
+    // The signals, a family of the user and an automatic one that finishes
+    // early. The bets are in the lists too, some of them near the top, and
+    // games are shared between lists.
+    fn overlapping_lists() -> (Vec<Vec<RankedGame>>, Vec<Vec<RankedGame>>) {
+        let voted = vec![
+            ranked_list(1..=60),
+            ranked_list([5, 61, 7, 62, 63, 2, 64, 65, 66, 67, 68, 69, 70, 71, 72]),
+            ranked_list([100, 3, 101, 102, 103]),
+        ];
+        let bet_lists = vec![
+            ranked_list([7, 3, 12, 40, 55]),
+            ranked_list([62, 5, 70]),
+            ranked_list([101]),
+        ];
+        (voted, bet_lists)
+    }
+
+    #[test]
+    fn pages_that_go_on_give_the_same_places_as_one_page() {
+        let (voted, bet_lists) = overlapping_lists();
+        let kinds = [
+            ListKind::Signals,
+            ListKind::UserFamily,
+            ListKind::AutomaticFamily,
+        ];
+
+        for bets in [(false, 10), (false, 3), (false, 0), (true, 0)] {
+            let one_page = in_pages(&voted, &bet_lists, &kinds, bets, usize::MAX, 20);
+            assert_eq!(one_page.len(), if bets.0 { 9 } else { 20 });
+
+            for page in [10, 7, 5, 1] {
+                assert_eq!(
+                    in_pages(&voted, &bet_lists, &kinds, bets, page, 20),
+                    one_page,
+                    "pages of {page}, bets {bets:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_list_finished_halfway_through_a_page_moves_the_turns_as_in_one_page() {
+        let (voted, bet_lists) = overlapping_lists();
+        let kinds = [
+            ListKind::Signals,
+            ListKind::UserFamily,
+            ListKind::AutomaticFamily,
+        ];
+
+        // The automatic family runs out of games well before the end
+        let one_page = in_pages(&voted, &bet_lists, &kinds, (false, 10), usize::MAX, 80);
+        let last_automatic = one_page.iter().rposition(|&(_, from, _)| from == 2);
+        assert!(last_automatic.is_some_and(|at| at < 40));
+
+        for page in [10, 3] {
+            assert_eq!(
+                in_pages(&voted, &bet_lists, &kinds, (false, 10), page, 80),
+                one_page
+            );
+        }
+    }
+
+    #[test]
+    fn short_pages_give_every_automatic_family_its_places() {
+        let kinds = [
+            ListKind::Signals,
+            ListKind::AutomaticFamily,
+            ListKind::AutomaticFamily,
+            ListKind::AutomaticFamily,
+            ListKind::AutomaticFamily,
+        ];
+        let voted: Vec<Vec<RankedGame>> = (0..5)
+            .map(|i| ranked_list(i * 1000..i * 1000 + 200))
+            .collect();
+
+        let places = in_pages(&voted, &[], &kinds, (false, 0), 5, 100);
+
+        for family in 1..=4 {
+            let first_twenty = |round: usize| {
+                places[round * 20..(round + 1) * 20]
+                    .iter()
+                    .filter(|&&(_, from, _)| from == family)
+                    .count()
+            };
+            assert!((0..5).all(|round| first_twenty(round) == 1));
+        }
+    }
+
+    #[test]
+    fn short_pages_bring_a_bet_every_ten_places() {
+        let voted = [ranked_list(1..=200)];
+        let bet_lists = [ranked_list(301..=400)];
+
+        let places = in_pages(
+            &voted,
+            &bet_lists,
+            &[ListKind::Signals],
+            (false, 10),
+            5,
+            100,
+        );
+        let bets_at: Vec<usize> = places
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, _, bet))| *bet)
+            .map(|(i, _)| i + 1)
+            .collect();
+
+        assert_eq!(bets_at, (1..=10).map(|n| n * 10).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_recommendation_goes_on_from_its_continuation() {
+        let one_page = recommendation(Region::ITALY, &SearchOptions::default());
+
+        let pages = recommendation_pages(&SearchOptions::default(), 1);
+
+        assert_eq!(summary(&pages), summary(&one_page.games));
+        assert_eq!(one_page.continuation.places, one_page.games.len());
+    }
+
+    #[test]
+    fn a_new_page_sorted_by_price_does_not_repeat_the_games_shown() {
+        let options = SearchOptions {
+            sort: SortBy::Price,
+            ..SearchOptions::default()
+        };
+        let one_page = recommendation(Region::ITALY, &options);
+
+        let pages = recommendation_pages(&options, 1);
+
+        let ids = |games: &[RecommendedGame]| -> HashSet<u32> {
+            games.iter().map(|game| game.id.0).collect()
+        };
+        assert_eq!(pages.len(), one_page.games.len());
+        assert_eq!(ids(&pages), ids(&one_page.games));
+        assert_eq!(
+            pages.iter().map(|game| game.position).collect::<Vec<_>>(),
+            (1..=pages.len()).collect::<Vec<_>>()
+        );
     }
 
     #[test]

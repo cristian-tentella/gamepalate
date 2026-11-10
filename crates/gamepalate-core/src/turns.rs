@@ -87,81 +87,98 @@ pub fn turn_order(shares: &[u32]) -> Vec<usize> {
         .collect()
 }
 
-pub fn in_turns<'a>(lists: &'a [Vec<RankedGame>], shares: &[u32]) -> Vec<Pick<'a>> {
-    if lists.is_empty() {
-        return Vec::new();
-    }
-    assert_eq!(lists.len(), shares.len(), "one share per list");
+// The turns go one at a time, so that a game placed anywhere, even as a bet,
+// is skipped by every list without using up a turn. Skipping it later or
+// leaving it out before gives the same places, and a page can go on from
+// where the last one stopped.
+#[derive(Debug, Clone)]
+pub struct Turns<'a> {
+    lists: &'a [Vec<RankedGame>],
+    order: Vec<usize>,
+    turn: usize,
+    cursors: Vec<usize>,
+}
 
-    let order = turn_order(shares);
-    let mut cursors = vec![0; lists.len()];
-    let mut seen = HashSet::new();
-    let mut picks = Vec::new();
-    let mut empty_turns = 0;
+impl<'a> Turns<'a> {
+    pub fn new(lists: &'a [Vec<RankedGame>], shares: &[u32], turn: usize) -> Turns<'a> {
+        // Without a vote model there are no bet lists
+        let order = if lists.is_empty() {
+            Vec::new()
+        } else {
+            assert_eq!(lists.len(), shares.len(), "one share per list");
+            turn_order(shares)
+        };
 
-    for &from in order.iter().cycle() {
-        let list = &lists[from];
-        let cursor = &mut cursors[from];
-        while *cursor < list.len() && seen.contains(&list[*cursor].id) {
-            *cursor += 1;
+        Turns {
+            lists,
+            turn: turn.checked_rem(order.len()).unwrap_or(0),
+            order,
+            cursors: vec![0; lists.len()],
         }
+    }
 
-        match list.get(*cursor) {
-            Some(game) => {
-                seen.insert(game.id);
-                picks.push(Pick {
+    // The place in turn_order of the next turn
+    pub fn turn(&self) -> usize {
+        self.turn
+    }
+
+    pub fn next(&mut self, seen: &HashSet<AppId>) -> Option<Pick<'a>> {
+        // A whole round of empty turns: every list is finished
+        for _ in 0..self.order.len() {
+            let from = self.order[self.turn];
+            self.turn = (self.turn + 1) % self.order.len();
+
+            let list = &self.lists[from];
+            let cursor = &mut self.cursors[from];
+            while *cursor < list.len() && seen.contains(&list[*cursor].id) {
+                *cursor += 1;
+            }
+            if let Some(game) = list.get(*cursor) {
+                *cursor += 1;
+                return Some(Pick {
                     game,
                     from,
                     bet: false,
                 });
-                *cursor += 1;
-                empty_turns = 0;
-            }
-            None => {
-                empty_turns += 1;
-                if empty_turns == order.len() {
-                    break;
-                }
             }
         }
+        None
     }
-
-    picks
 }
 
-fn next_unseen<'a>(
-    picks: &[Pick<'a>],
-    cursor: &mut usize,
-    seen: &HashSet<AppId>,
-) -> Option<Pick<'a>> {
-    while let Some(&pick) = picks.get(*cursor) {
-        *cursor += 1;
-        if !seen.contains(&pick.game.id) {
-            return Some(pick);
-        }
-    }
-    None
-}
-
-pub fn with_bets<'a>(list: Vec<Pick<'a>>, bets: Vec<Pick<'a>>, bet_every: usize) -> Vec<Pick<'a>> {
-    let mut list_cursor = 0;
-    let mut bets_cursor = 0;
+pub fn in_turns<'a>(lists: &'a [Vec<RankedGame>], shares: &[u32]) -> Vec<Pick<'a>> {
+    let mut turns = Turns::new(lists, shares, 0);
     let mut seen = HashSet::new();
+
+    std::iter::from_fn(|| {
+        let pick = turns.next(&seen)?;
+        seen.insert(pick.game.id);
+        Some(pick)
+    })
+    .collect()
+}
+
+// A bet every bet_every places, counted from the places already given
+// before this page.
+pub fn with_bets<'a>(
+    list: &mut Turns<'a>,
+    bets: &mut Turns<'a>,
+    bet_every: usize,
+    places_before: usize,
+    seen: &mut HashSet<AppId>,
+    limit: usize,
+) -> Vec<Pick<'a>> {
     let mut placed = Vec::new();
 
-    loop {
-        let bet_turn = (placed.len() + 1) % bet_every == 0;
-        let bet = if bet_turn {
-            next_unseen(&bets, &mut bets_cursor, &seen)
-        } else {
-            None
-        };
+    while placed.len() < limit {
+        let bet_turn = (places_before + placed.len() + 1).is_multiple_of(bet_every);
+        let bet = if bet_turn { bets.next(seen) } else { None };
 
         let pick = match bet {
             Some(bet) => Some(Pick { bet: true, ..bet }),
-            None => next_unseen(&list, &mut list_cursor, &seen).or_else(|| {
-                next_unseen(&bets, &mut bets_cursor, &seen).map(|bet| Pick { bet: true, ..bet })
-            }),
+            None => list
+                .next(seen)
+                .or_else(|| bets.next(seen).map(|bet| Pick { bet: true, ..bet })),
         };
 
         let Some(pick) = pick else {
@@ -293,6 +310,33 @@ mod tests {
         let picks = in_turns(&lists, &turn_shares(&[Signals, AutomaticFamily]));
 
         assert_eq!(ids(&picks), [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn turns_from_a_point_of_the_round_give_the_rest_of_the_whole_sequence() {
+        let kinds = [Signals, UserFamily, AutomaticFamily];
+        let shares = turn_shares(&kinds);
+        let lists = [list(1..40), list([3, 40, 41, 5, 42]), list([50, 2, 51])];
+        let whole = in_turns(&lists, &shares);
+
+        for shown in 0..=whole.len() {
+            let mut turns = Turns::new(&lists, &shares, 0);
+            let mut seen = HashSet::new();
+            for _ in 0..shown {
+                seen.insert(turns.next(&seen).unwrap().game.id);
+            }
+
+            let mut rest = Turns::new(&lists, &shares, turns.turn());
+            let rest: Vec<Pick> = std::iter::from_fn(|| {
+                let pick = rest.next(&seen)?;
+                seen.insert(pick.game.id);
+                Some(pick)
+            })
+            .collect();
+
+            assert_eq!(ids(&rest), ids(&whole[shown..]));
+            assert_eq!(froms(&rest), froms(&whole[shown..]));
+        }
     }
 
     #[test]
