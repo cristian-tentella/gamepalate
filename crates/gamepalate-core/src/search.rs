@@ -426,11 +426,9 @@ pub fn recommend_from(
             limit,
         )
     } else {
-        // The turns don't decide the order: only the games shown are left out
-        let mut from_start = Continuation {
-            shown: continuation.shown.clone(),
-            ..Continuation::default()
-        };
+        // The turns don't decide the order. The whole list is sorted from the
+        // start every time, so pages are pieces of one list, ties and labels included
+        let mut from_start = Continuation::default();
         let mut picks = merged_lists(
             &voted,
             &bet_lists,
@@ -441,6 +439,7 @@ pub fn recommend_from(
             usize::MAX,
         );
         sort_picks(&mut picks, options.sort, inputs.catalog, now);
+        picks.retain(|pick| !continuation.shown.contains(&pick.game.id));
         picks.truncate(limit);
         picks
     };
@@ -869,7 +868,11 @@ mod tests {
     // those with tag 4 are not, so the candidates with tag 4 become bets.
     // Tag 1 is the taste of the signals, tag 2 of a family of the user and
     // tag 5 of an automatic family.
-    fn recommendation_with_votes(limit: usize, continuation: Continuation) -> Recommendation {
+    fn recommendation_with_votes(
+        sort: SortBy,
+        limit: usize,
+        continuation: Continuation,
+    ) -> Recommendation {
         let tagged = |id: u32, tags: &[u32]| Game {
             tags: tags
                 .iter()
@@ -945,6 +948,7 @@ mod tests {
             config: &config,
         };
         let options = SearchOptions {
+            sort,
             limit: Some(limit),
             ..SearchOptions::default()
         };
@@ -952,15 +956,28 @@ mod tests {
         recommend_from(&inputs, &options, continuation, NOW).unwrap()
     }
 
+    fn shown(games: &[RecommendedGame]) -> Vec<(usize, u32, Option<String>, bool)> {
+        games
+            .iter()
+            .map(|game| (game.position, game.id.0, game.from_family.clone(), game.bet))
+            .collect()
+    }
+
+    fn pages_with_votes(sort: SortBy, page: usize, places: usize) -> Vec<RecommendedGame> {
+        let mut continuation = Continuation::default();
+        let mut games = Vec::new();
+        while games.len() < places {
+            let recommendation =
+                recommendation_with_votes(sort, page.min(places - games.len()), continuation);
+            continuation = recommendation.continuation;
+            games.extend(recommendation.games);
+        }
+        games
+    }
+
     #[test]
     fn pages_with_votes_and_bets_go_on_as_one_page() {
-        let one_page = recommendation_with_votes(40, Continuation::default());
-        let placed = |games: &[RecommendedGame]| -> Vec<(usize, u32, Option<String>, bool)> {
-            games
-                .iter()
-                .map(|game| (game.position, game.id.0, game.from_family.clone(), game.bet))
-                .collect()
-        };
+        let one_page = recommendation_with_votes(SortBy::Relevance, 40, Continuation::default());
 
         // The fixture reaches what it is for
         assert!(!one_page.without_vote_model);
@@ -980,16 +997,22 @@ mod tests {
         }
 
         for page in [10, 7, 3] {
-            let mut continuation = Continuation::default();
-            let mut games = Vec::new();
-            while games.len() < 40 {
-                let recommendation =
-                    recommendation_with_votes(page.min(40 - games.len()), continuation);
-                continuation = recommendation.continuation;
-                games.extend(recommendation.games);
-            }
+            let games = pages_with_votes(SortBy::Relevance, page, 40);
 
-            assert_eq!(placed(&games), placed(&one_page.games), "pages of {page}");
+            assert_eq!(shown(&games), shown(&one_page.games), "pages of {page}");
+        }
+    }
+
+    #[test]
+    fn pages_sorted_by_price_are_pieces_of_one_page() {
+        // All the games of the fixture have the same price: only the ties decide
+        let one_page = recommendation_with_votes(SortBy::Price, 40, Continuation::default());
+        assert_eq!(one_page.games.len(), 40);
+
+        for page in [10, 7, 3] {
+            let games = pages_with_votes(SortBy::Price, page, 40);
+
+            assert_eq!(shown(&games), shown(&one_page.games), "pages of {page}");
         }
     }
 
@@ -1013,15 +1036,7 @@ mod tests {
 
         let pages = recommendation_pages(&options, 1);
 
-        let ids = |games: &[RecommendedGame]| -> HashSet<u32> {
-            games.iter().map(|game| game.id.0).collect()
-        };
-        assert_eq!(pages.len(), one_page.games.len());
-        assert_eq!(ids(&pages), ids(&one_page.games));
-        assert_eq!(
-            pages.iter().map(|game| game.position).collect::<Vec<_>>(),
-            (1..=pages.len()).collect::<Vec<_>>()
-        );
+        assert_eq!(summary(&pages), summary(&one_page.games));
     }
 
     #[test]
