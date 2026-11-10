@@ -487,6 +487,7 @@ mod tests {
         ids::TagId,
         region::Region,
         signals::LibraryGame,
+        votes::{Vote, VoteKind},
     };
 
     const NOW: Timestamp = Timestamp(1_793_638_800_000);
@@ -862,6 +863,134 @@ mod tests {
             .collect();
 
         assert_eq!(bets_at, (1..=10).map(|n| n * 10).collect::<Vec<_>>());
+    }
+
+    // Enough votes for an opinion model: the games with tag 3 are liked and
+    // those with tag 4 are not, so the candidates with tag 4 become bets.
+    // Tag 1 is the taste of the signals, tag 2 of a family of the user and
+    // tag 5 of an automatic family.
+    fn recommendation_with_votes(limit: usize, continuation: Continuation) -> Recommendation {
+        let tagged = |id: u32, tags: &[u32]| Game {
+            tags: tags
+                .iter()
+                .map(|&tag| GameTag {
+                    id: TagId(tag),
+                    weight: 1.0,
+                })
+                .collect(),
+            ..game(id, 0)
+        };
+        let mut games = vec![tagged(1, &[1]), tagged(2, &[2]), tagged(3, &[5])];
+        games.extend((10..20).map(|id| tagged(id, &[1, 3])));
+        games.extend((20..30).map(|id| tagged(id, &[1, 4])));
+        games.extend((100..160).map(|id| {
+            let taste = [1, 2, 5][(id % 3) as usize];
+            let opinion = if id % 4 == 0 { 4 } else { 3 };
+            tagged(id, &[taste, opinion])
+        }));
+        let catalog = Catalog::new(
+            games,
+            BTreeMap::new(),
+            (1..=5).map(|tag| (TagId(tag), 1.0)).collect(),
+            Freshness {
+                prices_updated_at: NOW,
+                tags_updated_at: NOW,
+                region: Region::ITALY,
+            },
+            Currency::italian(),
+        );
+        let vectors = game_vectors(&catalog);
+        let signals = Signals {
+            read_at: NOW,
+            library: vec![LibraryGame {
+                id: AppId(1),
+                total_hours: 20.0,
+                last_played: None,
+            }],
+            borrowed: vec![],
+            recent: Vec::new(),
+            wishlist: Vec::new(),
+            followed: Vec::new(),
+        };
+        let vote = |kind| Vote {
+            kind,
+            date: "2026-11-10".to_string(),
+            at: None,
+            bet: false,
+        };
+        let votes: Votes = (10..20)
+            .map(|id| (AppId(id), vote(VoteKind::WouldTry)))
+            .chain((20..30).map(|id| (AppId(id), vote(VoteKind::NotForMe))))
+            .collect();
+        let family = |name: &str, game: u32, automatic: Option<&str>| Family {
+            name: name.to_string(),
+            games: vec![AppId(game)],
+            automatic: automatic.map(str::to_string),
+        };
+        let config = Config::default();
+        let inputs = SearchInputs {
+            catalog: &catalog,
+            game_vectors: &vectors,
+            signals: &signals,
+            votes: &votes,
+            corrections: &Corrections::default(),
+            families: &Families {
+                families: vec![
+                    family("Puzzle", 2, None),
+                    family("Racing", 3, Some("2026-11-10")),
+                ],
+                held_out: Vec::new(),
+            },
+            off_catalog: &OffCatalogGames::new(),
+            config: &config,
+        };
+        let options = SearchOptions {
+            limit: Some(limit),
+            ..SearchOptions::default()
+        };
+
+        recommend_from(&inputs, &options, continuation, NOW).unwrap()
+    }
+
+    #[test]
+    fn pages_with_votes_and_bets_go_on_as_one_page() {
+        let one_page = recommendation_with_votes(40, Continuation::default());
+        let placed = |games: &[RecommendedGame]| -> Vec<(usize, u32, Option<String>, bool)> {
+            games
+                .iter()
+                .map(|game| (game.position, game.id.0, game.from_family.clone(), game.bet))
+                .collect()
+        };
+
+        // The fixture reaches what it is for
+        assert!(!one_page.without_vote_model);
+        assert_eq!(one_page.games.len(), 40);
+        assert_eq!(
+            one_page.games.iter().filter(|game| game.bet).count(),
+            4,
+            "a bet every 10 places"
+        );
+        for family in ["Puzzle", "Racing"] {
+            assert!(
+                one_page
+                    .games
+                    .iter()
+                    .any(|game| game.from_family.as_deref() == Some(family))
+            );
+        }
+
+        for page in [10, 7, 3] {
+            let mut continuation = Continuation::default();
+            let mut games = Vec::new();
+            while games.len() < 40 {
+                let recommendation =
+                    recommendation_with_votes(page.min(40 - games.len()), continuation);
+                continuation = recommendation.continuation;
+                games.extend(recommendation.games);
+            }
+
+            assert_eq!(placed(&games), placed(&one_page.games), "pages of {page}");
+        }
     }
 
     #[test]
