@@ -1,9 +1,11 @@
-use gamepalate_app::{AppId, RecommendedGame};
+use gamepalate_app::{Continuation, RecommendedGame};
 
 pub struct Queue {
     games: Vec<RecommendedGame>,
     index: usize,
     next: Next,
+    // Where the next page goes on from
+    continuation: Continuation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -15,11 +17,12 @@ enum Next {
 }
 
 impl Queue {
-    pub fn new(games: Vec<RecommendedGame>) -> Queue {
+    pub fn new(games: Vec<RecommendedGame>, continuation: Continuation) -> Queue {
         Queue {
             games,
             index: 0,
             next: Next::Idle,
+            continuation,
         }
     }
 
@@ -73,11 +76,11 @@ impl Queue {
         false
     }
 
-    pub fn seen(&self) -> Vec<AppId> {
-        self.games.iter().map(|game| game.id).collect()
+    pub fn continuation(&self) -> &Continuation {
+        &self.continuation
     }
 
-    pub fn receive(&mut self, games: Vec<RecommendedGame>) {
+    pub fn receive(&mut self, games: Vec<RecommendedGame>, continuation: Continuation) {
         if games.is_empty() {
             self.next = Next::Exhausted;
             return;
@@ -85,6 +88,7 @@ impl Queue {
 
         let waiting = self.next == Next::Waiting;
         self.games.extend(games);
+        self.continuation = continuation;
         self.next = Next::Idle;
         if waiting {
             self.index += 1;
@@ -98,13 +102,13 @@ impl Queue {
 
 #[cfg(test)]
 mod tests {
-    use gamepalate_app::{Price, Reviews};
+    use gamepalate_app::{AppId, Price, Reviews};
 
     use super::*;
 
     #[test]
     fn asks_for_the_next_batch_on_the_last_game() {
-        let mut queue = Queue::new(games(1..=2));
+        let mut queue = Queue::new(games(1..=2), Continuation::default());
 
         assert!(queue.advance());
         assert!(!queue.advance());
@@ -113,31 +117,30 @@ mod tests {
 
     #[test]
     fn moves_to_the_new_batch_when_it_was_waiting() {
-        let mut queue = Queue::new(games(1..=2));
+        let mut queue = Queue::new(games(1..=2), Continuation::default());
         queue.advance();
         queue.advance();
 
-        queue.receive(games(3..=5));
+        queue.receive(games(3..=5), after(3..=5));
 
         assert_eq!(queue.current().map(|game| game.id), Some(AppId(3)));
     }
 
     #[test]
     fn stays_put_when_the_preloaded_batch_arrives_early() {
-        let mut queue = Queue::new(games(1..=2));
+        let mut queue = Queue::new(games(1..=2), Continuation::default());
         queue.advance();
 
-        queue.receive(games(3..=4));
+        queue.receive(games(3..=4), after(3..=4));
 
         assert_eq!(queue.current().map(|game| game.id), Some(AppId(2)));
-        assert_eq!(queue.seen().len(), 4);
     }
 
     #[test]
     fn goes_back_across_batches() {
-        let mut queue = Queue::new(games(1..=1));
+        let mut queue = Queue::new(games(1..=1), Continuation::default());
         queue.advance();
-        queue.receive(games(2..=3));
+        queue.receive(games(2..=3), after(2..=3));
 
         queue.back();
 
@@ -146,10 +149,10 @@ mod tests {
 
     #[test]
     fn stops_when_there_are_no_more_games() {
-        let mut queue = Queue::new(games(1..=1));
+        let mut queue = Queue::new(games(1..=1), Continuation::default());
         queue.advance();
 
-        queue.receive(Vec::new());
+        queue.receive(Vec::new(), Continuation::default());
 
         assert!(!queue.advance());
         assert!(!queue.is_waiting());
@@ -157,7 +160,7 @@ mod tests {
 
     #[test]
     fn lists_the_current_game_and_the_next_ones() {
-        let mut queue = Queue::new(games(1..=4));
+        let mut queue = Queue::new(games(1..=4), Continuation::default());
         queue.advance();
 
         assert_eq!(ids(queue.upcoming(5)), vec![2, 3, 4]);
@@ -165,8 +168,38 @@ mod tests {
         assert_eq!(ids(queue.around(9, 0)), vec![1, 2]);
     }
 
+    #[test]
+    fn keeps_the_continuation_of_the_last_batch() {
+        let mut queue = Queue::new(games(1..=2), after(1..=2));
+        queue.advance();
+
+        queue.receive(games(3..=4), after(3..=4));
+
+        assert_eq!(queue.continuation(), &after(3..=4));
+    }
+
+    #[test]
+    fn keeps_the_continuation_when_no_games_are_left() {
+        let mut queue = Queue::new(games(1..=1), after(1..=1));
+        queue.advance();
+
+        queue.receive(Vec::new(), Continuation::default());
+
+        assert_eq!(queue.continuation(), &after(1..=1));
+    }
+
     fn ids(games: &[RecommendedGame]) -> Vec<u32> {
         games.iter().map(|game| game.id.0).collect()
+    }
+
+    // As if the core had shown the games up to the last of these
+    fn after(ids: std::ops::RangeInclusive<u32>) -> Continuation {
+        Continuation {
+            shown: (1..=*ids.end()).map(AppId).collect(),
+            turn: *ids.end() as usize,
+            bet_turn: 0,
+            places: *ids.end() as usize,
+        }
     }
 
     fn games(ids: std::ops::RangeInclusive<u32>) -> Vec<RecommendedGame> {

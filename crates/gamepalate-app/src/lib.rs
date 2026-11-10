@@ -40,7 +40,7 @@ pub use gamepalate_core::{
     ids::{AppId, SteamId, TagId},
     opinion::Labels,
     region::Region,
-    search::{Recommendation, RecommendedGame, SearchError, SearchOptions, SortBy},
+    search::{Continuation, Recommendation, RecommendedGame, SearchError, SearchOptions, SortBy},
     timestamp::Timestamp,
     votes::{Vote, VoteKind},
 };

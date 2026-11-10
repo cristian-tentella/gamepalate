@@ -199,7 +199,7 @@ impl Discover {
                     Task::none()
                 };
                 self.empty_because = recommendation.empty_because;
-                let mut queue = Queue::new(recommendation.games);
+                let mut queue = Queue::new(recommendation.games, recommendation.continuation);
                 let load = queue.wants_next();
                 self.state = State::Ready(queue);
                 return Task::batch([save, self.load_more_if(load)]);
@@ -229,7 +229,9 @@ impl Discover {
             Message::MoreRecommended(_, result) => {
                 if let State::Ready(queue) = &mut self.state {
                     match result {
-                        Ok(recommendation) => queue.receive(recommendation.games),
+                        Ok(recommendation) => {
+                            queue.receive(recommendation.games, recommendation.continuation)
+                        }
                         Err(error) => {
                             queue.failed();
                             return self.show_toast(error.to_string());
@@ -594,11 +596,11 @@ impl Discover {
         };
         let gamepalate = Arc::clone(&self.gamepalate);
         let options = self.options.clone();
-        let seen = queue.seen();
+        let continuation = queue.continuation().clone();
         let search = self.searches;
 
         Task::perform(
-            async move { gamepalate.recommend_after(&options, &seen) },
+            async move { gamepalate.recommend_after(&options, &continuation) },
             move |result| Message::MoreRecommended(search, result),
         )
     }

@@ -1434,7 +1434,7 @@ mod tests {
             value_text(ConfigKey::WishlistCap, ConfigValue::Number(0.0)),
             "Off"
         );
-        assert_eq!(shown(ConfigKey::Count), "20 games");
+        assert_eq!(shown(ConfigKey::Count), "16 games");
         assert_eq!(shown(ConfigKey::EarlyAccess), "Shown");
         assert_eq!(shown(ConfigKey::MinReviews), "1,000 reviews");
         assert_eq!(shown(ConfigKey::MinPositivePercent), "75%");
@@ -1604,7 +1604,7 @@ mod tests {
         );
         assert_eq!(
             input_note(ConfigKey::Count, "10.5").as_deref(),
-            Some("A whole number, such as 20")
+            Some("A whole number, such as 16")
         );
         assert_eq!(input_note(ConfigKey::Count, ""), None);
         assert_eq!(input_note(ConfigKey::Count, "30"), None);
