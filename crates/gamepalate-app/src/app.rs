@@ -19,7 +19,8 @@ use gamepalate_core::{
     off_catalog::OffCatalogGames,
     region::Region,
     search::{
-        Recommendation, RecommendedGame, SearchError, SearchInputs, SearchOptions, recommend,
+        Continuation, Recommendation, SearchError, SearchInputs, SearchOptions, recommend,
+        recommend_from,
     },
     taste::game_name,
     timestamp::Timestamp,
@@ -155,17 +156,18 @@ impl Gamepalate {
     pub fn recommend_after(
         &self,
         options: &SearchOptions,
-        seen: &[AppId],
+        continuation: &Continuation,
     ) -> Result<Recommendation, RecommendError> {
-        let count = options.limit.unwrap_or(self.files.config.results.count);
-        let wider = SearchOptions {
-            limit: Some(count + seen.len()),
-            ..options.clone()
-        };
-        let mut recommendation = self.recommend(&wider)?;
-        recommendation.games = unseen(recommendation.games, seen, count);
-
-        Ok(recommendation)
+        self.with_inputs(|inputs| {
+            recommend_from(
+                inputs,
+                options,
+                continuation.clone(),
+                Timestamp(jiff::Timestamp::now().as_millisecond()),
+            )
+        })
+        .map_err(RecommendError)
+        .inspect_err(failed("could not recommend"))
     }
 
     pub fn vote(&self, id: AppId, kind: VoteKind, bet: bool) -> Result<(), VoteError> {
@@ -672,14 +674,6 @@ fn voted_games(
     games
 }
 
-fn unseen(games: Vec<RecommendedGame>, seen: &[AppId], count: usize) -> Vec<RecommendedGame> {
-    games
-        .into_iter()
-        .filter(|game| !seen.contains(&game.id))
-        .take(count)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -853,44 +847,5 @@ mod tests {
             },
             Currency::italian(),
         )
-    }
-
-    #[test]
-    fn skips_the_games_already_seen() {
-        let games = (1..=5).map(game).collect();
-
-        let ids: Vec<AppId> = unseen(games, &[AppId(1), AppId(3)], 2)
-            .iter()
-            .map(|game| game.id)
-            .collect();
-
-        assert_eq!(ids, vec![AppId(2), AppId(4)]);
-    }
-
-    fn game(id: u32) -> RecommendedGame {
-        RecommendedGame {
-            position: id as usize,
-            id: AppId(id),
-            name: format!("Game {id}"),
-            price: Price {
-                original_cents: 999,
-                discount: None,
-            },
-            store_url: String::new(),
-            from_family: None,
-            affinity: 1.0,
-            top_tags: Vec::new(),
-            similar_to: None,
-            similar_to_id: None,
-            similar_to_multiplier: None,
-            quality: 1.0,
-            reviews: Reviews {
-                total: 100,
-                positive: 90,
-            },
-            in_wishlist: false,
-            relevance: 1.0,
-            bet: false,
-        }
     }
 }
