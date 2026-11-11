@@ -91,6 +91,7 @@ mod tests {
                 controller: None,
                 italian: None,
                 steam_deck: None,
+                is_early_access: false,
             },
             modes: Vec::new(),
         })))

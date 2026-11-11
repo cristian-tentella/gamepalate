@@ -987,6 +987,11 @@ fn facts<'a>(details: &'a GameDetails, tags: &[String], open: bool) -> Element<'
         format::developers(&store.developers),
     )
     .map(|byline| text(byline).size(font::NOTE_SIZE).style(style::muted));
+    let early_access = store.is_early_access.then(|| {
+        text("Early Access")
+            .size(font::NOTE_SIZE)
+            .style(style::accent)
+    });
     let about = game::key_button(
         "D",
         "About this game",
@@ -1044,6 +1049,7 @@ fn facts<'a>(details: &'a GameDetails, tags: &[String], open: bool) -> Element<'
 
     column![about]
         .push(byline)
+        .push(early_access)
         .push(tags)
         .push(menu)
         .spacing(8)

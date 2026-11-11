@@ -30,6 +30,7 @@ pub struct ItemDetails {
     pub controller: Option<Controller>,
     pub italian: Option<Italian>,
     pub steam_deck: Option<SteamDeck>,
+    pub is_early_access: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +75,8 @@ struct SteamDetails {
     #[serde(default)]
     supported_languages: Vec<Language>,
     platforms: Option<Platforms>,
+    #[serde(default)]
+    is_early_access: bool,
 }
 
 #[derive(Deserialize)]
@@ -332,6 +335,7 @@ fn to_details(item: SteamDetails) -> ItemDetails {
             Some(3) => Some(SteamDeck::Verified),
             _ => None,
         },
+        is_early_access: item.is_early_access,
     }
 }
 
@@ -436,8 +440,20 @@ mod tests {
                     audio: false,
                 }),
                 steam_deck: Some(SteamDeck::Verified),
+                is_early_access: false,
             })
         );
+    }
+
+    #[test]
+    fn reads_the_early_access_flag() {
+        let details = one(json!({
+            "id": 1_086_940,
+            "success": 1,
+            "is_early_access": true,
+        }));
+
+        assert!(details.unwrap().is_early_access);
     }
 
     #[test]
@@ -477,6 +493,7 @@ mod tests {
                 controller: None,
                 italian: None,
                 steam_deck: None,
+                is_early_access: false,
             })
         );
     }
