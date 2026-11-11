@@ -45,7 +45,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Install system libraries
-        run: sudo apt-get update && sudo apt-get install -y nasm pkg-config libdbus-1-dev libxkbcommon-dev libwayland-dev libx11-dev
+        run: |
+          printf '%s\n' http://archive.ubuntu.com/ubuntu http://security.ubuntu.com/ubuntu \
+            | sudo tee /etc/apt/apt-mirrors.txt
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y nasm pkg-config libdbus-1-dev libxkbcommon-dev libwayland-dev libx11-dev
       - name: Check the tag matches the version
         run: |
           version=$(cargo pkgid -p gamepalate-gui | sed 's/.*[#@]//')

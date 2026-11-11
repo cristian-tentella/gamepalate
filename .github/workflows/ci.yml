@@ -35,8 +35,10 @@ jobs:
       - name: Install system libraries
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y nasm pkg-config libdbus-1-dev libxkbcommon-dev libwayland-dev libx11-dev
+          printf '%s\n' http://archive.ubuntu.com/ubuntu http://security.ubuntu.com/ubuntu \
+            | sudo tee /etc/apt/apt-mirrors.txt
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y nasm pkg-config libdbus-1-dev libxkbcommon-dev libwayland-dev libx11-dev
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - name: Skip optimizations
