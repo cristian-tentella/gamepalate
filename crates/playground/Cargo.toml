@@ -1,10 +1,10 @@
 [package]
 name = "playground"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "1.0.104"
-gamepalate-core = { version = "0.14.0", path = "../gamepalate-core" }
-gamepalate-store = { version = "0.14.0", path = "../gamepalate-store" }
+gamepalate-core = { version = "0.15.0", path = "../gamepalate-core" }
+gamepalate-store = { version = "0.15.0", path = "../gamepalate-store" }
