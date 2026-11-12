@@ -15,7 +15,7 @@ use iced::{
 use crate::{font, style};
 
 pub mod discover;
-mod game;
+pub(crate) mod game;
 pub mod library;
 pub mod profile;
 pub mod settings;

@@ -545,6 +545,10 @@ impl Gamepalate {
         header_url(id)
     }
 
+    pub fn elsewhere_hours(&self) -> f64 {
+        self.files.config.signals.elsewhere_hours
+    }
+
     pub fn bet_every(&self) -> usize {
         self.files.config.results.bet_every
     }

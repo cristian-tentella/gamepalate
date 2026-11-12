@@ -3,6 +3,8 @@ use gamepalate_app::{
 };
 use jiff::{civil::Date, tz::TimeZone};
 
+use crate::screen::game::Pick;
+
 const FEW_REVIEWS_GAP: f64 = 5.0;
 
 pub fn when(at: Timestamp, now: Timestamp) -> String {
@@ -309,6 +311,25 @@ pub fn vote(kind: VoteKind) -> &'static str {
         VoteKind::Maybe => "Maybe",
         VoteKind::NotForMe => "Not for me",
         VoteKind::Known => "Already know it",
+    }
+}
+
+pub fn pick(pick: Pick) -> &'static str {
+    match pick {
+        Pick::Vote(kind) => vote(kind),
+        Pick::Played => "Played, liked it",
+    }
+}
+
+pub fn played_tip(hours: f64) -> String {
+    format!("Counts as {hours} h of play, like a game in your Library")
+}
+
+pub fn elsewhere_text(name: &str, played: bool) -> String {
+    if played {
+        format!("Added {name} as played elsewhere")
+    } else {
+        format!("Removed {name}")
     }
 }
 

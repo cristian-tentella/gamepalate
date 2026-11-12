@@ -3,7 +3,6 @@ use std::{
     collections::{BTreeMap, HashMap},
     fmt,
     sync::Arc,
-    time::Duration,
 };
 
 use gamepalate_app::{AppId, Gamepalate, Vote, VoteKind, VotedGame};
@@ -22,7 +21,9 @@ use iced::{
 };
 
 use super::{
-    game::{self, Link, VOTE_HEIGHT},
+    Toasts,
+    game::{self, Link, Pick, VOTE_HEIGHT},
+    sentence,
     showcase::{self, Showcase},
 };
 use crate::{font, format, style};
@@ -51,7 +52,6 @@ const TOP_HEIGHT: f32 = 160.0;
 const MIN_SHOT_WIDTH: f32 = 480.0;
 const CONTENT_SPACING: f32 = 18.0;
 const SCROLLBAR_GAP: f32 = 12.0;
-const TOAST_DURATION: Duration = Duration::from_secs(4);
 const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–4.";
 
 pub struct Votes {
@@ -66,14 +66,9 @@ pub struct Votes {
     rows: Vec<AppId>,
     selected: usize,
     viewport: Option<(f32, f32)>,
-    toast: Option<Toast>,
-    toasts_shown: u64,
+    toasts: Toasts,
+    played: Option<AppId>,
     showcase: Showcase,
-}
-
-struct Toast {
-    id: u64,
-    text: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -104,6 +99,10 @@ pub enum Message {
     Scrolled(Viewport),
     Vote(VoteKind),
     VoteSaved(Result<(), String>),
+    Played,
+    PlayedSaved(AppId, String, Result<bool, String>),
+    Undo,
+    Undone(Result<(), String>),
     Matched(u64, HashMap<AppId, f64>),
     Open(Link),
     HideToast(u64),
@@ -128,8 +127,8 @@ impl Votes {
             rows: Vec::new(),
             selected: 0,
             viewport: None,
-            toast: None,
-            toasts_shown: 0,
+            toasts: Toasts::default(),
+            played: None,
             showcase: Showcase::new(gamepalate),
         };
         votes.rows = votes.shown_rows();
@@ -218,6 +217,42 @@ impl Votes {
                 return self.find_matches();
             }
             Message::VoteSaved(Err(error)) => return self.show_toast(error),
+            Message::Played => {
+                if let Some(game) = self.current() {
+                    let (id, name) = (game.id, game.name.clone());
+                    let gamepalate = Arc::clone(&self.gamepalate);
+                    return Task::perform(
+                        async move {
+                            gamepalate
+                                .set_played_elsewhere(id, true)
+                                .map_err(|error| sentence(&error.to_string()))
+                        },
+                        move |result| Message::PlayedSaved(id, name.clone(), result),
+                    );
+                }
+            }
+            Message::PlayedSaved(id, name, Ok(before)) => {
+                self.played = (!before).then_some(id);
+                let text = format::elsewhere_text(&name, true);
+                return self.toasts.show(text, !before, Message::HideToast);
+            }
+            Message::PlayedSaved(_, _, Err(error)) => return self.show_toast(error),
+            Message::Undo => {
+                if let Some(id) = self.played.take() {
+                    let gamepalate = Arc::clone(&self.gamepalate);
+                    return Task::perform(
+                        async move {
+                            gamepalate
+                                .set_played_elsewhere(id, false)
+                                .map(|_| ())
+                                .map_err(|error| sentence(&error.to_string()))
+                        },
+                        Message::Undone,
+                    );
+                }
+            }
+            Message::Undone(Ok(())) => return self.show_toast("Undone".to_string()),
+            Message::Undone(Err(error)) => return self.show_toast(error),
             Message::Matched(matching, matches) => {
                 if matching == self.matching {
                     let first = self.matches.replace(matches).is_none();
@@ -231,11 +266,7 @@ impl Votes {
                     game::open(link, &game.name, &game.store_url);
                 }
             }
-            Message::HideToast(id) => {
-                if self.toast.as_ref().is_some_and(|toast| toast.id == id) {
-                    self.toast = None;
-                }
-            }
+            Message::HideToast(id) => self.toasts.hide(id),
             Message::Showcase(message) => {
                 return self.showcase.update(message).map(Message::Showcase);
             }
@@ -249,16 +280,7 @@ impl Votes {
     }
 
     pub fn view(&self, scale: f32) -> Element<'_, Message> {
-        let toast = self.toast.as_ref().map(|toast| {
-            container(
-                container(text(&toast.text))
-                    .padding([8, 14])
-                    .style(style::toast),
-            )
-            .center_x(Fill)
-            .align_bottom(Fill)
-            .padding(16)
-        });
+        let toast = self.toasts.view(Message::Undo);
         let card = container(self.card(scale))
             .padding(16)
             .width(Fill)
@@ -483,14 +505,23 @@ impl Votes {
     fn vote_row(&self, width: f32) -> Element<'_, Message> {
         let game = self.current();
         let vote_width = game::vote_width(width - game::LINKS_WIDTH, 0.0);
-        let votes = game::vote_buttons(|key, kind| {
+        let elsewhere_hours = self.gamepalate.elsewhere_hours();
+        let votes = game::vote_buttons(|key, pick| {
+            let (message, current) = match pick {
+                Pick::Vote(kind) => (
+                    Message::Vote(kind),
+                    game.is_some_and(|game| game.vote.kind == kind),
+                ),
+                Pick::Played => (Message::Played, false),
+            };
             game::vote_button(
                 key,
-                kind,
+                pick,
+                game::tip(pick, elsewhere_hours),
                 true,
                 vote_width,
-                game.is_some().then_some(Message::Vote(kind)),
-                game.is_some_and(|game| game.vote.kind == kind),
+                game.is_some().then_some(message),
+                current,
             )
         })
         .width(Fill);
@@ -592,13 +623,7 @@ impl Votes {
     }
 
     fn show_toast(&mut self, text: String) -> Task<Message> {
-        self.toasts_shown += 1;
-        let id = self.toasts_shown;
-        self.toast = Some(Toast { id, text });
-
-        Task::perform(tokio::time::sleep(TOAST_DURATION), move |_| {
-            Message::HideToast(id)
-        })
+        self.toasts.show(text, false, Message::HideToast)
     }
 }
 
@@ -771,6 +796,7 @@ fn stopped_by_popup(message: &Message) -> bool {
         Message::Previous
             | Message::Next
             | Message::Vote(_)
+            | Message::Played
             | Message::Open(_)
             | Message::FocusSearch
     )
@@ -782,7 +808,11 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
     };
 
     if modifiers.command() {
-        return matches!(key.as_ref(), Key::Character("f" | "F")).then_some(Message::FocusSearch);
+        return match key.as_ref() {
+            Key::Character("f" | "F") => Some(Message::FocusSearch),
+            Key::Character("z" | "Z") => Some(Message::Undo),
+            _ => None,
+        };
     }
 
     match key {
@@ -805,8 +835,11 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         Key::Character(character) if character.eq_ignore_ascii_case("j") => {
             Some(Message::Showcase(showcase::Message::ScrollDown))
         }
-        Key::Character(character) => game::vote_key(&character)
-            .map(Message::Vote)
+        Key::Character(character) => game::pick_key(&character)
+            .map(|pick| match pick {
+                Pick::Vote(kind) => Message::Vote(kind),
+                Pick::Played => Message::Played,
+            })
             .or_else(|| game::link_key(&character).map(Message::Open)),
         Key::Named(_) | Key::Unidentified => None,
     }
@@ -1022,15 +1055,41 @@ mod tests {
     }
 
     #[test]
-    fn votes_and_opens_the_links_with_the_numbers() {
+    fn votes_with_the_numbers_and_opens_the_links_with_q_w_e() {
         assert!(matches!(
             key_message(pressed(Key::Character("3".into()))),
             Some(Message::Vote(VoteKind::NotForMe))
         ));
         assert!(matches!(
-            key_message(pressed(Key::Character("6".into()))),
+            key_message(pressed(Key::Character("4".into()))),
+            Some(Message::Played)
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("w".into()))),
             Some(Message::Open(Link::Eneba))
         ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("E".into()))),
+            Some(Message::Open(Link::Hltb))
+        ));
+        for key in ["5", "6", "7"] {
+            assert!(key_message(pressed(Key::Character(key.into()))).is_none());
+        }
+    }
+
+    #[test]
+    fn ctrl_z_undoes_the_last_played_elsewhere() {
+        let event = keyboard::Event::KeyPressed {
+            key: Key::Character("z".into()),
+            modified_key: Key::Character("z".into()),
+            physical_key: key::Physical::Unidentified(key::NativeCode::Unidentified),
+            location: Location::Standard,
+            modifiers: Modifiers::CTRL,
+            text: None,
+            repeat: false,
+        };
+
+        assert!(matches!(key_message(event), Some(Message::Undo)));
     }
 
     #[test]

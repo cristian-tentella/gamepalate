@@ -391,7 +391,7 @@ impl Library {
                 }
                 self.adding = false;
                 self.read_view();
-                return self.show_toast(elsewhere_text(&name, played), before != played);
+                return self.show_toast(format::elsewhere_text(&name, played), before != played);
             }
             Message::Scrolled(viewport) => {
                 let offset = viewport.absolute_offset().y;
@@ -1411,14 +1411,6 @@ fn placeholder(adding: bool) -> &'static str {
         ADD_PLACEHOLDER
     } else {
         SEARCH_PLACEHOLDER
-    }
-}
-
-fn elsewhere_text(name: &str, played: bool) -> String {
-    if played {
-        format!("Added {name} as played elsewhere")
-    } else {
-        format!("Removed {name}")
     }
 }
 
@@ -2699,11 +2691,11 @@ mod tests {
     #[test]
     fn adding_and_removing_say_which_game_and_can_be_undone() {
         assert_eq!(
-            elsewhere_text("It Takes Two", true),
+            format::elsewhere_text("It Takes Two", true),
             "Added It Takes Two as played elsewhere"
         );
         assert_eq!(
-            elsewhere_text("It Takes Two", false),
+            format::elsewhere_text("It Takes Two", false),
             "Removed It Takes Two"
         );
         assert!(matches!(
