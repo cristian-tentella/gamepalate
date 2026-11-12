@@ -19,11 +19,11 @@ const HEADER: &str = "\
 # gamepalate rewrites this file at every vote: comments added by hand are lost.
 #
 # would_try   you would try it, it counts as a signal
-# maybe       you might try it
+# later       not now: the game comes back in Discover after 30 days
 # not_for_me  not for you, it leaves the recommendations
 # known       you already know it, it leaves the recommendations
 # bet = true  the vote was given to a bet
-# at          when the vote was cast, in milliseconds since 1970 (used to count the last 24 hours)
+# at          when the vote was cast, in milliseconds since 1970 (for the last 24 hours and the 30 days of a later)
 ";
 
 #[derive(Debug, thiserror::Error)]
@@ -67,7 +67,8 @@ struct VoteEntry {
 #[serde(rename_all = "snake_case")]
 enum VoteKindEntry {
     WouldTry,
-    Maybe,
+    #[serde(alias = "maybe")]
+    Later,
     NotForMe,
     Known,
 }
@@ -76,7 +77,7 @@ impl From<VoteKindEntry> for VoteKind {
     fn from(kind: VoteKindEntry) -> Self {
         match kind {
             VoteKindEntry::WouldTry => VoteKind::WouldTry,
-            VoteKindEntry::Maybe => VoteKind::Maybe,
+            VoteKindEntry::Later => VoteKind::Later,
             VoteKindEntry::NotForMe => VoteKind::NotForMe,
             VoteKindEntry::Known => VoteKind::Known,
         }
@@ -134,7 +135,7 @@ fn votes_text(votes: &Votes, name: impl Fn(AppId) -> Option<String>) -> String {
 fn kind_name(kind: VoteKind) -> &'static str {
     match kind {
         VoteKind::WouldTry => "would_try",
-        VoteKind::Maybe => "maybe",
+        VoteKind::Later => "later",
         VoteKind::NotForMe => "not_for_me",
         VoteKind::Known => "known",
     }
@@ -224,7 +225,7 @@ mod tests {
         votes.insert(
             AppId(10),
             Vote {
-                kind: VoteKind::Maybe,
+                kind: VoteKind::Later,
                 date: "2026-11-07".to_string(),
                 at: Some(Timestamp(1_762_500_000_000)),
                 bet: true,
@@ -243,9 +244,31 @@ mod tests {
         let text = votes_text(&votes, |_| None);
 
         assert!(text.contains(
-            "10 = { vote = \"maybe\", date = \"2026-11-07\", at = 1762500000000, bet = true }"
+            "10 = { vote = \"later\", date = \"2026-11-07\", at = 1762500000000, bet = true }"
         ));
         assert_eq!(parse_votes(&text).unwrap(), votes);
+    }
+
+    #[test]
+    fn an_old_maybe_is_read_as_a_later_and_saved_as_one() {
+        let votes = parse_votes(
+            r#"
+            [votes]
+            1496590 = { vote = "maybe", date = "2026-11-11", at = 1794404475152 } # Tchia
+            2393760 = { vote = "later", date = "2026-11-11" }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(votes[&AppId(1496590)].kind, VoteKind::Later);
+        assert_eq!(votes[&AppId(2393760)].kind, VoteKind::Later);
+        let text = votes_text(&votes, |_| None);
+        assert!(
+            text.contains(
+                "1496590 = { vote = \"later\", date = \"2026-11-11\", at = 1794404475152 }"
+            )
+        );
+        assert!(!text.contains("\"maybe\""));
     }
 
     #[test]
@@ -253,9 +276,9 @@ mod tests {
         let votes = parse_votes(
             r#"
             [votes]
-            100 = { vote = "maybe", date = "2026-10-07" }
+            100 = { vote = "later", date = "2026-10-07" }
             20 = { vote = "known", date = "2026-10-07" }
-            3 = { vote = "maybe", date = "2026-10-07" }
+            3 = { vote = "later", date = "2026-10-07" }
             "#,
         )
         .unwrap();
@@ -271,13 +294,13 @@ mod tests {
 
     #[test]
     fn parse_votes_rejects_an_appid_with_a_leading_zero() {
-        let result = parse_votes(r#"votes = { "012" = { vote = "maybe", date = "2026-10-07" } }"#);
+        let result = parse_votes(r#"votes = { "012" = { vote = "later", date = "2026-10-07" } }"#);
         assert!(matches!(result, Err(VotesError::InvalidAppId(key)) if key == "012"));
     }
 
     #[test]
     fn parse_votes_rejects_a_badly_shaped_date() {
-        let result = parse_votes(r#"votes = { 10 = { vote = "maybe", date = "7/10/2026" } }"#);
+        let result = parse_votes(r#"votes = { 10 = { vote = "later", date = "7/10/2026" } }"#);
         assert!(matches!(
             result,
             Err(VotesError::InvalidDate { appid: 10, .. })
@@ -287,7 +310,7 @@ mod tests {
     #[test]
     fn parse_votes_rejects_bet_false() {
         let result =
-            parse_votes(r#"votes = { 10 = { vote = "maybe", date = "2026-10-07", bet = false } }"#);
+            parse_votes(r#"votes = { 10 = { vote = "later", date = "2026-10-07", bet = false } }"#);
         assert!(matches!(result, Err(VotesError::BetNotTrue(10))));
     }
 
@@ -300,7 +323,7 @@ mod tests {
     #[test]
     fn parse_votes_rejects_an_unknown_key() {
         let result =
-            parse_votes(r#"votes = { 10 = { vote = "maybe", date = "2026-10-07", note = "" } }"#);
+            parse_votes(r#"votes = { 10 = { vote = "later", date = "2026-10-07", note = "" } }"#);
         assert!(matches!(result, Err(VotesError::Toml(_))));
     }
 

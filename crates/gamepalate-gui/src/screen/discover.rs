@@ -101,7 +101,8 @@ pub enum Message {
     UndoFilters,
     FiltersSaved(Result<(), String>),
     Previous,
-    Next,
+    Later,
+    LaterSaved(Result<(), String>),
     Vote(VoteKind),
     VoteSaved(Result<(), String>),
     Played,
@@ -249,7 +250,23 @@ impl Discover {
                     queue.back();
                 }
             }
-            Message::Next => return self.advance(),
+            Message::Later => {
+                let save = self.current().map(|game| {
+                    let gamepalate = Arc::clone(&self.gamepalate);
+                    let (id, bet) = (game.id, game.bet);
+                    Task::perform(
+                        async move {
+                            gamepalate
+                                .vote(id, VoteKind::Later, bet)
+                                .map_err(|error| error.to_string())
+                        },
+                        Message::LaterSaved,
+                    )
+                });
+                return Task::batch(save.into_iter().chain([self.advance()]));
+            }
+            Message::LaterSaved(Ok(())) => {}
+            Message::LaterSaved(Err(error)) => return self.show_toast(error),
             Message::Vote(kind) => {
                 if let Some(game) = self.current() {
                     let text = format::voted(&game.name, kind);
@@ -524,7 +541,7 @@ impl Discover {
             row![
                 style::divider(),
                 game::moves(
-                    game.is_some().then_some(Message::Next),
+                    game.is_some().then_some(Message::Later),
                     Some(Message::Previous)
                 ),
             ]
@@ -981,7 +998,7 @@ fn after(duration: Duration, message: Message) -> Task<Message> {
 fn stopped_by_popup(message: &Message) -> bool {
     matches!(
         message,
-        Message::Next
+        Message::Later
             | Message::Previous
             | Message::Vote(_)
             | Message::Played
@@ -993,7 +1010,7 @@ fn stopped_by_popup(message: &Message) -> bool {
 fn acts_on_the_game(message: &Message) -> bool {
     matches!(
         message,
-        Message::Next
+        Message::Later
             | Message::Previous
             | Message::Vote(_)
             | Message::Played
@@ -1032,7 +1049,7 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
     }
 
     match key {
-        Key::Named(Named::Space) => Some(Message::Next),
+        Key::Named(Named::Space) => Some(Message::Later),
         Key::Named(Named::Backspace) => Some(Message::Previous),
         Key::Named(Named::ArrowUp) => Some(Message::Showcase(showcase::Message::ScrollUp)),
         Key::Named(Named::ArrowDown) => Some(Message::Showcase(showcase::Message::ScrollDown)),
@@ -1069,7 +1086,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn votes_with_the_keys_from_one_to_three_and_marks_played_with_four() {
+    fn votes_with_one_and_three_and_marks_played_with_four() {
         assert!(matches!(
             key_message(pressed(Key::Character("1".into()))),
             Some(Message::Vote(VoteKind::WouldTry))
@@ -1078,6 +1095,7 @@ mod tests {
             key_message(pressed(Key::Character("4".into()))),
             Some(Message::Played)
         ));
+        assert!(key_message(pressed(Key::Character("2".into()))).is_none());
     }
 
     #[test]
@@ -1145,10 +1163,10 @@ mod tests {
     }
 
     #[test]
-    fn moves_between_games_with_space_and_backspace() {
+    fn space_passes_the_game_for_later_and_backspace_goes_back() {
         assert!(matches!(
             key_message(pressed(Key::Named(Named::Space))),
-            Some(Message::Next)
+            Some(Message::Later)
         ));
         assert!(matches!(
             key_message(pressed(Key::Named(Named::Backspace))),
@@ -1250,7 +1268,7 @@ mod tests {
     #[test]
     fn the_open_filters_stop_the_keys_of_the_game() {
         assert!(acts_on_the_game(&Message::Vote(VoteKind::WouldTry)));
-        assert!(acts_on_the_game(&Message::Next));
+        assert!(acts_on_the_game(&Message::Later));
         assert!(acts_on_the_game(&Message::Showcase(
             showcase::Message::NextScreenshot
         )));
@@ -1313,7 +1331,7 @@ mod tests {
     #[test]
     fn an_open_popup_stops_the_votes_and_the_next_game() {
         assert!(stopped_by_popup(&Message::Vote(VoteKind::WouldTry)));
-        assert!(stopped_by_popup(&Message::Next));
+        assert!(stopped_by_popup(&Message::Later));
         assert!(stopped_by_popup(&Message::Previous));
         assert!(stopped_by_popup(&Message::Open(Link::Steam)));
         assert!(!stopped_by_popup(&Message::Showcase(

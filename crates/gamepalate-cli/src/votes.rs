@@ -52,7 +52,7 @@ pub fn run(files: &DataFiles) {
 fn kind_name(kind: VoteKind) -> &'static str {
     match kind {
         VoteKind::WouldTry => "would_try",
-        VoteKind::Maybe => "maybe",
+        VoteKind::Later => "later",
         VoteKind::NotForMe => "not_for_me",
         VoteKind::Known => "known",
     }

@@ -9,7 +9,7 @@ use crate::{
     ids::{AppId, TagId},
     signals::Signals,
     timestamp::Timestamp,
-    votes::{VoteKind, Votes},
+    votes::{VoteKind, Votes, standing},
 };
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -80,7 +80,13 @@ impl Filter {
         !matches!(self, Filter::Owned | Filter::FamilyGames)
     }
 
-    pub fn passes(&self, game: &Game, price: Price, context: &FilterContext) -> bool {
+    pub fn passes(
+        &self,
+        game: &Game,
+        price: Price,
+        context: &FilterContext,
+        now: Timestamp,
+    ) -> bool {
         match self {
             Filter::Owned => !context.owned.contains(&game.id),
             Filter::FamilyGames => !context.family_games.contains(&game.id),
@@ -99,7 +105,7 @@ impl Filter {
                     && u64::from(game.reviews.positive) * 100
                         >= u64::from(*min) * u64::from(game.reviews.total)
             }
-            Filter::Voted => context.vote_kind(game.id).is_none(),
+            Filter::Voted => standing(context.votes, game.id, now).is_none(),
             Filter::EarlyAccess => !game.is_early_access,
             Filter::MinPrice(min) => price.final_cents() >= *min,
             Filter::MaxPrice(max) => price.final_cents() <= *max,
@@ -293,7 +299,7 @@ pub fn apply_filters(
         let price = game.price.as_of(now);
         match filters
             .iter()
-            .position(|filter| !filter.passes(game, price, context))
+            .position(|filter| !filter.passes(game, price, context, now))
         {
             None => {
                 candidates.insert(game.id);

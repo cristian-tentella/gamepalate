@@ -77,7 +77,7 @@ pub struct FamilyView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VotesView {
     pub would_try: usize,
-    pub maybe: usize,
+    pub later: usize,
     pub not_for_me: usize,
     pub known: usize,
     pub labels: Labels,
@@ -228,7 +228,7 @@ fn votes_view(inputs: &SearchInputs) -> VotesView {
 
     VotesView {
         would_try: count(VoteKind::WouldTry),
-        maybe: count(VoteKind::Maybe),
+        later: count(VoteKind::Later),
         not_for_me: count(VoteKind::NotForMe),
         known: count(VoteKind::Known),
         labels: labels(inputs.votes, inputs.catalog),
@@ -403,7 +403,7 @@ mod tests {
         Votes::from([
             (AppId(4), vote(VoteKind::WouldTry)),
             (AppId(3), vote(VoteKind::NotForMe)),
-            (AppId(5), vote(VoteKind::Maybe)),
+            (AppId(5), vote(VoteKind::Later)),
             (AppId(6), vote(VoteKind::Known)),
         ])
     }
@@ -589,7 +589,7 @@ mod tests {
             view().votes,
             VotesView {
                 would_try: 1,
-                maybe: 1,
+                later: 1,
                 not_for_me: 1,
                 known: 1,
                 labels: Labels {

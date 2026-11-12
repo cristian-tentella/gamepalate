@@ -6,7 +6,8 @@ use crate::{
     game_vector::GameVector,
     ids::AppId,
     taste::Taste,
-    votes::Votes,
+    timestamp::Timestamp,
+    votes::{Votes, standing},
 };
 
 #[derive(Debug, Clone)]
@@ -76,10 +77,11 @@ pub fn bets(
     opinions: &HashMap<AppId, f64>,
     votes: &Votes,
     votes_weight: f64,
+    now: Timestamp,
 ) -> Vec<RankedGame> {
     ranked_games
         .iter()
-        .filter(|ranked_game| !votes.contains_key(&ranked_game.id))
+        .filter(|ranked_game| standing(votes, ranked_game.id, now).is_none())
         .filter_map(|ranked_game| {
             let opinion = *opinions.get(&ranked_game.id)?;
             if opinion >= 0.0 {
@@ -90,4 +92,53 @@ pub fn bets(
             Some(bet)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::votes::{LATER_DAYS, Vote, VoteKind};
+
+    const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+    const CAST: i64 = 1_794_404_475_152;
+
+    fn ranked(id: u32) -> RankedGame {
+        RankedGame {
+            id: AppId(id),
+            relevance: 1.0,
+            references: Vec::new(),
+            affinity: 1.0,
+        }
+    }
+
+    fn vote(kind: VoteKind) -> Vote {
+        Vote {
+            kind,
+            date: "2026-11-11".to_string(),
+            at: Some(Timestamp(CAST)),
+            bet: false,
+        }
+    }
+
+    fn bet_ids(now: i64) -> Vec<u32> {
+        let games = [ranked(1), ranked(2), ranked(3)];
+        let opinions = HashMap::from([(AppId(1), -1.0), (AppId(2), -1.0), (AppId(3), -1.0)]);
+        let votes = Votes::from([
+            (AppId(2), vote(VoteKind::Later)),
+            (AppId(3), vote(VoteKind::NotForMe)),
+        ]);
+
+        bets(&games, &opinions, &votes, 1.0, Timestamp(now))
+            .iter()
+            .map(|game| game.id.0)
+            .collect()
+    }
+
+    #[test]
+    fn a_later_keeps_a_game_out_of_the_bets_until_it_lapses() {
+        let lapse = CAST + LATER_DAYS * DAY_MS;
+
+        assert_eq!(bet_ids(lapse - 1), [1]);
+        assert_eq!(bet_ids(lapse), [1, 2]);
+    }
 }

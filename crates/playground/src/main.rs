@@ -69,7 +69,7 @@ fn main() -> anyhow::Result<()> {
     println!("\n== votes");
     println!("votes: {}", votes.len());
     println!("would try: {}", count(VoteKind::WouldTry));
-    println!("maybe: {}", count(VoteKind::Maybe));
+    println!("later: {}", count(VoteKind::Later));
     println!("not for me: {}", count(VoteKind::NotForMe));
     println!("known: {}", count(VoteKind::Known));
     println!("bets: {}", votes.values().filter(|vote| vote.bet).count());

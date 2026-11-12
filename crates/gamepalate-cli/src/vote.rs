@@ -31,8 +31,8 @@ pub struct VoteArgs {
 enum VoteChoice {
     /// You would try it: it counts as a signal
     WouldTry,
-    /// You might try it
-    Maybe,
+    /// Not now: it comes back in the recommendations after 30 days
+    Later,
     /// Not for you: it leaves the recommendations
     NotForMe,
     /// You already know it: it leaves the recommendations
@@ -43,7 +43,7 @@ impl VoteChoice {
     fn kind(self) -> VoteKind {
         match self {
             VoteChoice::WouldTry => VoteKind::WouldTry,
-            VoteChoice::Maybe => VoteKind::Maybe,
+            VoteChoice::Later => VoteKind::Later,
             VoteChoice::NotForMe => VoteKind::NotForMe,
             VoteChoice::Known => VoteKind::Known,
         }
@@ -82,4 +82,20 @@ pub fn run(args: &VoteArgs, files: &DataFiles, data_dir: &Path) -> anyhow::Resul
         args.vote.name()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn choice(name: &str) -> Option<VoteKind> {
+        VoteChoice::from_str(name, false).ok().map(VoteChoice::kind)
+    }
+
+    #[test]
+    fn later_is_a_vote_and_maybe_is_not_any_more() {
+        assert_eq!(choice("later"), Some(VoteKind::Later));
+        assert_eq!(choice("would_try"), Some(VoteKind::WouldTry));
+        assert_eq!(choice("maybe"), None);
+    }
 }

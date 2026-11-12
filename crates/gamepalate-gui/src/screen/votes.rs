@@ -28,9 +28,8 @@ use super::{
 };
 use crate::{font, format, style};
 
-const FILTERS: [Filter; 6] = [
+const FILTERS: [Filter; 5] = [
     Filter::Kind(VoteKind::WouldTry),
-    Filter::Kind(VoteKind::Maybe),
     Filter::Kind(VoteKind::NotForMe),
     Filter::Kind(VoteKind::Known),
     Filter::Bets,
@@ -736,6 +735,7 @@ pub(super) fn bets_summary(
     let (bets, others): (Vec<&Vote>, Vec<&Vote>) = games
         .values()
         .map(|game| &game.vote)
+        .filter(|vote| vote.kind != VoteKind::Later)
         .filter(|vote| vote.bet || vote.date.as_str() >= first)
         .partition(|vote| vote.bet);
     let would_try = |votes: &[&Vote]| {
@@ -893,7 +893,7 @@ mod tests {
                 None,
             ),
             priced(
-                voted(3, "GRIME", VoteKind::Maybe, "2026-10-20", false),
+                voted(3, "GRIME", VoteKind::Later, "2026-10-20", false),
                 2099,
                 Some(60),
             ),
@@ -945,7 +945,7 @@ mod tests {
     fn the_search_looks_among_all_the_votes() {
         let rows = rows(
             &games(),
-            Filter::Kind(VoteKind::Maybe),
+            Filter::Kind(VoteKind::NotForMe),
             Order::Newest,
             false,
             " sat ",
@@ -953,6 +953,21 @@ mod tests {
         );
 
         assert_eq!(rows, ids(&[2]));
+    }
+
+    #[test]
+    fn a_later_has_no_filter_and_shows_only_in_all() {
+        assert!(!FILTERS.contains(&Filter::Kind(VoteKind::Later)));
+        assert!(
+            FILTERS
+                .iter()
+                .filter(|filter| **filter != Filter::All)
+                .all(
+                    |filter| !rows(&games(), *filter, Order::Newest, false, "", None)
+                        .contains(&AppId(3))
+                )
+        );
+        assert!(rows(&games(), Filter::All, Order::Newest, false, "", None).contains(&AppId(3)));
     }
 
     #[test]
@@ -967,16 +982,42 @@ mod tests {
 
     #[test]
     fn the_bets_summary_compares_with_the_votes_since_the_first_bet() {
-        assert_eq!(bets_summary(&games()), Some((1, 2, Some(0.0))));
+        let mut games = games();
+        games.extend(by_id(vec![voted(
+            6,
+            "Tunic",
+            VoteKind::NotForMe,
+            "2026-10-25",
+            false,
+        )]));
+
+        assert_eq!(bets_summary(&games), Some((1, 2, Some(0.0))));
         assert_eq!(bets_summary(&BTreeMap::new()), None);
     }
 
     #[test]
-    fn says_why_the_list_is_empty() {
-        let maybe = Filter::Kind(VoteKind::Maybe);
+    fn the_bets_summary_leaves_out_the_laters() {
+        let mut games = games();
+        games.extend(by_id(vec![voted(
+            7,
+            "Tchia",
+            VoteKind::Later,
+            "2026-10-26",
+            true,
+        )]));
 
-        assert_eq!(empty_text(true, maybe, false, ""), NO_VOTES);
-        assert_eq!(empty_text(false, maybe, false, ""), "No Maybe votes");
+        assert_eq!(bets_summary(&games), Some((1, 2, None)));
+    }
+
+    #[test]
+    fn says_why_the_list_is_empty() {
+        let not_for_me = Filter::Kind(VoteKind::NotForMe);
+
+        assert_eq!(empty_text(true, not_for_me, false, ""), NO_VOTES);
+        assert_eq!(
+            empty_text(false, not_for_me, false, ""),
+            "No Not for me votes"
+        );
         assert_eq!(
             empty_text(false, Filter::Kind(VoteKind::Known), false, ""),
             "No Known votes"
@@ -986,7 +1027,7 @@ mod tests {
             "No votes on Bets"
         );
         assert_eq!(
-            empty_text(false, maybe, false, " hades "),
+            empty_text(false, not_for_me, false, " hades "),
             "No votes match \"hades\""
         );
     }
@@ -1028,8 +1069,8 @@ mod tests {
     #[test]
     fn says_when_nothing_is_on_sale() {
         assert_eq!(
-            empty_text(false, Filter::Kind(VoteKind::Maybe), true, ""),
-            "No Maybe votes on sale"
+            empty_text(false, Filter::Kind(VoteKind::WouldTry), true, ""),
+            "No Would try votes on sale"
         );
         assert_eq!(empty_text(false, Filter::Bets, true, ""), "No Bets on sale");
         assert_eq!(empty_text(false, Filter::All, true, ""), "No votes on sale");
@@ -1150,7 +1191,7 @@ mod tests {
 
     #[test]
     fn an_open_popup_stops_the_votes_and_the_links() {
-        assert!(stopped_by_popup(&Message::Vote(VoteKind::Maybe)));
+        assert!(stopped_by_popup(&Message::Vote(VoteKind::WouldTry)));
         assert!(stopped_by_popup(&Message::Open(Link::Hltb)));
         assert!(stopped_by_popup(&Message::FocusSearch));
         assert!(!stopped_by_popup(&Message::Showcase(

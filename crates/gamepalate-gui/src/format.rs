@@ -308,7 +308,7 @@ pub fn year(release: Option<Timestamp>) -> Option<String> {
 pub fn vote(kind: VoteKind) -> &'static str {
     match kind {
         VoteKind::WouldTry => "Would try",
-        VoteKind::Maybe => "Maybe",
+        VoteKind::Later => "Later",
         VoteKind::NotForMe => "Not for me",
         VoteKind::Known => "Already know it",
     }
@@ -319,6 +319,10 @@ pub fn pick(pick: Pick) -> &'static str {
         Pick::Vote(kind) => vote(kind),
         Pick::Played => "Played, liked it",
     }
+}
+
+pub fn later_tip(days: i64) -> String {
+    format!("Back in Discover in {days} days")
 }
 
 pub fn played_tip(hours: f64) -> String {
@@ -764,6 +768,11 @@ mod tests {
     #[test]
     fn says_how_often_a_bet_comes() {
         assert_eq!(bet(5), "A game your votes would skip. 1 in 5 is a Bet.");
+    }
+
+    #[test]
+    fn the_later_tip_says_when_the_game_comes_back() {
+        assert_eq!(later_tip(30), "Back in Discover in 30 days");
     }
 
     #[test]

@@ -764,7 +764,7 @@ mod tests {
         cast(
             &mut votes,
             AppId(1),
-            VoteKind::Maybe,
+            VoteKind::Later,
             "2026-10-01".to_string(),
             false,
             None,
@@ -807,7 +807,7 @@ mod tests {
         assert!(games[0].vote.bet);
         assert_eq!(games[0].price, None);
         assert_eq!(games[1].name, "Subnautica");
-        assert_eq!(games[1].vote.kind, VoteKind::Maybe);
+        assert_eq!(games[1].vote.kind, VoteKind::Later);
         catalog_game.price.discount = None;
         assert_eq!(games[1].price, Some(catalog_game.price));
         assert_eq!(games[1].reviews, Some(catalog_game.reviews));

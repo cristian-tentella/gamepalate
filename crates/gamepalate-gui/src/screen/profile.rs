@@ -774,7 +774,7 @@ impl Profile {
             return None;
         }
 
-        let total = votes.would_try + votes.maybe + votes.not_for_me + votes.known;
+        let total = votes.would_try + votes.not_for_me + votes.known;
         let body: Element<'_, Message> = if total == 0 {
             text(NO_VOTES).size(font::BAR_SIZE).into()
         } else {
@@ -2008,7 +2008,7 @@ mod tests {
     fn labels(would_try: usize, not_for_me: usize) -> VotesView {
         VotesView {
             would_try: 0,
-            maybe: 0,
+            later: 0,
             not_for_me: 0,
             known: 0,
             labels: gamepalate_app::Labels {

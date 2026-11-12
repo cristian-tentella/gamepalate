@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use gamepalate_app::{Currency, Price, Reviews, VoteKind};
+use gamepalate_app::{Currency, LATER_DAYS, Price, Reviews, VoteKind};
 use iced::{
     Center, Element, Fill, Length, never, padding,
     widget::{
@@ -16,9 +16,8 @@ pub enum Pick {
     Played,
 }
 
-pub const PICKS: [(&str, Pick); 4] = [
+pub const PICKS: [(&str, Pick); 3] = [
     ("1", Pick::Vote(VoteKind::WouldTry)),
-    ("2", Pick::Vote(VoteKind::Maybe)),
     ("3", Pick::Vote(VoteKind::NotForMe)),
     ("4", Pick::Played),
 ];
@@ -278,30 +277,35 @@ pub fn key_button<'a, Message: Clone + 'a>(
 }
 
 pub fn moves<'a, Message: Clone + 'a>(
-    skip: Option<Message>,
+    later: Option<Message>,
     back: Option<Message>,
 ) -> Row<'a, Message> {
-    row![
-        key_button("Space", "Skip", font::BAR_SIZE, skip),
-        key_button("⌫", "Back", font::BAR_SIZE, back),
-    ]
-    .spacing(ACTION_SPACING)
-    .align_y(Center)
+    let later = tooltip(
+        key_button("Space", "Later", font::BAR_SIZE, later),
+        container(text(format::later_tip(LATER_DAYS)).size(font::NOTE_SIZE))
+            .padding([6, 10])
+            .style(style::popup),
+        tooltip::Position::Top,
+    );
+
+    row![later, key_button("⌫", "Back", font::BAR_SIZE, back)]
+        .spacing(ACTION_SPACING)
+        .align_y(Center)
 }
 
 pub fn vote_buttons<'a, Message: 'a>(
     button: impl Fn(&'a str, Pick) -> Element<'a, Message>,
 ) -> Row<'a, Message> {
-    let [would_try, maybe, not_for_me, played] = PICKS.map(|(key, pick)| button(key, pick));
+    let [would_try, not_for_me, played] = PICKS.map(|(key, pick)| button(key, pick));
 
-    row![would_try, maybe, not_for_me, style::divider(), played]
+    row![would_try, not_for_me, style::divider(), played]
         .spacing(VOTE_SPACING)
         .align_y(Center)
 }
 
 pub fn vote_width(available: f32, beside: f32) -> Length {
     let divider = 1.0 + 2.0 * style::DIVIDER_INSET + VOTE_SPACING;
-    let needed = 4.0 * (VOTE_WIDTH + VOTE_SPACING) + divider + beside;
+    let needed = PICKS.len() as f32 * (VOTE_WIDTH + VOTE_SPACING) + divider + beside;
 
     if available >= needed {
         Length::Fixed(VOTE_WIDTH)
@@ -346,16 +350,16 @@ mod tests {
 
     #[test]
     fn the_vote_buttons_stop_growing_once_there_is_room() {
-        assert_eq!(vote_width(760.0, 0.0), Length::Fixed(VOTE_WIDTH));
-        assert_eq!(vote_width(720.0, 0.0), Length::Fill);
-        assert_eq!(vote_width(956.0, 180.0), Length::Fixed(VOTE_WIDTH));
-        assert_eq!(vote_width(900.0, 180.0), Length::Fill);
+        assert_eq!(vote_width(580.0, 0.0), Length::Fixed(VOTE_WIDTH));
+        assert_eq!(vote_width(540.0, 0.0), Length::Fill);
+        assert_eq!(vote_width(776.0, 180.0), Length::Fixed(VOTE_WIDTH));
+        assert_eq!(vote_width(720.0, 180.0), Length::Fill);
     }
 
     #[test]
-    fn the_keys_from_one_to_four_are_the_votes_and_played() {
+    fn the_keys_one_three_and_four_are_the_votes_and_played() {
         assert_eq!(pick_key("1"), Some(Pick::Vote(VoteKind::WouldTry)));
-        assert_eq!(pick_key("2"), Some(Pick::Vote(VoteKind::Maybe)));
+        assert_eq!(pick_key("2"), None);
         assert_eq!(pick_key("3"), Some(Pick::Vote(VoteKind::NotForMe)));
         assert_eq!(pick_key("4"), Some(Pick::Played));
         assert_eq!(pick_key("5"), None);
