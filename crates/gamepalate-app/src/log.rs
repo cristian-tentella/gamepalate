@@ -8,6 +8,7 @@ use std::{
     sync::Mutex,
 };
 
+use gamepalate_store::known::KnownConverted;
 use tracing::Level;
 use tracing_subscriber::{Layer, filter::Targets, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -49,6 +50,12 @@ pub fn start_log() -> io::Result<()> {
 
 pub(crate) fn failed<E: Error + 'static>(what: &'static str) -> impl FnOnce(&E) {
     move |error| tracing::warn!("{what}: {}", error_chain(error))
+}
+
+pub(crate) fn known_converted(converted: Option<KnownConverted>) {
+    if let Some(KnownConverted { votes, hidden }) = converted {
+        tracing::info!("converted {votes} Known votes, {hidden} games hidden");
+    }
 }
 
 fn open_log(dir: &Path) -> io::Result<File> {

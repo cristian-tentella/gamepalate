@@ -872,6 +872,7 @@ games = [
                 },
                 votes: Votes::new(),
                 off_catalog: BTreeMap::new(),
+                known_converted: None,
             }
         }
 

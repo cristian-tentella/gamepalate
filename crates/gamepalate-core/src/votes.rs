@@ -17,7 +17,6 @@ pub enum VoteKind {
     WouldTry,
     Later,
     NotForMe,
-    Known,
 }
 
 pub fn cast(
@@ -216,7 +215,7 @@ mod tests {
     #[test]
     fn only_a_later_lapses() {
         let long_after = Timestamp(i64::MAX / 2);
-        for kind in [VoteKind::WouldTry, VoteKind::NotForMe, VoteKind::Known] {
+        for kind in [VoteKind::WouldTry, VoteKind::NotForMe] {
             assert!(!vote(kind, "2020-01-01", Some(0)).has_lapsed(long_after));
         }
     }

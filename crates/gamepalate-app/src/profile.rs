@@ -79,7 +79,6 @@ pub struct VotesView {
     pub would_try: usize,
     pub later: usize,
     pub not_for_me: usize,
-    pub known: usize,
     pub labels: Labels,
     pub min_labels: usize,
 }
@@ -230,7 +229,6 @@ fn votes_view(inputs: &SearchInputs) -> VotesView {
         would_try: count(VoteKind::WouldTry),
         later: count(VoteKind::Later),
         not_for_me: count(VoteKind::NotForMe),
-        known: count(VoteKind::Known),
         labels: labels(inputs.votes, inputs.catalog),
         min_labels: MIN_LABELS,
     }
@@ -404,7 +402,6 @@ mod tests {
             (AppId(4), vote(VoteKind::WouldTry)),
             (AppId(3), vote(VoteKind::NotForMe)),
             (AppId(5), vote(VoteKind::Later)),
-            (AppId(6), vote(VoteKind::Known)),
         ])
     }
 
@@ -591,7 +588,6 @@ mod tests {
                 would_try: 1,
                 later: 1,
                 not_for_me: 1,
-                known: 1,
                 labels: Labels {
                     would_try: 1,
                     not_for_me: 1

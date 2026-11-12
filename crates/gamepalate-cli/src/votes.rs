@@ -54,6 +54,5 @@ fn kind_name(kind: VoteKind) -> &'static str {
         VoteKind::WouldTry => "would_try",
         VoteKind::Later => "later",
         VoteKind::NotForMe => "not_for_me",
-        VoteKind::Known => "known",
     }
 }

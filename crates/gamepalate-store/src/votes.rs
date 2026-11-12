@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -21,7 +21,6 @@ const HEADER: &str = "\
 # would_try   you would try it, it counts as a signal
 # later       not now: the game comes back in Discover after 30 days
 # not_for_me  not for you, it leaves the recommendations
-# known       you already know it, it leaves the recommendations
 # bet = true  the vote was given to a bet
 # at          when the vote was cast, in milliseconds since 1970 (for the last 24 hours and the 30 days of a later)
 ";
@@ -70,24 +69,32 @@ enum VoteKindEntry {
     #[serde(alias = "maybe")]
     Later,
     NotForMe,
+    // An old vote, only read to be converted: see `known`.
     Known,
 }
 
-impl From<VoteKindEntry> for VoteKind {
-    fn from(kind: VoteKindEntry) -> Self {
-        match kind {
-            VoteKindEntry::WouldTry => VoteKind::WouldTry,
-            VoteKindEntry::Later => VoteKind::Later,
-            VoteKindEntry::NotForMe => VoteKind::NotForMe,
-            VoteKindEntry::Known => VoteKind::Known,
+impl VoteKindEntry {
+    fn kind(&self) -> Option<VoteKind> {
+        match self {
+            VoteKindEntry::WouldTry => Some(VoteKind::WouldTry),
+            VoteKindEntry::Later => Some(VoteKind::Later),
+            VoteKindEntry::NotForMe => Some(VoteKind::NotForMe),
+            VoteKindEntry::Known => None,
         }
     }
 }
 
-pub fn load_votes(path: &Path) -> Result<Votes, VotesError> {
+#[derive(Debug, Default, PartialEq)]
+pub struct ReadVotes {
+    pub votes: Votes,
+    /// The games of the old `known` votes, left out of `votes`.
+    pub known: BTreeSet<AppId>,
+}
+
+pub fn load_votes(path: &Path) -> Result<ReadVotes, VotesError> {
     match std::fs::read_to_string(path) {
         Ok(text) => parse_votes(&text),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(Votes::new()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(ReadVotes::default()),
         Err(error) => Err(error.into()),
     }
 }
@@ -137,23 +144,28 @@ fn kind_name(kind: VoteKind) -> &'static str {
         VoteKind::WouldTry => "would_try",
         VoteKind::Later => "later",
         VoteKind::NotForMe => "not_for_me",
-        VoteKind::Known => "known",
     }
 }
 
-fn parse_votes(text: &str) -> Result<Votes, VotesError> {
+fn parse_votes(text: &str) -> Result<ReadVotes, VotesError> {
     let file: VotesFile = toml::from_str(text)?;
 
-    file.votes
-        .into_iter()
-        .map(|(key, entry)| {
-            let appid = parse_id_key(&key).ok_or(VotesError::InvalidAppId(key))?;
-            Ok((AppId(appid), vote_from_entry(appid, entry)?))
-        })
-        .collect()
+    let mut read = ReadVotes::default();
+    for (key, entry) in file.votes {
+        let appid = parse_id_key(&key).ok_or(VotesError::InvalidAppId(key))?;
+        match vote_from_entry(appid, entry)? {
+            Some(vote) => {
+                read.votes.insert(AppId(appid), vote);
+            }
+            None => {
+                read.known.insert(AppId(appid));
+            }
+        }
+    }
+    Ok(read)
 }
 
-fn vote_from_entry(appid: u32, entry: VoteEntry) -> Result<Vote, VotesError> {
+fn vote_from_entry(appid: u32, entry: VoteEntry) -> Result<Option<Vote>, VotesError> {
     if !is_date_shaped(&entry.date) {
         return Err(VotesError::InvalidDate {
             appid,
@@ -167,12 +179,12 @@ fn vote_from_entry(appid: u32, entry: VoteEntry) -> Result<Vote, VotesError> {
         Some(false) => return Err(VotesError::BetNotTrue(appid)),
     };
 
-    Ok(Vote {
-        kind: entry.vote.into(),
+    Ok(entry.vote.kind().map(|kind| Vote {
+        kind,
         date: entry.date,
         at: entry.at.map(Timestamp),
         bet,
-    })
+    }))
 }
 
 fn is_date_shaped(date: &str) -> bool {
@@ -197,7 +209,8 @@ mod tests {
             5678 = { vote = "not_for_me", date = "2026-10-08", bet = true } # a name
             "#,
         )
-        .unwrap();
+        .unwrap()
+        .votes;
 
         assert_eq!(
             votes[&AppId(1234)],
@@ -234,7 +247,7 @@ mod tests {
         votes.insert(
             AppId(20),
             Vote {
-                kind: VoteKind::Known,
+                kind: VoteKind::NotForMe,
                 date: "2026-10-07".to_string(),
                 at: None,
                 bet: false,
@@ -246,7 +259,7 @@ mod tests {
         assert!(text.contains(
             "10 = { vote = \"later\", date = \"2026-11-07\", at = 1762500000000, bet = true }"
         ));
-        assert_eq!(parse_votes(&text).unwrap(), votes);
+        assert_eq!(parse_votes(&text).unwrap().votes, votes);
     }
 
     #[test]
@@ -258,7 +271,8 @@ mod tests {
             2393760 = { vote = "later", date = "2026-11-11" }
             "#,
         )
-        .unwrap();
+        .unwrap()
+        .votes;
 
         assert_eq!(votes[&AppId(1496590)].kind, VoteKind::Later);
         assert_eq!(votes[&AppId(2393760)].kind, VoteKind::Later);
@@ -272,16 +286,36 @@ mod tests {
     }
 
     #[test]
+    fn an_old_known_is_read_apart_and_never_saved() {
+        let read = parse_votes(
+            r#"
+            [votes]
+            500 = { vote = "known", date = "2026-10-07", at = 1791000000000 } # Left 4 Dead
+            620 = { vote = "would_try", date = "2026-10-07" }
+            22370 = { vote = "known", date = "2026-10-08", bet = true }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(read.known, BTreeSet::from([AppId(500), AppId(22370)]));
+        assert_eq!(read.votes.keys().copied().collect::<Vec<_>>(), [AppId(620)]);
+        let text = votes_text(&read.votes, |_| None);
+        assert!(!text.contains("known"));
+        assert!(!text.contains("500"));
+    }
+
+    #[test]
     fn parse_votes_orders_appids_numerically() {
         let votes = parse_votes(
             r#"
             [votes]
             100 = { vote = "later", date = "2026-10-07" }
-            20 = { vote = "known", date = "2026-10-07" }
+            20 = { vote = "would_try", date = "2026-10-07" }
             3 = { vote = "later", date = "2026-10-07" }
             "#,
         )
-        .unwrap();
+        .unwrap()
+        .votes;
 
         let appids: Vec<AppId> = votes.keys().copied().collect();
         assert_eq!(appids, [AppId(3), AppId(20), AppId(100)]);
@@ -289,7 +323,7 @@ mod tests {
 
     #[test]
     fn parse_votes_without_the_section_is_empty() {
-        assert!(parse_votes("").unwrap().is_empty());
+        assert_eq!(parse_votes("").unwrap(), ReadVotes::default());
     }
 
     #[test]
@@ -329,7 +363,7 @@ mod tests {
 
     #[test]
     fn load_votes_without_a_file_is_empty() {
-        let votes = load_votes(Path::new("does-not-exist/votes.toml")).unwrap();
-        assert!(votes.is_empty());
+        let read = load_votes(Path::new("does-not-exist/votes.toml")).unwrap();
+        assert_eq!(read, ReadVotes::default());
     }
 }

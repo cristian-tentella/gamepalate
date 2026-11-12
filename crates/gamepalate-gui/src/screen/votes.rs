@@ -28,10 +28,9 @@ use super::{
 };
 use crate::{font, format, style};
 
-const FILTERS: [Filter; 5] = [
+const FILTERS: [Filter; 4] = [
     Filter::Kind(VoteKind::WouldTry),
     Filter::Kind(VoteKind::NotForMe),
-    Filter::Kind(VoteKind::Known),
     Filter::Bets,
     Filter::All,
 ];
@@ -653,7 +652,6 @@ pub(super) fn by_id(games: Vec<VotedGame>) -> BTreeMap<AppId, VotedGame> {
 
 fn filter_label(filter: Filter) -> &'static str {
     match filter {
-        Filter::Kind(VoteKind::Known) => "Known",
         Filter::Kind(kind) => format::vote(kind),
         Filter::Bets => "Bets",
         Filter::All => "All",
@@ -975,7 +973,7 @@ mod tests {
         let games = games();
 
         assert_eq!(count(&games, Filter::Kind(VoteKind::WouldTry), false), 3);
-        assert_eq!(count(&games, Filter::Kind(VoteKind::Known), false), 0);
+        assert_eq!(count(&games, Filter::Kind(VoteKind::NotForMe), false), 1);
         assert_eq!(count(&games, Filter::Bets, false), 2);
         assert_eq!(count(&games, Filter::All, false), 5);
     }
@@ -1019,8 +1017,8 @@ mod tests {
             "No Not for me votes"
         );
         assert_eq!(
-            empty_text(false, Filter::Kind(VoteKind::Known), false, ""),
-            "No Known votes"
+            empty_text(false, Filter::Kind(VoteKind::WouldTry), false, ""),
+            "No Would try votes"
         );
         assert_eq!(
             empty_text(false, Filter::Bets, false, ""),

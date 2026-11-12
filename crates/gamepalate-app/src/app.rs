@@ -55,7 +55,7 @@ use crate::{
         GameCorrection, GameCorrectionError, LibraryView, PlayedElsewhereError,
         changed_played_elsewhere, corrected_game, game_correction, library_ids, library_view,
     },
-    log::failed,
+    log::{failed, known_converted},
     profile::{ProfileView, profile_view},
     settings::{self, Settings},
     steam_client::steam_client_file_of,
@@ -99,6 +99,7 @@ impl Gamepalate {
             .ok_or(OpenError::DataDirNotFound)?;
         let mut files =
             load_data_files(&dir).inspect_err(failed("could not read the data files"))?;
+        known_converted(files.known_converted);
         let created_families = families_on_open(
             &dir.join(FAMILIES_FILE),
             &mut files,
@@ -739,7 +740,10 @@ mod tests {
         let votes = vote_in(&path, &Votes::new()).unwrap();
 
         assert_eq!(votes.len(), 1);
-        assert_eq!(gamepalate_store::votes::load_votes(&path).unwrap(), votes);
+        assert_eq!(
+            gamepalate_store::votes::load_votes(&path).unwrap().votes,
+            votes
+        );
         assert!(std::fs::read_to_string(&path).unwrap().contains(
             "620 = { vote = \"would_try\", date = \"2026-10-30\", at = 1762500000000, bet = true } # Portal 2"
         ));
@@ -820,7 +824,7 @@ mod tests {
         cast(
             &mut votes,
             AppId(72850),
-            VoteKind::Known,
+            VoteKind::NotForMe,
             "2026-10-01".to_string(),
             false,
             None,

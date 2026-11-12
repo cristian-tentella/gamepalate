@@ -310,7 +310,6 @@ pub fn vote(kind: VoteKind) -> &'static str {
         VoteKind::WouldTry => "Would try",
         VoteKind::Later => "Later",
         VoteKind::NotForMe => "Not for me",
-        VoteKind::Known => "Already know it",
     }
 }
 

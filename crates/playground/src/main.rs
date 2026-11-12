@@ -42,6 +42,7 @@ fn main() -> anyhow::Result<()> {
         signals,
         votes,
         off_catalog,
+        ..
     } = load_data_files(&data_dir)?;
 
     println!("\n== config\n{config:#?}");
@@ -71,7 +72,6 @@ fn main() -> anyhow::Result<()> {
     println!("would try: {}", count(VoteKind::WouldTry));
     println!("later: {}", count(VoteKind::Later));
     println!("not for me: {}", count(VoteKind::NotForMe));
-    println!("known: {}", count(VoteKind::Known));
     println!("bets: {}", votes.values().filter(|vote| vote.bet).count());
     let liked = liked_creators(
         &signals,

@@ -38,7 +38,6 @@ pub enum Filter {
     FamilyGames,
     Hidden,
     NotForMe,
-    Known,
     BannedTags,
     MinReviews(u32),
     MaxReviews(u32),
@@ -60,7 +59,6 @@ impl Filter {
             Filter::FamilyGames => "family games",
             Filter::Hidden => "hidden games",
             Filter::NotForMe => "not for me games",
-            Filter::Known => "known games",
             Filter::BannedTags => "banned tags",
             Filter::MinReviews(_) => "min reviews",
             Filter::MaxReviews(_) => "max reviews",
@@ -92,7 +90,6 @@ impl Filter {
             Filter::FamilyGames => !context.family_games.contains(&game.id),
             Filter::Hidden => !context.corrections.hidden_games.contains(&game.id),
             Filter::NotForMe => context.vote_kind(game.id) != Some(VoteKind::NotForMe),
-            Filter::Known => context.vote_kind(game.id) != Some(VoteKind::Known),
             Filter::BannedTags => !context
                 .corrections
                 .banned_tags
@@ -135,11 +132,7 @@ impl<'a> FilterContext<'a> {
         votes: &'a Votes,
         corrections: &'a Corrections,
     ) -> FilterContext<'a> {
-        let owned = signals
-            .played()
-            .chain(signals.recent.iter().map(|game| game.id))
-            .chain(corrections.played_elsewhere.iter().copied())
-            .collect();
+        let owned = owned_games(signals, corrections);
         let family_games = families
             .families
             .iter()
@@ -157,6 +150,15 @@ impl<'a> FilterContext<'a> {
     fn vote_kind(&self, id: AppId) -> Option<VoteKind> {
         self.votes.get(&id).map(|vote| vote.kind)
     }
+}
+
+/// The games in the library, borrowed, played recently or played elsewhere.
+pub fn owned_games(signals: &Signals, corrections: &Corrections) -> BTreeSet<AppId> {
+    signals
+        .played()
+        .chain(signals.recent.iter().map(|game| game.id))
+        .chain(corrections.played_elsewhere.iter().copied())
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -238,7 +240,6 @@ pub fn active_filters(
         Filter::FamilyGames,
         Filter::Hidden,
         Filter::NotForMe,
-        Filter::Known,
         Filter::BannedTags,
         Filter::MinReviews(options.min_reviews.unwrap_or(config.relevance.min_reviews)),
     ];

@@ -35,8 +35,6 @@ enum VoteChoice {
     Later,
     /// Not for you: it leaves the recommendations
     NotForMe,
-    /// You already know it: it leaves the recommendations
-    Known,
 }
 
 impl VoteChoice {
@@ -45,7 +43,6 @@ impl VoteChoice {
             VoteChoice::WouldTry => VoteKind::WouldTry,
             VoteChoice::Later => VoteKind::Later,
             VoteChoice::NotForMe => VoteKind::NotForMe,
-            VoteChoice::Known => VoteKind::Known,
         }
     }
 

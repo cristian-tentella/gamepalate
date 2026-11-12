@@ -10,7 +10,7 @@ use gamepalate_store::{
 
 use crate::{
     account::steam_api_key,
-    log::failed,
+    log::{failed, known_converted},
     signals::{
         OffCatalogError, OffCatalogInputs, ReadSignalsError, off_catalog, read_signals,
         save_signals, steam_client_hours,
@@ -72,6 +72,7 @@ pub(crate) async fn check_ready_with<S: Get>(
     }
 
     let mut files = load_data_files(data_dir)?;
+    known_converted(files.known_converted);
     files.off_catalog = off_catalog(
         data_dir,
         steam,

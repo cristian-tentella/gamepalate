@@ -774,7 +774,7 @@ impl Profile {
             return None;
         }
 
-        let total = votes.would_try + votes.not_for_me + votes.known;
+        let total = votes.would_try + votes.not_for_me;
         let body: Element<'_, Message> = if total == 0 {
             text(NO_VOTES).size(font::BAR_SIZE).into()
         } else {
@@ -2010,7 +2010,6 @@ mod tests {
             would_try: 0,
             later: 0,
             not_for_me: 0,
-            known: 0,
             labels: gamepalate_app::Labels {
                 would_try,
                 not_for_me,
