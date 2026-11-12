@@ -103,7 +103,7 @@ pub enum Message {
     Previous,
     Later,
     LaterSaved(Result<(), String>),
-    Vote(VoteKind),
+    Vote(Pick),
     VoteSaved(Result<(), String>),
     Played,
     PlayedSaved(String, Result<bool, String>),
@@ -257,7 +257,7 @@ impl Discover {
                     Task::perform(
                         async move {
                             gamepalate
-                                .vote(id, VoteKind::Later, bet)
+                                .vote(id, VoteKind::Later, false, bet)
                                 .map_err(|error| error.to_string())
                         },
                         Message::LaterSaved,
@@ -267,15 +267,15 @@ impl Discover {
             }
             Message::LaterSaved(Ok(())) => {}
             Message::LaterSaved(Err(error)) => return self.show_toast(error),
-            Message::Vote(kind) => {
-                if let Some(game) = self.current() {
-                    let text = format::voted(&game.name, kind);
+            Message::Vote(pick) => {
+                if let (Some(game), Some((kind, genre_ok))) = (self.current(), pick.ballot()) {
+                    let text = format::voted(&game.name, pick);
                     let gamepalate = Arc::clone(&self.gamepalate);
                     let (id, bet) = (game.id, game.bet);
                     let save = Task::perform(
                         async move {
                             gamepalate
-                                .vote(id, kind, bet)
+                                .vote(id, kind, genre_ok, bet)
                                 .map_err(|error| error.to_string())
                         },
                         Message::VoteSaved,
@@ -283,7 +283,7 @@ impl Discover {
                     return Task::batch([
                         save,
                         self.show_toast(text),
-                        self.flash(Pick::Vote(kind)),
+                        self.flash(pick),
                         self.advance(),
                     ]);
                 }
@@ -549,16 +549,19 @@ impl Discover {
             .align_y(Center)
         });
         let flashed = self.flash.as_ref().map(|flash| flash.pick);
-        let elsewhere_hours = self.gamepalate.elsewhere_hours();
+        let (would_try_hours, elsewhere_hours) = (
+            self.gamepalate.would_try_hours(),
+            self.gamepalate.elsewhere_hours(),
+        );
         let votes = game::vote_buttons(|key, pick| {
             let message = match pick {
-                Pick::Vote(kind) => Message::Vote(kind),
                 Pick::Played => Message::Played,
+                pick => Message::Vote(pick),
             };
             game::vote_button(
                 key,
                 pick,
-                game::tip(pick, elsewhere_hours),
+                game::tip(pick, would_try_hours, elsewhere_hours),
                 compact,
                 vote_width,
                 game.is_some().then_some(message),
@@ -1071,8 +1074,8 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         }
         Key::Character(key) => game::pick_key(key.as_str())
             .map(|pick| match pick {
-                Pick::Vote(kind) => Message::Vote(kind),
                 Pick::Played => Message::Played,
+                pick => Message::Vote(pick),
             })
             .or_else(|| game::link_key(key.as_str()).map(Message::Open)),
         Key::Named(_) | Key::Unidentified => None,
@@ -1089,13 +1092,16 @@ mod tests {
     fn votes_with_one_and_three_and_marks_played_with_four() {
         assert!(matches!(
             key_message(pressed(Key::Character("1".into()))),
-            Some(Message::Vote(VoteKind::WouldTry))
+            Some(Message::Vote(Pick::Vote(VoteKind::WouldTry)))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("2".into()))),
+            Some(Message::Vote(Pick::NotThisOne))
         ));
         assert!(matches!(
             key_message(pressed(Key::Character("4".into()))),
             Some(Message::Played)
         ));
-        assert!(key_message(pressed(Key::Character("2".into()))).is_none());
     }
 
     #[test]
@@ -1267,7 +1273,9 @@ mod tests {
 
     #[test]
     fn the_open_filters_stop_the_keys_of_the_game() {
-        assert!(acts_on_the_game(&Message::Vote(VoteKind::WouldTry)));
+        assert!(acts_on_the_game(&Message::Vote(Pick::Vote(
+            VoteKind::WouldTry
+        ))));
         assert!(acts_on_the_game(&Message::Later));
         assert!(acts_on_the_game(&Message::Showcase(
             showcase::Message::NextScreenshot
@@ -1330,7 +1338,9 @@ mod tests {
 
     #[test]
     fn an_open_popup_stops_the_votes_and_the_next_game() {
-        assert!(stopped_by_popup(&Message::Vote(VoteKind::WouldTry)));
+        assert!(stopped_by_popup(&Message::Vote(Pick::Vote(
+            VoteKind::WouldTry
+        ))));
         assert!(stopped_by_popup(&Message::Later));
         assert!(stopped_by_popup(&Message::Previous));
         assert!(stopped_by_popup(&Message::Open(Link::Steam)));

@@ -10,6 +10,7 @@ pub struct Vote {
     pub date: String,
     pub at: Option<Timestamp>,
     pub bet: bool,
+    pub genre_ok: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -19,22 +20,16 @@ pub enum VoteKind {
     NotForMe,
 }
 
-pub fn cast(
-    votes: &mut Votes,
-    id: AppId,
-    kind: VoteKind,
-    date: String,
-    bet: bool,
-    at: Option<Timestamp>,
-) {
-    let bet = bet || votes.get(&id).is_some_and(|vote| vote.bet);
+/// Saves `vote` in place of the old one. A bet stays a bet; `genre_ok` holds only on a Not for me.
+pub fn cast(votes: &mut Votes, id: AppId, vote: Vote) {
+    let bet = vote.bet || votes.get(&id).is_some_and(|old| old.bet);
+    let genre_ok = vote.genre_ok && vote.kind == VoteKind::NotForMe;
     votes.insert(
         id,
         Vote {
-            kind,
-            date,
-            at,
             bet,
+            genre_ok,
+            ..vote
         },
     );
 }
@@ -97,7 +92,25 @@ mod tests {
     use super::*;
 
     fn cast_on(votes: &mut Votes, kind: VoteKind, bet: bool) {
-        cast(votes, AppId(620), kind, "2026-10-30".to_string(), bet, None);
+        cast(
+            votes,
+            AppId(620),
+            Vote {
+                bet,
+                ..vote(kind, "2026-10-30", None)
+            },
+        );
+    }
+
+    fn not_this_one(votes: &mut Votes) {
+        cast(
+            votes,
+            AppId(620),
+            Vote {
+                genre_ok: true,
+                ..vote(VoteKind::NotForMe, "2026-10-30", None)
+            },
+        );
     }
 
     #[test]
@@ -106,22 +119,14 @@ mod tests {
         cast(
             &mut votes,
             AppId(620),
-            VoteKind::Later,
-            "2026-10-29".to_string(),
-            false,
-            None,
+            vote(VoteKind::Later, "2026-10-29", None),
         );
 
         cast_on(&mut votes, VoteKind::WouldTry, false);
 
         assert_eq!(
             votes[&AppId(620)],
-            Vote {
-                kind: VoteKind::WouldTry,
-                date: "2026-10-30".to_string(),
-                at: None,
-                bet: false,
-            }
+            vote(VoteKind::WouldTry, "2026-10-30", None)
         );
     }
 
@@ -135,15 +140,46 @@ mod tests {
         assert!(votes[&AppId(620)].bet);
     }
 
-    fn cast_at(votes: &mut Votes, id: u32, at: Option<i64>) {
+    #[test]
+    fn not_this_one_is_a_not_for_me_with_the_genre_ok() {
+        let mut votes = Votes::new();
+
+        not_this_one(&mut votes);
+
+        assert_eq!(votes[&AppId(620)].kind, VoteKind::NotForMe);
+        assert!(votes[&AppId(620)].genre_ok);
+    }
+
+    #[test]
+    fn the_genre_ok_is_lost_when_the_vote_changes() {
+        for kind in [VoteKind::WouldTry, VoteKind::Later, VoteKind::NotForMe] {
+            let mut votes = Votes::new();
+            not_this_one(&mut votes);
+
+            cast_on(&mut votes, kind, false);
+
+            assert!(!votes[&AppId(620)].genre_ok);
+        }
+    }
+
+    #[test]
+    fn only_a_not_for_me_keeps_the_genre_ok() {
+        let mut votes = Votes::new();
+
         cast(
-            votes,
-            AppId(id),
-            VoteKind::WouldTry,
-            "2026-11-07".to_string(),
-            false,
-            at.map(Timestamp),
+            &mut votes,
+            AppId(620),
+            Vote {
+                genre_ok: true,
+                ..vote(VoteKind::WouldTry, "2026-10-30", None)
+            },
         );
+
+        assert!(!votes[&AppId(620)].genre_ok);
+    }
+
+    fn cast_at(votes: &mut Votes, id: u32, at: Option<i64>) {
+        cast(votes, AppId(id), vote(VoteKind::WouldTry, "2026-11-07", at));
     }
 
     #[test]
@@ -167,10 +203,7 @@ mod tests {
         cast(
             &mut votes,
             AppId(2),
-            VoteKind::Later,
-            "2026-11-07".to_string(),
-            false,
-            Some(Timestamp(now - 1)),
+            vote(VoteKind::Later, "2026-11-07", Some(now - 1)),
         );
 
         assert_eq!(cast_in_last_day(&votes, Timestamp(now)), 1);
@@ -182,6 +215,7 @@ mod tests {
             date: date.to_string(),
             at: at.map(Timestamp),
             bet: false,
+            genre_ok: false,
         }
     }
 
@@ -227,10 +261,7 @@ mod tests {
         cast(
             &mut votes,
             AppId(620),
-            VoteKind::Later,
-            "2026-11-11".to_string(),
-            false,
-            Some(Timestamp(day)),
+            vote(VoteKind::Later, "2026-11-11", Some(day)),
         );
         let back = Timestamp(day + LATER_DAYS * DAY_MS);
         assert!(standing(&votes, AppId(620), back).is_none());
@@ -238,10 +269,7 @@ mod tests {
         cast(
             &mut votes,
             AppId(620),
-            VoteKind::Later,
-            "2026-12-11".to_string(),
-            false,
-            Some(back),
+            vote(VoteKind::Later, "2026-12-11", Some(back.0)),
         );
 
         assert!(standing(&votes, AppId(620), back).is_some());
@@ -255,19 +283,13 @@ mod tests {
         cast(
             &mut votes,
             AppId(620),
-            VoteKind::Later,
-            "2026-11-11".to_string(),
-            false,
-            Some(Timestamp(day)),
+            vote(VoteKind::Later, "2026-11-11", Some(day)),
         );
 
         cast(
             &mut votes,
             AppId(620),
-            VoteKind::NotForMe,
-            "2026-11-11".to_string(),
-            false,
-            Some(Timestamp(day + 1)),
+            vote(VoteKind::NotForMe, "2026-11-11", Some(day + 1)),
         );
 
         let far = Timestamp(day + 2 * LATER_DAYS * DAY_MS);

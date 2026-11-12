@@ -257,7 +257,7 @@ pub fn few_reviews(reviews: &Reviews, quality: f64) -> Option<String> {
 }
 
 pub fn bet(every: usize) -> String {
-    format!("A game your votes would skip. 1 in {every} is a Bet.")
+    format!("A game your votes would rank low. 1 in {every} is a Bet.")
 }
 
 pub fn screenshot_position(index: usize, count: usize) -> String {
@@ -316,9 +316,20 @@ pub fn vote(kind: VoteKind) -> &'static str {
 pub fn pick(pick: Pick) -> &'static str {
     match pick {
         Pick::Vote(kind) => vote(kind),
+        Pick::NotThisOne => "Not this one",
         Pick::Played => "Played, liked it",
     }
 }
+
+pub fn would_try_tip(hours: f64) -> String {
+    format!("Counts as {hours} h of play in your taste. Stays in Votes for when it's on sale.")
+}
+
+pub const NOT_THIS_ONE_TIP: &str =
+    "You like this kind of game, just not this one. It won't come back.";
+
+pub const NOT_FOR_ME_TIP: &str =
+    "Not your kind of game, or you played it and didn't like it. It won't come back.";
 
 pub fn later_tip(days: i64) -> String {
     format!("Back in Discover in {days} days")
@@ -336,8 +347,8 @@ pub fn elsewhere_text(name: &str, played: bool) -> String {
     }
 }
 
-pub fn voted(name: &str, kind: VoteKind) -> String {
-    format!("{name}: voted {}", vote(kind))
+pub fn voted(name: &str, voted: Pick) -> String {
+    format!("{name}: voted {}", pick(voted))
 }
 
 pub fn voted_day(date: &str, today: Date) -> String {
@@ -766,7 +777,10 @@ mod tests {
 
     #[test]
     fn says_how_often_a_bet_comes() {
-        assert_eq!(bet(5), "A game your votes would skip. 1 in 5 is a Bet.");
+        assert_eq!(
+            bet(10),
+            "A game your votes would rank low. 1 in 10 is a Bet."
+        );
     }
 
     #[test]
@@ -837,7 +851,14 @@ mod tests {
 
     #[test]
     fn says_what_was_voted() {
-        assert_eq!(voted("INFRA", VoteKind::WouldTry), "INFRA: voted Would try");
+        assert_eq!(
+            voted("INFRA", Pick::Vote(VoteKind::WouldTry)),
+            "INFRA: voted Would try"
+        );
+        assert_eq!(
+            voted("Firewatch", Pick::NotThisOne),
+            "Firewatch: voted Not this one"
+        );
     }
 
     #[test]

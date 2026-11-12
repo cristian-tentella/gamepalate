@@ -393,6 +393,7 @@ mod tests {
             kind,
             date: "2026-10-01".to_string(),
             bet: false,
+            genre_ok: false,
             at: None,
         }
     }
@@ -595,6 +596,23 @@ mod tests {
                 min_labels: 10,
             }
         );
+    }
+
+    #[test]
+    fn a_not_this_one_counts_as_a_not_for_me_and_its_label() {
+        let mut votes = votes();
+        votes.insert(
+            AppId(1),
+            Vote {
+                genre_ok: true,
+                ..vote(VoteKind::NotForMe)
+            },
+        );
+
+        let view = view_with(&signals(), &votes).votes;
+
+        assert_eq!(view.not_for_me, 2);
+        assert_eq!(view.labels.not_for_me, 2);
     }
 
     #[test]

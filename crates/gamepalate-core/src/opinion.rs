@@ -333,6 +333,7 @@ mod tests {
             kind,
             date: "2026-10-01".to_string(),
             bet: false,
+            genre_ok: false,
             at: None,
         }
     }

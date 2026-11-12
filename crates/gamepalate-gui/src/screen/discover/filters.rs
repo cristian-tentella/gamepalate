@@ -288,7 +288,7 @@ impl Panel {
             text(INFO)
                 .font(font::ICONS)
                 .size(font::icon(font::NOTE_SIZE)),
-            container(text("Games your votes would skip").size(font::NOTE_SIZE))
+            container(text("Games your votes would rank low").size(font::NOTE_SIZE))
                 .padding([6, 10])
                 .style(style::popup),
             tooltip::Position::Bottom,

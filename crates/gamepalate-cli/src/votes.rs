@@ -18,6 +18,9 @@ pub fn run(files: &DataFiles) {
         .map(|(&id, vote)| {
             let unnamed = game_name(id, &files.catalog, &files.off_catalog) == format!("#{}", id.0);
             let mut game = game_label(id, &files.catalog, &files.off_catalog);
+            if vote.genre_ok {
+                game.push_str(" [genre ok]");
+            }
             if vote.bet {
                 game.push_str(" [bet]");
             }

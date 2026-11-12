@@ -1006,7 +1006,7 @@ fn config_note(key: ConfigKey) -> &'static str {
             "What the Discover filter starts from"
         }
         ConfigKey::BetEvery => {
-            "One game in this many is one your votes would skip, 0 turns them off"
+            "One game in this many is one your votes would rank low, 0 turns them off"
         }
         ConfigKey::QualityWeight => "How much review scores count next to your taste, from 0 to 1",
         ConfigKey::VotesWeight => "How much your votes move the order, 0 turns it off",

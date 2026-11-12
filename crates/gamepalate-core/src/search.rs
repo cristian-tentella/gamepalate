@@ -920,6 +920,7 @@ mod tests {
             date: "2026-11-10".to_string(),
             at: None,
             bet: false,
+            genre_ok: false,
         };
         let votes: Votes = (10..20)
             .map(|id| (AppId(id), vote(VoteKind::WouldTry)))
@@ -1037,6 +1038,7 @@ mod tests {
             date: "2026-10-01".to_string(),
             at: Some(Timestamp(at)),
             bet: false,
+            genre_ok: false,
         };
         let votes = Votes::from([
             (AppId(2), later(NOW.0 - day)),

@@ -171,7 +171,13 @@ impl Gamepalate {
         .inspect_err(failed("could not recommend"))
     }
 
-    pub fn vote(&self, id: AppId, kind: VoteKind, bet: bool) -> Result<(), VoteError> {
+    pub fn vote(
+        &self,
+        id: AppId,
+        kind: VoteKind,
+        genre_ok: bool,
+        bet: bool,
+    ) -> Result<(), VoteError> {
         let mut votes = self.lock_votes();
         let now = jiff::Zoned::now();
         let date = now.date().to_string();
@@ -189,6 +195,7 @@ impl Gamepalate {
                 date,
                 at: Some(at),
                 bet,
+                genre_ok,
             },
             name,
         )
@@ -546,6 +553,10 @@ impl Gamepalate {
         header_url(id)
     }
 
+    pub fn would_try_hours(&self) -> f64 {
+        self.files.config.signals.would_try_hours
+    }
+
     pub fn elsewhere_hours(&self) -> f64 {
         self.files.config.signals.elsewhere_hours
     }
@@ -647,7 +658,7 @@ fn saved_vote(
     name: impl Fn(AppId) -> Option<String>,
 ) -> Result<Votes, VoteError> {
     let mut changed = votes.clone();
-    cast(&mut changed, id, vote.kind, vote.date, vote.bet, vote.at);
+    cast(&mut changed, id, vote);
     save_votes(path, &changed, name).map_err(|source| VoteError {
         path: path.to_path_buf(),
         source,
@@ -727,6 +738,7 @@ mod tests {
                 date: "2026-10-30".to_string(),
                 at: Some(Timestamp(1_762_500_000_000)),
                 bet: true,
+                genre_ok: false,
             },
             |_| Some("Portal 2".to_string()),
         )
@@ -768,18 +780,24 @@ mod tests {
         cast(
             &mut votes,
             AppId(1),
-            VoteKind::Later,
-            "2026-10-01".to_string(),
-            false,
-            None,
+            Vote {
+                kind: VoteKind::Later,
+                date: "2026-10-01".to_string(),
+                at: None,
+                bet: false,
+                genre_ok: false,
+            },
         );
         cast(
             &mut votes,
             AppId(2),
-            VoteKind::WouldTry,
-            "2026-10-30".to_string(),
-            true,
-            None,
+            Vote {
+                kind: VoteKind::WouldTry,
+                date: "2026-10-30".to_string(),
+                at: None,
+                bet: true,
+                genre_ok: false,
+            },
         );
         let mut catalog_game = Game {
             id: AppId(1),
@@ -824,10 +842,13 @@ mod tests {
         cast(
             &mut votes,
             AppId(72850),
-            VoteKind::NotForMe,
-            "2026-10-01".to_string(),
-            false,
-            None,
+            Vote {
+                kind: VoteKind::NotForMe,
+                date: "2026-10-01".to_string(),
+                at: None,
+                bet: false,
+                genre_ok: false,
+            },
         );
         let off_catalog = OffCatalogGames::from([(
             AppId(72850),

@@ -95,7 +95,7 @@ pub enum Message {
     Previous,
     Next,
     Scrolled(Viewport),
-    Vote(VoteKind),
+    Vote(Pick),
     VoteSaved(Result<(), String>),
     Played,
     PlayedSaved(AppId, String, Result<bool, String>),
@@ -194,15 +194,15 @@ impl Votes {
             Message::Scrolled(viewport) => {
                 self.viewport = Some((viewport.absolute_offset().y, viewport.bounds().height));
             }
-            Message::Vote(kind) => {
-                if let Some(game) = self.current() {
-                    let text = format::voted(&game.name, kind);
+            Message::Vote(pick) => {
+                if let (Some(game), Some((kind, genre_ok))) = (self.current(), pick.ballot()) {
+                    let text = format::voted(&game.name, pick);
                     let id = game.id;
                     let gamepalate = Arc::clone(&self.gamepalate);
                     let save = Task::perform(
                         async move {
                             gamepalate
-                                .vote(id, kind, false)
+                                .vote(id, kind, genre_ok, false)
                                 .map_err(|error| error.to_string())
                         },
                         Message::VoteSaved,
@@ -454,7 +454,7 @@ impl Votes {
         };
         let voted = rich_text![
             span("Voted "),
-            span(format::vote(game.vote.kind)).font(font::SEMIBOLD),
+            span(format::pick(Pick::of(&game.vote))).font(font::SEMIBOLD),
             span(format!(" · {}", format::voted_day(&game.vote.date, today))),
         ]
         .size(font::BAR_SIZE)
@@ -503,19 +503,20 @@ impl Votes {
     fn vote_row(&self, width: f32) -> Element<'_, Message> {
         let game = self.current();
         let vote_width = game::vote_width(width - game::LINKS_WIDTH, 0.0);
-        let elsewhere_hours = self.gamepalate.elsewhere_hours();
+        let (would_try_hours, elsewhere_hours) = (
+            self.gamepalate.would_try_hours(),
+            self.gamepalate.elsewhere_hours(),
+        );
         let votes = game::vote_buttons(|key, pick| {
-            let (message, current) = match pick {
-                Pick::Vote(kind) => (
-                    Message::Vote(kind),
-                    game.is_some_and(|game| game.vote.kind == kind),
-                ),
-                Pick::Played => (Message::Played, false),
+            let message = match pick {
+                Pick::Played => Message::Played,
+                pick => Message::Vote(pick),
             };
+            let current = game.is_some_and(|game| Pick::of(&game.vote) == pick);
             game::vote_button(
                 key,
                 pick,
-                game::tip(pick, elsewhere_hours),
+                game::tip(pick, would_try_hours, elsewhere_hours),
                 true,
                 vote_width,
                 game.is_some().then_some(message),
@@ -835,8 +836,8 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         }
         Key::Character(character) => game::pick_key(&character)
             .map(|pick| match pick {
-                Pick::Vote(kind) => Message::Vote(kind),
                 Pick::Played => Message::Played,
+                pick => Message::Vote(pick),
             })
             .or_else(|| game::link_key(&character).map(Message::Open)),
         Key::Named(_) | Key::Unidentified => None,
@@ -858,6 +859,7 @@ mod tests {
                 kind,
                 date: date.to_string(),
                 bet,
+                genre_ok: false,
                 at: None,
             },
             price: None,
@@ -979,6 +981,16 @@ mod tests {
     }
 
     #[test]
+    fn a_not_this_one_is_in_the_not_for_me_filter() {
+        let mut games = games();
+        let mut not_this_one = voted(6, "Firewatch", VoteKind::NotForMe, "2026-11-13", false);
+        not_this_one.vote.genre_ok = true;
+        games.insert(not_this_one.id, not_this_one);
+
+        assert_eq!(count(&games, Filter::Kind(VoteKind::NotForMe), false), 2);
+    }
+
+    #[test]
     fn the_bets_summary_compares_with_the_votes_since_the_first_bet() {
         let mut games = games();
         games.extend(by_id(vec![voted(
@@ -1097,7 +1109,11 @@ mod tests {
     fn votes_with_the_numbers_and_opens_the_links_with_q_w_e() {
         assert!(matches!(
             key_message(pressed(Key::Character("3".into()))),
-            Some(Message::Vote(VoteKind::NotForMe))
+            Some(Message::Vote(Pick::Vote(VoteKind::NotForMe)))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("2".into()))),
+            Some(Message::Vote(Pick::NotThisOne))
         ));
         assert!(matches!(
             key_message(pressed(Key::Character("4".into()))),
@@ -1189,7 +1205,9 @@ mod tests {
 
     #[test]
     fn an_open_popup_stops_the_votes_and_the_links() {
-        assert!(stopped_by_popup(&Message::Vote(VoteKind::WouldTry)));
+        assert!(stopped_by_popup(&Message::Vote(Pick::Vote(
+            VoteKind::WouldTry
+        ))));
         assert!(stopped_by_popup(&Message::Open(Link::Hltb)));
         assert!(stopped_by_popup(&Message::FocusSearch));
         assert!(!stopped_by_popup(&Message::Showcase(

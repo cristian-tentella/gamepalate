@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use gamepalate_app::{Currency, LATER_DAYS, Price, Reviews, VoteKind};
+use gamepalate_app::{Currency, LATER_DAYS, Price, Reviews, Vote, VoteKind};
 use iced::{
     Center, Element, Fill, Length, never, padding,
     widget::{
@@ -13,11 +13,32 @@ use crate::{font, format, style};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Pick {
     Vote(VoteKind),
+    NotThisOne,
     Played,
 }
 
-pub const PICKS: [(&str, Pick); 3] = [
+impl Pick {
+    pub fn of(vote: &Vote) -> Pick {
+        if vote.genre_ok {
+            Pick::NotThisOne
+        } else {
+            Pick::Vote(vote.kind)
+        }
+    }
+
+    /// The kind of vote the pick saves, and whether the genre is fine.
+    pub fn ballot(self) -> Option<(VoteKind, bool)> {
+        match self {
+            Pick::Vote(kind) => Some((kind, false)),
+            Pick::NotThisOne => Some((VoteKind::NotForMe, true)),
+            Pick::Played => None,
+        }
+    }
+}
+
+pub const PICKS: [(&str, Pick); 4] = [
     ("1", Pick::Vote(VoteKind::WouldTry)),
+    ("2", Pick::NotThisOne),
     ("3", Pick::Vote(VoteKind::NotForMe)),
     ("4", Pick::Played),
 ];
@@ -183,17 +204,20 @@ pub fn reviews<'a, Message: 'a>(reviews: &Reviews) -> Element<'a, Message> {
     }
 }
 
-pub fn tip(pick: Pick, elsewhere_hours: f64) -> Option<String> {
+pub fn tip(pick: Pick, would_try_hours: f64, elsewhere_hours: f64) -> String {
     match pick {
-        Pick::Vote(_) => None,
-        Pick::Played => Some(format::played_tip(elsewhere_hours)),
+        Pick::Vote(VoteKind::WouldTry) => format::would_try_tip(would_try_hours),
+        Pick::NotThisOne => format::NOT_THIS_ONE_TIP.to_string(),
+        Pick::Vote(VoteKind::NotForMe) => format::NOT_FOR_ME_TIP.to_string(),
+        Pick::Vote(VoteKind::Later) => format::later_tip(LATER_DAYS),
+        Pick::Played => format::played_tip(elsewhere_hours),
     }
 }
 
 pub fn vote_button<'a, Message: Clone + 'a>(
     key: &'a str,
     pick: Pick,
-    tip: Option<String>,
+    tip: String,
     compact: bool,
     width: Length,
     on_press: Option<Message>,
@@ -234,17 +258,14 @@ pub fn vote_button<'a, Message: Clone + 'a>(
         .style(style::vote(flashed))
         .on_press_maybe(on_press);
 
-    match tip {
-        Some(tip) => tooltip(
-            button,
-            container(text(tip).size(font::NOTE_SIZE))
-                .padding([6, 10])
-                .style(style::popup),
-            tooltip::Position::Top,
-        )
-        .into(),
-        None => button.into(),
-    }
+    tooltip(
+        button,
+        container(text(tip).size(font::NOTE_SIZE))
+            .padding([6, 10])
+            .style(style::popup),
+        tooltip::Position::Top,
+    )
+    .into()
 }
 
 pub fn keycap<'a, Message: 'a>(key: &'a str) -> Container<'a, Message> {
@@ -296,11 +317,17 @@ pub fn moves<'a, Message: Clone + 'a>(
 pub fn vote_buttons<'a, Message: 'a>(
     button: impl Fn(&'a str, Pick) -> Element<'a, Message>,
 ) -> Row<'a, Message> {
-    let [would_try, not_for_me, played] = PICKS.map(|(key, pick)| button(key, pick));
+    let [would_try, not_this_one, not_for_me, played] = PICKS.map(|(key, pick)| button(key, pick));
 
-    row![would_try, not_for_me, style::divider(), played]
-        .spacing(VOTE_SPACING)
-        .align_y(Center)
+    row![
+        would_try,
+        not_this_one,
+        not_for_me,
+        style::divider(),
+        played
+    ]
+    .spacing(VOTE_SPACING)
+    .align_y(Center)
 }
 
 pub fn vote_width(available: f32, beside: f32) -> Length {
@@ -350,16 +377,16 @@ mod tests {
 
     #[test]
     fn the_vote_buttons_stop_growing_once_there_is_room() {
-        assert_eq!(vote_width(580.0, 0.0), Length::Fixed(VOTE_WIDTH));
-        assert_eq!(vote_width(540.0, 0.0), Length::Fill);
-        assert_eq!(vote_width(776.0, 180.0), Length::Fixed(VOTE_WIDTH));
-        assert_eq!(vote_width(720.0, 180.0), Length::Fill);
+        assert_eq!(vote_width(760.0, 0.0), Length::Fixed(VOTE_WIDTH));
+        assert_eq!(vote_width(720.0, 0.0), Length::Fill);
+        assert_eq!(vote_width(940.0, 180.0), Length::Fixed(VOTE_WIDTH));
+        assert_eq!(vote_width(900.0, 180.0), Length::Fill);
     }
 
     #[test]
-    fn the_keys_one_three_and_four_are_the_votes_and_played() {
+    fn the_keys_one_to_four_are_the_votes_and_played() {
         assert_eq!(pick_key("1"), Some(Pick::Vote(VoteKind::WouldTry)));
-        assert_eq!(pick_key("2"), None);
+        assert_eq!(pick_key("2"), Some(Pick::NotThisOne));
         assert_eq!(pick_key("3"), Some(Pick::Vote(VoteKind::NotForMe)));
         assert_eq!(pick_key("4"), Some(Pick::Played));
         assert_eq!(pick_key("5"), None);
@@ -377,11 +404,52 @@ mod tests {
     }
 
     #[test]
-    fn only_played_has_a_tip() {
-        assert_eq!(tip(Pick::Vote(VoteKind::WouldTry), 20.0), None);
+    fn two_saves_a_not_for_me_with_the_genre_ok() {
+        assert_eq!(Pick::NotThisOne.ballot(), Some((VoteKind::NotForMe, true)));
         assert_eq!(
-            tip(Pick::Played, 20.0).as_deref(),
-            Some("Counts as 20 h of play, like a game in your Library")
+            Pick::Vote(VoteKind::NotForMe).ballot(),
+            Some((VoteKind::NotForMe, false))
+        );
+        assert_eq!(Pick::Played.ballot(), None);
+    }
+
+    #[test]
+    fn a_not_for_me_with_the_genre_ok_is_shown_as_not_this_one() {
+        let mut vote = Vote {
+            kind: VoteKind::NotForMe,
+            date: "2026-11-13".to_string(),
+            at: None,
+            bet: false,
+            genre_ok: false,
+        };
+        assert_eq!(Pick::of(&vote), Pick::Vote(VoteKind::NotForMe));
+
+        vote.genre_ok = true;
+
+        assert_eq!(Pick::of(&vote), Pick::NotThisOne);
+    }
+
+    #[test]
+    fn every_vote_has_a_tip_with_the_hours_of_the_config() {
+        assert_eq!(
+            tip(Pick::Vote(VoteKind::WouldTry), 5.0, 20.0),
+            "Counts as 5 h of play in your taste. Stays in Votes for when it's on sale."
+        );
+        assert_eq!(
+            tip(Pick::NotThisOne, 5.0, 20.0),
+            "You like this kind of game, just not this one. It won't come back."
+        );
+        assert_eq!(
+            tip(Pick::Vote(VoteKind::NotForMe), 5.0, 20.0),
+            "Not your kind of game, or you played it and didn't like it. It won't come back."
+        );
+        assert_eq!(
+            tip(Pick::Played, 5.0, 20.0),
+            "Counts as 20 h of play, like a game in your Library"
+        );
+        assert_eq!(
+            tip(Pick::Vote(VoteKind::WouldTry), 3.0, 20.0),
+            "Counts as 3 h of play in your taste. Stays in Votes for when it's on sale."
         );
     }
 

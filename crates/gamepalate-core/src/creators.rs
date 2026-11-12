@@ -200,6 +200,7 @@ mod tests {
                 kind: VoteKind::WouldTry,
                 date: "2026-11-08".to_string(),
                 bet: false,
+                genre_ok: false,
                 at: None,
             },
         )]);

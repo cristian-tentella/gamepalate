@@ -117,6 +117,7 @@ mod tests {
             date: "2026-11-11".to_string(),
             at: Some(Timestamp(CAST)),
             bet: false,
+            genre_ok: false,
         }
     }
 
