@@ -1,5 +1,3 @@
-use std::process::Command;
-
 use gamepalate_app::{Currency, LATER_DAYS, Price, Reviews, Vote, VoteKind};
 use iced::{
     Center, Element, Fill, Length, Size, never, padding,
@@ -104,13 +102,7 @@ pub fn open(link: Link, name: &str, store_url: &str) {
         Link::Eneba => format::eneba_url(name),
         Link::Hltb => format::hltb_url(name),
     };
-    open_url(&url);
-}
-
-pub fn open_url(url: &str) {
-    let _ = Command::new("rundll32")
-        .args(["url.dll,FileProtocolHandler", url])
-        .spawn();
+    super::open(url);
 }
 
 pub fn title<'a, Message: 'a>(name: &'a str) -> Element<'a, Message> {

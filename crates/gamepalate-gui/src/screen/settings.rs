@@ -2,7 +2,6 @@ mod account;
 mod config;
 
 use std::{
-    process::Command,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -24,7 +23,7 @@ use crate::{
     app::Page,
     font, format,
     new_version::{NewVersions, Offer},
-    screen::game::open_url,
+    screen::open,
     screen::setup::PRIVACY_PAGE,
     style,
 };
@@ -197,23 +196,15 @@ impl Settings {
             | Message::RegionSaved(_) => self.update_account(message),
             Message::Theme(choice) => Action::Theme(choice),
             Message::OpenFolder => {
-                let _ = Command::new("explorer")
-                    .arg(&self.settings.data_dir)
-                    .spawn();
+                open(&self.settings.data_dir);
                 Action::None
             }
             Message::OpenPrivacy => {
-                let _ = Command::new("rundll32")
-                    .arg("url.dll,FileProtocolHandler")
-                    .arg(PRIVACY_PAGE)
-                    .spawn();
+                open(PRIVACY_PAGE);
                 Action::None
             }
             Message::OpenConfig => {
-                let _ = Command::new("rundll32")
-                    .arg("url.dll,FileProtocolHandler")
-                    .arg(self.settings.data_dir.join("config.toml"))
-                    .spawn();
+                open(self.settings.data_dir.join("config.toml"));
                 Action::None
             }
             Message::ClearCache => {
@@ -267,7 +258,7 @@ impl Settings {
             Message::CheckNow => Action::CheckNewVersion,
             Message::CheckAtStartup(check) => Action::CheckAtStartup(check),
             Message::OpenRelease(page) => {
-                open_url(&page);
+                open(page);
                 Action::None
             }
             Message::Back => self.close(),

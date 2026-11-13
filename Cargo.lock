@@ -1948,6 +1948,7 @@ dependencies = [
  "iced",
  "image",
  "jiff",
+ "open",
  "tauri-winres",
  "tempfile",
  "tokio",

@@ -1,6 +1,5 @@
 use std::{
     cmp::Ordering,
-    process::Command,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -244,7 +243,7 @@ impl Setup {
             Message::OpenFolder => {
                 if let Some(dir) = &self.first_run.data_dir {
                     let _ = std::fs::create_dir_all(dir);
-                    let _ = Command::new("explorer").arg(dir).spawn();
+                    super::open(dir);
                 }
                 Action::None
             }
@@ -707,9 +706,7 @@ fn ready_title(ready: Option<&Ready>) -> &'static str {
 }
 
 fn open_link(url: &str) -> Action {
-    let _ = Command::new("rundll32")
-        .args(["url.dll,FileProtocolHandler", url])
-        .spawn();
+    super::open(url);
     Action::None
 }
 

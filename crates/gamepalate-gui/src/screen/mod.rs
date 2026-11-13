@@ -1,8 +1,8 @@
 use std::{
+    ffi::OsStr,
     fs::OpenOptions,
     io::{self, ErrorKind, Write},
     path::Path,
-    process::Command,
     time::Duration,
 };
 
@@ -44,10 +44,15 @@ pub enum Screen {
 pub(crate) fn open_families(data_dir: &Path) {
     let path = data_dir.join("families.toml");
     if create_missing(&path).is_ok() {
-        let _ = Command::new("rundll32")
-            .arg("url.dll,FileProtocolHandler")
-            .arg(path)
-            .spawn();
+        open(path);
+    }
+}
+
+/// Opens a link, a folder or a file with what the system uses for it.
+pub(crate) fn open(target: impl AsRef<OsStr>) {
+    let target = target.as_ref();
+    if let Err(error) = open::that_detached(target) {
+        tracing::warn!("could not open {}: {error}", target.display());
     }
 }
 
