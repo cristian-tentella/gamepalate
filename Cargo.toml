@@ -2,6 +2,13 @@
 resolver = "3"
 members = ["crates/*"]
 
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

@@ -16,3 +16,6 @@ toml_edit = "0.25.17"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[lints]
+workspace = true
