@@ -5,7 +5,7 @@ use gamepalate_app::{
     reviews::{Block, Language, Languages, Order, Review, ReviewQuery, Span, Verdict},
 };
 use iced::{
-    Center, Element, Task, never, padding,
+    Center, Element, Fill, Task, never,
     widget::{
         button, column, container, pick_list, rich_text, row, sensor, span, text, text_input,
     },
@@ -18,12 +18,13 @@ use super::{
 };
 use crate::{font, format, style};
 
-const LINE_HEIGHT: f32 = 1.5;
-const REVIEW_SPACING: f32 = 24.0;
-const BLOCK_SPACING: f32 = 12.0;
+const LINE_HEIGHT: f32 = 1.6;
+const REVIEW_SPACING: f32 = 16.0;
+const BLOCK_SPACING: f32 = 14.0;
+const CARD_PADDING: f32 = 20.0;
 const BULLET_WIDTH: f32 = 18.0;
 const BULLET: &str = "•";
-const QUOTE_INSET: f32 = 18.0;
+const QUOTE_PADDING: [u16; 2] = [10, 14];
 const LOAD_AHEAD: f32 = 600.0;
 const FILTER_SPACING: f32 = 16.0;
 const THUMB_UP: char = '\u{E8DC}';
@@ -222,20 +223,20 @@ fn heading(review: &Review, now: Timestamp) -> Element<'_, Message> {
     let verdict = text(format::verdict(review.recommended))
         .size(font::NOTE_SIZE)
         .font(font::SEMIBOLD);
-    let verdict = if review.recommended {
-        row![thumb.style(style::accent), verdict.style(style::accent)]
-    } else {
-        row![thumb, verdict]
-    };
+    let verdict = container(row![thumb, verdict].spacing(6).align_y(Center))
+        .padding([3, 10])
+        .style(style::review_verdict(review.recommended));
 
     row![
-        verdict.spacing(6).align_y(Center),
-        text("·").size(font::NOTE_SIZE).style(style::muted),
+        verdict,
         text(format::review_facts(review, now))
             .size(font::NOTE_SIZE)
             .style(style::muted),
     ]
-    .spacing(6)
+    .spacing(12)
+    .align_y(Center)
+    .wrap()
+    .vertical_spacing(6)
     .into()
 }
 
@@ -299,10 +300,7 @@ impl Showcase {
                 sheet_note("No helpful reviews in the past year, so these are the most recent")
             }))
             .spacing(REVIEW_SPACING);
-        for (index, review) in reviews.iter().enumerate() {
-            if index > 0 {
-                body = body.push(style::separator());
-            }
+        for review in reviews {
             body = body.push(self.review(review, now));
         }
 
@@ -329,11 +327,16 @@ impl Showcase {
                 .on_press(Message::ExpandReview(review.id.clone()))
         });
 
-        column![heading(review, now)]
-            .push(column(blocks).spacing(BLOCK_SPACING))
-            .push(more)
-            .spacing(BLOCK_SPACING)
-            .into()
+        container(
+            column![heading(review, now)]
+                .push(column(blocks).spacing(BLOCK_SPACING))
+                .push(more)
+                .spacing(BLOCK_SPACING),
+        )
+        .padding(CARD_PADDING)
+        .width(Fill)
+        .style(style::review_card)
+        .into()
     }
 
     fn review_block<'a>(
@@ -356,7 +359,9 @@ impl Showcase {
             ]
             .into(),
             Block::Quote(spans) => container(paragraph(spans, true))
-                .padding(padding::left(QUOTE_INSET))
+                .padding(QUOTE_PADDING)
+                .width(Fill)
+                .style(style::review_quote)
                 .into(),
             Block::Spoiler(spans) if self.spoilers.contains(&(review.id.clone(), index)) => {
                 paragraph(spans, false)
