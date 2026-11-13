@@ -1,7 +1,4 @@
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
 use gamepalate_app::{AppId, FoundGame, GameStanding, Gamepalate, MIN_SEARCH_CHARS};
 use iced::{
@@ -10,7 +7,7 @@ use iced::{
     padding,
     widget::{
         Id, button, column, container, image, mouse_area, opaque, operation,
-        operation::RelativeOffset, responsive, row, scrollable, space, stack, text, text_input,
+        operation::RelativeOffset, row, scrollable, space, stack, text, text_input,
     },
     window,
 };
@@ -52,6 +49,8 @@ pub struct Search {
     found: Vec<FoundGame>,
     selected: Option<usize>,
     state: State,
+    /// Typed since the panel opened: the late focus leaves the field alone.
+    typed: bool,
     backdrop: Option<Backdrop>,
     now: Option<Instant>,
     capsules: Images<image::Allocation, AppId>,
@@ -62,15 +61,8 @@ enum State {
     #[default]
     Closed,
     /// Waiting for the screenshot of the page, taken before the panel covers it.
-    Opening(Instant),
-    Open(Timing),
-}
-
-/// When each step of the opening happened, for the log.
-#[derive(Clone, Copy)]
-struct Timing {
-    asked: Instant,
-    screenshot: Duration,
+    Opening,
+    Open,
 }
 
 struct Backdrop {
@@ -102,7 +94,7 @@ pub enum Action {
 
 impl std::fmt::Debug for Blurred {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Blurred({:?})", self.took)
+        f.write_str("Blurred")
     }
 }
 
@@ -119,20 +111,19 @@ impl Search {
         match message {
             Message::Toggle if self.is_open() => self.close(),
             Message::Toggle => {
-                let asked = Instant::now();
                 return Action::Run(match window {
                     Some(window) => {
-                        self.state = State::Opening(asked);
+                        self.state = State::Opening;
                         window::screenshot(window).map(Message::Screenshot)
                     }
-                    None => self.show(gamepalate, asked, Duration::ZERO),
+                    None => self.show(gamepalate),
                 });
             }
             Message::Screenshot(screenshot) => {
-                let State::Opening(asked) = self.state else {
+                if !matches!(self.state, State::Opening) {
                     return Action::Run(Task::none());
-                };
-                let shown = self.show(gamepalate, asked, asked.elapsed());
+                }
+                let shown = self.show(gamepalate);
                 let blurred = Task::perform(
                     async move {
                         tokio::task::spawn_blocking(move || backdrop::blur(&screenshot, top)).await
@@ -146,32 +137,27 @@ impl Search {
                 .and_then(Task::done);
                 return Action::Run(Task::batch([shown, blurred]));
             }
+            // The blurred page comes a few milliseconds after the panel: by then the field is
+            // surely in the window, so it gets the focus again unless typing has begun.
             Message::Blurred(blurred) => {
-                if let State::Open(timing) = self.state {
-                    tracing::info!(
-                        "game search: screenshot {} ms, blur {} ms",
-                        timing.screenshot.as_millis(),
-                        blurred.took.as_millis()
-                    );
+                if matches!(self.state, State::Open) {
                     self.backdrop = Some(Backdrop {
                         handle: blurred.handle.clone(),
                         shown: None,
                     });
+                    if !self.typed {
+                        return Action::Run(focus());
+                    }
                 }
             }
             Message::Frame(now) => {
                 self.now = Some(now);
-                if let (State::Open(timing), Some(backdrop)) = (self.state, &mut self.backdrop)
-                    && backdrop.shown.is_none()
-                {
-                    backdrop.shown = Some(now);
-                    tracing::info!(
-                        "game search: blurred page shown {} ms after opening",
-                        now.saturating_duration_since(timing.asked).as_millis()
-                    );
+                if let Some(backdrop) = &mut self.backdrop {
+                    backdrop.shown.get_or_insert(now);
                 }
             }
             Message::Input(text) => {
+                self.typed = true;
                 self.found = gamepalate.find_games(&text);
                 self.text = text;
                 self.selected = None;
@@ -247,8 +233,9 @@ impl Search {
     }
 
     /// The panel over the page, or nothing while the screenshot is on its way.
-    pub fn view(&self) -> Option<Element<'_, Message>> {
-        if !matches!(self.state, State::Open(_)) {
+    /// `area` is the size below the top bar.
+    pub fn view(&self, area: Size) -> Option<Element<'_, Message>> {
+        if !matches!(self.state, State::Open) {
             return None;
         }
         let picture = self.backdrop.as_ref().map(|backdrop| {
@@ -276,7 +263,7 @@ impl Search {
             stack![]
                 .push(picture)
                 .push(veil)
-                .push(responsive(move |size| self.placed(size)))
+                .push(self.placed(area))
                 .into(),
         )
     }
@@ -381,22 +368,14 @@ impl Search {
     }
 
     /// The panel opens with the last text selected, so typing replaces it.
-    fn show(
-        &mut self,
-        gamepalate: &Arc<Gamepalate>,
-        asked: Instant,
-        screenshot: Duration,
-    ) -> Task<Message> {
-        self.state = State::Open(Timing { asked, screenshot });
+    fn show(&mut self, gamepalate: &Arc<Gamepalate>) -> Task<Message> {
+        self.state = State::Open;
+        self.typed = false;
         self.found = gamepalate.find_games(&self.text);
         self.selected = None;
         self.backdrop = None;
 
-        Task::batch([
-            operation::focus(FIELD),
-            operation::select_all(FIELD),
-            self.load_capsules(gamepalate),
-        ])
+        Task::batch([focus(), self.load_capsules(gamepalate)])
     }
 
     fn select(&mut self, selected: Option<usize>) -> Task<Message> {
@@ -442,6 +421,10 @@ impl Search {
             )
         }))
     }
+}
+
+fn focus() -> Task<Message> {
+    Task::batch([operation::focus(FIELD), operation::select_all(FIELD)])
 }
 
 fn keycap<'a>(label: &'a str) -> Element<'a, Message> {
@@ -513,6 +496,8 @@ pub(super) fn standing_text(standing: GameStanding) -> String {
 mod tests {
     use super::*;
 
+    const AREA: Size = Size::new(1280.0, 755.0);
+
     fn found(count: u32) -> Vec<FoundGame> {
         (1..=count)
             .map(|id| FoundGame {
@@ -527,10 +512,7 @@ mod tests {
         Search {
             text: "game".to_string(),
             found: found(count),
-            state: State::Open(Timing {
-                asked: Instant::now(),
-                screenshot: Duration::ZERO,
-            }),
+            state: State::Open,
             ..Search::default()
         }
     }
@@ -616,17 +598,17 @@ mod tests {
     #[test]
     fn the_panel_waits_for_the_screenshot() {
         let mut search = Search {
-            state: State::Opening(Instant::now()),
+            state: State::Opening,
             ..Search::default()
         };
 
         assert!(search.is_open());
-        assert!(search.view().is_none());
+        assert!(search.view(AREA).is_none());
 
         search.state = State::Closed;
         assert!(!search.is_open());
-        assert!(search.view().is_none());
-        assert!(open_with(1).view().is_some());
+        assert!(search.view(AREA).is_none());
+        assert!(open_with(1).view(AREA).is_some());
     }
 
     #[test]

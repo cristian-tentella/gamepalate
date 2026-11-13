@@ -554,7 +554,14 @@ impl App {
                     .as_ref()
                     .map(|page| page.view(self.scale).map(Message::GamePage)),
             )
-            .push(self.search.view().map(|search| search.map(Message::Search)));
+            .push(
+                self.search
+                    .view(Size::new(
+                        self.resized.width,
+                        self.resized.height - SEARCH_TOP,
+                    ))
+                    .map(|search| search.map(Message::Search)),
+            );
 
         let app = column![
             bar,

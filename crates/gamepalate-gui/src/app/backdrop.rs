@@ -16,12 +16,10 @@ pub const FADE: Duration = Duration::from_millis(120);
 
 pub struct Blurred {
     pub handle: Handle,
-    pub took: Duration,
 }
 
 /// The part of the window below `top`, in logical pixels, shrunk and blurred.
 pub fn blur(screenshot: &Screenshot, top: f32) -> Blurred {
-    let started = Instant::now();
     let below = below_the_bar(screenshot, top);
     let start = below.y as usize * below.width as usize * 4;
     let (small, small_width, small_height) =
@@ -32,7 +30,6 @@ pub fn blur(screenshot: &Screenshot, top: f32) -> Blurred {
 
     Blurred {
         handle: Handle::from_rgba(small_width, small_height, blurred.into_raw()),
-        took: started.elapsed(),
     }
 }
 
