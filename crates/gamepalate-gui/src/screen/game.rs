@@ -330,11 +330,13 @@ fn segment(pick: Pick) -> style::Segment {
     }
 }
 
-/// The three verdicts as one segmented group, then Played on its own.
+/// The three verdicts as one segmented group, then Played on its own unless `played` is false.
 pub fn vote_buttons<'a, Message: 'a>(
     button: impl Fn(&'a str, Pick) -> Element<'a, Message>,
+    played: bool,
 ) -> Row<'a, Message> {
-    let [would_try, not_this_one, not_for_me, played] = PICKS.map(|(key, pick)| button(key, pick));
+    let [would_try, not_this_one, not_for_me, played_button] =
+        PICKS.map(|(key, pick)| button(key, pick));
     let seam = || rule::vertical(1).style(style::vote_seam);
     let verdicts =
         container(row![would_try, seam(), not_this_one, seam(), not_for_me].height(Fill))
@@ -342,7 +344,8 @@ pub fn vote_buttons<'a, Message: 'a>(
             .padding(1)
             .style(style::vote_group);
 
-    row![verdicts, played]
+    row![verdicts]
+        .push(played.then_some(played_button))
         .spacing(GROUP_SPACING)
         .align_y(Center)
 }

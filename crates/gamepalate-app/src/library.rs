@@ -6,12 +6,13 @@ use std::{
 use gamepalate_core::{
     corrections::Corrections,
     effective_hours::{HoursSource, hours_by_source},
+    game::{Price, Reviews},
     ids::AppId,
     profile::{heaviest_tags, profile_games},
     search::SearchInputs,
     taste::{game_name, signals_taste},
     timestamp::Timestamp,
-    votes::{VoteKind, standing},
+    votes::{Vote, VoteKind, standing},
 };
 use gamepalate_store::{
     corrections::CorrectionsError,
@@ -226,17 +227,37 @@ pub struct FoundGame {
     pub standing: Option<GameStanding>,
 }
 
+/// A game of the catalog opened on its own, with everything its page can change.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GameView {
+    pub id: AppId,
+    pub name: String,
+    pub price: Price,
+    pub reviews: Reviews,
+    pub store_url: String,
+    pub standing: Option<GameStanding>,
+    /// The vote that still counts: a Later that is over is none.
+    pub vote: Option<Vote>,
+    pub in_library: bool,
+    pub played_elsewhere: bool,
+    /// The families the game is not in yet.
+    pub other_families: Vec<String>,
+}
+
 /// A game is in the Library when you own it, borrow it or played it lately: the wishlist and the
 /// followed games are in the Library page, but they are not games you have.
+fn in_library(id: AppId, inputs: &SearchInputs) -> bool {
+    let signals = inputs.signals;
+    signals.played().any(|played| played == id) || signals.recent.iter().any(|game| game.id == id)
+}
+
 pub(crate) fn game_standing(
     id: AppId,
     inputs: &SearchInputs,
     now: Timestamp,
 ) -> Option<GameStanding> {
     let signals = inputs.signals;
-    if signals.played().any(|played| played == id)
-        || signals.recent.iter().any(|game| game.id == id)
-    {
+    if in_library(id, inputs) {
         let hours = hours_by_source(
             signals,
             inputs.votes,
@@ -271,6 +292,30 @@ pub(crate) fn found_games(ids: &[AppId], inputs: &SearchInputs, now: Timestamp) 
             })
         })
         .collect()
+}
+
+pub(crate) fn game_view(id: AppId, inputs: &SearchInputs, now: Timestamp) -> Option<GameView> {
+    let game = inputs.catalog.game(id)?;
+    let other_families = inputs
+        .families
+        .families
+        .iter()
+        .filter(|family| !family.games.contains(&id))
+        .map(|family| family.name.clone())
+        .collect();
+
+    Some(GameView {
+        id,
+        name: game.name.clone(),
+        price: game.price.as_of(now),
+        reviews: game.reviews,
+        store_url: format!("https://store.steampowered.com/app/{}/", id.0),
+        standing: game_standing(id, inputs, now),
+        vote: standing(inputs.votes, id, now).cloned(),
+        in_library: in_library(id, inputs),
+        played_elsewhere: inputs.corrections.played_elsewhere.contains(&id),
+        other_families,
+    })
 }
 
 pub(crate) fn library_ids(inputs: &SearchInputs) -> BTreeSet<AppId> {
@@ -734,6 +779,72 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_game_of_the_library_opens_with_the_families_it_can_join() {
+        let mut fixture = Fixture::new();
+        fixture.families = Families {
+            families: vec![
+                Family {
+                    name: "mysteries".to_string(),
+                    games: vec![AppId(1)],
+                    automatic: None,
+                },
+                Family {
+                    name: "cozy".to_string(),
+                    games: vec![AppId(5)],
+                    automatic: None,
+                },
+            ],
+            held_out: Vec::new(),
+        };
+
+        let view = game_view(AppId(1), &fixture.inputs(), NOW).unwrap();
+
+        assert_eq!(view.name, "Outer Wilds");
+        assert!(view.in_library && !view.played_elsewhere);
+        assert_eq!(view.standing, Some(GameStanding::InLibrary { hours: 50.0 }));
+        assert_eq!(view.vote, None);
+        assert_eq!(view.other_families, ["cozy"]);
+        assert_eq!(view.store_url, "https://store.steampowered.com/app/1/");
+    }
+
+    #[test]
+    fn a_vote_given_from_a_search_shows_at_once_and_is_never_a_bet() {
+        let mut fixture = Fixture::new();
+        fixture.votes.clear();
+        gamepalate_core::votes::cast(
+            &mut fixture.votes,
+            AppId(4),
+            Vote {
+                bet: true,
+                searched: true,
+                ..Vote::new(VoteKind::NotForMe, "2026-11-13")
+            },
+        );
+
+        let view = game_view(AppId(4), &fixture.inputs(), NOW).unwrap();
+
+        assert_eq!(view.standing, Some(GameStanding::NotForMe));
+        let vote = view.vote.unwrap();
+        assert!(vote.searched && !vote.bet);
+        assert!(!view.in_library && !view.played_elsewhere);
+    }
+
+    #[test]
+    fn a_later_that_is_over_leaves_the_game_without_a_vote() {
+        let mut fixture = Fixture::new();
+        voted(&mut fixture, later_since(30, 0));
+
+        let view = game_view(AppId(6), &fixture.inputs(), NOW).unwrap();
+
+        assert_eq!((view.standing, view.vote), (None, None));
+    }
+
+    #[test]
+    fn a_game_out_of_the_catalog_has_no_page() {
+        assert_eq!(game_view(AppId(80), &Fixture::new().inputs(), NOW), None);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 mod frame;
+mod game_page;
 mod install;
 mod refresh;
 mod search;
@@ -40,6 +41,7 @@ use frame::{
     CLOSE, MAXIMIZE, MINIMIZE, RESTORE, WindowAction, rescaled, resize_borders, saved_size,
     window_button,
 };
+use game_page::GamePage;
 use refresh::{Refresh, refresh_button, refresh_tooltip};
 use search::Search;
 use theme::{choice, light, theme, theme_button, toggled};
@@ -73,6 +75,7 @@ pub struct App {
     logo: image::Handle,
     families_notice: Option<usize>,
     search: Search,
+    game_page: Option<Box<GamePage>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -91,6 +94,7 @@ pub enum Message {
     Settings(settings::Message),
     Setup(setup::Message),
     Search(search::Message),
+    GamePage(game_page::Message),
     WindowFound(Option<window::Id>),
     Window(WindowAction),
     BarPressed,
@@ -146,6 +150,7 @@ impl App {
             logo: image::Handle::from_bytes(LOGO_BYTES),
             families_notice: None,
             search: Search::default(),
+            game_page: None,
         };
         let task = match setup::start(FirstRun::check(None)) {
             Ok(gamepalate) => {
@@ -186,7 +191,11 @@ impl App {
                 let back = self.back_page();
                 self.leave(back)
             }
-            Message::Navigate(page) if self.page() == Some(page) => Task::none(),
+            Message::Navigate(page) if self.page() == Some(page) => {
+                self.search.close();
+                let changed = self.game_page.take().is_some_and(|page| page.changed());
+                self.close_game_page(changed)
+            }
             Message::Navigate(page) => self.leave(page),
             Message::Discover(discover::Message::OpenSimilar(id)) => self.show_game(id),
             Message::Discover(message) => {
@@ -284,6 +293,9 @@ impl App {
                 if let Screen::Settings(screen) = &mut self.screen {
                     screen.reopened(&gamepalate);
                 }
+                if let Some(page) = &mut self.game_page {
+                    page.use_gamepalate(&gamepalate);
+                }
                 self.gamepalate = Some(gamepalate);
                 self.find_pending();
                 if matches!(self.screen, Screen::Settings(_)) {
@@ -308,8 +320,17 @@ impl App {
                     search::Action::Run(task) => task.map(Message::Search),
                     search::Action::Open(id) => {
                         let saving = self.save_settings();
-                        Task::batch([self.show_game(id), saving])
+                        Task::batch([self.open_game(id), saving])
                     }
+                }
+            }
+            Message::GamePage(message) => {
+                let Some(page) = &mut self.game_page else {
+                    return Task::none();
+                };
+                match page.update(message) {
+                    game_page::Action::Run(task) => task.map(Message::GamePage),
+                    game_page::Action::Close { changed } => self.close_game_page(changed),
                 }
             }
             Message::Setup(message) => {
@@ -390,7 +411,8 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let keys = !self.search.is_open();
+        let menu_open = self.search.is_open();
+        let keys = !menu_open && self.game_page.is_none();
         let screen = match &self.screen {
             Screen::Discover(_) => Discover::subscription(keys).map(Message::Discover),
             Screen::Votes(_) => Votes::subscription(keys).map(Message::Votes),
@@ -399,10 +421,15 @@ impl App {
             Screen::Settings(screen) => screen.subscription(keys).map(Message::Settings),
             Screen::Setup(_) | Screen::Starting => Subscription::none(),
         };
-        let menu = if keys {
-            Subscription::none()
-        } else {
+        let menu = if menu_open {
             event::listen_with(search::menu_key).map(Message::Search)
+        } else {
+            Subscription::none()
+        };
+        let game_page = if self.game_page.is_some() {
+            GamePage::subscription(!menu_open).map(Message::GamePage)
+        } else {
+            Subscription::none()
         };
 
         Subscription::batch([
@@ -412,6 +439,7 @@ impl App {
             keyboard::listen().filter_map(page_key),
             screen,
             menu,
+            game_page,
         ])
     }
 
@@ -523,6 +551,11 @@ impl App {
                 .map(Message::Settings),
             Screen::Starting => column![].into(),
         };
+        let content = stack![content].push(
+            self.game_page
+                .as_ref()
+                .map(|page| page.view(self.scale).map(Message::GamePage)),
+        );
 
         let app = column![
             bar,
@@ -592,6 +625,7 @@ impl App {
 
     fn leave(&mut self, page: Page) -> Task<Message> {
         self.search.close();
+        self.game_page = None;
         let saving = self.save_settings();
 
         Task::batch([self.open(page), saving])
@@ -638,6 +672,34 @@ impl App {
         }
     }
 
+    /// A game found by name opens over the page, which keeps its state. A game out of the catalog
+    /// has no page of its own: it opens where it is.
+    fn open_game(&mut self, id: AppId) -> Task<Message> {
+        let Some(gamepalate) = &self.gamepalate else {
+            return Task::none();
+        };
+        let Some((page, task)) = GamePage::new(gamepalate, id) else {
+            return self.show_game(id);
+        };
+        let changed = self.game_page.take().is_some_and(|page| page.changed());
+        let refreshed = self.close_game_page(changed);
+        self.game_page = Some(Box::new(page));
+
+        Task::batch([refreshed, task.map(Message::GamePage)])
+    }
+
+    /// The lists of Votes, Library and Profile are made when they open: after a change they open
+    /// again. Discover keeps its queue.
+    fn close_game_page(&mut self, changed: bool) -> Task<Message> {
+        self.game_page = None;
+        match self.page() {
+            Some(page @ (Page::Votes | Page::Library | Page::Profile)) if changed => {
+                self.open(page)
+            }
+            _ => Task::none(),
+        }
+    }
+
     fn show_game(&mut self, id: AppId) -> Task<Message> {
         let Some(gamepalate) = &self.gamepalate else {
             return Task::none();
@@ -674,7 +736,7 @@ impl App {
         .padding(0)
         .height(Fill)
         .style(style::tab(current))
-        .on_press_maybe((!current).then_some(Message::Navigate(page)))
+        .on_press_maybe((!current || self.game_page.is_some()).then_some(Message::Navigate(page)))
         .into()
     }
 }

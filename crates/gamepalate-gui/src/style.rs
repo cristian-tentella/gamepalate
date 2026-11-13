@@ -484,6 +484,17 @@ pub fn list_row(current: bool) -> impl Fn(&Theme, button::Status) -> button::Sty
     }
 }
 
+/// A layer that hides the page under it.
+pub fn page(theme: &Theme) -> container::Style {
+    let background = theme.extended_palette().background.base;
+
+    container::Style {
+        background: Some(background.color.into()),
+        text_color: Some(background.text),
+        ..container::Style::default()
+    }
+}
+
 pub fn veil(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(

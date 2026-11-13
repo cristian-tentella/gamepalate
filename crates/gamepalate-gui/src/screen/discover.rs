@@ -556,21 +556,24 @@ impl Discover {
             self.gamepalate.would_try_hours(),
             self.gamepalate.elsewhere_hours(),
         );
-        let votes = game::vote_buttons(|key, pick| {
-            let message = match pick {
-                Pick::Played => Message::Played,
-                pick => Message::Vote(pick),
-            };
-            game::vote_button(
-                key,
-                pick,
-                game::tip(pick, would_try_hours, elsewhere_hours),
-                compact,
-                vote_width,
-                game.is_some().then_some(message),
-                flashed == Some(pick),
-            )
-        })
+        let votes = game::vote_buttons(
+            |key, pick| {
+                let message = match pick {
+                    Pick::Played => Message::Played,
+                    pick => Message::Vote(pick),
+                };
+                game::vote_button(
+                    key,
+                    pick,
+                    game::tip(pick, would_try_hours, elsewhere_hours),
+                    compact,
+                    vote_width,
+                    game.is_some().then_some(message),
+                    flashed == Some(pick),
+                )
+            },
+            true,
+        )
         .push(hints);
         let links = game::links(|link| game.is_some().then_some(Message::Open(link)));
         let (votes, spacing) = match layout {

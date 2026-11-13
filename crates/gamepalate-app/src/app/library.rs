@@ -4,9 +4,9 @@ use super::Gamepalate;
 use crate::{
     catalog_search::CatalogMatch,
     library::{
-        FoundGame, GameCorrection, GameCorrectionError, LibraryView, PlayedElsewhereError,
-        changed_played_elsewhere, corrected_game, found_games, game_correction, library_ids,
-        library_view,
+        FoundGame, GameCorrection, GameCorrectionError, GameView, LibraryView,
+        PlayedElsewhereError, changed_played_elsewhere, corrected_game, found_games,
+        game_correction, game_view, library_ids, library_view,
     },
     log::failed,
     profile::{ProfileView, profile_view},
@@ -75,6 +75,12 @@ impl Gamepalate {
         let ids = self.names.find(text, &self.files.catalog);
         let now = Timestamp(jiff::Timestamp::now().as_millisecond());
         self.with_inputs(|inputs| found_games(&ids, inputs, now))
+    }
+
+    /// One game of the catalog for its page, read again after each change.
+    pub fn game_view(&self, id: AppId) -> Option<GameView> {
+        let now = Timestamp(jiff::Timestamp::now().as_millisecond());
+        self.with_inputs(|inputs| game_view(id, inputs, now))
     }
 
     pub fn search_catalog(&self, text: &str) -> Vec<CatalogMatch> {

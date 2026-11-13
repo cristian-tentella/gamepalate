@@ -513,22 +513,25 @@ impl Votes {
             self.gamepalate.would_try_hours(),
             self.gamepalate.elsewhere_hours(),
         );
-        let votes = game::vote_buttons(|key, pick| {
-            let message = match pick {
-                Pick::Played => Message::Played,
-                pick => Message::Vote(pick),
-            };
-            let current = game.is_some_and(|game| Pick::of(&game.vote) == pick);
-            game::vote_button(
-                key,
-                pick,
-                game::tip(pick, would_try_hours, elsewhere_hours),
-                true,
-                vote_width,
-                game.is_some().then_some(message),
-                current,
-            )
-        })
+        let votes = game::vote_buttons(
+            |key, pick| {
+                let message = match pick {
+                    Pick::Played => Message::Played,
+                    pick => Message::Vote(pick),
+                };
+                let current = game.is_some_and(|game| Pick::of(&game.vote) == pick);
+                game::vote_button(
+                    key,
+                    pick,
+                    game::tip(pick, would_try_hours, elsewhere_hours),
+                    true,
+                    vote_width,
+                    game.is_some().then_some(message),
+                    current,
+                )
+            },
+            true,
+        )
         .width(Fill);
 
         container(votes).center_y(Fill).into()

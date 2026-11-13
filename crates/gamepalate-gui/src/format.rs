@@ -352,6 +352,14 @@ pub fn voted(name: &str, voted: Pick) -> String {
     format!("{name}: voted {}", pick(voted))
 }
 
+pub fn vote_removed(name: &str) -> String {
+    format!("{name}: vote removed")
+}
+
+pub fn added_to_family(family: &str) -> String {
+    format!("Added to {}", family.trim())
+}
+
 pub fn voted_day(date: &str, today: Date) -> String {
     let Ok(day) = date.parse::<Date>() else {
         return date.to_string();

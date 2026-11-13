@@ -416,6 +416,9 @@ impl App {
         if let Screen::Discover(discover) = &mut self.screen {
             discover.use_gamepalate(&gamepalate);
         }
+        if let Some(page) = &mut self.game_page {
+            page.use_gamepalate(&gamepalate);
+        }
         self.gamepalate = Some(gamepalate);
         self.find_pending();
     }

@@ -280,7 +280,7 @@ fn field_width(window_width: f32) -> f32 {
     (window_width - ROOM_FOR_THE_REST).clamp(NARROW_WIDTH, WIDE_WIDTH)
 }
 
-fn standing_text(standing: GameStanding) -> String {
+pub(super) fn standing_text(standing: GameStanding) -> String {
     match standing {
         GameStanding::InLibrary { hours: played } => format!("In your library · {}", hours(played)),
         GameStanding::PlayedElsewhere => "Played elsewhere".to_string(),
