@@ -16,10 +16,10 @@ use gamepalate_app::{
 use iced::{
     Center, ContentFit, Element, Event, Fill, Subscription, Task, event,
     futures::{SinkExt, channel::mpsc},
-    mouse, never, padding, stream,
+    mouse, padding, stream,
     widget::{
-        button, column, container, image, mouse_area, progress_bar, rich_text, row, scrollable,
-        space, span, stack, text, text_input, tooltip,
+        button, column, container, image, mouse_area, progress_bar, row, scrollable, space, stack,
+        text, text_input, tooltip,
     },
 };
 
@@ -800,16 +800,16 @@ impl Setup {
                 let (before, after) =
                     imported_note(&format::day(imported.prices_at, now), imported.region);
                 Some(
-                    rich_text![
-                        span(before),
-                        span(REFRESH.to_string())
+                    row![
+                        note(before),
+                        text(REFRESH)
                             .font(font::ICONS)
-                            .size(font::icon(font::NOTE_SIZE)),
-                        span(after),
+                            .size(font::icon(font::NOTE_SIZE))
+                            .style(style::muted),
+                        note(after),
                     ]
-                    .size(font::NOTE_SIZE)
-                    .style(style::muted)
-                    .on_link_click(never)
+                    .spacing(4)
+                    .align_y(Center)
                     .into(),
                 )
             }
@@ -1014,8 +1014,8 @@ fn import_error_text(error: &CatalogFileError) -> String {
 
 fn imported_note(day: &str, region: Region) -> (String, &'static str) {
     (
-        format!("Catalog from {day}, prices for {region}. Press "),
-        " later to download your own.",
+        format!("Catalog from {day}, prices for {region}. Press"),
+        "later to download your own.",
     )
 }
 
@@ -1542,7 +1542,7 @@ mod tests {
         let (before, after) = imported_note("13 Nov", Region::ITALY);
 
         assert_eq!(
-            format!("{before}⟳{after}"),
+            format!("{before} ⟳ {after}"),
             "Catalog from 13 Nov, prices for IT. Press ⟳ later to download your own."
         );
     }
