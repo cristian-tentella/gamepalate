@@ -57,7 +57,7 @@ pub use gamepalate_steam::{
 };
 pub mod reviews {
     pub use gamepalate_steam::reviews::{
-        Block, Languages, Order, Review, ReviewPage, ReviewQuery, Span, Verdict,
+        Block, Language, Languages, Order, Review, ReviewPage, ReviewQuery, Span, Verdict,
     };
 }
 pub use gamepalate_store::config::{ConfigError, ConfigValue};

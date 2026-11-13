@@ -107,6 +107,7 @@ impl GamePage {
     /// The blurred page no longer fits the window: the veil stays alone.
     pub fn resized(&mut self) {
         self.backdrop = None;
+        self.showcase.resized();
     }
 
     pub fn use_gamepalate(&mut self, gamepalate: &Arc<Gamepalate>) -> Task<Message> {

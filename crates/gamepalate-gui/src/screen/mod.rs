@@ -41,6 +41,17 @@ pub enum Screen {
     Starting,
 }
 
+impl Screen {
+    /// The blurred pages under the sheets no longer fit the window.
+    pub fn resized(&mut self) {
+        match self {
+            Screen::Discover(screen) => screen.resized(),
+            Screen::Votes(screen) => screen.resized(),
+            _ => {}
+        }
+    }
+}
+
 pub(crate) fn open_families(data_dir: &Path) {
     let path = data_dir.join("families.toml");
     if create_missing(&path).is_ok() {

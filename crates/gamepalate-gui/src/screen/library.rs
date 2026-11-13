@@ -677,6 +677,7 @@ impl Library {
                     "Tags",
                     &game.name,
                     None,
+                    None,
                     tags_body(
                         self.game_tags(),
                         self.tags_popup.all,

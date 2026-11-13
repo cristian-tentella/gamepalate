@@ -150,6 +150,10 @@ impl Votes {
         (votes, Task::batch([task, load, scroll]))
     }
 
+    pub fn resized(&mut self) {
+        self.showcase.resized();
+    }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let message = scrolled_by_popup(message, self.showcase.is_popup_open());
         if self.showcase.is_open() && stopped_by_popup(&message) {

@@ -25,11 +25,30 @@ pub enum Verdict {
     Negative,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+/// A language of the reviews. A new one needs only its name for Steam here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Language {
+    English,
+}
+
+impl Language {
+    fn steam_name(self) -> &'static str {
+        match self {
+            Language::English => "english",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Languages {
-    #[default]
-    EnglishAndItalian,
+    Only(Language),
     All,
+}
+
+impl Default for Languages {
+    fn default() -> Languages {
+        Languages::Only(Language::English)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -126,9 +145,8 @@ impl ReviewQuery {
             params.push(("day_range", HELPFUL_DAYS.to_string()));
         }
         match self.languages {
-            Languages::EnglishAndItalian => {
-                params.push(("languages[0]", "english".to_string()));
-                params.push(("languages[1]", "italian".to_string()));
+            Languages::Only(language) => {
+                params.push(("languages[0]", language.steam_name().to_string()));
             }
             Languages::All => params.push(("languages[0]", "all".to_string())),
         }
@@ -611,7 +629,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_default_asks_the_most_helpful_of_the_year_in_english_and_italian() {
+    async fn the_default_asks_the_most_helpful_of_the_year_in_english() {
         let steam = FakeSteam::new(portal_page());
 
         get_reviews(&steam, AppId(620), &ReviewQuery::default(), None)
@@ -628,7 +646,6 @@ mod tests {
                 ("review_type", "0"),
                 ("day_range", "365"),
                 ("languages[0]", "english"),
-                ("languages[1]", "italian"),
                 ("num_per_page", "10"),
                 ("cursor", "*"),
             ])

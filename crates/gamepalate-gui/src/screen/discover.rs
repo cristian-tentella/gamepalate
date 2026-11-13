@@ -173,6 +173,10 @@ impl Discover {
         self.gamepalate = Arc::clone(gamepalate);
     }
 
+    pub fn resized(&mut self) {
+        self.showcase.resized();
+    }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         if self.showcase.is_open() {
             if matches!(message, Message::CloseFilters) {

@@ -1,4 +1,4 @@
-mod backdrop;
+pub(crate) mod backdrop;
 mod frame;
 mod game_page;
 mod install;
@@ -49,8 +49,9 @@ use theme::{choice, light, theme, theme_button, toggled};
 
 const UNDERLINE_HEIGHT: f32 = 2.0;
 const BAR_HEIGHT: f32 = 44.0;
-/// The top bar and the line under it: the game search leaves them sharp.
-const SEARCH_TOP: f32 = BAR_HEIGHT + 1.0;
+/// The top bar and the line under it, above the page: the blurred pictures of the page, under
+/// the game search and the sheets, leave them sharp.
+pub(crate) const PAGE_TOP: f32 = BAR_HEIGHT + 1.0;
 const LOGO_BYTES: &[u8] = include_bytes!("../gamepalate-24.png");
 const LOGO_SIZE: f32 = 24.0;
 const LOGO_SPACING: f32 = 8.0;
@@ -322,7 +323,7 @@ impl App {
                 };
                 match self
                     .search
-                    .update(message, gamepalate, self.window, SEARCH_TOP)
+                    .update(message, gamepalate, self.window, PAGE_TOP)
                 {
                     search::Action::Run(task) => task.map(Message::Search),
                     search::Action::Open(id, backdrop) => {
@@ -559,7 +560,7 @@ impl App {
                 .map(Message::Settings),
             Screen::Starting => column![].into(),
         };
-        let area = Size::new(self.resized.width, self.resized.height - SEARCH_TOP);
+        let area = Size::new(self.resized.width, self.resized.height - PAGE_TOP);
         let content = stack![content]
             .push(self.game_page.as_ref().map(|page| {
                 page.view(self.scale, area, page_name(self.page()))

@@ -2,11 +2,13 @@ use std::{fmt, sync::Arc};
 
 use gamepalate_app::{
     AppId, Timestamp,
-    reviews::{Block, Languages, Order, Review, ReviewQuery, Span, Verdict},
+    reviews::{Block, Language, Languages, Order, Review, ReviewQuery, Span, Verdict},
 };
 use iced::{
     Center, Element, Task, never, padding,
-    widget::{button, column, container, pick_list, rich_text, row, sensor, span, text},
+    widget::{
+        button, column, container, pick_list, rich_text, row, sensor, span, text, text_input,
+    },
 };
 
 use super::{
@@ -30,16 +32,13 @@ const ORDERS: [Sorting; 3] = [
     Sorting(Order::Funny),
 ];
 const VERDICTS: [Verdict; 3] = [Verdict::All, Verdict::Positive, Verdict::Negative];
-const LANGUAGES: [Language; 2] = [
-    Language(Languages::EnglishAndItalian),
-    Language(Languages::All),
+/// The languages to choose from: a new one goes here, before All languages.
+const LANGUAGES: [Speaking; 2] = [
+    Speaking(Languages::Only(Language::English)),
+    Speaking(Languages::All),
 ];
-const PLAYED: [Played; 4] = [
-    Played(None),
-    Played(Some(2)),
-    Played(Some(10)),
-    Played(Some(50)),
-];
+const HOURS_WIDTH: f32 = 56.0;
+const HOURS_DIGITS: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Sorting(Order);
@@ -55,27 +54,29 @@ impl fmt::Display for Sorting {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Language(Languages);
+struct Speaking(Languages);
 
-impl fmt::Display for Language {
+impl fmt::Display for Speaking {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self.0 {
-            Languages::EnglishAndItalian => "English and Italian",
+            Languages::Only(Language::English) => "English",
             Languages::All => "All languages",
         })
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Played(Option<u32>);
+/// What the hours field keeps of what is typed: digits only, a few of them.
+pub(super) fn hours_typed(typed: &str) -> String {
+    typed
+        .chars()
+        .filter(char::is_ascii_digit)
+        .take(HOURS_DIGITS)
+        .collect()
+}
 
-impl fmt::Display for Played {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            None => formatter.write_str("Any"),
-            Some(hours) => write!(formatter, "{hours} h"),
-        }
-    }
+/// The minimum the hours field asks for: nothing, or 0, is any.
+pub(super) fn min_hours(typed: &str) -> Option<u32> {
+    typed.parse().ok().filter(|&hours| hours > 0)
 }
 
 fn verdict_label(verdict: Verdict, matching: Option<u32>) -> String {
@@ -172,13 +173,14 @@ impl Showcase {
             text("Played at least")
                 .size(font::NOTE_SIZE)
                 .style(style::muted),
-            dropdown(
-                &PLAYED,
-                Played(query.min_hours),
-                move |Played(min_hours)| {
-                    Message::FilterReviews(ReviewQuery { min_hours, ..query })
-                }
-            ),
+            text_input("Any", &self.hours_typed)
+                .on_input(Message::TypeHours)
+                .on_submit(Message::ApplyHours(self.hours_typed.clone()))
+                .style(style::field)
+                .size(font::NOTE_SIZE)
+                .padding([4, 8])
+                .width(HOURS_WIDTH),
+            text("h").size(font::NOTE_SIZE).style(style::muted),
         ]
         .spacing(8)
         .align_y(Center);
@@ -190,8 +192,8 @@ impl Showcase {
             verdicts,
             dropdown(
                 &LANGUAGES,
-                Language(query.languages),
-                move |Language(languages)| {
+                Speaking(query.languages),
+                move |Speaking(languages)| {
                     Message::FilterReviews(ReviewQuery { languages, ..query })
                 }
             ),
@@ -345,12 +347,24 @@ mod tests {
         );
         assert_eq!(
             LANGUAGES.map(|language| language.to_string()),
-            ["English and Italian", "All languages"]
+            ["English", "All languages"]
         );
-        assert_eq!(
-            PLAYED.map(|played| played.to_string()),
-            ["Any", "2 h", "10 h", "50 h"]
-        );
+        assert_eq!(LANGUAGES[0].0, Languages::default());
+    }
+
+    #[test]
+    fn the_hours_field_keeps_a_few_digits() {
+        assert_eq!(hours_typed("12a3"), "123");
+        assert_eq!(hours_typed("1234567"), "12345");
+        assert_eq!(hours_typed("-5"), "5");
+    }
+
+    #[test]
+    fn any_number_of_hours_is_a_minimum_and_nothing_or_0_is_any() {
+        assert_eq!(min_hours("7"), Some(7));
+        assert_eq!(min_hours("250"), Some(250));
+        assert_eq!(min_hours(""), None);
+        assert_eq!(min_hours("0"), None);
     }
 
     #[test]
