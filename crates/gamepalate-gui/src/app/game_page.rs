@@ -9,7 +9,7 @@ use iced::{
     never, padding,
     widget::{
         button, column, container, image, mouse_area, opaque, pick_list, responsive, rich_text,
-        row, scrollable, space, span, stack, text, tooltip,
+        row, scrollable, space, span, stack, text,
     },
 };
 use jiff::civil::Date;
@@ -30,7 +30,6 @@ use crate::{
 /// around it.
 const SHEET_SHARE: f32 = 0.9;
 const SHEET_MAX_WIDTH: f32 = 1200.0;
-const BACK: char = '\u{E5CB}';
 const CLOSE: char = '\u{E5CD}';
 const HEAD_HEIGHT: f32 = 44.0;
 const SIDE_WIDTH: f32 = 340.0;
@@ -311,11 +310,11 @@ impl GamePage {
     fn head(&self, under: &'static str) -> Element<'_, Message> {
         let back = button(
             row![
-                text(BACK).font(font::ICONS).size(font::icon(11.0)),
-                text(format!("Back to {under}")).size(font::BAR_SIZE),
                 container(text("Esc").size(font::NOTE_SIZE - 1.0))
                     .padding([1, 6])
                     .style(style::muted_keycap),
+                text(format!("Back to {under}")).size(font::NOTE_SIZE),
+                text(CLOSE).font(font::ICONS).size(font::icon(11.0)),
             ]
             .spacing(8)
             .align_y(Center),
@@ -328,25 +327,15 @@ impl GamePage {
         };
 
         row![
-            back,
             space().width(Fill),
             link("Q", "Steam ↗", Link::Steam),
             link("W", "Eneba ↗", Link::Eneba),
             link("E", "HLTB ↗", Link::Hltb),
             style::divider(),
-            tooltip(
-                button(text(CLOSE).font(font::ICONS).size(font::icon(11.0)))
-                    .padding([4, 6])
-                    .style(style::text_button)
-                    .on_press(Message::Back),
-                container(text(format!("Back to {under} (Esc)")).size(font::NOTE_SIZE))
-                    .padding([6, 10])
-                    .style(style::popup),
-                tooltip::Position::Bottom,
-            ),
+            back,
         ]
         .spacing(game::ACTION_SPACING)
-        .padding(padding::left(12).right(12))
+        .padding(padding::left(20).right(12))
         .height(HEAD_HEIGHT)
         .align_y(Center)
         .into()
