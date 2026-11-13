@@ -18,7 +18,7 @@ use gamepalate_app::{
     reviews::{ReviewPage, ReviewQuery},
 };
 use iced::{
-    Center, ContentFit, Element, Fill, Task, mouse, padding,
+    Center, ContentFit, Element, Fill, Shrink, Task, mouse, padding,
     widget::{
         Id, button, column, container, image, mouse_area, opaque, operation, row, scrollable,
         scrollable::{AbsoluteOffset, RelativeOffset},
@@ -580,7 +580,8 @@ pub(super) fn scroll_sheet<M: 'static>(y: f32) -> Task<M> {
     operation::scroll_by(SHEET, AbsoluteOffset { x: 0.0, y })
 }
 
-/// `backdrop` is the blurred page under the sheet, when there is one.
+/// `backdrop` is the blurred page under the sheet, when there is one. A sheet with a `bar` takes
+/// all the height there is: the list under the bar changes with it, and the sheet keeps its size.
 pub(super) fn sheet<'a, M: Clone + 'a>(
     label: &'a str,
     name: &'a str,
@@ -602,6 +603,7 @@ pub(super) fn sheet<'a, M: Clone + 'a>(
         .width(Fill),
         close_button,
     ];
+    let height = if bar.is_some() { Fill } else { Shrink };
     let sheet = column![
         container(header).padding(padding::top(24).bottom(20).left(SHEET_INSET).right(20)),
         style::separator(),
@@ -621,8 +623,10 @@ pub(super) fn sheet<'a, M: Clone + 'a>(
                     .right(SHEET_INSET),
             ),
         )
+        .height(height)
         .id(SHEET),
-    );
+    )
+    .height(height);
 
     let picture = backdrop.map(|handle| {
         image(handle.clone())
@@ -645,6 +649,7 @@ pub(super) fn sheet<'a, M: Clone + 'a>(
             container(opaque(
                 container(sheet)
                     .max_width(MEASURE + 2.0 * SHEET_INSET)
+                    .height(height)
                     .style(style::popup),
             ))
             .center(Fill)
