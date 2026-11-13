@@ -1,12 +1,12 @@
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use gamepalate_app::{
     AppId, Timestamp,
-    reviews::{Block, Review, Span},
+    reviews::{Block, Languages, Order, Review, ReviewQuery, Span, Verdict},
 };
 use iced::{
     Center, Element, Task, never, padding,
-    widget::{button, column, container, rich_text, row, sensor, span, text},
+    widget::{button, column, container, pick_list, rich_text, row, sensor, span, text},
 };
 
 use super::{
@@ -23,6 +23,85 @@ const BULLET_WIDTH: f32 = 18.0;
 const BULLET: &str = "•";
 const QUOTE_INSET: f32 = 18.0;
 const LOAD_AHEAD: f32 = 600.0;
+const FILTER_SPACING: f32 = 16.0;
+const ORDERS: [Sorting; 3] = [
+    Sorting(Order::Helpful),
+    Sorting(Order::Recent),
+    Sorting(Order::Funny),
+];
+const VERDICTS: [Verdict; 3] = [Verdict::All, Verdict::Positive, Verdict::Negative];
+const LANGUAGES: [Language; 2] = [
+    Language(Languages::EnglishAndItalian),
+    Language(Languages::All),
+];
+const PLAYED: [Played; 4] = [
+    Played(None),
+    Played(Some(2)),
+    Played(Some(10)),
+    Played(Some(50)),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Sorting(Order);
+
+impl fmt::Display for Sorting {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self.0 {
+            Order::Helpful => "Most helpful",
+            Order::Recent => "Most recent",
+            Order::Funny => "Funniest",
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Language(Languages);
+
+impl fmt::Display for Language {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self.0 {
+            Languages::EnglishAndItalian => "English and Italian",
+            Languages::All => "All languages",
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Played(Option<u32>);
+
+impl fmt::Display for Played {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            None => formatter.write_str("Any"),
+            Some(hours) => write!(formatter, "{hours} h"),
+        }
+    }
+}
+
+fn verdict_label(verdict: Verdict, matching: Option<u32>) -> String {
+    let label = match verdict {
+        Verdict::All => "All",
+        Verdict::Positive => "Positive",
+        Verdict::Negative => "Negative",
+    };
+    match matching {
+        Some(matching) => format!("{label} {}", format::count(matching)),
+        None => label.to_string(),
+    }
+}
+
+fn dropdown<'a, T: fmt::Display + Clone + PartialEq + 'a>(
+    choices: &'a [T],
+    chosen: T,
+    choose: impl Fn(T) -> Message + 'a,
+) -> Element<'a, Message> {
+    pick_list(choices, Some(chosen), choose)
+        .text_size(font::NOTE_SIZE)
+        .padding([4, 8])
+        .style(style::dropdown)
+        .menu_style(style::menu)
+        .into()
+}
 
 fn paragraph<'a>(spans: &'a [Span], quiet: bool) -> Element<'a, Message> {
     let pieces: Vec<_> = spans
@@ -77,11 +156,64 @@ fn heading(review: &Review, now: Timestamp) -> Element<'_, Message> {
 }
 
 impl Showcase {
+    pub(super) fn review_filters(&self, id: AppId) -> Element<'_, Message> {
+        let query = self.reviews.query();
+        let matching = self.reviews.get(id).and_then(|list| list.matching);
+        let verdicts = row(VERDICTS.map(|verdict| {
+            let chosen = verdict == query.verdict;
+            button(text(verdict_label(verdict, matching.filter(|_| chosen))).size(font::NOTE_SIZE))
+                .padding([3, 10])
+                .style(style::choice(chosen))
+                .on_press(Message::FilterReviews(ReviewQuery { verdict, ..query }))
+                .into()
+        }))
+        .spacing(6);
+        let played = row![
+            text("Played at least")
+                .size(font::NOTE_SIZE)
+                .style(style::muted),
+            dropdown(
+                &PLAYED,
+                Played(query.min_hours),
+                move |Played(min_hours)| {
+                    Message::FilterReviews(ReviewQuery { min_hours, ..query })
+                }
+            ),
+        ]
+        .spacing(8)
+        .align_y(Center);
+
+        row![
+            dropdown(&ORDERS, Sorting(query.order), move |Sorting(order)| {
+                Message::FilterReviews(ReviewQuery { order, ..query })
+            }),
+            verdicts,
+            dropdown(
+                &LANGUAGES,
+                Language(query.languages),
+                move |Language(languages)| {
+                    Message::FilterReviews(ReviewQuery { languages, ..query })
+                }
+            ),
+            played,
+        ]
+        .spacing(FILTER_SPACING)
+        .align_y(Center)
+        .wrap()
+        .vertical_spacing(8)
+        .into()
+    }
+
     pub(super) fn reviews_body(&self, id: AppId) -> Element<'_, Message> {
         let now = Timestamp(jiff::Timestamp::now().as_millisecond());
-        let list = self.reviews.get(id, self.review_query);
+        let list = self.reviews.get(id);
         let reviews = list.map_or(&[][..], |list| list.reviews.as_slice());
-        let mut body = column![].spacing(REVIEW_SPACING);
+        let fell_back = self.reviews.fell_back(id) && !list.is_some_and(|list| list.found_none());
+        let mut body = column![]
+            .push(fell_back.then(|| {
+                sheet_note("No helpful reviews in the past year, so these are the most recent")
+            }))
+            .spacing(REVIEW_SPACING);
         for (index, review) in reviews.iter().enumerate() {
             if index > 0 {
                 body = body.push(style::separator());
@@ -155,7 +287,7 @@ impl Showcase {
             .align_y(Center)
             .into(),
             Some(Fetch::Idle | Fetch::Loading) | None => sensor(sheet_note("Loading…"))
-                .key((id, self.review_query, shown))
+                .key((id, self.reviews.shown(id), shown))
                 .anticipate(LOAD_AHEAD)
                 .on_show(|_| Message::MoreReviews)
                 .into(),
@@ -167,23 +299,17 @@ impl Showcase {
     }
 
     pub(super) fn load_reviews(&mut self) -> Task<Message> {
-        let request = self
-            .open_reviews()
-            .and_then(|id| self.reviews.start(id, self.review_query));
+        let request = self.open_reviews().and_then(|id| self.reviews.start(id));
         self.fetch_reviews(request)
     }
 
     pub(super) fn more_reviews(&mut self) -> Task<Message> {
-        let request = self
-            .open_reviews()
-            .and_then(|id| self.reviews.more(id, self.review_query));
+        let request = self.open_reviews().and_then(|id| self.reviews.more(id));
         self.fetch_reviews(request)
     }
 
     pub(super) fn retry_reviews(&mut self) -> Task<Message> {
-        let request = self
-            .open_reviews()
-            .and_then(|id| self.reviews.retry(id, self.review_query));
+        let request = self.open_reviews().and_then(|id| self.reviews.retry(id));
         self.fetch_reviews(request)
     }
 
@@ -204,5 +330,33 @@ impl Showcase {
             },
             |(request, result)| Message::ReviewsLoaded(request, result),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_filters_read_as_in_the_sheet() {
+        assert_eq!(
+            ORDERS.map(|order| order.to_string()),
+            ["Most helpful", "Most recent", "Funniest"]
+        );
+        assert_eq!(
+            LANGUAGES.map(|language| language.to_string()),
+            ["English and Italian", "All languages"]
+        );
+        assert_eq!(
+            PLAYED.map(|played| played.to_string()),
+            ["Any", "2 h", "10 h", "50 h"]
+        );
+    }
+
+    #[test]
+    fn the_chosen_verdict_shows_how_many_reviews_match() {
+        assert_eq!(verdict_label(Verdict::All, Some(2287)), "All 2,287");
+        assert_eq!(verdict_label(Verdict::Negative, Some(0)), "Negative 0");
+        assert_eq!(verdict_label(Verdict::Positive, None), "Positive");
     }
 }

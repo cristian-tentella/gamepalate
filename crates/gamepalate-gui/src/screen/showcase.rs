@@ -20,7 +20,8 @@ use iced::{
     Center, Element, Fill, Task, mouse, padding,
     widget::{
         Id, button, column, container, image, mouse_area, opaque, operation, row, scrollable,
-        scrollable::AbsoluteOffset, space, stack, text,
+        scrollable::{AbsoluteOffset, RelativeOffset},
+        space, stack, text,
     },
 };
 
@@ -56,7 +57,6 @@ pub struct Showcase {
     pages: Pages,
     descriptions: Descriptions,
     reviews: ReviewLists,
-    review_query: ReviewQuery,
     spoilers: HashSet<(String, usize)>,
     has_reviews: bool,
     extras: Images,
@@ -147,6 +147,7 @@ pub enum Message {
     ToggleAllTags,
     ToggleReviews,
     MoreReviews,
+    FilterReviews(ReviewQuery),
     RetryReviews,
     ShowSpoiler(String, usize),
     ClosePopup,
@@ -165,7 +166,6 @@ impl Showcase {
             pages: Pages::default(),
             descriptions: Descriptions::default(),
             reviews: ReviewLists::default(),
-            review_query: ReviewQuery::default(),
             spoilers: HashSet::new(),
             has_reviews: false,
             extras: Images::default(),
@@ -235,6 +235,14 @@ impl Showcase {
                 .toggle(Popup::Reviews, self.can_open_popup() && self.has_reviews),
             Message::MoreReviews => return self.more_reviews(),
             Message::RetryReviews => return self.retry_reviews(),
+            Message::FilterReviews(query) => {
+                if self.reviews.choose(query) {
+                    return Task::batch([
+                        operation::snap_to(SHEET, RelativeOffset::START),
+                        self.load_reviews(),
+                    ]);
+                }
+            }
             Message::ShowSpoiler(id, index) => {
                 self.spoilers.insert((id, index));
             }
@@ -302,13 +310,16 @@ impl Showcase {
 
     pub fn popup<'a>(&'a self, name: &'a str) -> Option<Element<'a, Message>> {
         let popup = self.popups.open?;
-        let body = match popup {
-            Popup::About => self.about(self.shown?),
-            Popup::Tags => self.tags_body(),
-            Popup::Reviews => self.reviews_body(self.shown?),
+        let (bar, body) = match popup {
+            Popup::About => (None, self.about(self.shown?)),
+            Popup::Tags => (None, self.tags_body()),
+            Popup::Reviews => (
+                Some(self.review_filters(self.shown?)),
+                self.reviews_body(self.shown?),
+            ),
         };
 
-        Some(sheet(popup.label(), name, None, body, Message::ClosePopup))
+        Some(sheet(popup.label(), name, bar, body, Message::ClosePopup))
     }
 
     pub fn facts<'a>(&'a self, id: AppId, tags: &[String]) -> Option<Element<'a, Message>> {
