@@ -3,11 +3,19 @@ mod descriptions;
 pub(crate) mod images;
 mod media;
 mod pages;
+mod review_sheet;
+mod reviews;
 mod tags;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
-use gamepalate_app::{AppId, Block, GameDetails, GameTagsView, Gamepalate};
+use gamepalate_app::{
+    AppId, Block, GameDetails, GameTagsView, Gamepalate,
+    reviews::{ReviewPage, ReviewQuery},
+};
 use iced::{
     Center, Element, Fill, Task, mouse, padding,
     widget::{
@@ -20,6 +28,7 @@ use self::{
     descriptions::Descriptions,
     images::{Images, Picture},
     pages::Pages,
+    reviews::{Request, ReviewLists},
 };
 use super::game;
 use crate::{font, format, style};
@@ -46,6 +55,10 @@ pub struct Showcase {
     images: Images,
     pages: Pages,
     descriptions: Descriptions,
+    reviews: ReviewLists,
+    review_query: ReviewQuery,
+    spoilers: HashSet<(String, usize)>,
+    has_reviews: bool,
     extras: Images,
     screenshot: usize,
     last_screenshot: Option<String>,
@@ -70,6 +83,7 @@ pub enum Version {
 enum Popup {
     About,
     Tags,
+    Reviews,
 }
 
 impl Popup {
@@ -77,6 +91,7 @@ impl Popup {
         match self {
             Popup::About => "About this game",
             Popup::Tags => "Tags",
+            Popup::Reviews => "Reviews",
         }
     }
 }
@@ -117,6 +132,7 @@ pub enum Message {
     VersionAllocated(Version, String, Option<image::Allocation>),
     DetailsLoaded(AppId, Result<Option<Arc<GameDetails>>, String>),
     DescriptionLoaded(AppId, Result<Option<Arc<Vec<Block>>>, String>),
+    ReviewsLoaded(Request, Result<Arc<ReviewPage>, String>),
     ExtraLoaded(String, Option<image::Handle>),
     ExtraAllocated(String, Option<image::Allocation>),
     OpenLink(String),
@@ -129,6 +145,10 @@ pub enum Message {
     ToggleAbout,
     ToggleTags,
     ToggleAllTags,
+    ToggleReviews,
+    MoreReviews,
+    RetryReviews,
+    ShowSpoiler(String, usize),
     ClosePopup,
     ScrollUp,
     ScrollDown,
@@ -144,6 +164,10 @@ impl Showcase {
             images: Images::default(),
             pages: Pages::default(),
             descriptions: Descriptions::default(),
+            reviews: ReviewLists::default(),
+            review_query: ReviewQuery::default(),
+            spoilers: HashSet::new(),
+            has_reviews: false,
             extras: Images::default(),
             screenshot: 0,
             last_screenshot: None,
@@ -181,6 +205,7 @@ impl Showcase {
             }
             Message::DetailsLoaded(id, result) => self.pages.loaded(id, result),
             Message::DescriptionLoaded(id, result) => self.descriptions.loaded(id, result),
+            Message::ReviewsLoaded(request, result) => self.reviews.loaded(request, result),
             Message::ExtraLoaded(url, None) => self.extras.loaded(url, None),
             Message::ExtraLoaded(url, Some(handle)) => {
                 return image::allocate(handle)
@@ -205,6 +230,14 @@ impl Showcase {
             Message::ToggleAbout => self.popups.toggle(Popup::About, self.can_open_popup()),
             Message::ToggleTags => self.popups.toggle(Popup::Tags, self.can_open_popup()),
             Message::ToggleAllTags => self.popups.all_tags = !self.popups.all_tags,
+            Message::ToggleReviews => self
+                .popups
+                .toggle(Popup::Reviews, self.can_open_popup() && self.has_reviews),
+            Message::MoreReviews => return self.more_reviews(),
+            Message::RetryReviews => return self.retry_reviews(),
+            Message::ShowSpoiler(id, index) => {
+                self.spoilers.insert((id, index));
+            }
             Message::ClosePopup => self.popups.close(),
             Message::Close => {
                 self.zoomed = false;
@@ -218,6 +251,7 @@ impl Showcase {
             self.load_versions(),
             self.load_description(),
             self.load_extras(),
+            self.load_reviews(),
         ])
     }
 
@@ -225,7 +259,8 @@ impl Showcase {
         !self.zoomed && self.shown.is_some()
     }
 
-    pub fn follow(&mut self, current: Option<AppId>) {
+    pub fn follow(&mut self, current: Option<AppId>, has_reviews: bool) {
+        self.has_reviews = has_reviews;
         if current != self.shown {
             self.shown = current;
             self.screenshot = 0;
@@ -233,6 +268,7 @@ impl Showcase {
             self.browsing = false;
             self.zoomed = false;
             self.popups.close();
+            self.spoilers.clear();
             self.tags = current.and_then(|id| self.gamepalate.game_tags(id));
             self.originals.clear();
             self.thumbnails.clear();
@@ -251,6 +287,7 @@ impl Showcase {
         let details = self.load_details(upcoming, nearby);
         let images = self.load_images(upcoming, nearby, similar);
         self.descriptions.keep_only(nearby);
+        self.reviews.keep_only(nearby);
 
         Task::batch([details, images, self.load_versions()])
     }
@@ -268,9 +305,10 @@ impl Showcase {
         let body = match popup {
             Popup::About => self.about(self.shown?),
             Popup::Tags => self.tags_body(),
+            Popup::Reviews => self.reviews_body(self.shown?),
         };
 
-        Some(sheet(popup.label(), name, body, Message::ClosePopup))
+        Some(sheet(popup.label(), name, None, body, Message::ClosePopup))
     }
 
     pub fn facts<'a>(&'a self, id: AppId, tags: &[String]) -> Option<Element<'a, Message>> {
@@ -399,6 +437,7 @@ pub(super) fn scroll_sheet<M: 'static>(y: f32) -> Task<M> {
 pub(super) fn sheet<'a, M: Clone + 'a>(
     label: &'a str,
     name: &'a str,
+    bar: Option<Element<'a, M>>,
     body: Element<'a, M>,
     close: M,
 ) -> Element<'a, M> {
@@ -418,16 +457,24 @@ pub(super) fn sheet<'a, M: Clone + 'a>(
     let sheet = column![
         container(header).padding(padding::top(24).bottom(20).left(SHEET_INSET).right(20)),
         style::separator(),
+    ]
+    .push(bar.map(|bar| {
+        column![
+            container(bar).padding(padding::top(12).bottom(12).left(SHEET_INSET).right(20)),
+            style::separator(),
+        ]
+    }))
+    .push(
         scrollable(
             container(body).padding(
                 padding::top(24)
                     .bottom(SHEET_INSET)
                     .left(SHEET_INSET)
-                    .right(SHEET_INSET)
-            )
+                    .right(SHEET_INSET),
+            ),
         )
         .id(SHEET),
-    ];
+    );
 
     stack![
         opaque(
@@ -471,6 +518,20 @@ mod tests {
     fn about_keeps_its_header_in_the_shared_sheet() {
         assert_eq!(Popup::About.label(), "About this game");
         assert_eq!(Popup::Tags.label(), "Tags");
+        assert_eq!(Popup::Reviews.label(), "Reviews");
+    }
+
+    #[test]
+    fn r_opens_and_closes_the_reviews_only_when_there_are_some() {
+        let mut popups = Popups::default();
+
+        popups.toggle(Popup::Reviews, false);
+        assert_eq!(popups.open, None);
+
+        popups.toggle(Popup::Reviews, true);
+        assert_eq!(popups.open, Some(Popup::Reviews));
+        popups.toggle(Popup::Reviews, true);
+        assert_eq!(popups.open, None);
     }
 
     #[test]

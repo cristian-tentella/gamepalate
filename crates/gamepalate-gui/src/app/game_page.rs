@@ -361,7 +361,10 @@ impl GamePage {
                     .spacing(4)
                     .into(),
                 figures: row![
-                    game::reviews(&game.reviews),
+                    game::reviews(
+                        &game.reviews,
+                        Message::Showcase(showcase::Message::ToggleReviews),
+                    ),
                     game::price_row(&game.price, self.gamepalate.currency(), game::PRICE_GAP),
                 ]
                 .spacing(28)
@@ -475,7 +478,8 @@ impl GamePage {
 
     fn load(&mut self) -> Task<Message> {
         let id = [self.game.id];
-        self.showcase.follow(Some(self.game.id));
+        self.showcase
+            .follow(Some(self.game.id), self.game.reviews.total > 0);
 
         self.showcase.load(&id, &id, &[]).map(Message::Showcase)
     }
@@ -592,6 +596,9 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         Key::Character(key) if key.eq_ignore_ascii_case("t") => {
             Some(Message::Showcase(showcase::Message::ToggleTags))
         }
+        Key::Character(key) if key.eq_ignore_ascii_case("r") => {
+            Some(Message::Showcase(showcase::Message::ToggleReviews))
+        }
         Key::Character(key) if key.eq_ignore_ascii_case("k") => {
             Some(Message::Showcase(showcase::Message::ScrollUp))
         }
@@ -684,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn the_description_tags_and_screenshots_have_the_keys_of_discover() {
+    fn the_description_tags_reviews_and_screenshots_have_the_keys_of_discover() {
         assert!(matches!(
             key_message(pressed(Key::Character("d".into()))),
             Some(Message::Showcase(showcase::Message::ToggleAbout))
@@ -692,6 +699,10 @@ mod tests {
         assert!(matches!(
             key_message(pressed(Key::Character("T".into()))),
             Some(Message::Showcase(showcase::Message::ToggleTags))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("r".into()))),
+            Some(Message::Showcase(showcase::Message::ToggleReviews))
         ));
         assert!(matches!(
             key_message(pressed(Key::Named(Named::ArrowRight))),

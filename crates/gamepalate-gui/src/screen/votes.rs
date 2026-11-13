@@ -462,7 +462,9 @@ impl Votes {
             game::Body {
                 heading: column![game::title(&game.name), voted].spacing(4).into(),
                 figures: row![]
-                    .push(game.reviews.as_ref().map(game::reviews))
+                    .push(game.reviews.as_ref().map(|reviews| {
+                        game::reviews(reviews, Message::Showcase(showcase::Message::ToggleReviews))
+                    }))
                     .push(price)
                     .spacing(28)
                     .into(),
@@ -598,7 +600,12 @@ impl Votes {
     }
 
     fn load(&mut self) -> Task<Message> {
-        self.showcase.follow(self.current().map(|game| game.id));
+        let has_reviews = self
+            .current()
+            .and_then(|game| game.reviews.as_ref())
+            .is_some_and(|reviews| reviews.total > 0);
+        self.showcase
+            .follow(self.current().map(|game| game.id), has_reviews);
         let end = (self.selected + showcase::AHEAD + 1).min(self.rows.len());
         let start = self.selected.saturating_sub(showcase::BEHIND).min(end);
         let upcoming = &self.rows[self.selected.min(end)..end];
@@ -818,6 +825,9 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         }
         Key::Character(character) if character.eq_ignore_ascii_case("t") => {
             Some(Message::Showcase(showcase::Message::ToggleTags))
+        }
+        Key::Character(character) if character.eq_ignore_ascii_case("r") => {
+            Some(Message::Showcase(showcase::Message::ToggleReviews))
         }
         Key::Character(character) if character.eq_ignore_ascii_case("k") => {
             Some(Message::Showcase(showcase::Message::ScrollUp))
@@ -1211,6 +1221,16 @@ mod tests {
             assert!(matches!(
                 key_message(pressed(Key::Character(key.into()))),
                 Some(Message::Showcase(showcase::Message::ToggleTags))
+            ));
+        }
+    }
+
+    #[test]
+    fn opens_the_reviews_with_r() {
+        for key in ["r", "R"] {
+            assert!(matches!(
+                key_message(pressed(Key::Character(key.into()))),
+                Some(Message::Showcase(showcase::Message::ToggleReviews))
             ));
         }
     }

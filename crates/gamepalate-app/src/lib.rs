@@ -55,6 +55,11 @@ pub use gamepalate_steam::{
     description::{Block, Span},
     transport::SteamError,
 };
+pub mod reviews {
+    pub use gamepalate_steam::reviews::{
+        Block, Languages, Order, Review, ReviewPage, ReviewQuery, Span, Verdict,
+    };
+}
 pub use gamepalate_store::config::{ConfigError, ConfigValue};
 pub use gamepalate_store::families_edit::NEW_FILE as NEW_FAMILIES_FILE;
 pub use gamepalate_store::gui::{GuiSettings, SavedWindow, ThemeChoice};

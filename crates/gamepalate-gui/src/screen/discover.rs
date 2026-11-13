@@ -186,7 +186,9 @@ impl Discover {
             return Task::none();
         }
         let task = self.handle(message);
-        self.showcase.follow(self.current().map(|game| game.id));
+        let has_reviews = self.current().is_some_and(|game| game.reviews.total > 0);
+        self.showcase
+            .follow(self.current().map(|game| game.id), has_reviews);
 
         Task::batch([task, self.load()])
     }
@@ -761,7 +763,10 @@ impl Discover {
         header_width: f32,
         beside: bool,
     ) -> Column<'a, Message> {
-        let reviews = game::reviews(&game.reviews);
+        let reviews = game::reviews(
+            &game.reviews,
+            Message::Showcase(showcase::Message::ToggleReviews),
+        );
         let currency = self.gamepalate.currency();
         let figures: Element<'a, Message> = if beside {
             let (shift, gap) = game::beside_reviews();
@@ -1034,6 +1039,7 @@ fn acts_on_the_game(message: &Message) -> bool {
                     | showcase::Message::PreviousScreenshot
                     | showcase::Message::ToggleAbout
                     | showcase::Message::ToggleTags
+                    | showcase::Message::ToggleReviews
             )
     )
 }
@@ -1076,6 +1082,9 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         }
         Key::Character(key) if key.eq_ignore_ascii_case("t") => {
             Some(Message::Showcase(showcase::Message::ToggleTags))
+        }
+        Key::Character(key) if key.eq_ignore_ascii_case("r") => {
+            Some(Message::Showcase(showcase::Message::ToggleReviews))
         }
         Key::Character(key) if key.eq_ignore_ascii_case("k") => {
             Some(Message::Showcase(showcase::Message::ScrollUp))
@@ -1344,6 +1353,22 @@ mod tests {
     fn the_open_filters_stop_the_tags() {
         assert!(acts_on_the_game(&Message::Showcase(
             showcase::Message::ToggleTags
+        )));
+    }
+
+    #[test]
+    fn opens_the_reviews_with_r_unless_the_filters_are_open() {
+        for key in ["r", "R"] {
+            assert!(matches!(
+                key_message(pressed(Key::Character(key.into()))),
+                Some(Message::Showcase(showcase::Message::ToggleReviews))
+            ));
+        }
+        assert!(acts_on_the_game(&Message::Showcase(
+            showcase::Message::ToggleReviews
+        )));
+        assert!(!stopped_by_popup(&Message::Showcase(
+            showcase::Message::ToggleReviews
         )));
     }
 
