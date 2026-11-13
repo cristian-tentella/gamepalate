@@ -1,13 +1,13 @@
 [package]
 name = "gamepalate-steam"
-version = "0.15.0"
+version = "0.16.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 flate2 = "1.1.10"
 futures = "0.3.34"
-gamepalate-core = { version = "0.15.0", path = "../gamepalate-core" }
+gamepalate-core = { version = "0.16.0", path = "../gamepalate-core" }
 jiff = "0.2.38"
 keyvalues-parser = "0.2.4"
 log = "0.4.34"
