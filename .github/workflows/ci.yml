@@ -3,7 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: ['**.md', 'LICENSE-*']
   pull_request:
+    paths-ignore: ['**.md', 'LICENSE-*']
 
 permissions:
   contents: read
@@ -27,27 +29,49 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # On Windows cargo is slow on NTFS: the workspace, Cargo and Rustup go on a Dev Drive.
+      - uses: samypr100/setup-dev-drive@v4
+        if: runner.os == 'Windows'
         with:
-          components: rustfmt, clippy
+          drive-size: 12GB
+          workspace-copy: true
+          env-mapping: |
+            CARGO_HOME,{{ DEV_DRIVE }}/.cargo
+            RUSTUP_HOME,{{ DEV_DRIVE }}/.rustup
+      - name: Install the toolchain of rust-toolchain.toml
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || '.' }}
+        run: rustup toolchain install
       - uses: ilammy/setup-nasm@v1
         if: runner.os == 'Windows'
-      - name: Install system libraries
+      - name: Skip the Azure apt mirror
         if: runner.os == 'Linux'
         run: |
           printf '%s\n' http://archive.ubuntu.com/ubuntu http://security.ubuntu.com/ubuntu \
             | sudo tee /etc/apt/apt-mirrors.txt
-          sudo apt-get -o Acquire::Retries=5 update
-          sudo apt-get -o Acquire::Retries=5 install -y nasm pkg-config libdbus-1-dev libxkbcommon-dev libwayland-dev libx11-dev
+      - uses: awalsh128/cache-apt-pkgs-action@v1
+        if: runner.os == 'Linux'
+        with:
+          packages: nasm pkg-config libdbus-1-dev libxkbcommon-dev libwayland-dev libx11-dev
+          version: 1
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
-      - name: Skip optimizations
+        with:
+          workspaces: ${{ env.DEV_DRIVE_WORKSPACE || '.' }} -> target
+          # Pull requests read the cache of main and do not write their own.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Faster CI builds
         run: |
           cat > "$RUNNER_TEMP/ci.toml" <<'EOF2'
           [profile.dev.package."*"]
           opt-level = 0
           [profile.dev.package.gamepalate-core]
           opt-level = 0
+          [target.x86_64-pc-windows-msvc]
+          linker = "rust-lld.exe"
           EOF2
+      - run: cargo fmt --all --check
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || '.' }}
       - run: cargo clippy --config "$RUNNER_TEMP/ci.toml" --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --config "$RUNNER_TEMP/ci.toml" --workspace --locked
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || '.' }}
+      # --all-targets leaves out the doctests: there are none, and rustdoc would start once per crate.
+      - run: cargo test --config "$RUNNER_TEMP/ci.toml" --workspace --all-targets --locked
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || '.' }}
