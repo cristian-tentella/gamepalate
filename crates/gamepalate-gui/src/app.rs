@@ -1,76 +1,55 @@
+mod frame;
+mod install;
+mod refresh;
+mod theme;
+
 use std::{
-    path::Path,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use gamepalate_app::{
-    AppId, Gamepalate, GuiSettings, PendingUpdate, Region, SavedWindow, ThemeChoice, Timestamp,
-    install::{Downloaded, Installed, SystemLaunch, Target, download_release},
-    new_version::{NewVersion, check_releases},
-    refresh::{Plan, Step, refresh, startup_plan},
+    AppId, Gamepalate, GuiSettings, PendingUpdate, SavedWindow,
+    install::{Downloaded, Installed, Target},
+    new_version::NewVersion,
+    refresh::{Plan, Step},
     setup::{FirstRun, error_chain},
-    update::{ArchiveState, archive_state, wall_clock},
+    update::ArchiveState,
 };
 use iced::{
-    Center, Color, Element, Fill, Length, Right, Shrink, Size, Subscription, Task, Theme, Top,
-    futures::{
-        SinkExt,
-        channel::mpsc,
-        future::{AbortHandle, Abortable, Aborted},
-    },
+    Center, Element, Fill, Right, Shrink, Size, Subscription, Task, Theme, Top,
     keyboard::{self, Key},
-    mouse, padding, stream, task,
-    theme::Palette,
-    widget::{
-        button, column, container, image, mouse_area, progress_bar, row, space, stack, text,
-        tooltip,
-    },
-    window::{self, Direction},
+    padding,
+    widget::{button, column, container, image, mouse_area, row, space, stack, text, tooltip},
+    window,
 };
 
 use crate::{
     font, format,
-    new_version::{self, NewVersions, Problem},
-    progress::{self, Stage, Tracker},
+    new_version::{NewVersions, Problem},
     screen::{
         Discover, Library, Profile, Screen, Settings, Votes, discover, library, profile, settings,
         setup, votes,
     },
     smooth::smooth,
-    style, window_icon,
+    style,
 };
+pub use frame::window_settings;
+use frame::{
+    CLOSE, MAXIMIZE, MINIMIZE, RESTORE, WindowAction, rescaled, resize_borders, saved_size,
+    window_button,
+};
+use refresh::{Refresh, refresh_button, refresh_tooltip};
+use theme::{choice, light, theme, theme_button, toggled};
 
 const UNDERLINE_HEIGHT: f32 = 2.0;
 const LOGO_BYTES: &[u8] = include_bytes!("../gamepalate-24.png");
 const LOGO_SIZE: f32 = 24.0;
 const LOGO_SPACING: f32 = 8.0;
-const RESIZE_BORDER: f32 = 5.0;
-const DOUBLE_CLICK: Duration = Duration::from_millis(500);
 const BAR_ICON_SCALE: f32 = 0.85;
-const MINIMIZE: char = '\u{E15B}';
-const MAXIMIZE: char = '\u{E3C6}';
-const RESTORE: char = '\u{E3E0}';
-const CLOSE: char = '\u{E5CD}';
-const SUN: char = '\u{E518}';
-const MOON: char = '\u{E51C}';
-const REFRESH: char = '\u{E5D5}';
-const CANCEL: char = '\u{E5CD}';
 const GEAR: char = '\u{E8B8}';
 const DOT_SIZE: f32 = 7.0;
 const NOTICE_DURATION: Duration = Duration::from_secs(12);
-const DEFAULT_SIZE: Size = Size::new(1280.0, 800.0);
-const MIN_SIZE: Size = Size::new(960.0, 600.0);
-const LIGHT_BACKGROUND: Color = Color::from_rgb8(0xff, 0xff, 0xff);
-const LIGHT_TEXT: Color = Color::from_rgb8(0x02, 0x31, 0x3d);
-const LIGHT_PRIMARY: Color = Color::from_rgb8(0x04, 0x77, 0x91);
-const LIGHT_ACCENT: Color = Color::from_rgb8(0x91, 0x33, 0x78);
-const LIGHT_DANGER: Color = Color::from_rgb8(0xa1, 0x59, 0x5a);
-const DARK_BACKGROUND: Color = Color::from_rgb8(0x08, 0x0f, 0x11);
-const DARK_TEXT: Color = Color::from_rgb8(0xda, 0xeb, 0xf1);
-const DARK_PRIMARY: Color = Color::from_rgb8(0x8d, 0xd6, 0xed);
-const DARK_ACCENT: Color = Color::from_rgb8(0xd8, 0x9b, 0xc3);
-const DARK_DANGER: Color = Color::from_rgb8(0xff, 0xba, 0xb9);
 
 pub struct App {
     gamepalate: Option<Arc<Gamepalate>>,
@@ -93,26 +72,10 @@ pub struct App {
     families_notice: Option<usize>,
 }
 
-#[derive(Debug, Default)]
-enum Refresh {
-    #[default]
-    Idle,
-    Running(Refreshing, task::Handle),
-    Failed(String),
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Start {
     Startup,
     Button,
-}
-
-#[derive(Debug)]
-enum Refreshing {
-    Catalog(Tracker),
-    Signals,
-    Renewal(Tracker),
-    Opening,
 }
 
 #[derive(Clone, Debug)]
@@ -145,14 +108,6 @@ pub enum Message {
     NewVersionDownloading(Option<u8>),
     NewVersionDownloaded(Result<Arc<Mutex<Option<Downloaded>>>, Problem>),
     InstallNewVersion,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum WindowAction {
-    Minimize,
-    ToggleMaximize,
-    Close,
-    Resize(Direction),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -350,108 +305,19 @@ impl App {
                     setup::Action::Open(gamepalate) => self.opened(*gamepalate),
                 }
             }
-            Message::WindowFound(id) => {
-                self.window = id;
-                match id {
-                    Some(id) => Task::batch([
-                        window::scale_factor(id).map(Message::Rescaled),
-                        window::run(id, window_icon::use_exe_icon).discard(),
-                    ]),
-                    None => Task::none(),
-                }
-            }
-            Message::Rescaled(scale) => {
-                self.scale = scale;
-                Task::none()
-            }
-            Message::Window(action) => self.window_action(action),
-            Message::BarPressed => self.bar_pressed(),
-            Message::Resized(size) => {
-                self.resized = size;
-                match self.window {
-                    Some(id) => window::is_maximized(id).map(Message::Maximized),
-                    None => Task::none(),
-                }
-            }
-            Message::Maximized(maximized) => {
-                self.maximized = maximized;
-                if let Some(size) = restored(self.resized, maximized) {
-                    self.size = size;
-                }
-                Task::none()
-            }
-            Message::Refresh => self.run_refresh(Plan::EVERYTHING, Start::Button),
-            Message::ArchiveRead(start, result) => match result {
-                Ok(state) => {
-                    self.renewal_due = state.renewal_due;
-                    match start {
-                        Start::Startup => {
-                            self.run_refresh(startup_plan(&state, wall_clock()), Start::Startup)
-                        }
-                        Start::Button => Task::none(),
-                    }
-                }
-                Err(error) => {
-                    if start == Start::Startup {
-                        self.startup_error = Some(error);
-                    }
-                    Task::none()
-                }
-            },
-            Message::Refreshing(step) => {
-                if let Refresh::Running(refreshing, ..) = &mut self.refresh {
-                    refreshing.advance(step, Instant::now());
-                }
-                Task::none()
-            }
-            Message::Entered(gamepalate) => {
-                if let Refresh::Running(refreshing, ..) = &mut self.refresh {
-                    *refreshing = Refreshing::Renewal(Tracker::default());
-                }
-                self.enter(gamepalate);
-                Task::none()
-            }
-            Message::Refreshed(start, result) => {
-                self.refresh = Refresh::Idle;
-                let read = self.read_archive(Start::Button);
-                let gamepalate = match result {
-                    Ok(Some(gamepalate)) => gamepalate,
-                    Ok(None) => {
-                        self.find_pending();
-                        return read;
-                    }
-                    Err(error) => {
-                        match start {
-                            Start::Button => self.refresh = Refresh::Failed(error),
-                            Start::Startup => self.startup_error = Some(error),
-                        }
-                        self.find_pending();
-                        return read;
-                    }
-                };
-                if !reopens_the_screen(start) {
-                    self.enter(gamepalate);
-                    return read;
-                }
-                self.gamepalate = Some(gamepalate);
-                self.find_pending();
-                let open = match self.page() {
-                    Some(page) => self.open(page),
-                    None => Task::none(),
-                };
-                Task::batch([open, read])
-            }
-            Message::CancelRefresh => {
-                if let Refresh::Running(refreshing, handle) = &self.refresh
-                    && refreshing.can_cancel()
-                {
-                    handle.abort();
-                    self.refresh = Refresh::Idle;
-                    self.find_pending();
-                    return self.read_archive(Start::Button);
-                }
-                Task::none()
-            }
+            Message::WindowFound(_)
+            | Message::Rescaled(_)
+            | Message::Window(_)
+            | Message::BarPressed
+            | Message::Resized(_)
+            | Message::Maximized(_) => self.update_frame(message),
+            Message::Refresh
+            | Message::ArchiveRead(..)
+            | Message::Refreshing(_)
+            | Message::Entered(_)
+            | Message::Refreshed(..)
+            | Message::CancelRefresh
+            | Message::DismissRefreshError => self.update_refresh(message),
             Message::HideFamiliesNotice => {
                 self.families_notice = None;
                 Task::none()
@@ -460,109 +326,12 @@ impl App {
                 self.families_notice = None;
                 self.update(Message::Navigate(Page::Profile))
             }
-            Message::DismissRefreshError => {
-                if matches!(self.refresh, Refresh::Failed(_)) {
-                    self.refresh = Refresh::Idle;
-                }
-                Task::none()
-            }
             Message::ToggleTheme => self.set_theme(choice(&toggled(&self.theme))),
-            Message::NewVersionChecked(found) => {
-                if let Err(error) = &found {
-                    tracing::warn!("could not check for new versions: {error}");
-                }
-                self.new_versions.checked(found.map_err(drop));
-                Task::none()
-            }
-            Message::NewVersionDownloading(percent) => {
-                self.new_versions.downloading(percent);
-                Task::none()
-            }
-            Message::NewVersionDownloaded(Ok(downloaded)) => {
-                self.downloaded = downloaded
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .take();
-                self.new_versions.installing();
-                let saving = match &mut self.screen {
-                    Screen::Settings(screen) => screen.leave().discard(),
-                    _ => Task::none(),
-                };
-                saving
-                    .chain(self.save_window())
-                    .chain(Task::done(Message::InstallNewVersion))
-            }
-            Message::NewVersionDownloaded(Err(problem)) => {
-                self.new_versions.failed(problem);
-                Task::none()
-            }
-            Message::InstallNewVersion => {
-                let Some(downloaded) = self.downloaded.take() else {
-                    return Task::none();
-                };
-                match downloaded.install(&SystemLaunch, true) {
-                    Ok(installed) => {
-                        self.installed = Some(installed);
-                        iced::exit()
-                    }
-                    Err(error) => {
-                        self.new_versions.failed(new_version::problem(&error));
-                        Task::none()
-                    }
-                }
-            }
+            Message::NewVersionChecked(_)
+            | Message::NewVersionDownloading(_)
+            | Message::NewVersionDownloaded(_)
+            | Message::InstallNewVersion => self.update_install(message),
         }
-    }
-
-    fn check_new_version(&mut self, start: Start) -> Task<Message> {
-        if !self.new_versions.start_check(start) {
-            return Task::none();
-        }
-
-        Task::perform(
-            async { check_releases().await.map_err(|error| error_chain(&error)) },
-            Message::NewVersionChecked,
-        )
-    }
-
-    fn download_new_version(&mut self) -> Task<Message> {
-        let Some(dir) = self
-            .gamepalate
-            .as_ref()
-            .map(|gamepalate| gamepalate.data_dir().to_path_buf())
-        else {
-            return Task::none();
-        };
-        let Some((new, target)) = self.new_versions.start_download() else {
-            return Task::none();
-        };
-
-        Task::run(
-            stream::channel(64, async move |mut output: mpsc::Sender<Message>| {
-                let mut events = output.clone();
-                let mut shown = None;
-                let downloaded = download_release(new.version, &target, &dir, move |progress| {
-                    let percent = progress.percent();
-                    if percent != shown {
-                        shown = percent;
-                        let _ = events.try_send(Message::NewVersionDownloading(percent));
-                    }
-                })
-                .await;
-                let message = Message::NewVersionDownloaded(
-                    downloaded
-                        .map(|downloaded| Arc::new(Mutex::new(Some(downloaded))))
-                        .map_err(|error| new_version::problem(&error)),
-                );
-                let _ = output.send(message).await;
-            }),
-            |message| message,
-        )
-    }
-
-    fn set_theme(&mut self, choice: ThemeChoice) -> Task<Message> {
-        self.theme = theme(choice);
-        self.change_gui_settings(move |settings| settings.theme = choice)
     }
 
     fn change_gui_settings(
@@ -734,151 +503,6 @@ impl App {
         self.theme.clone()
     }
 
-    fn save_window(&self) -> Task<Message> {
-        let window = SavedWindow {
-            width: self.size.width.round() as u32,
-            height: self.size.height.round() as u32,
-            maximized: self.maximized,
-        };
-        self.change_gui_settings(move |settings| settings.window = Some(window))
-    }
-
-    fn window_action(&self, action: WindowAction) -> Task<Message> {
-        if matches!(action, WindowAction::Close) {
-            return self.save_window().chain(iced::exit());
-        }
-        let Some(id) = self.window else {
-            return Task::none();
-        };
-
-        match action {
-            WindowAction::Minimize => window::minimize(id, true),
-            WindowAction::ToggleMaximize => window::toggle_maximize(id),
-            WindowAction::Resize(direction) => window::drag_resize(id, direction),
-            WindowAction::Close => Task::none(),
-        }
-    }
-
-    fn status<'a>(&'a self, gamepalate: &Gamepalate) -> Element<'a, Message> {
-        let refreshing = match &self.refresh {
-            Refresh::Idle => return freshness(gamepalate),
-            Refresh::Failed(error) => return refresh_failed(error),
-            Refresh::Running(refreshing, ..) => refreshing,
-        };
-        let bar = match refreshing {
-            Refreshing::Catalog(tracker) | Refreshing::Renewal(tracker)
-                if matches!(tracker.stage(), Stage::StoreData { .. } | Stage::Writing) =>
-            {
-                Some(
-                    progress_bar(0.0..=1.0, tracker.fraction())
-                        .girth(4)
-                        .length(160)
-                        .style(style::meter),
-                )
-            }
-            _ => None,
-        };
-
-        row![text(refreshing_text(refreshing)).size(font::NOTE_SIZE)]
-            .push(bar)
-            .push(
-                refreshing_count(refreshing)
-                    .map(|count| text(count).size(font::NOTE_SIZE).style(style::muted)),
-            )
-            .spacing(10)
-            .align_y(Center)
-            .into()
-    }
-
-    fn run_refresh(&mut self, plan: Plan, start: Start) -> Task<Message> {
-        let Some(gamepalate) = &self.gamepalate else {
-            return Task::none();
-        };
-        if plan.is_nothing() || matches!(self.refresh, Refresh::Running(..)) {
-            return Task::none();
-        }
-        let dir = gamepalate.data_dir().to_path_buf();
-
-        let (task, handle) = Task::run(
-            stream::channel(64, async move |mut output: mpsc::Sender<Message>| {
-                let (abort, registration) = AbortHandle::new_pair();
-                let _abort_on_drop = AbortOnDrop(abort);
-                let mut events = output.clone();
-                let runtime = tokio::runtime::Handle::current();
-                let blocking = tokio::task::spawn_blocking(move || {
-                    runtime.block_on(Abortable::new(
-                        refresh_in_two(&dir, plan, &mut events),
-                        registration,
-                    ))
-                });
-                let result = match blocking.await {
-                    Ok(Ok(result)) => result,
-                    Ok(Err(Aborted)) => return,
-                    Err(error) => Err(format!("The update stopped unexpectedly: {error}")),
-                };
-                let _ = output.send(Message::Refreshed(start, result)).await;
-            }),
-            |message| message,
-        )
-        .abortable();
-        let refreshing = if plan.prices {
-            Refreshing::Catalog(Tracker::default())
-        } else {
-            Refreshing::Renewal(Tracker::default())
-        };
-        self.startup_error = None;
-        self.refresh = Refresh::Running(refreshing, handle);
-
-        task
-    }
-
-    fn read_archive(&self, start: Start) -> Task<Message> {
-        let Some(gamepalate) = &self.gamepalate else {
-            return Task::none();
-        };
-        let dir = gamepalate.data_dir().to_path_buf();
-
-        Task::perform(
-            async move {
-                archive_state(&dir, wall_clock())
-                    .map_err(|error| progress::update_error_text(&error))
-            },
-            move |result| Message::ArchiveRead(start, result),
-        )
-    }
-
-    fn enter(&mut self, gamepalate: Arc<Gamepalate>) {
-        if let Screen::Discover(discover) = &mut self.screen {
-            discover.use_gamepalate(&gamepalate);
-        }
-        self.gamepalate = Some(gamepalate);
-        self.find_pending();
-    }
-
-    fn find_pending(&mut self) {
-        self.pending = self
-            .gamepalate
-            .as_ref()
-            .and_then(|gamepalate| gamepalate.pending_update());
-    }
-
-    fn bar_pressed(&mut self) -> Task<Message> {
-        let Some(id) = self.window else {
-            return Task::none();
-        };
-        let now = Instant::now();
-        let double = self
-            .last_bar_press
-            .is_some_and(|last| now.duration_since(last) < DOUBLE_CLICK);
-        self.last_bar_press = (!double).then_some(now);
-
-        if double {
-            window::toggle_maximize(id)
-        } else {
-            window::drag(id)
-        }
-    }
-
     fn opened(&mut self, gamepalate: Gamepalate) -> Task<Message> {
         let gamepalate = Arc::new(gamepalate);
         let pruner = Arc::clone(&gamepalate);
@@ -1029,286 +653,6 @@ fn page_key(event: keyboard::Event) -> Option<Message> {
     }
 }
 
-fn freshness<'a>(gamepalate: &Gamepalate) -> Element<'a, Message> {
-    let now = Timestamp(jiff::Timestamp::now().as_millisecond());
-    let signals = format::when(gamepalate.signals_read_at(), now);
-    let prices = prices_text(
-        format::when(gamepalate.prices_updated_at(), now),
-        gamepalate.prices_region(),
-    );
-
-    text!("Signals {signals} · {prices}")
-        .size(font::NOTE_SIZE)
-        .style(style::muted)
-        .into()
-}
-
-fn prices_text(when: String, other_region: Option<Region>) -> String {
-    match other_region {
-        Some(region) => format!("Prices {when} · {region}"),
-        None => format!("Prices {when}"),
-    }
-}
-
-fn window_button<'a>(icon: char, action: WindowAction) -> Element<'a, Message> {
-    // The dash and the cross of Material Symbols are thinner than the square.
-    let thin = icon == MINIMIZE || icon == CLOSE;
-    let size = font::icon(10.0) * BAR_ICON_SCALE * if thin { 1.4 } else { 1.0 };
-    button(
-        container(
-            text(icon)
-                .font(font::ICONS)
-                .size(size)
-                .width(Fill)
-                .height(Fill)
-                .center(),
-        )
-        .padding(padding::bottom(UNDERLINE_HEIGHT)),
-    )
-    .width(46)
-    .height(Fill)
-    .padding(0)
-    .style(if matches!(action, WindowAction::Close) {
-        style::close_button
-    } else {
-        style::window_button
-    })
-    .on_press(Message::Window(action))
-    .into()
-}
-
-fn rescaled((_, event): (window::Id, window::Event)) -> Option<Message> {
-    match event {
-        window::Event::Rescaled(scale) => Some(Message::Rescaled(scale)),
-        _ => None,
-    }
-}
-
-pub fn window_settings(saved: Option<SavedWindow>) -> window::Settings {
-    #[cfg_attr(not(windows), allow(unused_mut))]
-    let mut settings = window::Settings {
-        size: saved_size(saved),
-        maximized: saved.is_some_and(|saved| saved.maximized),
-        position: window::Position::Centered,
-        min_size: Some(MIN_SIZE),
-        decorations: false,
-        exit_on_close_request: false,
-        ..window::Settings::default()
-    };
-    #[cfg(windows)]
-    {
-        settings.platform_specific = window::settings::PlatformSpecific {
-            undecorated_shadow: true,
-            corner_preference: window::settings::platform::CornerPreference::Round,
-            ..window::settings::PlatformSpecific::default()
-        };
-    }
-    settings
-}
-
-fn saved_size(saved: Option<SavedWindow>) -> Size {
-    saved.map_or(DEFAULT_SIZE, |saved| {
-        Size::new(
-            (saved.width as f32).max(MIN_SIZE.width),
-            (saved.height as f32).max(MIN_SIZE.height),
-        )
-    })
-}
-
-fn restored(size: Size, maximized: bool) -> Option<Size> {
-    (!maximized && size.width >= MIN_SIZE.width && size.height >= MIN_SIZE.height).then_some(size)
-}
-
-fn light() -> Theme {
-    Theme::custom(
-        "Light",
-        Palette {
-            background: LIGHT_BACKGROUND,
-            text: LIGHT_TEXT,
-            primary: LIGHT_PRIMARY,
-            success: LIGHT_ACCENT,
-            warning: LIGHT_ACCENT,
-            danger: LIGHT_DANGER,
-        },
-    )
-}
-
-fn dark() -> Theme {
-    Theme::custom(
-        "Dark",
-        Palette {
-            background: DARK_BACKGROUND,
-            text: DARK_TEXT,
-            primary: DARK_PRIMARY,
-            success: DARK_ACCENT,
-            warning: DARK_ACCENT,
-            danger: DARK_DANGER,
-        },
-    )
-}
-
-fn is_dark(theme: &Theme) -> bool {
-    theme.extended_palette().is_dark
-}
-
-fn toggled(theme: &Theme) -> Theme {
-    if is_dark(theme) { light() } else { dark() }
-}
-
-fn theme(choice: ThemeChoice) -> Theme {
-    match choice {
-        ThemeChoice::Light => light(),
-        ThemeChoice::Dark => dark(),
-    }
-}
-
-fn choice(theme: &Theme) -> ThemeChoice {
-    if is_dark(theme) {
-        ThemeChoice::Dark
-    } else {
-        ThemeChoice::Light
-    }
-}
-
-fn theme_icon(theme: &Theme) -> char {
-    if is_dark(theme) { SUN } else { MOON }
-}
-
-async fn refresh_in_two(
-    dir: &Path,
-    plan: Plan,
-    output: &mut mpsc::Sender<Message>,
-) -> Result<Option<Arc<Gamepalate>>, String> {
-    let mut events = output.clone();
-    let mut progress = move |step| {
-        let _ = events.try_send(Message::Refreshing(step));
-    };
-    let mut latest = None;
-    let mut renewal = plan.renewal_after(None);
-
-    let prices = plan.prices_only();
-    if !prices.is_nothing() {
-        let refreshed = refresh(dir, prices, &mut progress)
-            .await
-            .map_err(|error| progress::refresh_error_text(&error))?;
-        renewal = plan.renewal_after(refreshed.prices.as_ref());
-        latest = refreshed.gamepalate.map(Arc::new);
-        if let Some(gamepalate) = latest.as_ref().filter(|_| !renewal.is_nothing()) {
-            let _ = output.send(Message::Entered(Arc::clone(gamepalate))).await;
-        }
-    }
-
-    if !renewal.is_nothing() {
-        let refreshed = refresh(dir, renewal, &mut progress)
-            .await
-            .map_err(|error| progress::refresh_error_text(&error))?;
-        if let Some(gamepalate) = refreshed.gamepalate {
-            latest = Some(Arc::new(gamepalate));
-        }
-    }
-
-    Ok(latest)
-}
-
-struct AbortOnDrop(AbortHandle);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-fn reopens_the_screen(start: Start) -> bool {
-    start == Start::Button
-}
-
-impl Refreshing {
-    fn advance(&mut self, step: Step, now: Instant) {
-        match step {
-            Step::Catalog(progress) => {
-                if !matches!(self, Refreshing::Catalog(_)) {
-                    *self = Refreshing::Catalog(Tracker::default());
-                }
-                if let Refreshing::Catalog(tracker) = self {
-                    tracker.advance(progress, now);
-                }
-            }
-            Step::Signals => *self = Refreshing::Signals,
-            Step::Renewal(progress) => {
-                if !matches!(self, Refreshing::Renewal(_)) {
-                    *self = Refreshing::Renewal(Tracker::default());
-                }
-                if let Refreshing::Renewal(tracker) = self {
-                    tracker.advance(progress, now);
-                }
-            }
-            Step::Opening => *self = Refreshing::Opening,
-        }
-    }
-
-    fn can_cancel(&self) -> bool {
-        matches!(
-            self,
-            Refreshing::Catalog(tracker) | Refreshing::Renewal(tracker)
-                if tracker.stage() != Stage::Writing
-        )
-    }
-}
-
-fn refreshing_text(refreshing: &Refreshing) -> &'static str {
-    match refreshing {
-        Refreshing::Catalog(tracker) => match tracker.stage() {
-            Stage::Starting | Stage::Reading => "Reading the list of Steam games…",
-            Stage::StoreData { .. } => "Updating prices",
-            Stage::Writing => "Writing the catalog…",
-        },
-        Refreshing::Signals => "Reading your Signals…",
-        Refreshing::Renewal(tracker) => match tracker.stage() {
-            Stage::Starting | Stage::Reading => "Renewing tags and reviews…",
-            Stage::StoreData { .. } => "Renewing tags and reviews",
-            Stage::Writing => "Writing the catalog…",
-        },
-        Refreshing::Opening => "Loading…",
-    }
-}
-
-fn refreshing_count(refreshing: &Refreshing) -> Option<String> {
-    let (Refreshing::Catalog(tracker) | Refreshing::Renewal(tracker)) = refreshing else {
-        return None;
-    };
-    let Stage::StoreData { done, total } = tracker.stage() else {
-        return None;
-    };
-    let count = format!(
-        "{} of {}",
-        format::count(done as u32),
-        format::count(total as u32)
-    );
-
-    Some(match tracker.time_left() {
-        Some(left) => format!("{count} · {}", format::time_left(left)),
-        None => count,
-    })
-}
-
-fn refresh_tooltip(
-    pending: Option<PendingUpdate>,
-    renewal_due: bool,
-    startup_error: Option<&str>,
-) -> String {
-    if let Some(error) = startup_error {
-        return error.to_string();
-    }
-    match pending {
-        Some(pending) => format!(
-            "Resume the update started on {}",
-            format::day_time(pending.started_at)
-        ),
-        None if renewal_due => "Update prices and Signals, then renew tags and reviews".to_string(),
-        None => "Update prices and Signals".to_string(),
-    }
-}
-
 fn families_notice<'a>(count: usize) -> Element<'a, Message> {
     let close = button(
         text(CLOSE)
@@ -1343,46 +687,6 @@ fn families_notice<'a>(count: usize) -> Element<'a, Message> {
     .align_bottom(Fill)
     .padding(16)
     .into()
-}
-
-fn refresh_failed<'a>(error: &str) -> Element<'a, Message> {
-    row![
-        tooltip(
-            text("Update stopped")
-                .size(font::NOTE_SIZE)
-                .style(text::danger),
-            container(text(error.to_string()).size(font::NOTE_SIZE))
-                .padding([6, 10])
-                .max_width(420)
-                .style(style::popup),
-            tooltip::Position::Bottom,
-        ),
-        button(
-            text(CLOSE)
-                .font(font::ICONS)
-                .size(font::icon(9.0) * BAR_ICON_SCALE)
-        )
-        .padding(0)
-        .style(style::link)
-        .on_press(Message::DismissRefreshError),
-    ]
-    .spacing(8)
-    .align_y(Center)
-    .into()
-}
-
-fn refresh_button<'a>(refresh: &Refresh, idle_tip: String) -> Element<'a, Message> {
-    let (icon, message, tip) = match refresh {
-        Refresh::Running(refreshing, ..) if refreshing.can_cancel() => (
-            CANCEL,
-            Some(Message::CancelRefresh),
-            "Pause the update".to_string(),
-        ),
-        Refresh::Running(..) => (REFRESH, None, idle_tip),
-        Refresh::Idle | Refresh::Failed(_) => (REFRESH, Some(Message::Refresh), idle_tip),
-    };
-
-    with_tooltip(bar_icon(icon, message).into(), tip)
 }
 
 fn settings_button<'a>(open: bool, new_version: bool) -> Element<'a, Message> {
@@ -1423,10 +727,6 @@ fn settings_tip(open: bool, new_version: bool) -> &'static str {
     }
 }
 
-fn theme_button<'a>(theme: &Theme) -> Element<'a, Message> {
-    bar_icon(theme_icon(theme), Some(Message::ToggleTheme)).into()
-}
-
 fn bar_icon<'a>(icon: char, message: Option<Message>) -> button::Button<'a, Message> {
     button(
         container(
@@ -1457,58 +757,6 @@ fn with_tooltip<'a>(icon: Element<'a, Message>, tip: String) -> Element<'a, Mess
     .into()
 }
 
-fn resize_borders<'a>() -> Element<'a, Message> {
-    column![
-        row![
-            resize_border(Direction::NorthWest),
-            resize_border(Direction::North),
-            resize_border(Direction::NorthEast),
-        ],
-        row![
-            resize_border(Direction::West),
-            space().width(Fill),
-            resize_border(Direction::East),
-        ]
-        .height(Fill),
-        row![
-            resize_border(Direction::SouthWest),
-            resize_border(Direction::South),
-            resize_border(Direction::SouthEast),
-        ],
-    ]
-    .into()
-}
-
-fn resize_border<'a>(direction: Direction) -> Element<'a, Message> {
-    let (width, height, interaction): (Length, Length, _) = match direction {
-        Direction::North | Direction::South => (
-            Fill,
-            RESIZE_BORDER.into(),
-            mouse::Interaction::ResizingVertically,
-        ),
-        Direction::East | Direction::West => (
-            RESIZE_BORDER.into(),
-            Fill,
-            mouse::Interaction::ResizingHorizontally,
-        ),
-        Direction::NorthWest | Direction::SouthEast => (
-            RESIZE_BORDER.into(),
-            RESIZE_BORDER.into(),
-            mouse::Interaction::ResizingDiagonallyDown,
-        ),
-        Direction::NorthEast | Direction::SouthWest => (
-            RESIZE_BORDER.into(),
-            RESIZE_BORDER.into(),
-            mouse::Interaction::ResizingDiagonallyUp,
-        ),
-    };
-
-    mouse_area(space().width(width).height(height))
-        .interaction(interaction)
-        .on_press(Message::Window(WindowAction::Resize(direction)))
-        .into()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1526,166 +774,6 @@ mod tests {
             text: None,
             repeat: false,
         }
-    }
-
-    fn store_data(done: usize, total: usize) -> Step {
-        Step::Catalog(gamepalate_app::update::Progress::StoreData { done, total })
-    }
-
-    #[test]
-    fn the_bar_says_each_step_of_the_update() {
-        let mut refreshing = Refreshing::Catalog(Tracker::default());
-        let now = Instant::now();
-        assert_eq!(
-            refreshing_text(&refreshing),
-            "Reading the list of Steam games…"
-        );
-        assert_eq!(refreshing_count(&refreshing), None);
-
-        refreshing.advance(store_data(312, 757), now);
-        assert_eq!(refreshing_text(&refreshing), "Updating prices");
-        assert_eq!(refreshing_count(&refreshing).as_deref(), Some("312 of 757"));
-
-        refreshing.advance(Step::Signals, now);
-        assert_eq!(refreshing_text(&refreshing), "Reading your Signals…");
-        assert_eq!(refreshing_count(&refreshing), None);
-
-        refreshing.advance(store_data(1, 2), now);
-        refreshing.advance(Step::Opening, now);
-        assert_eq!(refreshing_text(&refreshing), "Loading…");
-    }
-
-    #[test]
-    fn after_ten_requests_the_bar_says_the_time_left() {
-        let mut refreshing = Refreshing::Catalog(Tracker::default());
-        let start = Instant::now();
-        for done in 1..=10 {
-            refreshing.advance(
-                store_data(done, 1_210),
-                start + Duration::from_secs(done as u64),
-            );
-        }
-
-        assert_eq!(
-            refreshing_count(&refreshing).as_deref(),
-            Some("10 of 1,210 · About 20 minutes left")
-        );
-    }
-
-    #[test]
-    fn the_update_can_be_stopped_until_it_writes() {
-        let mut refreshing = Refreshing::Catalog(Tracker::default());
-        let now = Instant::now();
-        assert!(refreshing.can_cancel());
-
-        refreshing.advance(store_data(312, 757), now);
-        assert!(refreshing.can_cancel());
-
-        refreshing.advance(
-            Step::Catalog(gamepalate_app::update::Progress::Writing),
-            now,
-        );
-        assert!(!refreshing.can_cancel());
-
-        refreshing.advance(Step::Signals, now);
-        assert!(!refreshing.can_cancel());
-    }
-
-    fn renewal_data(done: usize, total: usize) -> Step {
-        Step::Renewal(gamepalate_app::update::Progress::StoreData { done, total })
-    }
-
-    #[test]
-    fn the_tooltip_offers_to_resume_a_pending_update() {
-        let started_at = Timestamp(1_793_369_460_000);
-
-        assert_eq!(
-            refresh_tooltip(None, false, None),
-            "Update prices and Signals"
-        );
-        assert_eq!(
-            refresh_tooltip(
-                Some(PendingUpdate {
-                    started_at,
-                    responses: 3,
-                }),
-                true,
-                None
-            ),
-            format!(
-                "Resume the update started on {}",
-                format::day_time(started_at)
-            )
-        );
-    }
-
-    #[test]
-    fn the_tooltip_says_when_tags_and_reviews_are_renewed_after_the_prices() {
-        assert_eq!(
-            refresh_tooltip(None, true, None),
-            "Update prices and Signals, then renew tags and reviews"
-        );
-    }
-
-    #[test]
-    fn the_tooltip_says_what_stopped_the_update_at_startup() {
-        let error =
-            "Steam is not responding, so the update stopped. Update again before 7 Nov to resume.";
-
-        assert_eq!(refresh_tooltip(None, true, Some(error)), error);
-    }
-
-    #[test]
-    fn the_renewal_has_its_own_words_in_the_bar() {
-        let mut refreshing = Refreshing::Catalog(Tracker::default());
-        let now = Instant::now();
-        refreshing.advance(store_data(2, 2), now);
-        refreshing.advance(Step::Signals, now);
-
-        refreshing.advance(
-            Step::Renewal(gamepalate_app::update::Progress::ReadingApps),
-            now,
-        );
-        assert_eq!(refreshing_text(&refreshing), "Renewing tags and reviews…");
-        assert!(refreshing.can_cancel());
-
-        refreshing.advance(renewal_data(40, 150), now);
-        assert_eq!(refreshing_text(&refreshing), "Renewing tags and reviews");
-        assert_eq!(refreshing_count(&refreshing).as_deref(), Some("40 of 150"));
-
-        refreshing.advance(
-            Step::Renewal(gamepalate_app::update::Progress::Writing),
-            now,
-        );
-        assert_eq!(refreshing_text(&refreshing), "Writing the catalog…");
-        assert!(!refreshing.can_cancel());
-    }
-
-    #[test]
-    fn the_renewal_starts_its_count_from_zero() {
-        let mut refreshing = Refreshing::Catalog(Tracker::default());
-        let now = Instant::now();
-        refreshing.advance(store_data(757, 757), now);
-
-        refreshing.advance(renewal_data(3, 150), now);
-
-        assert!(matches!(refreshing, Refreshing::Renewal(_)));
-        assert_eq!(refreshing_count(&refreshing).as_deref(), Some("3 of 150"));
-    }
-
-    #[test]
-    fn only_the_button_opens_the_screen_again() {
-        assert!(reopens_the_screen(Start::Button));
-        assert!(!reopens_the_screen(Start::Startup));
-    }
-
-    #[test]
-    fn prices_of_another_region_say_their_region() {
-        assert_eq!(prices_text("28 Oct".to_string(), None), "Prices 28 Oct");
-        assert_eq!(
-            prices_text("28 Oct".to_string(), Some(Region::ITALY)),
-            "Prices 28 Oct · IT"
-        );
     }
 
     #[test]
@@ -1716,83 +804,5 @@ mod tests {
         assert_eq!(page("4", keyboard::Modifiers::CTRL), Some(Page::Profile));
         assert_eq!(page("3", keyboard::Modifiers::empty()), None);
         assert_eq!(page("5", keyboard::Modifiers::CTRL), None);
-    }
-
-    #[test]
-    fn the_window_opens_as_it_was_saved() {
-        let saved = |width, height, maximized| {
-            Some(SavedWindow {
-                width,
-                height,
-                maximized,
-            })
-        };
-
-        let first = window_settings(None);
-        assert_eq!(first.size, DEFAULT_SIZE);
-        assert!(!first.maximized);
-        assert!(matches!(first.position, window::Position::Centered));
-        assert!(!first.exit_on_close_request);
-
-        let large = window_settings(saved(1440, 900, true));
-        assert_eq!(large.size, Size::new(1440.0, 900.0));
-        assert!(large.maximized);
-
-        assert_eq!(window_settings(saved(400, 300, false)).size, MIN_SIZE);
-    }
-
-    #[test]
-    fn keeps_the_size_of_the_window_when_it_is_not_maximized_or_minimized() {
-        let size = Size::new(1440.0, 900.0);
-
-        assert_eq!(restored(size, false), Some(size));
-        assert_eq!(restored(Size::new(2560.0, 1392.0), true), None);
-        assert_eq!(restored(Size::ZERO, false), None);
-    }
-
-    #[test]
-    fn the_theme_goes_from_light_to_dark_and_back() {
-        assert_eq!(toggled(&light()), dark());
-        assert_eq!(toggled(&dark()), light());
-    }
-
-    #[test]
-    fn the_dark_theme_has_a_darker_background_than_the_default() {
-        let background = dark().palette().background;
-
-        assert_eq!(background, DARK_BACKGROUND);
-        assert!(background.relative_luminance() < Palette::DARK.background.relative_luminance());
-    }
-
-    #[test]
-    fn links_and_discounts_stand_out_in_the_dark_as_in_the_light() {
-        let contrast = |theme: &Theme| {
-            let background = theme.palette().background;
-            let link = style::link(theme, button::Status::Active).text_color;
-            let discount = style::accent(theme).color.unwrap();
-
-            (
-                link.relative_contrast(background),
-                discount.relative_contrast(background),
-            )
-        };
-        let (light_link, light_discount) = contrast(&light());
-        let (dark_link, dark_discount) = contrast(&dark());
-
-        assert!(dark_link >= light_link);
-        assert!(dark_discount >= light_discount);
-    }
-
-    #[test]
-    fn the_saved_choice_is_the_theme() {
-        for choice_saved in [ThemeChoice::Light, ThemeChoice::Dark] {
-            assert_eq!(choice(&theme(choice_saved)), choice_saved);
-        }
-    }
-
-    #[test]
-    fn the_button_shows_the_theme_it_switches_to() {
-        assert_eq!(theme_icon(&light()), MOON);
-        assert_eq!(theme_icon(&dark()), SUN);
     }
 }
