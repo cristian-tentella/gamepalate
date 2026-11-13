@@ -10,7 +10,7 @@ dbg_macro = "warn"
 todo = "warn"
 
 [profile.release]
-lto = "fat"
+lto = "thin"
 codegen-units = 1
 strip = true
 
