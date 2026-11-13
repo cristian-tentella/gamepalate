@@ -29,6 +29,11 @@ const FILTER_SPACING: f32 = 16.0;
 const THUMB_UP: char = '\u{E8DC}';
 const THUMB_DOWN: char = '\u{E8DB}';
 const THUMB_SIZE: f32 = 11.0;
+/// About seven lines of the sheet: longer reviews are cut there until Read more.
+const SHORT_CHARS: usize = 600;
+/// What a block costs beyond its letters: each starts a line of its own.
+const BLOCK_CHARS: usize = 40;
+const CUT: &str = "…";
 const ORDERS: [Sorting; 3] = [
     Sorting(Order::Helpful),
     Sorting(Order::Recent),
@@ -107,11 +112,79 @@ fn dropdown<'a, T: fmt::Display + Clone + PartialEq + 'a>(
         .into()
 }
 
-fn paragraph<'a>(spans: &'a [Span], quiet: bool) -> Element<'a, Message> {
+/// The start of a review, cut at a word near `limit` characters, or `None` when it is not
+/// longer. A spoiler is never cut: it stays closed behind its button.
+pub(super) fn shortened(blocks: &[Block], limit: usize) -> Option<Vec<Block>> {
+    let mut left = limit;
+    let mut kept = Vec::new();
+    for block in blocks {
+        let length = block_chars(block);
+        if length <= left {
+            kept.push(block.clone());
+            left -= length;
+            continue;
+        }
+        let cut = match block {
+            Block::Spoiler(_) => None,
+            _ if left < 2 * BLOCK_CHARS => None,
+            Block::Heading(heading) => Some(Block::Heading(cut_text(heading, left - BLOCK_CHARS))),
+            Block::Paragraph(spans) => Some(Block::Paragraph(cut_spans(spans, left - BLOCK_CHARS))),
+            Block::Item(spans) => Some(Block::Item(cut_spans(spans, left - BLOCK_CHARS))),
+            Block::Quote(spans) => Some(Block::Quote(cut_spans(spans, left - BLOCK_CHARS))),
+        };
+        kept.extend(cut);
+        if kept.is_empty() {
+            kept.push(block.clone());
+        }
+        return Some(kept);
+    }
+    None
+}
+
+fn block_chars(block: &Block) -> usize {
+    let letters = match block {
+        Block::Heading(heading) => heading.chars().count(),
+        Block::Spoiler(_) => 0,
+        Block::Paragraph(spans) | Block::Item(spans) | Block::Quote(spans) => {
+            spans.iter().map(|part| part.text.chars().count()).sum()
+        }
+    };
+    letters + BLOCK_CHARS
+}
+
+fn cut_spans(spans: &[Span], mut left: usize) -> Vec<Span> {
+    let mut kept = Vec::new();
+    for part in spans {
+        let length = part.text.chars().count();
+        if length < left {
+            kept.push(part.clone());
+            left -= length;
+        } else {
+            kept.push(Span {
+                text: cut_text(&part.text, left),
+                bold: part.bold,
+            });
+            break;
+        }
+    }
+    kept
+}
+
+/// The first `limit` characters, back to the last space when there is one, then an ellipsis.
+fn cut_text(text: &str, limit: usize) -> String {
+    let start: String = text.chars().take(limit).collect();
+    let start = match start.rfind(char::is_whitespace) {
+        Some(space) if space > start.len() / 2 => &start[..space],
+        _ => start.as_str(),
+    };
+    format!("{}{CUT}", start.trim_end())
+}
+
+fn paragraph<'a>(spans: &[Span], quiet: bool) -> Element<'a, Message> {
     let pieces: Vec<_> = spans
         .iter()
         .map(|part| {
-            span(part.text.as_str()).font(if part.bold {
+            span(part.text.clone()).font(if part.bold {
                 font::SEMIBOLD
             } else {
                 font::REGULAR
@@ -130,7 +203,7 @@ fn paragraph<'a>(spans: &'a [Span], quiet: bool) -> Element<'a, Message> {
     }
 }
 
-fn spoiler<'a>(review: &'a Review, index: usize) -> Element<'a, Message> {
+fn spoiler<'a>(review: &Review, index: usize) -> Element<'a, Message> {
     button(text("Spoiler").size(font::NOTE_SIZE))
         .padding([2, 10])
         .style(style::chip)
@@ -238,27 +311,40 @@ impl Showcase {
     }
 
     fn review<'a>(&'a self, review: &'a Review, now: Timestamp) -> Element<'a, Message> {
-        let blocks = review
-            .text
+        let short = if self.expanded.contains(&review.id) {
+            None
+        } else {
+            shortened(&review.text, SHORT_CHARS)
+        };
+        let blocks = short
+            .as_deref()
+            .unwrap_or(&review.text)
             .iter()
             .enumerate()
             .map(|(index, block)| self.review_block(review, index, block));
+        let more = short.is_some().then(|| {
+            button(text("Read more").size(font::NOTE_SIZE))
+                .padding([2, 6])
+                .style(style::text_button)
+                .on_press(Message::ExpandReview(review.id.clone()))
+        });
 
         column![heading(review, now)]
             .push(column(blocks).spacing(BLOCK_SPACING))
+            .push(more)
             .spacing(BLOCK_SPACING)
             .into()
     }
 
     fn review_block<'a>(
         &self,
-        review: &'a Review,
+        review: &Review,
         index: usize,
-        block: &'a Block,
+        block: &Block,
     ) -> Element<'a, Message> {
         match block {
             Block::Paragraph(spans) => paragraph(spans, false),
-            Block::Heading(heading) => text(heading)
+            Block::Heading(heading) => text(heading.clone())
                 .size(BODY_SIZE)
                 .font(font::SEMIBOLD)
                 .line_height(LINE_HEIGHT)
@@ -375,6 +461,74 @@ mod tests {
         assert_eq!(min_hours("250"), Some(250));
         assert_eq!(min_hours(""), None);
         assert_eq!(min_hours("0"), None);
+    }
+
+    fn words(text: &str) -> Block {
+        Block::Paragraph(vec![Span {
+            text: text.to_string(),
+            bold: false,
+        }])
+    }
+
+    fn texts(blocks: &[Block]) -> Vec<String> {
+        blocks
+            .iter()
+            .map(|block| match block {
+                Block::Heading(heading) => heading.clone(),
+                Block::Paragraph(spans)
+                | Block::Item(spans)
+                | Block::Quote(spans)
+                | Block::Spoiler(spans) => spans.iter().map(|part| part.text.as_str()).collect(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_short_review_is_not_cut() {
+        assert_eq!(
+            shortened(&[words("Great game"), words("Buy it")], 200),
+            None
+        );
+    }
+
+    #[test]
+    fn a_long_review_is_cut_at_a_word_with_an_ellipsis() {
+        let long = "word ".repeat(100);
+
+        let short = shortened(&[words("Intro"), words(&long)], 200).unwrap();
+
+        let texts = texts(&short);
+        assert_eq!(texts[0], "Intro");
+        assert!(texts[1].ends_with("word…"), "{}", texts[1]);
+        assert!(texts[1].chars().count() <= 200 - 2 * BLOCK_CHARS);
+    }
+
+    #[test]
+    fn many_short_blocks_count_as_lines() {
+        let items: Vec<_> = (0..30).map(|_| words("ok")).collect();
+
+        let short = shortened(&items, 200).unwrap();
+
+        assert_eq!(short.len(), 200 / (2 + BLOCK_CHARS));
+    }
+
+    #[test]
+    fn a_spoiler_is_never_cut() {
+        let secret = Block::Spoiler(vec![Span {
+            text: "secret ".repeat(100),
+            bold: false,
+        }]);
+        let long = "word ".repeat(100);
+
+        let short = shortened(&[words("Intro"), secret.clone(), words(&long)], 200).unwrap();
+
+        assert_eq!(short[1], secret);
+    }
+
+    #[test]
+    fn a_long_word_is_cut_inside() {
+        assert_eq!(cut_text("abcdefghij", 4), "abcd…");
+        assert_eq!(cut_text("one two three", 9), "one two…");
     }
 
     #[test]

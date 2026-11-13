@@ -22,7 +22,7 @@ use iced::{
     widget::{
         Id, button, column, container, image, mouse_area, opaque, operation, row, scrollable,
         scrollable::{AbsoluteOffset, RelativeOffset},
-        space, stack, text,
+        space, stack, text, tooltip,
     },
     window,
 };
@@ -55,6 +55,8 @@ const MEASURE: f32 = 680.0;
 const BODY_SIZE: f32 = 16.0;
 const SHEET_INSET: f32 = 40.0;
 const SHEET_MARGIN: f32 = 32.0;
+const CLOSE_SIZE: f32 = 32.0;
+const TITLE_SIZE: f32 = 16.0;
 const CLOSE: char = '\u{E5CD}';
 const CLOSED: char = '\u{E5CC}';
 const OPENED: char = '\u{E5CF}';
@@ -68,6 +70,7 @@ pub struct Showcase {
     descriptions: Descriptions,
     reviews: ReviewLists,
     spoilers: HashSet<(String, usize)>,
+    expanded: HashSet<String>,
     hours_typed: String,
     has_reviews: bool,
     extras: Images,
@@ -200,6 +203,7 @@ pub enum Message {
     ApplyHours(String),
     RetryReviews,
     ShowSpoiler(String, usize),
+    ExpandReview(String),
     ClosePopup,
     ScrollUp,
     ScrollDown,
@@ -217,6 +221,7 @@ impl Showcase {
             descriptions: Descriptions::default(),
             reviews: ReviewLists::default(),
             spoilers: HashSet::new(),
+            expanded: HashSet::new(),
             hours_typed: String::new(),
             has_reviews: false,
             extras: Images::default(),
@@ -327,6 +332,9 @@ impl Showcase {
             Message::ShowSpoiler(id, index) => {
                 self.spoilers.insert((id, index));
             }
+            Message::ExpandReview(id) => {
+                self.expanded.insert(id);
+            }
             Message::ClosePopup => self.popups.close(),
             Message::Close => {
                 self.zoomed = false;
@@ -389,6 +397,7 @@ impl Showcase {
             self.zoomed = false;
             self.popups.close();
             self.spoilers.clear();
+            self.expanded.clear();
             self.tags = current.and_then(|id| self.gamepalate.game_tags(id));
             self.originals.clear();
             self.thumbnails.clear();
@@ -590,34 +599,50 @@ pub(super) fn sheet<'a, M: Clone + 'a>(
     body: Element<'a, M>,
     close: M,
 ) -> Element<'a, M> {
-    let close_button = button(text(CLOSE).font(font::ICONS).size(font::icon(12.0)))
-        .padding([8, 12])
-        .style(style::secondary)
-        .on_press(close.clone());
+    let close_button = tooltip(
+        button(
+            text(CLOSE)
+                .font(font::ICONS)
+                .size(font::icon(11.0))
+                .width(Fill)
+                .height(Fill)
+                .center(),
+        )
+        .width(CLOSE_SIZE)
+        .height(CLOSE_SIZE)
+        .padding(0)
+        .style(style::sheet_close)
+        .on_press(close.clone()),
+        container(text("Close (Esc)").size(font::NOTE_SIZE))
+            .padding([6, 10])
+            .style(style::popup),
+        tooltip::Position::Left,
+    );
     let header = row![
-        column![
-            text(label).size(font::NOTE_SIZE).style(style::muted),
-            text(name).size(font::PRICE_SIZE).font(font::SEMIBOLD),
-        ]
-        .spacing(4)
-        .width(Fill),
+        text(label).size(TITLE_SIZE).font(font::SEMIBOLD),
+        text(name)
+            .size(font::BAR_SIZE)
+            .style(style::muted)
+            .width(Fill),
         close_button,
-    ];
+    ]
+    .spacing(10)
+    .align_y(Center);
     let height = if bar.is_some() { Fill } else { Shrink };
     let sheet = column![
-        container(header).padding(padding::top(24).bottom(20).left(SHEET_INSET).right(20)),
+        container(header).padding(padding::top(10).bottom(10).left(SHEET_INSET).right(12)),
         style::separator(),
     ]
     .push(bar.map(|bar| {
         column![
-            container(bar).padding(padding::top(12).bottom(12).left(SHEET_INSET).right(20)),
+            container(bar).padding(padding::top(10).bottom(10).left(SHEET_INSET).right(20)),
             style::separator(),
         ]
     }))
     .push(
         scrollable(
             container(body).padding(
-                padding::top(24)
+                padding::top(20)
                     .bottom(SHEET_INSET)
                     .left(SHEET_INSET)
                     .right(SHEET_INSET),

@@ -170,6 +170,30 @@ pub fn open_bar_icon(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+/// The round close button of a sheet: only the cross until the pointer is on it.
+pub fn sheet_close(theme: &Theme, status: button::Status) -> button::Style {
+    let background = theme.extended_palette().background;
+
+    button::Style {
+        background: match status {
+            button::Status::Hovered => Some(background.weak.color.into()),
+            button::Status::Pressed => Some(background.strong.color.into()),
+            button::Status::Active | button::Status::Disabled => None,
+        },
+        text_color: match status {
+            button::Status::Hovered | button::Status::Pressed => background.base.text,
+            button::Status::Active | button::Status::Disabled => {
+                muted(theme).color.unwrap_or(background.base.text)
+            }
+        },
+        border: Border {
+            radius: f32::MAX.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
+    }
+}
+
 pub fn close_button(theme: &Theme, status: button::Status) -> button::Style {
     let red = Color::from_rgb8(0xc4, 0x2b, 0x1c);
 
