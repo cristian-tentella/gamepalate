@@ -77,9 +77,8 @@ pub struct FamilyView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VotesView {
     pub would_try: usize,
-    pub maybe: usize,
+    pub later: usize,
     pub not_for_me: usize,
-    pub known: usize,
     pub labels: Labels,
     pub min_labels: usize,
 }
@@ -228,9 +227,8 @@ fn votes_view(inputs: &SearchInputs) -> VotesView {
 
     VotesView {
         would_try: count(VoteKind::WouldTry),
-        maybe: count(VoteKind::Maybe),
+        later: count(VoteKind::Later),
         not_for_me: count(VoteKind::NotForMe),
-        known: count(VoteKind::Known),
         labels: labels(inputs.votes, inputs.catalog),
         min_labels: MIN_LABELS,
     }
@@ -395,6 +393,7 @@ mod tests {
             kind,
             date: "2026-10-01".to_string(),
             bet: false,
+            genre_ok: false,
             at: None,
         }
     }
@@ -403,8 +402,7 @@ mod tests {
         Votes::from([
             (AppId(4), vote(VoteKind::WouldTry)),
             (AppId(3), vote(VoteKind::NotForMe)),
-            (AppId(5), vote(VoteKind::Maybe)),
-            (AppId(6), vote(VoteKind::Known)),
+            (AppId(5), vote(VoteKind::Later)),
         ])
     }
 
@@ -589,9 +587,8 @@ mod tests {
             view().votes,
             VotesView {
                 would_try: 1,
-                maybe: 1,
+                later: 1,
                 not_for_me: 1,
-                known: 1,
                 labels: Labels {
                     would_try: 1,
                     not_for_me: 1
@@ -599,6 +596,23 @@ mod tests {
                 min_labels: 10,
             }
         );
+    }
+
+    #[test]
+    fn a_not_this_one_counts_as_a_not_for_me_and_its_label() {
+        let mut votes = votes();
+        votes.insert(
+            AppId(1),
+            Vote {
+                genre_ok: true,
+                ..vote(VoteKind::NotForMe)
+            },
+        );
+
+        let view = view_with(&signals(), &votes).votes;
+
+        assert_eq!(view.not_for_me, 2);
+        assert_eq!(view.labels.not_for_me, 2);
     }
 
     #[test]

@@ -9,7 +9,7 @@ use crate::{
     ids::{AppId, TagId},
     signals::Signals,
     timestamp::Timestamp,
-    votes::{VoteKind, Votes},
+    votes::{VoteKind, Votes, standing},
 };
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -38,7 +38,6 @@ pub enum Filter {
     FamilyGames,
     Hidden,
     NotForMe,
-    Known,
     BannedTags,
     MinReviews(u32),
     MaxReviews(u32),
@@ -60,7 +59,6 @@ impl Filter {
             Filter::FamilyGames => "family games",
             Filter::Hidden => "hidden games",
             Filter::NotForMe => "not for me games",
-            Filter::Known => "known games",
             Filter::BannedTags => "banned tags",
             Filter::MinReviews(_) => "min reviews",
             Filter::MaxReviews(_) => "max reviews",
@@ -80,13 +78,18 @@ impl Filter {
         !matches!(self, Filter::Owned | Filter::FamilyGames)
     }
 
-    pub fn passes(&self, game: &Game, price: Price, context: &FilterContext) -> bool {
+    pub fn passes(
+        &self,
+        game: &Game,
+        price: Price,
+        context: &FilterContext,
+        now: Timestamp,
+    ) -> bool {
         match self {
             Filter::Owned => !context.owned.contains(&game.id),
             Filter::FamilyGames => !context.family_games.contains(&game.id),
             Filter::Hidden => !context.corrections.hidden_games.contains(&game.id),
             Filter::NotForMe => context.vote_kind(game.id) != Some(VoteKind::NotForMe),
-            Filter::Known => context.vote_kind(game.id) != Some(VoteKind::Known),
             Filter::BannedTags => !context
                 .corrections
                 .banned_tags
@@ -99,7 +102,7 @@ impl Filter {
                     && u64::from(game.reviews.positive) * 100
                         >= u64::from(*min) * u64::from(game.reviews.total)
             }
-            Filter::Voted => context.vote_kind(game.id).is_none(),
+            Filter::Voted => standing(context.votes, game.id, now).is_none(),
             Filter::EarlyAccess => !game.is_early_access,
             Filter::MinPrice(min) => price.final_cents() >= *min,
             Filter::MaxPrice(max) => price.final_cents() <= *max,
@@ -129,11 +132,7 @@ impl<'a> FilterContext<'a> {
         votes: &'a Votes,
         corrections: &'a Corrections,
     ) -> FilterContext<'a> {
-        let owned = signals
-            .played()
-            .chain(signals.recent.iter().map(|game| game.id))
-            .chain(corrections.played_elsewhere.iter().copied())
-            .collect();
+        let owned = owned_games(signals, corrections);
         let family_games = families
             .families
             .iter()
@@ -151,6 +150,15 @@ impl<'a> FilterContext<'a> {
     fn vote_kind(&self, id: AppId) -> Option<VoteKind> {
         self.votes.get(&id).map(|vote| vote.kind)
     }
+}
+
+/// The games in the library, borrowed, played recently or played elsewhere.
+pub fn owned_games(signals: &Signals, corrections: &Corrections) -> BTreeSet<AppId> {
+    signals
+        .played()
+        .chain(signals.recent.iter().map(|game| game.id))
+        .chain(corrections.played_elsewhere.iter().copied())
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -232,7 +240,6 @@ pub fn active_filters(
         Filter::FamilyGames,
         Filter::Hidden,
         Filter::NotForMe,
-        Filter::Known,
         Filter::BannedTags,
         Filter::MinReviews(options.min_reviews.unwrap_or(config.relevance.min_reviews)),
     ];
@@ -293,7 +300,7 @@ pub fn apply_filters(
         let price = game.price.as_of(now);
         match filters
             .iter()
-            .position(|filter| !filter.passes(game, price, context))
+            .position(|filter| !filter.passes(game, price, context, now))
         {
             None => {
                 candidates.insert(game.id);

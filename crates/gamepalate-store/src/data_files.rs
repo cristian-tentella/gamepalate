@@ -11,9 +11,10 @@ use crate::{
     config::{ConfigError, load_config},
     corrections::{CorrectionsError, load_corrections},
     families::{FamiliesError, load_families},
+    known::{KnownConverted, convert_known},
     off_catalog::load_off_catalog_games,
     signals::{SignalsError, load_signals},
-    votes::{VotesError, load_votes},
+    votes::{ReadVotes, VotesError, load_votes},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -46,6 +47,7 @@ pub struct DataFiles {
     pub signals: Signals,
     pub votes: Votes,
     pub off_catalog: OffCatalogGames,
+    pub known_converted: Option<KnownConverted>,
 }
 
 pub fn load_data_files(dir: &Path) -> Result<DataFiles, DataFilesError> {
@@ -63,10 +65,10 @@ pub fn load_data_files_with(
     let catalog = load_catalog(&dir.join("catalog.sqlite"))?;
     let corrections = load_corrections(&dir.join("corrections.toml"))?;
     let families = load_families(&dir.join("families.toml"))?;
-    let votes = load_votes(&dir.join("votes.toml"))?;
+    let ReadVotes { votes, known } = load_votes(&dir.join("votes.toml"))?;
     let off_catalog = load_off_catalog_games(&dir.join("off-catalog-tags.json"));
 
-    Ok(DataFiles {
+    let mut files = DataFiles {
         config,
         catalog,
         corrections,
@@ -74,7 +76,10 @@ pub fn load_data_files_with(
         signals,
         votes,
         off_catalog,
-    })
+        known_converted: None,
+    };
+    files.known_converted = convert_known(dir, &known, &mut files)?;
+    Ok(files)
 }
 
 impl DataFiles {

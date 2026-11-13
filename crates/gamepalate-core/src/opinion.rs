@@ -333,6 +333,7 @@ mod tests {
             kind,
             date: "2026-10-01".to_string(),
             bet: false,
+            genre_ok: false,
             at: None,
         }
     }
@@ -353,7 +354,7 @@ mod tests {
         let votes = Votes::from([
             (AppId(1), vote(VoteKind::WouldTry)),
             (AppId(2), vote(VoteKind::NotForMe)),
-            (AppId(3), vote(VoteKind::Maybe)),
+            (AppId(3), vote(VoteKind::Later)),
             (AppId(4), vote(VoteKind::WouldTry)),
         ]);
 
@@ -455,7 +456,7 @@ mod tests {
     fn a_vote_that_is_not_a_label_takes_the_opinion_of_the_whole_model() {
         let catalog = tagged_catalog(41);
         let mut votes = alternate_votes(40);
-        votes.insert(AppId(41), vote(VoteKind::Maybe));
+        votes.insert(AppId(41), vote(VoteKind::Later));
 
         let opinions = held_out_opinions(&votes, &catalog, &LikedCreators::default());
         let model = opinion_model(&votes, &catalog, &LikedCreators::default()).unwrap();

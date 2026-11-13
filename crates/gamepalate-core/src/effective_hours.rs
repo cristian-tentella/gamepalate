@@ -160,6 +160,7 @@ mod tests {
             kind,
             date: "2026-10-01".to_string(),
             bet: false,
+            genre_ok: false,
             at: None,
         }
     }
@@ -192,7 +193,7 @@ mod tests {
     fn effective_hours_add_only_would_try_votes() {
         let votes = Votes::from([
             (AppId(10), vote(VoteKind::WouldTry)),
-            (AppId(20), vote(VoteKind::Maybe)),
+            (AppId(20), vote(VoteKind::Later)),
         ]);
         let hours = effective_hours(
             &signals(),

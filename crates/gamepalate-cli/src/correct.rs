@@ -453,6 +453,7 @@ mod tests {
             },
             votes: Votes::new(),
             off_catalog: OffCatalogGames::new(),
+            known_converted: None,
         }
     }
 

@@ -1,24 +1,52 @@
 use std::process::Command;
 
-use gamepalate_app::{Currency, Price, Reviews, VoteKind};
+use gamepalate_app::{Currency, LATER_DAYS, Price, Reviews, Vote, VoteKind};
 use iced::{
-    Center, Element, Fill, Length, never, padding,
+    Center, Element, Fill, Left, Length, never, padding,
     widget::{
-        Container, Row, button, column, container, rich_text, row, span, stack, text, tooltip,
+        Container, Row, button, column, container, rich_text, row, rule, space, span, stack, text,
+        tooltip,
     },
 };
 
 use crate::{font, format, style};
 
-pub const VOTES: [(&str, VoteKind); 4] = [
-    ("1", VoteKind::WouldTry),
-    ("2", VoteKind::Maybe),
-    ("3", VoteKind::NotForMe),
-    ("4", VoteKind::Known),
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Pick {
+    Vote(VoteKind),
+    NotThisOne,
+    Played,
+}
+
+impl Pick {
+    pub fn of(vote: &Vote) -> Pick {
+        if vote.genre_ok {
+            Pick::NotThisOne
+        } else {
+            Pick::Vote(vote.kind)
+        }
+    }
+
+    /// The kind of vote the pick saves, and whether the genre is fine.
+    pub fn ballot(self) -> Option<(VoteKind, bool)> {
+        match self {
+            Pick::Vote(kind) => Some((kind, false)),
+            Pick::NotThisOne => Some((VoteKind::NotForMe, true)),
+            Pick::Played => None,
+        }
+    }
+}
+
+pub const PICKS: [(&str, Pick); 4] = [
+    ("1", Pick::Vote(VoteKind::WouldTry)),
+    ("2", Pick::NotThisOne),
+    ("3", Pick::Vote(VoteKind::NotForMe)),
+    ("4", Pick::Played),
 ];
 pub const VOTE_HEIGHT: f32 = 36.0;
 const VOTE_WIDTH: f32 = 172.0;
 const VOTE_SPACING: f32 = 8.0;
+const GROUP_SPACING: f32 = 12.0;
 pub const LINKS_WIDTH: f32 = 340.0;
 pub const ACTION_SPACING: f32 = 16.0;
 const KEYCAP_SIZE: f32 = 18.0;
@@ -39,18 +67,18 @@ pub enum Link {
     Hltb,
 }
 
-pub fn vote_key(key: &str) -> Option<VoteKind> {
-    VOTES
+pub fn pick_key(key: &str) -> Option<Pick> {
+    PICKS
         .iter()
-        .find(|(vote_key, _)| *vote_key == key)
-        .map(|(_, kind)| *kind)
+        .find(|(pick_key, _)| *pick_key == key)
+        .map(|(_, pick)| *pick)
 }
 
 pub fn link_key(key: &str) -> Option<Link> {
     match key {
-        "5" => Some(Link::Steam),
-        "6" => Some(Link::Eneba),
-        "7" => Some(Link::Hltb),
+        key if key.eq_ignore_ascii_case("q") => Some(Link::Steam),
+        key if key.eq_ignore_ascii_case("w") => Some(Link::Eneba),
+        key if key.eq_ignore_ascii_case("e") => Some(Link::Hltb),
         _ => None,
     }
 }
@@ -178,9 +206,20 @@ pub fn reviews<'a, Message: 'a>(reviews: &Reviews) -> Element<'a, Message> {
     }
 }
 
+pub fn tip(pick: Pick, would_try_hours: f64, elsewhere_hours: f64) -> String {
+    match pick {
+        Pick::Vote(VoteKind::WouldTry) => format::would_try_tip(would_try_hours),
+        Pick::NotThisOne => format::NOT_THIS_ONE_TIP.to_string(),
+        Pick::Vote(VoteKind::NotForMe) => format::NOT_FOR_ME_TIP.to_string(),
+        Pick::Vote(VoteKind::Later) => format::later_tip(LATER_DAYS),
+        Pick::Played => format::played_tip(elsewhere_hours),
+    }
+}
+
 pub fn vote_button<'a, Message: Clone + 'a>(
     key: &'a str,
-    kind: VoteKind,
+    pick: Pick,
+    tip: String,
     compact: bool,
     width: Length,
     on_press: Option<Message>,
@@ -194,7 +233,7 @@ pub fn vote_button<'a, Message: Clone + 'a>(
     } else {
         keycap(key)
     };
-    let label = text(format::vote(kind))
+    let label = text(format::pick(pick))
         .size(if compact {
             COMPACT_VOTE_SIZE
         } else {
@@ -202,10 +241,9 @@ pub fn vote_button<'a, Message: Clone + 'a>(
         })
         .font(font::SEMIBOLD)
         .wrapping(text::Wrapping::None);
-    // When the buttons share a narrow row, the longest label keeps its own width
-    // instead of wrapping onto two lines.
+    // In a narrow row each button takes the width of its label, with room on both sides.
     let content = container(row![keycap, label].spacing(10).align_y(Center)).center_y(Fill);
-    let (content, width) = if width == Length::Fill && kind == VoteKind::Known {
+    let (content, width) = if width == Length::Fill {
         (
             content.padding(padding::left(VOTE_INSET).right(VOTE_INSET)),
             Length::Shrink,
@@ -213,14 +251,28 @@ pub fn vote_button<'a, Message: Clone + 'a>(
     } else {
         (content.center_x(Fill), width)
     };
+    let segment = segment(pick);
+    let height = if segment == style::Segment::Alone {
+        Length::Fixed(VOTE_HEIGHT)
+    } else {
+        Length::Fill
+    };
 
-    button(content)
+    let button = button(content)
         .width(width)
-        .height(VOTE_HEIGHT)
+        .height(height)
         .padding(0)
-        .style(style::vote(flashed))
-        .on_press_maybe(on_press)
-        .into()
+        .style(style::vote(flashed, segment))
+        .on_press_maybe(on_press);
+
+    tooltip(
+        button,
+        container(text(tip).size(font::NOTE_SIZE))
+            .padding([6, 10])
+            .style(style::popup),
+        tooltip::Position::Top,
+    )
+    .into()
 }
 
 pub fn keycap<'a, Message: 'a>(key: &'a str) -> Container<'a, Message> {
@@ -253,30 +305,51 @@ pub fn key_button<'a, Message: Clone + 'a>(
 }
 
 pub fn moves<'a, Message: Clone + 'a>(
-    skip: Option<Message>,
+    later: Option<Message>,
     back: Option<Message>,
 ) -> Row<'a, Message> {
-    row![
-        key_button("Space", "Skip", font::BAR_SIZE, skip),
-        key_button("⌫", "Back", font::BAR_SIZE, back),
-    ]
-    .spacing(ACTION_SPACING)
-    .align_y(Center)
+    let later = tooltip(
+        key_button("Space", "Later", font::BAR_SIZE, later),
+        container(text(format::later_tip(LATER_DAYS)).size(font::NOTE_SIZE))
+            .padding([6, 10])
+            .style(style::popup),
+        tooltip::Position::Top,
+    );
+
+    row![later, key_button("⌫", "Back", font::BAR_SIZE, back)]
+        .spacing(ACTION_SPACING)
+        .align_y(Center)
 }
 
-pub fn vote_buttons<'a, Message: 'a>(
-    button: impl Fn(&'a str, VoteKind) -> Element<'a, Message>,
-) -> Row<'a, Message> {
-    let [would_try, maybe, not_for_me, known] = VOTES.map(|(key, kind)| button(key, kind));
+fn segment(pick: Pick) -> style::Segment {
+    match pick {
+        Pick::Vote(VoteKind::WouldTry) => style::Segment::First,
+        Pick::NotThisOne => style::Segment::Middle,
+        Pick::Vote(VoteKind::NotForMe | VoteKind::Later) => style::Segment::Last,
+        Pick::Played => style::Segment::Alone,
+    }
+}
 
-    row![would_try, maybe, not_for_me, style::divider(), known]
-        .spacing(VOTE_SPACING)
+/// The three verdicts as one segmented group, then Played on its own.
+pub fn vote_buttons<'a, Message: 'a>(
+    button: impl Fn(&'a str, Pick) -> Element<'a, Message>,
+) -> Row<'a, Message> {
+    let [would_try, not_this_one, not_for_me, played] = PICKS.map(|(key, pick)| button(key, pick));
+    let seam = || rule::vertical(1).style(style::vote_seam);
+    let verdicts =
+        container(row![would_try, seam(), not_this_one, seam(), not_for_me].height(Fill))
+            .height(VOTE_HEIGHT)
+            .padding(1)
+            .style(style::vote_group);
+
+    row![verdicts, played]
+        .spacing(GROUP_SPACING)
         .align_y(Center)
 }
 
 pub fn vote_width(available: f32, beside: f32) -> Length {
-    let divider = 1.0 + 2.0 * style::DIVIDER_INSET + VOTE_SPACING;
-    let needed = 4.0 * (VOTE_WIDTH + VOTE_SPACING) + divider + beside;
+    let verdicts = 3.0 * VOTE_WIDTH + 2.0 * 1.0 + 2.0 * 1.0;
+    let needed = verdicts + GROUP_SPACING + VOTE_WIDTH + VOTE_SPACING + beside;
 
     if available >= needed {
         Length::Fixed(VOTE_WIDTH)
@@ -285,14 +358,43 @@ pub fn vote_width(available: f32, beside: f32) -> Length {
     }
 }
 
+/// The links as a muted column, from the top to the bottom of the header image.
+pub fn header_links<'a, Message: Clone + 'a>(
+    height: f32,
+    on_press: impl Fn(Link) -> Option<Message>,
+) -> Element<'a, Message> {
+    let link = |key: &'a str, label: &'a str, link: Link| {
+        let keycap = keycap(key).style(style::muted_keycap);
+        button(
+            row![keycap, text(label).size(font::NOTE_SIZE)]
+                .spacing(KEY_SPACING)
+                .align_y(Center),
+        )
+        .padding(0)
+        .style(style::muted_action)
+        .on_press_maybe(on_press(link))
+    };
+
+    column![
+        link("Q", "Steam ↗", Link::Steam),
+        space().height(Fill),
+        link("W", "Eneba ↗", Link::Eneba),
+        space().height(Fill),
+        link("E", "HLTB ↗", Link::Hltb),
+    ]
+    .height(height)
+    .align_x(Left)
+    .into()
+}
+
 pub fn links<'a, Message: Clone + 'a>(
     on_press: impl Fn(Link) -> Option<Message>,
 ) -> Element<'a, Message> {
     row![
         style::divider(),
-        key_button("5", "Steam ↗", font::BAR_SIZE, on_press(Link::Steam)),
-        key_button("6", "Eneba ↗", font::BAR_SIZE, on_press(Link::Eneba)),
-        key_button("7", "HLTB ↗", font::BAR_SIZE, on_press(Link::Hltb)),
+        key_button("Q", "Steam ↗", font::BAR_SIZE, on_press(Link::Steam)),
+        key_button("W", "Eneba ↗", font::BAR_SIZE, on_press(Link::Eneba)),
+        key_button("E", "HLTB ↗", font::BAR_SIZE, on_press(Link::Hltb)),
     ]
     .spacing(ACTION_SPACING)
     .align_y(Center)
@@ -321,26 +423,89 @@ mod tests {
 
     #[test]
     fn the_vote_buttons_stop_growing_once_there_is_room() {
-        assert_eq!(vote_width(760.0, 0.0), Length::Fixed(VOTE_WIDTH));
-        assert_eq!(vote_width(720.0, 0.0), Length::Fill);
-        assert_eq!(vote_width(956.0, 180.0), Length::Fixed(VOTE_WIDTH));
-        assert_eq!(vote_width(900.0, 180.0), Length::Fill);
+        assert_eq!(vote_width(712.0, 0.0), Length::Fixed(VOTE_WIDTH));
+        assert_eq!(vote_width(711.0, 0.0), Length::Fill);
+        assert_eq!(vote_width(892.0, 180.0), Length::Fixed(VOTE_WIDTH));
+        assert_eq!(vote_width(891.0, 180.0), Length::Fill);
     }
 
     #[test]
-    fn the_keys_from_one_to_four_are_the_votes() {
-        assert_eq!(vote_key("1"), Some(VoteKind::WouldTry));
-        assert_eq!(vote_key("2"), Some(VoteKind::Maybe));
-        assert_eq!(vote_key("3"), Some(VoteKind::NotForMe));
-        assert_eq!(vote_key("4"), Some(VoteKind::Known));
-        assert_eq!(vote_key("5"), None);
+    fn the_keys_one_to_four_are_the_votes_and_played() {
+        assert_eq!(pick_key("1"), Some(Pick::Vote(VoteKind::WouldTry)));
+        assert_eq!(pick_key("2"), Some(Pick::NotThisOne));
+        assert_eq!(pick_key("3"), Some(Pick::Vote(VoteKind::NotForMe)));
+        assert_eq!(pick_key("4"), Some(Pick::Played));
+        assert_eq!(pick_key("5"), None);
     }
 
     #[test]
-    fn the_keys_from_five_to_seven_are_the_links() {
-        assert_eq!(link_key("5"), Some(Link::Steam));
-        assert_eq!(link_key("6"), Some(Link::Eneba));
-        assert_eq!(link_key("7"), Some(Link::Hltb));
-        assert_eq!(link_key("4"), None);
+    fn q_w_and_e_are_the_links_in_either_case() {
+        assert_eq!(link_key("q"), Some(Link::Steam));
+        assert_eq!(link_key("W"), Some(Link::Eneba));
+        assert_eq!(link_key("e"), Some(Link::Hltb));
+        assert_eq!(link_key("E"), Some(Link::Hltb));
+        for key in ["4", "5", "6", "7"] {
+            assert_eq!(link_key(key), None);
+        }
+    }
+
+    #[test]
+    fn two_saves_a_not_for_me_with_the_genre_ok() {
+        assert_eq!(Pick::NotThisOne.ballot(), Some((VoteKind::NotForMe, true)));
+        assert_eq!(
+            Pick::Vote(VoteKind::NotForMe).ballot(),
+            Some((VoteKind::NotForMe, false))
+        );
+        assert_eq!(Pick::Played.ballot(), None);
+    }
+
+    #[test]
+    fn a_not_for_me_with_the_genre_ok_is_shown_as_not_this_one() {
+        let mut vote = Vote {
+            kind: VoteKind::NotForMe,
+            date: "2026-11-13".to_string(),
+            at: None,
+            bet: false,
+            genre_ok: false,
+        };
+        assert_eq!(Pick::of(&vote), Pick::Vote(VoteKind::NotForMe));
+
+        vote.genre_ok = true;
+
+        assert_eq!(Pick::of(&vote), Pick::NotThisOne);
+    }
+
+    #[test]
+    fn every_vote_has_a_tip_with_the_hours_of_the_config() {
+        assert_eq!(
+            tip(Pick::Vote(VoteKind::WouldTry), 5.0, 20.0),
+            "Counts as 5 h of play in your taste. Stays in Votes for when it's on sale."
+        );
+        assert_eq!(
+            tip(Pick::NotThisOne, 5.0, 20.0),
+            "You like this kind of game, just not this one. It won't come back."
+        );
+        assert_eq!(
+            tip(Pick::Vote(VoteKind::NotForMe), 5.0, 20.0),
+            "Not your kind of game, or you played it and didn't like it. It won't come back."
+        );
+        assert_eq!(
+            tip(Pick::Played, 5.0, 20.0),
+            "Counts as 20 h of play, like a game in your Library"
+        );
+        assert_eq!(
+            tip(Pick::Vote(VoteKind::WouldTry), 3.0, 20.0),
+            "Counts as 3 h of play in your taste. Stays in Votes for when it's on sale."
+        );
+    }
+
+    #[test]
+    fn the_longest_label_fits_in_a_vote_button() {
+        let longest = PICKS
+            .iter()
+            .map(|(_, pick)| format::pick(*pick).chars().count())
+            .max();
+
+        assert_eq!(longest, Some("Played, liked it".chars().count()));
     }
 }

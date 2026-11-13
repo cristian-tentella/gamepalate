@@ -397,7 +397,7 @@ pub fn recommend_from(
             .map(|ranked| {
                 (
                     with_votes(ranked, opinion_by_id, votes_weight),
-                    bets(ranked, opinion_by_id, inputs.votes, votes_weight),
+                    bets(ranked, opinion_by_id, inputs.votes, votes_weight, now),
                 )
             })
             .unzip(),
@@ -486,7 +486,7 @@ mod tests {
         ids::TagId,
         region::Region,
         signals::LibraryGame,
-        votes::{Vote, VoteKind},
+        votes::{LATER_DAYS, Vote, VoteKind},
     };
 
     const NOW: Timestamp = Timestamp(1_793_638_800_000);
@@ -920,6 +920,7 @@ mod tests {
             date: "2026-11-10".to_string(),
             at: None,
             bet: false,
+            genre_ok: false,
         };
         let votes: Votes = (10..20)
             .map(|id| (AppId(id), vote(VoteKind::WouldTry)))
@@ -973,6 +974,85 @@ mod tests {
             games.extend(recommendation.games);
         }
         games
+    }
+
+    fn shown_without_voted(votes: &Votes) -> Vec<u32> {
+        let catalog = Catalog::new(
+            (1..=6).map(|id| game(id, 1)).collect(),
+            BTreeMap::new(),
+            BTreeMap::from([(TagId(1), 1.0)]),
+            Freshness {
+                prices_updated_at: NOW,
+                tags_updated_at: NOW,
+                region: Region::ITALY,
+            },
+            Currency::italian(),
+        );
+        let vectors = game_vectors(&catalog);
+        let signals = Signals {
+            read_at: NOW,
+            library: vec![LibraryGame {
+                id: AppId(1),
+                total_hours: 20.0,
+                last_played: None,
+            }],
+            borrowed: vec![],
+            recent: Vec::new(),
+            wishlist: Vec::new(),
+            followed: Vec::new(),
+        };
+        let config = Config::default();
+        let inputs = SearchInputs {
+            catalog: &catalog,
+            game_vectors: &vectors,
+            signals: &signals,
+            votes,
+            corrections: &Corrections::default(),
+            families: &Families::default(),
+            off_catalog: &OffCatalogGames::new(),
+            config: &config,
+        };
+        let options = SearchOptions {
+            filters: FilterOptions {
+                without_voted: true,
+                ..FilterOptions::default()
+            },
+            ..SearchOptions::default()
+        };
+
+        let mut ids: Vec<u32> = recommend(&inputs, &options, NOW)
+            .unwrap()
+            .games
+            .iter()
+            .map(|game| game.id.0)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    #[test]
+    fn a_later_comes_back_once_its_days_are_over() {
+        let day = 24 * 60 * 60 * 1000;
+        let later = |at: i64| Vote {
+            kind: VoteKind::Later,
+            date: "2026-10-01".to_string(),
+            at: Some(Timestamp(at)),
+            bet: false,
+            genre_ok: false,
+        };
+        let votes = Votes::from([
+            (AppId(2), later(NOW.0 - day)),
+            (AppId(3), later(NOW.0 - LATER_DAYS * day)),
+            (
+                AppId(4),
+                Vote {
+                    kind: VoteKind::NotForMe,
+                    ..later(NOW.0 - 2 * LATER_DAYS * day)
+                },
+            ),
+        ]);
+
+        assert_eq!(shown_without_voted(&votes), [3, 5, 6]);
     }
 
     #[test]

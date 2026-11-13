@@ -42,7 +42,7 @@ pub use gamepalate_core::{
     region::Region,
     search::{Continuation, Recommendation, RecommendedGame, SearchError, SearchOptions, SortBy},
     timestamp::Timestamp,
-    votes::{Vote, VoteKind},
+    votes::{LATER_DAYS, Vote, VoteKind},
 };
 pub use gamepalate_steam::details::{
     Controller, Italian, ItemDetails, SteamDeck, original_screenshot, thumbnail_screenshot,

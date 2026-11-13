@@ -774,7 +774,7 @@ impl Profile {
             return None;
         }
 
-        let total = votes.would_try + votes.maybe + votes.not_for_me + votes.known;
+        let total = votes.would_try + votes.not_for_me;
         let body: Element<'_, Message> = if total == 0 {
             text(NO_VOTES).size(font::BAR_SIZE).into()
         } else {
@@ -909,7 +909,7 @@ fn label_bar<'a>(label: &'a str, count: usize, needed: usize) -> Element<'a, Mes
 
 fn opinion_progress(votes: &VotesView) -> String {
     format!(
-        "Votes count from {n} Would try and {n} Not for me. You have {} and {}.",
+        "Votes count from {n} Would try and {n} Not this game or Not my genre. You have {} and {}.",
         votes.labels.would_try,
         votes.labels.not_for_me,
         n = votes.min_labels
@@ -2008,9 +2008,8 @@ mod tests {
     fn labels(would_try: usize, not_for_me: usize) -> VotesView {
         VotesView {
             would_try: 0,
-            maybe: 0,
+            later: 0,
             not_for_me: 0,
-            known: 0,
             labels: gamepalate_app::Labels {
                 would_try,
                 not_for_me,
@@ -2023,7 +2022,7 @@ mod tests {
     fn the_opinion_says_how_many_votes_are_missing() {
         assert_eq!(
             opinion_progress(&labels(4, 7)),
-            "Votes count from 10 Would try and 10 Not for me. You have 4 and 7."
+            "Votes count from 10 Would try and 10 Not this game or Not my genre. You have 4 and 7."
         );
     }
 

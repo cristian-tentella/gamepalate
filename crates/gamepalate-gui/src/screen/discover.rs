@@ -28,7 +28,9 @@ use self::{
     queue::Queue,
 };
 use super::{
-    game::{self, Link, VOTE_HEIGHT},
+    Toasts,
+    game::{self, Link, Pick, VOTE_HEIGHT},
+    sentence,
     showcase::{self, Showcase},
 };
 use crate::{font, format, style};
@@ -37,7 +39,6 @@ static SEARCHES: AtomicU64 = AtomicU64::new(0);
 const FROM_MAX_WIDTH: f32 = 240.0;
 const SUMMARY_CHARS: usize = 60;
 const COMPACT_WIDTH: f32 = 1100.0;
-const TOAST_DURATION: Duration = Duration::from_secs(4);
 const FLASH_DURATION: Duration = Duration::from_millis(600);
 const SIDE_WIDTH: f32 = 360.0;
 const MIN_SHOT_WIDTH: f32 = 480.0;
@@ -74,7 +75,8 @@ pub struct Discover {
     votes_this_session: usize,
     votes_last_day: usize,
     bet_every: usize,
-    toast: Option<Toast>,
+    toasts: Toasts,
+    played: Option<AppId>,
     flash: Option<Flash>,
     timers_started: u64,
     showcase: Showcase,
@@ -83,12 +85,7 @@ pub struct Discover {
 
 struct Flash {
     id: u64,
-    kind: VoteKind,
-}
-
-struct Toast {
-    id: u64,
-    text: String,
+    pick: Pick,
 }
 
 #[derive(Clone, Debug)]
@@ -104,9 +101,14 @@ pub enum Message {
     UndoFilters,
     FiltersSaved(Result<(), String>),
     Previous,
-    Next,
-    Vote(VoteKind),
+    Later,
+    LaterSaved(Result<(), String>),
+    Vote(Pick),
     VoteSaved(Result<(), String>),
+    Played,
+    PlayedSaved(String, Result<bool, String>),
+    Undo,
+    Undone(Result<(), String>),
     Open(Link),
     HideToast(u64),
     EndFlash(u64),
@@ -155,7 +157,8 @@ impl Discover {
             votes_this_session: 0,
             votes_last_day: gamepalate.votes_in_last_day(),
             bet_every: gamepalate.bet_every(),
-            toast: None,
+            toasts: Toasts::default(),
+            played: None,
             flash: None,
             timers_started: 0,
             showcase: Showcase::new(gamepalate),
@@ -247,16 +250,32 @@ impl Discover {
                     queue.back();
                 }
             }
-            Message::Next => return self.advance(),
-            Message::Vote(kind) => {
-                if let Some(game) = self.current() {
-                    let text = format::voted(&game.name, kind);
+            Message::Later => {
+                let save = self.current().map(|game| {
+                    let gamepalate = Arc::clone(&self.gamepalate);
+                    let (id, bet) = (game.id, game.bet);
+                    Task::perform(
+                        async move {
+                            gamepalate
+                                .vote(id, VoteKind::Later, false, bet)
+                                .map_err(|error| error.to_string())
+                        },
+                        Message::LaterSaved,
+                    )
+                });
+                return Task::batch(save.into_iter().chain([self.advance()]));
+            }
+            Message::LaterSaved(Ok(())) => {}
+            Message::LaterSaved(Err(error)) => return self.show_toast(error),
+            Message::Vote(pick) => {
+                if let (Some(game), Some((kind, genre_ok))) = (self.current(), pick.ballot()) {
+                    let text = format::voted(&game.name, pick);
                     let gamepalate = Arc::clone(&self.gamepalate);
                     let (id, bet) = (game.id, game.bet);
                     let save = Task::perform(
                         async move {
                             gamepalate
-                                .vote(id, kind, bet)
+                                .vote(id, kind, genre_ok, bet)
                                 .map_err(|error| error.to_string())
                         },
                         Message::VoteSaved,
@@ -264,7 +283,7 @@ impl Discover {
                     return Task::batch([
                         save,
                         self.show_toast(text),
-                        self.flash(kind),
+                        self.flash(pick),
                         self.advance(),
                     ]);
                 }
@@ -274,6 +293,50 @@ impl Discover {
                 self.votes_last_day = self.gamepalate.votes_in_last_day();
             }
             Message::VoteSaved(Err(error)) => return self.show_toast(error),
+            Message::Played => {
+                if let Some(game) = self.current() {
+                    let (id, name) = (game.id, game.name.clone());
+                    let gamepalate = Arc::clone(&self.gamepalate);
+                    self.played = Some(id);
+                    let save = Task::perform(
+                        async move {
+                            gamepalate
+                                .set_played_elsewhere(id, true)
+                                .map_err(|error| sentence(&error.to_string()))
+                        },
+                        move |result| Message::PlayedSaved(name.clone(), result),
+                    );
+                    return Task::batch([save, self.flash(Pick::Played), self.advance()]);
+                }
+            }
+            Message::PlayedSaved(name, Ok(before)) => {
+                self.votes_this_session += 1;
+                if before {
+                    self.played = None;
+                }
+                let text = format::elsewhere_text(&name, true);
+                return self.toasts.show(text, !before, Message::HideToast);
+            }
+            Message::PlayedSaved(_, Err(error)) => {
+                self.played = None;
+                return self.show_toast(error);
+            }
+            Message::Undo => {
+                if let Some(id) = self.played.take() {
+                    let gamepalate = Arc::clone(&self.gamepalate);
+                    return Task::perform(
+                        async move {
+                            gamepalate
+                                .set_played_elsewhere(id, false)
+                                .map(|_| ())
+                                .map_err(|error| sentence(&error.to_string()))
+                        },
+                        Message::Undone,
+                    );
+                }
+            }
+            Message::Undone(Ok(())) => return self.show_toast("Undone".to_string()),
+            Message::Undone(Err(error)) => return self.show_toast(error),
             Message::Open(link) => {
                 if let Some(game) = self.current() {
                     game::open(link, &game.name, &game.store_url);
@@ -318,11 +381,7 @@ impl Discover {
                     self.flash = None;
                 }
             }
-            Message::HideToast(id) => {
-                if self.toast.as_ref().is_some_and(|toast| toast.id == id) {
-                    self.toast = None;
-                }
-            }
+            Message::HideToast(id) => self.toasts.hide(id),
             Message::Showcase(message) => {
                 return self.showcase.update(message).map(Message::Showcase);
             }
@@ -442,16 +501,7 @@ impl Discover {
                 container(opaque(panel)).padding(padding::top(8).left(left)),
             ]
         });
-        let toast = self.toast.as_ref().map(|toast| {
-            container(
-                container(text(&toast.text))
-                    .padding([8, 14])
-                    .style(style::toast),
-            )
-            .center_x(Fill)
-            .align_bottom(Fill)
-            .padding(16)
-        });
+        let toast = self.toasts.view(Message::Undo);
         let game = container(self.game(layout, game_size.height))
             .padding(GAME_PADDING)
             .width(Fill)
@@ -491,22 +541,31 @@ impl Discover {
             row![
                 style::divider(),
                 game::moves(
-                    game.is_some().then_some(Message::Next),
+                    game.is_some().then_some(Message::Later),
                     Some(Message::Previous)
                 ),
             ]
             .spacing(game::ACTION_SPACING)
             .align_y(Center)
         });
-        let flashed = self.flash.as_ref().map(|flash| flash.kind);
-        let votes = game::vote_buttons(|key, kind| {
+        let flashed = self.flash.as_ref().map(|flash| flash.pick);
+        let (would_try_hours, elsewhere_hours) = (
+            self.gamepalate.would_try_hours(),
+            self.gamepalate.elsewhere_hours(),
+        );
+        let votes = game::vote_buttons(|key, pick| {
+            let message = match pick {
+                Pick::Played => Message::Played,
+                pick => Message::Vote(pick),
+            };
             game::vote_button(
                 key,
-                kind,
+                pick,
+                game::tip(pick, would_try_hours, elsewhere_hours),
                 compact,
                 vote_width,
-                game.is_some().then_some(Message::Vote(kind)),
-                flashed == Some(kind),
+                game.is_some().then_some(message),
+                flashed == Some(pick),
             )
         })
         .push(hints);
@@ -606,15 +665,12 @@ impl Discover {
     }
 
     fn show_toast(&mut self, text: String) -> Task<Message> {
-        let id = self.start_timer();
-        self.toast = Some(Toast { id, text });
-
-        after(TOAST_DURATION, Message::HideToast(id))
+        self.toasts.show(text, false, Message::HideToast)
     }
 
-    fn flash(&mut self, kind: VoteKind) -> Task<Message> {
+    fn flash(&mut self, pick: Pick) -> Task<Message> {
         let id = self.start_timer();
-        self.flash = Some(Flash { id, kind });
+        self.flash = Some(Flash { id, pick });
 
         after(FLASH_DURATION, Message::EndFlash(id))
     }
@@ -945,9 +1001,10 @@ fn after(duration: Duration, message: Message) -> Task<Message> {
 fn stopped_by_popup(message: &Message) -> bool {
     matches!(
         message,
-        Message::Next
+        Message::Later
             | Message::Previous
             | Message::Vote(_)
+            | Message::Played
             | Message::Open(_)
             | Message::ToggleFilters
     )
@@ -956,9 +1013,10 @@ fn stopped_by_popup(message: &Message) -> bool {
 fn acts_on_the_game(message: &Message) -> bool {
     matches!(
         message,
-        Message::Next
+        Message::Later
             | Message::Previous
             | Message::Vote(_)
+            | Message::Played
             | Message::Open(_)
             | Message::Showcase(
                 showcase::Message::NextScreenshot
@@ -986,11 +1044,15 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
     };
 
     if modifiers.command() {
-        return matches!(key.as_ref(), Key::Character("f" | "F")).then_some(Message::ToggleFilters);
+        return match key.as_ref() {
+            Key::Character("f" | "F") => Some(Message::ToggleFilters),
+            Key::Character("z" | "Z") => Some(Message::Undo),
+            _ => None,
+        };
     }
 
     match key {
-        Key::Named(Named::Space) => Some(Message::Next),
+        Key::Named(Named::Space) => Some(Message::Later),
         Key::Named(Named::Backspace) => Some(Message::Previous),
         Key::Named(Named::ArrowUp) => Some(Message::Showcase(showcase::Message::ScrollUp)),
         Key::Named(Named::ArrowDown) => Some(Message::Showcase(showcase::Message::ScrollDown)),
@@ -1010,8 +1072,11 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         Key::Character(key) if key.eq_ignore_ascii_case("j") => {
             Some(Message::Showcase(showcase::Message::ScrollDown))
         }
-        Key::Character(key) => game::vote_key(key.as_str())
-            .map(Message::Vote)
+        Key::Character(key) => game::pick_key(key.as_str())
+            .map(|pick| match pick {
+                Pick::Played => Message::Played,
+                pick => Message::Vote(pick),
+            })
             .or_else(|| game::link_key(key.as_str()).map(Message::Open)),
         Key::Named(_) | Key::Unidentified => None,
     }
@@ -1024,27 +1089,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn votes_with_the_keys_from_one_to_four() {
+    fn votes_with_one_and_three_and_marks_played_with_four() {
         assert!(matches!(
             key_message(pressed(Key::Character("1".into()))),
-            Some(Message::Vote(VoteKind::WouldTry))
+            Some(Message::Vote(Pick::Vote(VoteKind::WouldTry)))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("2".into()))),
+            Some(Message::Vote(Pick::NotThisOne))
         ));
         assert!(matches!(
             key_message(pressed(Key::Character("4".into()))),
-            Some(Message::Vote(VoteKind::Known))
+            Some(Message::Played)
         ));
     }
 
     #[test]
-    fn opens_the_links_with_the_keys_from_five_to_seven() {
+    fn opens_the_links_with_q_w_and_e_and_not_with_the_numbers() {
         assert!(matches!(
-            key_message(pressed(Key::Character("5".into()))),
+            key_message(pressed(Key::Character("q".into()))),
             Some(Message::Open(Link::Steam))
         ));
         assert!(matches!(
-            key_message(pressed(Key::Character("7".into()))),
+            key_message(pressed(Key::Character("W".into()))),
+            Some(Message::Open(Link::Eneba))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("e".into()))),
             Some(Message::Open(Link::Hltb))
         ));
+        for key in ["5", "6", "7"] {
+            assert!(key_message(pressed(Key::Character(key.into()))).is_none());
+        }
     }
 
     #[test]
@@ -1093,10 +1169,10 @@ mod tests {
     }
 
     #[test]
-    fn moves_between_games_with_space_and_backspace() {
+    fn space_passes_the_game_for_later_and_backspace_goes_back() {
         assert!(matches!(
             key_message(pressed(Key::Named(Named::Space))),
-            Some(Message::Next)
+            Some(Message::Later)
         ));
         assert!(matches!(
             key_message(pressed(Key::Named(Named::Backspace))),
@@ -1197,8 +1273,10 @@ mod tests {
 
     #[test]
     fn the_open_filters_stop_the_keys_of_the_game() {
-        assert!(acts_on_the_game(&Message::Vote(VoteKind::WouldTry)));
-        assert!(acts_on_the_game(&Message::Next));
+        assert!(acts_on_the_game(&Message::Vote(Pick::Vote(
+            VoteKind::WouldTry
+        ))));
+        assert!(acts_on_the_game(&Message::Later));
         assert!(acts_on_the_game(&Message::Showcase(
             showcase::Message::NextScreenshot
         )));
@@ -1260,8 +1338,10 @@ mod tests {
 
     #[test]
     fn an_open_popup_stops_the_votes_and_the_next_game() {
-        assert!(stopped_by_popup(&Message::Vote(VoteKind::WouldTry)));
-        assert!(stopped_by_popup(&Message::Next));
+        assert!(stopped_by_popup(&Message::Vote(Pick::Vote(
+            VoteKind::WouldTry
+        ))));
+        assert!(stopped_by_popup(&Message::Later));
         assert!(stopped_by_popup(&Message::Previous));
         assert!(stopped_by_popup(&Message::Open(Link::Steam)));
         assert!(!stopped_by_popup(&Message::Showcase(

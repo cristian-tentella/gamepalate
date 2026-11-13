@@ -3,7 +3,6 @@ use std::{
     collections::{BTreeMap, HashMap},
     fmt,
     sync::Arc,
-    time::Duration,
 };
 
 use gamepalate_app::{AppId, Gamepalate, Vote, VoteKind, VotedGame};
@@ -22,16 +21,16 @@ use iced::{
 };
 
 use super::{
-    game::{self, Link, VOTE_HEIGHT},
+    Toasts,
+    game::{self, Link, Pick, VOTE_HEIGHT},
+    sentence,
     showcase::{self, Showcase},
 };
 use crate::{font, format, style};
 
-const FILTERS: [Filter; 6] = [
+const FILTERS: [Filter; 4] = [
     Filter::Kind(VoteKind::WouldTry),
-    Filter::Kind(VoteKind::Maybe),
     Filter::Kind(VoteKind::NotForMe),
-    Filter::Kind(VoteKind::Known),
     Filter::Bets,
     Filter::All,
 ];
@@ -51,7 +50,6 @@ const TOP_HEIGHT: f32 = 160.0;
 const MIN_SHOT_WIDTH: f32 = 480.0;
 const CONTENT_SPACING: f32 = 18.0;
 const SCROLLBAR_GAP: f32 = 12.0;
-const TOAST_DURATION: Duration = Duration::from_secs(4);
 const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–4.";
 
 pub struct Votes {
@@ -66,14 +64,9 @@ pub struct Votes {
     rows: Vec<AppId>,
     selected: usize,
     viewport: Option<(f32, f32)>,
-    toast: Option<Toast>,
-    toasts_shown: u64,
+    toasts: Toasts,
+    played: Option<AppId>,
     showcase: Showcase,
-}
-
-struct Toast {
-    id: u64,
-    text: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -102,8 +95,12 @@ pub enum Message {
     Previous,
     Next,
     Scrolled(Viewport),
-    Vote(VoteKind),
+    Vote(Pick),
     VoteSaved(Result<(), String>),
+    Played,
+    PlayedSaved(AppId, String, Result<bool, String>),
+    Undo,
+    Undone(Result<(), String>),
     Matched(u64, HashMap<AppId, f64>),
     Open(Link),
     HideToast(u64),
@@ -128,8 +125,8 @@ impl Votes {
             rows: Vec::new(),
             selected: 0,
             viewport: None,
-            toast: None,
-            toasts_shown: 0,
+            toasts: Toasts::default(),
+            played: None,
             showcase: Showcase::new(gamepalate),
         };
         votes.rows = votes.shown_rows();
@@ -197,15 +194,15 @@ impl Votes {
             Message::Scrolled(viewport) => {
                 self.viewport = Some((viewport.absolute_offset().y, viewport.bounds().height));
             }
-            Message::Vote(kind) => {
-                if let Some(game) = self.current() {
-                    let text = format::voted(&game.name, kind);
+            Message::Vote(pick) => {
+                if let (Some(game), Some((kind, genre_ok))) = (self.current(), pick.ballot()) {
+                    let text = format::voted(&game.name, pick);
                     let id = game.id;
                     let gamepalate = Arc::clone(&self.gamepalate);
                     let save = Task::perform(
                         async move {
                             gamepalate
-                                .vote(id, kind, false)
+                                .vote(id, kind, genre_ok, false)
                                 .map_err(|error| error.to_string())
                         },
                         Message::VoteSaved,
@@ -218,6 +215,42 @@ impl Votes {
                 return self.find_matches();
             }
             Message::VoteSaved(Err(error)) => return self.show_toast(error),
+            Message::Played => {
+                if let Some(game) = self.current() {
+                    let (id, name) = (game.id, game.name.clone());
+                    let gamepalate = Arc::clone(&self.gamepalate);
+                    return Task::perform(
+                        async move {
+                            gamepalate
+                                .set_played_elsewhere(id, true)
+                                .map_err(|error| sentence(&error.to_string()))
+                        },
+                        move |result| Message::PlayedSaved(id, name.clone(), result),
+                    );
+                }
+            }
+            Message::PlayedSaved(id, name, Ok(before)) => {
+                self.played = (!before).then_some(id);
+                let text = format::elsewhere_text(&name, true);
+                return self.toasts.show(text, !before, Message::HideToast);
+            }
+            Message::PlayedSaved(_, _, Err(error)) => return self.show_toast(error),
+            Message::Undo => {
+                if let Some(id) = self.played.take() {
+                    let gamepalate = Arc::clone(&self.gamepalate);
+                    return Task::perform(
+                        async move {
+                            gamepalate
+                                .set_played_elsewhere(id, false)
+                                .map(|_| ())
+                                .map_err(|error| sentence(&error.to_string()))
+                        },
+                        Message::Undone,
+                    );
+                }
+            }
+            Message::Undone(Ok(())) => return self.show_toast("Undone".to_string()),
+            Message::Undone(Err(error)) => return self.show_toast(error),
             Message::Matched(matching, matches) => {
                 if matching == self.matching {
                     let first = self.matches.replace(matches).is_none();
@@ -231,11 +264,7 @@ impl Votes {
                     game::open(link, &game.name, &game.store_url);
                 }
             }
-            Message::HideToast(id) => {
-                if self.toast.as_ref().is_some_and(|toast| toast.id == id) {
-                    self.toast = None;
-                }
-            }
+            Message::HideToast(id) => self.toasts.hide(id),
             Message::Showcase(message) => {
                 return self.showcase.update(message).map(Message::Showcase);
             }
@@ -249,16 +278,7 @@ impl Votes {
     }
 
     pub fn view(&self, scale: f32) -> Element<'_, Message> {
-        let toast = self.toast.as_ref().map(|toast| {
-            container(
-                container(text(&toast.text))
-                    .padding([8, 14])
-                    .style(style::toast),
-            )
-            .center_x(Fill)
-            .align_bottom(Fill)
-            .padding(16)
-        });
+        let toast = self.toasts.view(Message::Undo);
         let card = container(self.card(scale))
             .padding(16)
             .width(Fill)
@@ -434,7 +454,7 @@ impl Votes {
         };
         let voted = rich_text![
             span("Voted "),
-            span(format::vote(game.vote.kind)).font(font::SEMIBOLD),
+            span(format::pick(Pick::of(&game.vote))).font(font::SEMIBOLD),
             span(format!(" · {}", format::voted_day(&game.vote.date, today))),
         ]
         .size(font::BAR_SIZE)
@@ -453,6 +473,8 @@ impl Votes {
                 game.vote.bet.then(|| self.gamepalate.bet_every()),
             ),
             info,
+            // Here the links leave the row of the votes all its width.
+            game::header_links(HEADER_HEIGHT, |link| Some(Message::Open(link))),
         ]
         .spacing(20)
         .align_y(Center);
@@ -482,27 +504,30 @@ impl Votes {
 
     fn vote_row(&self, width: f32) -> Element<'_, Message> {
         let game = self.current();
-        let vote_width = game::vote_width(width - game::LINKS_WIDTH, 0.0);
-        let votes = game::vote_buttons(|key, kind| {
+        let vote_width = game::vote_width(width, 0.0);
+        let (would_try_hours, elsewhere_hours) = (
+            self.gamepalate.would_try_hours(),
+            self.gamepalate.elsewhere_hours(),
+        );
+        let votes = game::vote_buttons(|key, pick| {
+            let message = match pick {
+                Pick::Played => Message::Played,
+                pick => Message::Vote(pick),
+            };
+            let current = game.is_some_and(|game| Pick::of(&game.vote) == pick);
             game::vote_button(
                 key,
-                kind,
+                pick,
+                game::tip(pick, would_try_hours, elsewhere_hours),
                 true,
                 vote_width,
-                game.is_some().then_some(Message::Vote(kind)),
-                game.is_some_and(|game| game.vote.kind == kind),
+                game.is_some().then_some(message),
+                current,
             )
         })
         .width(Fill);
 
-        row![
-            votes,
-            game::links(|link| game.is_some().then_some(Message::Open(link))),
-        ]
-        .spacing(8)
-        .height(Fill)
-        .align_y(Center)
-        .into()
+        container(votes).center_y(Fill).into()
     }
 
     fn current(&self) -> Option<&VotedGame> {
@@ -592,13 +617,7 @@ impl Votes {
     }
 
     fn show_toast(&mut self, text: String) -> Task<Message> {
-        self.toasts_shown += 1;
-        let id = self.toasts_shown;
-        self.toast = Some(Toast { id, text });
-
-        Task::perform(tokio::time::sleep(TOAST_DURATION), move |_| {
-            Message::HideToast(id)
-        })
+        self.toasts.show(text, false, Message::HideToast)
     }
 }
 
@@ -629,7 +648,6 @@ pub(super) fn by_id(games: Vec<VotedGame>) -> BTreeMap<AppId, VotedGame> {
 
 fn filter_label(filter: Filter) -> &'static str {
     match filter {
-        Filter::Kind(VoteKind::Known) => "Known",
         Filter::Kind(kind) => format::vote(kind),
         Filter::Bets => "Bets",
         Filter::All => "All",
@@ -711,6 +729,7 @@ pub(super) fn bets_summary(
     let (bets, others): (Vec<&Vote>, Vec<&Vote>) = games
         .values()
         .map(|game| &game.vote)
+        .filter(|vote| vote.kind != VoteKind::Later)
         .filter(|vote| vote.bet || vote.date.as_str() >= first)
         .partition(|vote| vote.bet);
     let would_try = |votes: &[&Vote]| {
@@ -771,6 +790,7 @@ fn stopped_by_popup(message: &Message) -> bool {
         Message::Previous
             | Message::Next
             | Message::Vote(_)
+            | Message::Played
             | Message::Open(_)
             | Message::FocusSearch
     )
@@ -782,7 +802,11 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
     };
 
     if modifiers.command() {
-        return matches!(key.as_ref(), Key::Character("f" | "F")).then_some(Message::FocusSearch);
+        return match key.as_ref() {
+            Key::Character("f" | "F") => Some(Message::FocusSearch),
+            Key::Character("z" | "Z") => Some(Message::Undo),
+            _ => None,
+        };
     }
 
     match key {
@@ -805,8 +829,11 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         Key::Character(character) if character.eq_ignore_ascii_case("j") => {
             Some(Message::Showcase(showcase::Message::ScrollDown))
         }
-        Key::Character(character) => game::vote_key(&character)
-            .map(Message::Vote)
+        Key::Character(character) => game::pick_key(&character)
+            .map(|pick| match pick {
+                Pick::Played => Message::Played,
+                pick => Message::Vote(pick),
+            })
             .or_else(|| game::link_key(&character).map(Message::Open)),
         Key::Named(_) | Key::Unidentified => None,
     }
@@ -827,6 +854,7 @@ mod tests {
                 kind,
                 date: date.to_string(),
                 bet,
+                genre_ok: false,
                 at: None,
             },
             price: None,
@@ -860,7 +888,7 @@ mod tests {
                 None,
             ),
             priced(
-                voted(3, "GRIME", VoteKind::Maybe, "2026-10-20", false),
+                voted(3, "GRIME", VoteKind::Later, "2026-10-20", false),
                 2099,
                 Some(60),
             ),
@@ -912,7 +940,7 @@ mod tests {
     fn the_search_looks_among_all_the_votes() {
         let rows = rows(
             &games(),
-            Filter::Kind(VoteKind::Maybe),
+            Filter::Kind(VoteKind::NotForMe),
             Order::Newest,
             false,
             " sat ",
@@ -923,37 +951,88 @@ mod tests {
     }
 
     #[test]
+    fn a_later_has_no_filter_and_shows_only_in_all() {
+        assert!(!FILTERS.contains(&Filter::Kind(VoteKind::Later)));
+        assert!(
+            FILTERS
+                .iter()
+                .filter(|filter| **filter != Filter::All)
+                .all(
+                    |filter| !rows(&games(), *filter, Order::Newest, false, "", None)
+                        .contains(&AppId(3))
+                )
+        );
+        assert!(rows(&games(), Filter::All, Order::Newest, false, "", None).contains(&AppId(3)));
+    }
+
+    #[test]
     fn counts_the_votes_of_each_filter() {
         let games = games();
 
         assert_eq!(count(&games, Filter::Kind(VoteKind::WouldTry), false), 3);
-        assert_eq!(count(&games, Filter::Kind(VoteKind::Known), false), 0);
+        assert_eq!(count(&games, Filter::Kind(VoteKind::NotForMe), false), 1);
         assert_eq!(count(&games, Filter::Bets, false), 2);
         assert_eq!(count(&games, Filter::All, false), 5);
     }
 
     #[test]
+    fn a_not_this_one_is_in_the_not_for_me_filter() {
+        let mut games = games();
+        let mut not_this_one = voted(6, "Firewatch", VoteKind::NotForMe, "2026-11-13", false);
+        not_this_one.vote.genre_ok = true;
+        games.insert(not_this_one.id, not_this_one);
+
+        assert_eq!(count(&games, Filter::Kind(VoteKind::NotForMe), false), 2);
+    }
+
+    #[test]
     fn the_bets_summary_compares_with_the_votes_since_the_first_bet() {
-        assert_eq!(bets_summary(&games()), Some((1, 2, Some(0.0))));
+        let mut games = games();
+        games.extend(by_id(vec![voted(
+            6,
+            "Tunic",
+            VoteKind::NotForMe,
+            "2026-10-25",
+            false,
+        )]));
+
+        assert_eq!(bets_summary(&games), Some((1, 2, Some(0.0))));
         assert_eq!(bets_summary(&BTreeMap::new()), None);
     }
 
     #[test]
-    fn says_why_the_list_is_empty() {
-        let maybe = Filter::Kind(VoteKind::Maybe);
+    fn the_bets_summary_leaves_out_the_laters() {
+        let mut games = games();
+        games.extend(by_id(vec![voted(
+            7,
+            "Tchia",
+            VoteKind::Later,
+            "2026-10-26",
+            true,
+        )]));
 
-        assert_eq!(empty_text(true, maybe, false, ""), NO_VOTES);
-        assert_eq!(empty_text(false, maybe, false, ""), "No Maybe votes");
+        assert_eq!(bets_summary(&games), Some((1, 2, None)));
+    }
+
+    #[test]
+    fn says_why_the_list_is_empty() {
+        let not_for_me = Filter::Kind(VoteKind::NotForMe);
+
+        assert_eq!(empty_text(true, not_for_me, false, ""), NO_VOTES);
         assert_eq!(
-            empty_text(false, Filter::Kind(VoteKind::Known), false, ""),
-            "No Known votes"
+            empty_text(false, not_for_me, false, ""),
+            "No Not for me votes"
+        );
+        assert_eq!(
+            empty_text(false, Filter::Kind(VoteKind::WouldTry), false, ""),
+            "No Would try votes"
         );
         assert_eq!(
             empty_text(false, Filter::Bets, false, ""),
             "No votes on Bets"
         );
         assert_eq!(
-            empty_text(false, maybe, false, " hades "),
+            empty_text(false, not_for_me, false, " hades "),
             "No votes match \"hades\""
         );
     }
@@ -995,8 +1074,8 @@ mod tests {
     #[test]
     fn says_when_nothing_is_on_sale() {
         assert_eq!(
-            empty_text(false, Filter::Kind(VoteKind::Maybe), true, ""),
-            "No Maybe votes on sale"
+            empty_text(false, Filter::Kind(VoteKind::WouldTry), true, ""),
+            "No Would try votes on sale"
         );
         assert_eq!(empty_text(false, Filter::Bets, true, ""), "No Bets on sale");
         assert_eq!(empty_text(false, Filter::All, true, ""), "No votes on sale");
@@ -1022,15 +1101,45 @@ mod tests {
     }
 
     #[test]
-    fn votes_and_opens_the_links_with_the_numbers() {
+    fn votes_with_the_numbers_and_opens_the_links_with_q_w_e() {
         assert!(matches!(
             key_message(pressed(Key::Character("3".into()))),
-            Some(Message::Vote(VoteKind::NotForMe))
+            Some(Message::Vote(Pick::Vote(VoteKind::NotForMe)))
         ));
         assert!(matches!(
-            key_message(pressed(Key::Character("6".into()))),
+            key_message(pressed(Key::Character("2".into()))),
+            Some(Message::Vote(Pick::NotThisOne))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("4".into()))),
+            Some(Message::Played)
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("w".into()))),
             Some(Message::Open(Link::Eneba))
         ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("E".into()))),
+            Some(Message::Open(Link::Hltb))
+        ));
+        for key in ["5", "6", "7"] {
+            assert!(key_message(pressed(Key::Character(key.into()))).is_none());
+        }
+    }
+
+    #[test]
+    fn ctrl_z_undoes_the_last_played_elsewhere() {
+        let event = keyboard::Event::KeyPressed {
+            key: Key::Character("z".into()),
+            modified_key: Key::Character("z".into()),
+            physical_key: key::Physical::Unidentified(key::NativeCode::Unidentified),
+            location: Location::Standard,
+            modifiers: Modifiers::CTRL,
+            text: None,
+            repeat: false,
+        };
+
+        assert!(matches!(key_message(event), Some(Message::Undo)));
     }
 
     #[test]
@@ -1091,7 +1200,9 @@ mod tests {
 
     #[test]
     fn an_open_popup_stops_the_votes_and_the_links() {
-        assert!(stopped_by_popup(&Message::Vote(VoteKind::Maybe)));
+        assert!(stopped_by_popup(&Message::Vote(Pick::Vote(
+            VoteKind::WouldTry
+        ))));
         assert!(stopped_by_popup(&Message::Open(Link::Hltb)));
         assert!(stopped_by_popup(&Message::FocusSearch));
         assert!(!stopped_by_popup(&Message::Showcase(

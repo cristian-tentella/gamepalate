@@ -1,5 +1,5 @@
 use iced::{
-    Border, Color, Element, Shadow, Theme, Vector,
+    Border, Color, Element, Shadow, Theme, Vector, border,
     overlay::menu,
     padding,
     theme::palette,
@@ -8,6 +8,7 @@ use iced::{
 
 const BADGE_TINT: f32 = 0.14;
 const KEYCAP_BORDER: f32 = 0.3;
+const MUTED: f32 = 0.55;
 const DIVIDER_HEIGHT: f32 = 20.0;
 pub const DIVIDER_INSET: f32 = 8.0;
 
@@ -125,6 +126,36 @@ pub fn key_action(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+/// A key action fainter than the others, for links that sit beside the content.
+pub fn muted_action(theme: &Theme, status: button::Status) -> button::Style {
+    let text_color = match status {
+        button::Status::Hovered | button::Status::Pressed => faded(theme, 0.85),
+        button::Status::Active | button::Status::Disabled => faded(theme, MUTED),
+    };
+
+    button::Style {
+        text_color,
+        ..button::Style::default()
+    }
+}
+
+pub fn muted_keycap(theme: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(faded(theme, MUTED)),
+        border: Border {
+            color: theme
+                .extended_palette()
+                .background
+                .base
+                .text
+                .scale_alpha(KEYCAP_BORDER * MUTED),
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
 pub fn window_button(theme: &Theme, status: button::Status) -> button::Style {
     let background = theme.extended_palette().background;
 
@@ -170,7 +201,31 @@ pub fn close_button(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-pub fn vote(flashed: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+pub const VOTE_RADIUS: f32 = 6.0;
+
+/// Where a vote button sits: alone, or as a segment of the group of verdicts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Segment {
+    Alone,
+    First,
+    Middle,
+    Last,
+}
+
+impl Segment {
+    // A segment sits inside the group's border, so its outer corners follow the inner edge.
+    fn radius(self) -> border::Radius {
+        let inner = VOTE_RADIUS - 1.0;
+        match self {
+            Segment::Alone => VOTE_RADIUS.into(),
+            Segment::First => border::Radius::default().left(inner),
+            Segment::Middle => border::Radius::default(),
+            Segment::Last => border::Radius::default().right(inner),
+        }
+    }
+}
+
+pub fn vote(flashed: bool, segment: Segment) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme, status| {
         let palette = theme.extended_palette();
         let background = palette.background;
@@ -179,6 +234,7 @@ pub fn vote(flashed: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
             button::Status::Pressed => 0.07,
             button::Status::Active | button::Status::Disabled => 0.015,
         };
+        let width = if segment == Segment::Alone { 1.0 } else { 0.0 };
 
         if flashed {
             return button::Style {
@@ -186,8 +242,8 @@ pub fn vote(flashed: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
                 text_color: palette.primary.base.text,
                 border: Border {
                     color: palette.primary.base.color,
-                    width: 1.0,
-                    radius: 6.0.into(),
+                    width,
+                    radius: segment.radius(),
                 },
                 ..button::Style::default()
             };
@@ -198,11 +254,31 @@ pub fn vote(flashed: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
             text_color: background.base.text,
             border: Border {
                 color: background.strong.color,
-                width: 1.0,
-                radius: 6.0.into(),
+                width,
+                radius: segment.radius(),
             },
             ..button::Style::default()
         }
+    }
+}
+
+/// The border around the segments of the verdicts.
+pub fn vote_group(theme: &Theme) -> container::Style {
+    container::Style {
+        border: Border {
+            color: theme.extended_palette().background.strong.color,
+            width: 1.0,
+            radius: VOTE_RADIUS.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// The line between two segments, as strong as the group's border.
+pub fn vote_seam(theme: &Theme) -> rule::Style {
+    rule::Style {
+        color: theme.extended_palette().background.strong.color,
+        ..rule::default(theme)
     }
 }
 

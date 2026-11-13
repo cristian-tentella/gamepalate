@@ -55,7 +55,7 @@ use crate::{
         GameCorrection, GameCorrectionError, LibraryView, PlayedElsewhereError,
         changed_played_elsewhere, corrected_game, game_correction, library_ids, library_view,
     },
-    log::failed,
+    log::{failed, known_converted},
     profile::{ProfileView, profile_view},
     settings::{self, Settings},
     steam_client::steam_client_file_of,
@@ -99,6 +99,7 @@ impl Gamepalate {
             .ok_or(OpenError::DataDirNotFound)?;
         let mut files =
             load_data_files(&dir).inspect_err(failed("could not read the data files"))?;
+        known_converted(files.known_converted);
         let created_families = families_on_open(
             &dir.join(FAMILIES_FILE),
             &mut files,
@@ -170,7 +171,13 @@ impl Gamepalate {
         .inspect_err(failed("could not recommend"))
     }
 
-    pub fn vote(&self, id: AppId, kind: VoteKind, bet: bool) -> Result<(), VoteError> {
+    pub fn vote(
+        &self,
+        id: AppId,
+        kind: VoteKind,
+        genre_ok: bool,
+        bet: bool,
+    ) -> Result<(), VoteError> {
         let mut votes = self.lock_votes();
         let now = jiff::Zoned::now();
         let date = now.date().to_string();
@@ -188,6 +195,7 @@ impl Gamepalate {
                 date,
                 at: Some(at),
                 bet,
+                genre_ok,
             },
             name,
         )
@@ -545,6 +553,14 @@ impl Gamepalate {
         header_url(id)
     }
 
+    pub fn would_try_hours(&self) -> f64 {
+        self.files.config.signals.would_try_hours
+    }
+
+    pub fn elsewhere_hours(&self) -> f64 {
+        self.files.config.signals.elsewhere_hours
+    }
+
     pub fn bet_every(&self) -> usize {
         self.files.config.results.bet_every
     }
@@ -642,7 +658,7 @@ fn saved_vote(
     name: impl Fn(AppId) -> Option<String>,
 ) -> Result<Votes, VoteError> {
     let mut changed = votes.clone();
-    cast(&mut changed, id, vote.kind, vote.date, vote.bet, vote.at);
+    cast(&mut changed, id, vote);
     save_votes(path, &changed, name).map_err(|source| VoteError {
         path: path.to_path_buf(),
         source,
@@ -722,6 +738,7 @@ mod tests {
                 date: "2026-10-30".to_string(),
                 at: Some(Timestamp(1_762_500_000_000)),
                 bet: true,
+                genre_ok: false,
             },
             |_| Some("Portal 2".to_string()),
         )
@@ -735,7 +752,10 @@ mod tests {
         let votes = vote_in(&path, &Votes::new()).unwrap();
 
         assert_eq!(votes.len(), 1);
-        assert_eq!(gamepalate_store::votes::load_votes(&path).unwrap(), votes);
+        assert_eq!(
+            gamepalate_store::votes::load_votes(&path).unwrap().votes,
+            votes
+        );
         assert!(std::fs::read_to_string(&path).unwrap().contains(
             "620 = { vote = \"would_try\", date = \"2026-10-30\", at = 1762500000000, bet = true } # Portal 2"
         ));
@@ -760,18 +780,24 @@ mod tests {
         cast(
             &mut votes,
             AppId(1),
-            VoteKind::Maybe,
-            "2026-10-01".to_string(),
-            false,
-            None,
+            Vote {
+                kind: VoteKind::Later,
+                date: "2026-10-01".to_string(),
+                at: None,
+                bet: false,
+                genre_ok: false,
+            },
         );
         cast(
             &mut votes,
             AppId(2),
-            VoteKind::WouldTry,
-            "2026-10-30".to_string(),
-            true,
-            None,
+            Vote {
+                kind: VoteKind::WouldTry,
+                date: "2026-10-30".to_string(),
+                at: None,
+                bet: true,
+                genre_ok: false,
+            },
         );
         let mut catalog_game = Game {
             id: AppId(1),
@@ -803,7 +829,7 @@ mod tests {
         assert!(games[0].vote.bet);
         assert_eq!(games[0].price, None);
         assert_eq!(games[1].name, "Subnautica");
-        assert_eq!(games[1].vote.kind, VoteKind::Maybe);
+        assert_eq!(games[1].vote.kind, VoteKind::Later);
         catalog_game.price.discount = None;
         assert_eq!(games[1].price, Some(catalog_game.price));
         assert_eq!(games[1].reviews, Some(catalog_game.reviews));
@@ -816,10 +842,13 @@ mod tests {
         cast(
             &mut votes,
             AppId(72850),
-            VoteKind::Known,
-            "2026-10-01".to_string(),
-            false,
-            None,
+            Vote {
+                kind: VoteKind::NotForMe,
+                date: "2026-10-01".to_string(),
+                at: None,
+                bet: false,
+                genre_ok: false,
+            },
         );
         let off_catalog = OffCatalogGames::from([(
             AppId(72850),
