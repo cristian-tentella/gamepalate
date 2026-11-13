@@ -4,12 +4,12 @@ use gamepalate_app::{
     AppId, DiscoverPlace, FamilyChange, GameStanding, GameView, Gamepalate, VoteKind,
 };
 use iced::{
-    Center, ContentFit, Element, Fill, Padding, Size, Subscription, Task,
+    Center, ContentFit, Element, Fill, Size, Subscription, Task,
     keyboard::{self, Key, key::Named},
     never, padding,
     widget::{
         button, column, container, image, mouse_area, opaque, pick_list, responsive, rich_text,
-        row, scrollable, space, span, stack, text,
+        row, scrollable, space, span, stack, text, tooltip,
     },
 };
 use jiff::civil::Date;
@@ -26,15 +26,12 @@ use crate::{
     style,
 };
 
-/// The sheet leaves the blurred page in sight around it.
-const SHEET_MARGIN: Padding = Padding {
-    top: 16.0,
-    right: 24.0,
-    bottom: 24.0,
-    left: 24.0,
-};
+/// The share of the area below the top bar the sheet takes: the blurred page stays in sight
+/// around it.
+const SHEET_SHARE: f32 = 0.9;
 const SHEET_MAX_WIDTH: f32 = 1200.0;
 const BACK: char = '\u{E5CB}';
+const CLOSE: char = '\u{E5CD}';
 const HEAD_HEIGHT: f32 = 44.0;
 const SIDE_WIDTH: f32 = 340.0;
 /// Below this width the side column goes under the screenshots.
@@ -256,8 +253,9 @@ impl GamePage {
         keyboard::listen().filter_map(key_message)
     }
 
-    /// The sheet over the blurred page. `under` names the page it goes back to.
-    pub fn view(&self, scale: f32, under: &'static str) -> Element<'_, Message> {
+    /// The sheet over the blurred page. `area` is the size below the top bar, `under` names the
+    /// page the sheet goes back to.
+    pub fn view(&self, scale: f32, area: Size, under: &'static str) -> Element<'_, Message> {
         let toast = self.toasts.view(Message::Undo);
         let body = container(responsive(move |size| self.details(size, scale)))
             .padding(padding::top(16).bottom(16).left(20).right(8))
@@ -276,9 +274,8 @@ impl GamePage {
             style::separator(),
             actions
         ])
-        .width(Fill)
-        .max_width(SHEET_MAX_WIDTH)
-        .height(Fill)
+        .width(sheet_size(area).width)
+        .height(sheet_size(area).height)
         .style(style::popup);
 
         let backdrop = self.backdrop.as_ref().map(|handle| {
@@ -300,12 +297,7 @@ impl GamePage {
         stack![]
             .push(backdrop)
             .push(veil)
-            .push(
-                container(opaque(sheet))
-                    .padding(SHEET_MARGIN)
-                    .center_x(Fill)
-                    .height(Fill),
-            )
+            .push(container(opaque(sheet)).center(Fill))
             .push(self.showcase.zoom().map(|zoom| zoom.map(Message::Showcase)))
             .push(
                 self.showcase
@@ -341,9 +333,20 @@ impl GamePage {
             link("Q", "Steam ↗", Link::Steam),
             link("W", "Eneba ↗", Link::Eneba),
             link("E", "HLTB ↗", Link::Hltb),
+            style::divider(),
+            tooltip(
+                button(text(CLOSE).font(font::ICONS).size(font::icon(11.0)))
+                    .padding([4, 6])
+                    .style(style::text_button)
+                    .on_press(Message::Back),
+                container(text(format!("Back to {under} (Esc)")).size(font::NOTE_SIZE))
+                    .padding([6, 10])
+                    .style(style::popup),
+                tooltip::Position::Bottom,
+            ),
         ]
         .spacing(game::ACTION_SPACING)
-        .padding(padding::left(12).right(20))
+        .padding(padding::left(12).right(12))
         .height(HEAD_HEIGHT)
         .align_y(Center)
         .into()
@@ -392,7 +395,7 @@ impl GamePage {
         .into()
     }
 
-    /// The name, where the game stands, and its price on the right.
+    /// The name and where the game stands, with the reviews and the price on the right.
     fn title_block(&self) -> Element<'_, Message> {
         let game = &self.game;
         let status = status(game, jiff::Zoned::now().date()).map(|status| {
@@ -426,14 +429,14 @@ impl GamePage {
                 .push(place)
                 .spacing(4)
                 .width(Fill),
+            game::reviews(&game.reviews),
             game::price_row(&game.price, self.gamepalate.currency(), game::PRICE_GAP),
         ]
-        .spacing(20)
+        .spacing(28)
         .into()
     }
 
-    /// The column beside the screenshots: the header image, the short description, the reviews
-    /// and the facts.
+    /// The column beside the screenshots: the header image, the short description and the facts.
     fn side(&self, width: f32) -> Element<'_, Message> {
         let game = &self.game;
         let header_width = width.min(SIDE_WIDTH);
@@ -448,7 +451,6 @@ impl GamePage {
                 .description(game.id)
                 .map(|description| description.map(Message::Showcase)),
         )
-        .push(game::reviews(&game.reviews))
         .push(
             self.showcase
                 .facts(game.id, &self.showcase.used_tags())
@@ -590,6 +592,13 @@ impl Place {
 }
 
 /// A game of the Library is played already: 4 is not offered there.
+fn sheet_size(area: Size) -> Size {
+    Size::new(
+        (area.width * SHEET_SHARE).min(SHEET_MAX_WIDTH),
+        area.height * SHEET_SHARE,
+    )
+}
+
 fn offers_played(game: &GameView) -> bool {
     !game.in_library
 }
@@ -781,6 +790,15 @@ mod tests {
         assert!(!stopped_by_popup(&Message::Showcase(
             showcase::Message::Close
         )));
+    }
+
+    #[test]
+    fn the_sheet_leaves_a_tenth_of_the_area_around_it() {
+        assert_eq!(
+            sheet_size(Size::new(1280.0, 755.0)),
+            Size::new(1152.0, 679.5)
+        );
+        assert_eq!(sheet_size(Size::new(1920.0, 1000.0)).width, SHEET_MAX_WIDTH);
     }
 
     #[test]

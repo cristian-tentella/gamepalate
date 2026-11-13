@@ -548,17 +548,15 @@ impl App {
                 .map(Message::Settings),
             Screen::Starting => column![].into(),
         };
+        let area = Size::new(self.resized.width, self.resized.height - SEARCH_TOP);
         let content = stack![content]
             .push(self.game_page.as_ref().map(|page| {
-                page.view(self.scale, page_name(self.page()))
+                page.view(self.scale, area, page_name(self.page()))
                     .map(Message::GamePage)
             }))
             .push(
                 self.search
-                    .view(Size::new(
-                        self.resized.width,
-                        self.resized.height - SEARCH_TOP,
-                    ))
+                    .view(area)
                     .map(|search| search.map(Message::Search)),
             );
 
