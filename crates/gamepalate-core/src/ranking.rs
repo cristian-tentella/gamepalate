@@ -113,11 +113,8 @@ mod tests {
 
     fn vote(kind: VoteKind) -> Vote {
         Vote {
-            kind,
-            date: "2026-11-11".to_string(),
             at: Some(Timestamp(CAST)),
-            bet: false,
-            genre_ok: false,
+            ..Vote::new(kind, "2026-11-11")
         }
     }
 

@@ -10,7 +10,7 @@ use crate::{
     tag_vector::{TagVector, add_weighted, tf_idf_vector},
     taste::{Taste, family_taste, game_tags, signals_taste},
     timestamp::Timestamp,
-    votes::{VoteKind, Votes},
+    votes::Votes,
 };
 
 pub const DEFAULT_TAG_LIMIT: usize = 15;
@@ -140,9 +140,7 @@ pub fn contributions(taste: &Taste, inputs: &SearchInputs) -> Contributions {
 }
 
 pub fn signal_kinds(id: AppId, signals: &Signals, votes: &Votes) -> Vec<SignalKind> {
-    let would_try = votes
-        .get(&id)
-        .is_some_and(|vote| vote.kind == VoteKind::WouldTry);
+    let would_try = votes.get(&id).is_some_and(|vote| vote.kind.is_yes());
 
     [
         (
@@ -385,7 +383,7 @@ mod tests {
         off_catalog::OffCatalogGames,
         region::Region,
         signals::{LibraryGame, RecentGame},
-        votes::Vote,
+        votes::{Vote, VoteKind},
     };
 
     fn game(id: u32, tags: &[u32]) -> Game {
@@ -454,16 +452,7 @@ mod tests {
             wishlist: vec![AppId(2)],
             followed: vec![AppId(3)],
         };
-        let votes = Votes::from([(
-            AppId(4),
-            Vote {
-                kind: VoteKind::WouldTry,
-                date: "2026-10-01".to_string(),
-                bet: false,
-                genre_ok: false,
-                at: None,
-            },
-        )]);
+        let votes = Votes::from([(AppId(4), Vote::new(VoteKind::WouldTry, "2026-10-01"))]);
         let inputs = SearchInputs {
             catalog: &catalog,
             game_vectors: &[],

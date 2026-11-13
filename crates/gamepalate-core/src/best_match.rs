@@ -133,13 +133,7 @@ mod tests {
     }
 
     fn would_try() -> Vote {
-        Vote {
-            kind: VoteKind::WouldTry,
-            date: "2026-11-02".to_string(),
-            bet: false,
-            genre_ok: false,
-            at: None,
-        }
+        Vote::new(VoteKind::WouldTry, "2026-11-02")
     }
 
     fn matches_of(games: Vec<Game>, votes: &Votes) -> HashMap<AppId, f64> {

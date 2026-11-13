@@ -736,15 +736,10 @@ pub(super) fn bets_summary(
     let (bets, others): (Vec<&Vote>, Vec<&Vote>) = games
         .values()
         .map(|game| &game.vote)
-        .filter(|vote| vote.kind != VoteKind::Later)
+        .filter(|vote| vote.kind.label().is_some())
         .filter(|vote| vote.bet || vote.date.as_str() >= first)
         .partition(|vote| vote.bet);
-    let would_try = |votes: &[&Vote]| {
-        votes
-            .iter()
-            .filter(|vote| vote.kind == VoteKind::WouldTry)
-            .count()
-    };
+    let would_try = |votes: &[&Vote]| votes.iter().filter(|vote| vote.kind.is_yes()).count();
     let others_share =
         (!others.is_empty()).then(|| would_try(&others) as f64 / others.len() as f64);
 
@@ -858,11 +853,8 @@ mod tests {
             id: AppId(id),
             name: name.to_string(),
             vote: Vote {
-                kind,
-                date: date.to_string(),
                 bet,
-                genre_ok: false,
-                at: None,
+                ..Vote::new(kind, date)
             },
             price: None,
             reviews: None,

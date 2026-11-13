@@ -461,13 +461,7 @@ mod tests {
 
     #[test]
     fn a_not_for_me_with_the_genre_ok_is_shown_as_not_this_one() {
-        let mut vote = Vote {
-            kind: VoteKind::NotForMe,
-            date: "2026-11-13".to_string(),
-            at: None,
-            bet: false,
-            genre_ok: false,
-        };
+        let mut vote = Vote::new(VoteKind::NotForMe, "2026-11-13");
         assert_eq!(Pick::of(&vote), Pick::Vote(VoteKind::NotForMe));
 
         vote.genre_ok = true;

@@ -20,10 +20,38 @@ pub enum VoteKind {
     NotForMe,
 }
 
+/// What each vote means. Every part of gamepalate that treats votes differently asks here.
+impl VoteKind {
+    /// A Would try: the game counts in the taste, like a game played.
+    pub fn is_yes(self) -> bool {
+        self == VoteKind::WouldTry
+    }
+
+    /// A Not for me: the Filter of the same name keeps the game out, and only a no can have `genre_ok`.
+    pub fn is_no(self) -> bool {
+        self == VoteKind::NotForMe
+    }
+
+    /// What the vote teaches the Parere: 1 for a yes, 0 for a no. A Later only passes a game, so
+    /// it teaches nothing, and it is not counted among the votes of the day or the Bets.
+    pub fn label(self) -> Option<f64> {
+        match self {
+            VoteKind::WouldTry => Some(1.0),
+            VoteKind::NotForMe => Some(0.0),
+            VoteKind::Later => None,
+        }
+    }
+
+    /// The vote keeps the game out of Discover only for `LATER_DAYS`; the others keep it out for good.
+    pub fn lapses(self) -> bool {
+        self == VoteKind::Later
+    }
+}
+
 /// Saves `vote` in place of the old one. A bet stays a bet; `genre_ok` holds only on a Not for me.
 pub fn cast(votes: &mut Votes, id: AppId, vote: Vote) {
     let bet = vote.bet || votes.get(&id).is_some_and(|old| old.bet);
-    let genre_ok = vote.genre_ok && vote.kind == VoteKind::NotForMe;
+    let genre_ok = vote.genre_ok && vote.kind.is_no();
     votes.insert(
         id,
         Vote {
@@ -39,9 +67,20 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 pub const LATER_DAYS: i64 = 30;
 
 impl Vote {
+    /// A vote cast on `date`, without a time, a bet or `genre_ok`.
+    pub fn new(kind: VoteKind, date: &str) -> Vote {
+        Vote {
+            kind,
+            date: date.to_string(),
+            at: None,
+            bet: false,
+            genre_ok: false,
+        }
+    }
+
     /// A Later whose days are over: the game is back, as if it had no vote.
     pub fn has_lapsed(&self, now: Timestamp) -> bool {
-        if self.kind != VoteKind::Later {
+        if !self.kind.lapses() {
             return false;
         }
         let since = self.at.or_else(|| day_start(&self.date));
@@ -79,7 +118,7 @@ fn day_start(date: &str) -> Option<Timestamp> {
 pub fn cast_in_last_day(votes: &Votes, now: Timestamp) -> usize {
     votes
         .values()
-        .filter(|vote| vote.kind != VoteKind::Later)
+        .filter(|vote| vote.kind.label().is_some())
         .filter(|vote| {
             vote.at
                 .is_some_and(|at| (0..DAY_MS).contains(&now.ms_since(at)))
@@ -211,12 +250,16 @@ mod tests {
 
     fn vote(kind: VoteKind, date: &str, at: Option<i64>) -> Vote {
         Vote {
-            kind,
-            date: date.to_string(),
             at: at.map(Timestamp),
-            bet: false,
-            genre_ok: false,
+            ..Vote::new(kind, date)
         }
+    }
+
+    #[test]
+    fn only_a_would_try_and_a_not_for_me_teach_the_opinion() {
+        assert_eq!(VoteKind::WouldTry.label(), Some(1.0));
+        assert_eq!(VoteKind::NotForMe.label(), Some(0.0));
+        assert_eq!(VoteKind::Later.label(), None);
     }
 
     #[test]

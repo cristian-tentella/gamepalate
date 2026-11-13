@@ -1,8 +1,8 @@
 use std::cmp::Reverse;
 
 use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL_CONDENSED};
-use gamepalate_core::{taste::game_name, votes::VoteKind};
-use gamepalate_store::data_files::DataFiles;
+use gamepalate_core::taste::game_name;
+use gamepalate_store::{data_files::DataFiles, votes::kind_name};
 
 use crate::{format::integer, names::game_label};
 
@@ -50,12 +50,4 @@ pub fn run(files: &DataFiles) {
         integer(files.votes.len() as u64),
         integer(bets as u64)
     );
-}
-
-fn kind_name(kind: VoteKind) -> &'static str {
-    match kind {
-        VoteKind::WouldTry => "would_try",
-        VoteKind::Later => "later",
-        VoteKind::NotForMe => "not_for_me",
-    }
 }
