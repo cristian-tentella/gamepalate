@@ -1,0 +1,83 @@
+use gamepalate_core::{ids::AppId, search::SearchInputs, taste::game_name};
+
+use super::Gamepalate;
+use crate::{
+    catalog_search::CatalogMatch,
+    library::{
+        GameCorrection, GameCorrectionError, LibraryView, PlayedElsewhereError,
+        changed_played_elsewhere, corrected_game, game_correction, library_ids, library_view,
+    },
+    log::failed,
+    profile::{ProfileView, profile_view},
+    tags::{GameTagsView, game_tags_view},
+};
+
+impl Gamepalate {
+    pub fn profile_view(&self) -> ProfileView {
+        self.with_inputs(profile_view)
+    }
+
+    pub fn game_tags(&self, id: AppId) -> Option<GameTagsView> {
+        self.with_inputs(|inputs| game_tags_view(id, inputs))
+    }
+
+    pub fn library_view(&self) -> LibraryView {
+        self.with_inputs(library_view)
+    }
+
+    pub fn correct_game(
+        &self,
+        id: AppId,
+        correction: GameCorrection,
+    ) -> Result<GameCorrection, GameCorrectionError> {
+        let votes = self.lock_votes();
+        let mut corrections = self.lock_corrections();
+        let families = self.lock_families();
+        let before = game_correction(id, &corrections);
+        *corrections = corrected_game(
+            &self.data_dir.join("corrections.toml"),
+            id,
+            correction,
+            &SearchInputs {
+                votes: &votes,
+                corrections: &corrections,
+                families: &families,
+                ..self.files.search_inputs(&self.vectors)
+            },
+        )
+        .inspect_err(failed("could not save the correction"))?;
+        Ok(before)
+    }
+
+    pub fn set_played_elsewhere(
+        &self,
+        id: AppId,
+        played: bool,
+    ) -> Result<bool, PlayedElsewhereError> {
+        let mut corrections = self.lock_corrections();
+        let before = corrections.played_elsewhere.contains(&id);
+        let name = game_name(id, &self.files.catalog, &self.files.off_catalog);
+        *corrections = changed_played_elsewhere(
+            &self.data_dir.join("corrections.toml"),
+            id,
+            played,
+            &corrections,
+            (name != format!("#{}", id.0)).then_some(name.as_str()),
+        )
+        .inspect_err(failed("could not save the game played elsewhere"))?;
+        Ok(before)
+    }
+
+    pub fn search_catalog(&self, text: &str) -> Vec<CatalogMatch> {
+        let in_library = self.with_inputs(library_ids);
+        self.names
+            .search(text, &in_library)
+            .into_iter()
+            .filter_map(|id| self.files.catalog.game(id))
+            .map(|game| CatalogMatch {
+                id: game.id,
+                name: game.name.clone(),
+            })
+            .collect()
+    }
+}
