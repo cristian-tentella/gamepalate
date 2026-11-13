@@ -315,8 +315,9 @@ pub fn vote(kind: VoteKind) -> &'static str {
 
 pub fn pick(pick: Pick) -> &'static str {
     match pick {
+        Pick::Vote(VoteKind::NotForMe) => "Not my genre",
         Pick::Vote(kind) => vote(kind),
-        Pick::NotThisOne => "Not this one",
+        Pick::NotThisOne => "Not this game",
         Pick::Played => "Played, liked it",
     }
 }
@@ -857,7 +858,7 @@ mod tests {
         );
         assert_eq!(
             voted("Firewatch", Pick::NotThisOne),
-            "Firewatch: voted Not this one"
+            "Firewatch: voted Not this game"
         );
     }
 

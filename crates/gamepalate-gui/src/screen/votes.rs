@@ -473,6 +473,8 @@ impl Votes {
                 game.vote.bet.then(|| self.gamepalate.bet_every()),
             ),
             info,
+            // Here the links leave the row of the votes all its width.
+            game::header_links(HEADER_HEIGHT, |link| Some(Message::Open(link))),
         ]
         .spacing(20)
         .align_y(Center);
@@ -502,7 +504,7 @@ impl Votes {
 
     fn vote_row(&self, width: f32) -> Element<'_, Message> {
         let game = self.current();
-        let vote_width = game::vote_width(width - game::LINKS_WIDTH, 0.0);
+        let vote_width = game::vote_width(width, 0.0);
         let (would_try_hours, elsewhere_hours) = (
             self.gamepalate.would_try_hours(),
             self.gamepalate.elsewhere_hours(),
@@ -525,14 +527,7 @@ impl Votes {
         })
         .width(Fill);
 
-        row![
-            votes,
-            game::links(|link| game.is_some().then_some(Message::Open(link))),
-        ]
-        .spacing(8)
-        .height(Fill)
-        .align_y(Center)
-        .into()
+        container(votes).center_y(Fill).into()
     }
 
     fn current(&self) -> Option<&VotedGame> {

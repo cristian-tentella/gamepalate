@@ -2,9 +2,10 @@ use std::process::Command;
 
 use gamepalate_app::{Currency, LATER_DAYS, Price, Reviews, Vote, VoteKind};
 use iced::{
-    Center, Element, Fill, Length, never, padding,
+    Center, Element, Fill, Left, Length, never, padding,
     widget::{
-        Container, Row, button, column, container, rich_text, row, span, stack, text, tooltip,
+        Container, Row, button, column, container, rich_text, row, rule, space, span, stack, text,
+        tooltip,
     },
 };
 
@@ -45,6 +46,7 @@ pub const PICKS: [(&str, Pick); 4] = [
 pub const VOTE_HEIGHT: f32 = 36.0;
 const VOTE_WIDTH: f32 = 172.0;
 const VOTE_SPACING: f32 = 8.0;
+const GROUP_SPACING: f32 = 12.0;
 pub const LINKS_WIDTH: f32 = 340.0;
 pub const ACTION_SPACING: f32 = 16.0;
 const KEYCAP_SIZE: f32 = 18.0;
@@ -239,10 +241,9 @@ pub fn vote_button<'a, Message: Clone + 'a>(
         })
         .font(font::SEMIBOLD)
         .wrapping(text::Wrapping::None);
-    // When the buttons share a narrow row, the longest label keeps its own width
-    // instead of wrapping onto two lines.
+    // In a narrow row each button takes the width of its label, with room on both sides.
     let content = container(row![keycap, label].spacing(10).align_y(Center)).center_y(Fill);
-    let (content, width) = if width == Length::Fill && pick == Pick::Played {
+    let (content, width) = if width == Length::Fill {
         (
             content.padding(padding::left(VOTE_INSET).right(VOTE_INSET)),
             Length::Shrink,
@@ -250,12 +251,18 @@ pub fn vote_button<'a, Message: Clone + 'a>(
     } else {
         (content.center_x(Fill), width)
     };
+    let segment = segment(pick);
+    let height = if segment == style::Segment::Alone {
+        Length::Fixed(VOTE_HEIGHT)
+    } else {
+        Length::Fill
+    };
 
     let button = button(content)
         .width(width)
-        .height(VOTE_HEIGHT)
+        .height(height)
         .padding(0)
-        .style(style::vote(flashed))
+        .style(style::vote(flashed, segment))
         .on_press_maybe(on_press);
 
     tooltip(
@@ -314,31 +321,70 @@ pub fn moves<'a, Message: Clone + 'a>(
         .align_y(Center)
 }
 
+fn segment(pick: Pick) -> style::Segment {
+    match pick {
+        Pick::Vote(VoteKind::WouldTry) => style::Segment::First,
+        Pick::NotThisOne => style::Segment::Middle,
+        Pick::Vote(VoteKind::NotForMe | VoteKind::Later) => style::Segment::Last,
+        Pick::Played => style::Segment::Alone,
+    }
+}
+
+/// The three verdicts as one segmented group, then Played on its own.
 pub fn vote_buttons<'a, Message: 'a>(
     button: impl Fn(&'a str, Pick) -> Element<'a, Message>,
 ) -> Row<'a, Message> {
     let [would_try, not_this_one, not_for_me, played] = PICKS.map(|(key, pick)| button(key, pick));
+    let seam = || rule::vertical(1).style(style::vote_seam);
+    let verdicts =
+        container(row![would_try, seam(), not_this_one, seam(), not_for_me].height(Fill))
+            .height(VOTE_HEIGHT)
+            .padding(1)
+            .style(style::vote_group);
 
-    row![
-        would_try,
-        not_this_one,
-        not_for_me,
-        style::divider(),
-        played
-    ]
-    .spacing(VOTE_SPACING)
-    .align_y(Center)
+    row![verdicts, played]
+        .spacing(GROUP_SPACING)
+        .align_y(Center)
 }
 
 pub fn vote_width(available: f32, beside: f32) -> Length {
-    let divider = 1.0 + 2.0 * style::DIVIDER_INSET + VOTE_SPACING;
-    let needed = PICKS.len() as f32 * (VOTE_WIDTH + VOTE_SPACING) + divider + beside;
+    let verdicts = 3.0 * VOTE_WIDTH + 2.0 * 1.0 + 2.0 * 1.0;
+    let needed = verdicts + GROUP_SPACING + VOTE_WIDTH + VOTE_SPACING + beside;
 
     if available >= needed {
         Length::Fixed(VOTE_WIDTH)
     } else {
         Length::Fill
     }
+}
+
+/// The links as a muted column, from the top to the bottom of the header image.
+pub fn header_links<'a, Message: Clone + 'a>(
+    height: f32,
+    on_press: impl Fn(Link) -> Option<Message>,
+) -> Element<'a, Message> {
+    let link = |key: &'a str, label: &'a str, link: Link| {
+        let keycap = keycap(key).style(style::muted_keycap);
+        button(
+            row![keycap, text(label).size(font::NOTE_SIZE)]
+                .spacing(KEY_SPACING)
+                .align_y(Center),
+        )
+        .padding(0)
+        .style(style::muted_action)
+        .on_press_maybe(on_press(link))
+    };
+
+    column![
+        link("Q", "Steam ↗", Link::Steam),
+        space().height(Fill),
+        link("W", "Eneba ↗", Link::Eneba),
+        space().height(Fill),
+        link("E", "HLTB ↗", Link::Hltb),
+    ]
+    .height(height)
+    .align_x(Left)
+    .into()
 }
 
 pub fn links<'a, Message: Clone + 'a>(
@@ -377,10 +423,10 @@ mod tests {
 
     #[test]
     fn the_vote_buttons_stop_growing_once_there_is_room() {
-        assert_eq!(vote_width(760.0, 0.0), Length::Fixed(VOTE_WIDTH));
-        assert_eq!(vote_width(720.0, 0.0), Length::Fill);
-        assert_eq!(vote_width(940.0, 180.0), Length::Fixed(VOTE_WIDTH));
-        assert_eq!(vote_width(900.0, 180.0), Length::Fill);
+        assert_eq!(vote_width(712.0, 0.0), Length::Fixed(VOTE_WIDTH));
+        assert_eq!(vote_width(711.0, 0.0), Length::Fill);
+        assert_eq!(vote_width(892.0, 180.0), Length::Fixed(VOTE_WIDTH));
+        assert_eq!(vote_width(891.0, 180.0), Length::Fill);
     }
 
     #[test]
