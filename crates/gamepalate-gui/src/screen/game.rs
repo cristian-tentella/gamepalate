@@ -56,10 +56,12 @@ const KEY_SPACING: f32 = 6.0;
 const TITLE_LINE_HEIGHT: f32 = 1.1;
 const BET_INSET: f32 = 8.0;
 const BADGE_PADDING: f32 = 2.0;
-/// The column beside the screenshots.
+/// The column beside the screenshots, at most and at least, and its share of a narrow room.
 const SIDE_WIDTH: f32 = 340.0;
-/// Below this width the column goes under the screenshots.
-const BESIDE_MIN_WIDTH: f32 = 900.0;
+const MIN_SIDE_WIDTH: f32 = 260.0;
+const SIDE_SHARE: f32 = 0.38;
+/// Narrower screenshots than this put the column under them.
+const MIN_BESIDE_SHOT_WIDTH: f32 = 320.0;
 /// The heading above the screenshots: the name and two lines.
 const HEADING_HEIGHT: f32 = 84.0;
 /// The screenshots shrink down to this to fit the height.
@@ -419,8 +421,7 @@ pub fn body<'a, Message: 'a>(
     size: Size,
     max_shot_width: f32,
 ) -> Element<'a, Message> {
-    let (beside, shot_width) = body_layout(size, max_shot_width);
-    let side_width = if beside { SIDE_WIDTH } else { shot_width };
+    let (beside, shot_width, side_width) = body_layout(size, max_shot_width);
     let header_width = side_width.min(SIDE_WIDTH);
     let side = column![(parts.header)(header_width, header_width * 215.0 / 460.0)]
         .extend(parts.side)
@@ -432,7 +433,7 @@ pub fn body<'a, Message: 'a>(
     let content: Element<'a, Message> = if beside {
         column![top, row![gallery, side].spacing(BODY_GAP)]
             .spacing(BODY_SPACING)
-            .width(shot_width + BODY_GAP + SIDE_WIDTH)
+            .width(shot_width + BODY_GAP + side_width)
             .into()
     } else {
         column![top, gallery, side]
@@ -450,18 +451,26 @@ pub fn body<'a, Message: 'a>(
     .into()
 }
 
-/// Whether the column goes beside the screenshots, and how wide the screenshots are.
-fn body_layout(size: Size, max_shot_width: f32) -> (bool, f32) {
-    let beside = size.width >= BESIDE_MIN_WIDTH;
-    let room = size.width - SCROLLBAR_GAP - if beside { SIDE_WIDTH + BODY_GAP } else { 0.0 };
-    let width = showcase::screenshot_width(
+/// Whether the column goes beside the screenshots, how wide the screenshots are, and how wide
+/// the column is. The column narrows and the screenshots shrink before the column goes under
+/// them, where reading it takes scrolling.
+fn body_layout(size: Size, max_shot_width: f32) -> (bool, f32, f32) {
+    let width = size.width - SCROLLBAR_GAP;
+    let side = (width * SIDE_SHARE).clamp(MIN_SIDE_WIDTH, SIDE_WIDTH);
+    let beside = width - side - BODY_GAP >= MIN_BESIDE_SHOT_WIDTH;
+    let room = if beside {
+        width - side - BODY_GAP
+    } else {
+        width
+    };
+    let shot = showcase::screenshot_width(
         room,
         size.height - HEADING_HEIGHT - BODY_SPACING,
         MIN_SHOT_WIDTH,
         max_shot_width,
     );
 
-    (beside, width)
+    (beside, shot, if beside { side } else { shot })
 }
 
 #[cfg(test)]
@@ -469,26 +478,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_wide_room_puts_the_column_beside_the_screenshots() {
-        let (beside, width) = body_layout(Size::new(1100.0, 900.0), 1200.0);
+    fn a_wide_room_puts_the_whole_column_beside_the_screenshots() {
+        let (beside, shot, side) = body_layout(Size::new(1100.0, 900.0), 1200.0);
 
         assert!(beside);
-        assert_eq!(width, 1100.0 - SCROLLBAR_GAP - SIDE_WIDTH - BODY_GAP);
+        assert_eq!(side, SIDE_WIDTH);
+        assert_eq!(shot, 1100.0 - SCROLLBAR_GAP - SIDE_WIDTH - BODY_GAP);
     }
 
     #[test]
-    fn a_narrow_room_stacks_the_column_under_the_screenshots() {
-        let (beside, width) = body_layout(Size::new(700.0, 900.0), 1200.0);
+    fn a_narrower_room_narrows_the_column_and_keeps_it_beside() {
+        let (beside, shot, side) = body_layout(Size::new(800.0, 900.0), 1200.0);
+
+        assert!(beside);
+        assert!((MIN_SIDE_WIDTH..SIDE_WIDTH).contains(&side));
+        assert_eq!(shot, 800.0 - SCROLLBAR_GAP - side - BODY_GAP);
+    }
+
+    #[test]
+    fn only_a_very_narrow_room_puts_the_column_under_the_screenshots() {
+        let (beside, shot, side) = body_layout(Size::new(560.0, 900.0), 1200.0);
 
         assert!(!beside);
-        assert_eq!(width, 700.0 - SCROLLBAR_GAP);
+        assert_eq!(shot, 560.0 - SCROLLBAR_GAP);
+        assert_eq!(side, shot);
     }
 
     #[test]
     fn the_screenshots_shrink_to_fit_a_short_room() {
-        let (_, tall) = body_layout(Size::new(1100.0, 900.0), 1200.0);
-        let (_, short) = body_layout(Size::new(1100.0, 400.0), 1200.0);
-        let (_, tiny) = body_layout(Size::new(1100.0, 150.0), 1200.0);
+        let (_, tall, _) = body_layout(Size::new(1100.0, 900.0), 1200.0);
+        let (_, short, _) = body_layout(Size::new(1100.0, 400.0), 1200.0);
+        let (_, tiny, _) = body_layout(Size::new(1100.0, 150.0), 1200.0);
 
         assert!(short < tall);
         assert_eq!(tiny, MIN_SHOT_WIDTH);
