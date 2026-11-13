@@ -1,6 +1,6 @@
 mod about;
 mod descriptions;
-pub(super) mod images;
+pub(crate) mod images;
 mod media;
 mod pages;
 mod tags;

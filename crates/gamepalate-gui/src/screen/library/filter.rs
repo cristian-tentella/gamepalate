@@ -2,7 +2,7 @@ use std::fmt;
 
 use gamepalate_app::{LibraryGameView, names::folded};
 
-pub(super) const FILTERS: [Filter; 7] = [
+const FILTERS: [Filter; 7] = [
     Filter::All,
     Filter::Owned,
     Filter::NotOwned,
@@ -63,6 +63,35 @@ impl fmt::Display for Sort {
             Sort::Name => "Name",
         })
     }
+}
+
+/// A filter with its count, as the "Show" menu lists it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Choice {
+    pub filter: Filter,
+    count: usize,
+}
+
+impl fmt::Display for Choice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} · {}", filter_label(self.filter), self.count)
+    }
+}
+
+pub(super) fn choice(games: &[LibraryGameView], filter: Filter) -> Choice {
+    Choice {
+        filter,
+        count: count(games, filter),
+    }
+}
+
+/// The filters the "Show" menu offers: the ones that would come up empty are left out.
+pub(super) fn choices(games: &[LibraryGameView]) -> Vec<Choice> {
+    FILTERS
+        .into_iter()
+        .filter(|&filter| shows_filter(filter, games))
+        .map(|filter| choice(games, filter))
+        .collect()
 }
 
 pub(super) fn shows_filter(filter: Filter, games: &[LibraryGameView]) -> bool {
@@ -270,6 +299,20 @@ mod tests {
             [7]
         );
         assert_eq!(filter_label(Filter::Elsewhere), "Elsewhere");
+
+        assert_eq!(
+            choices(&games)
+                .into_iter()
+                .map(|choice| choice.to_string())
+                .collect::<Vec<_>>(),
+            [
+                "All · 7",
+                "Owned · 4",
+                "Wishlist · 1",
+                "Followed · 1",
+                "Elsewhere · 1"
+            ]
+        );
 
         games.pop();
         assert!(!shows_filter(Filter::Elsewhere, &games));

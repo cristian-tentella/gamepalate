@@ -69,6 +69,7 @@ impl VoteArgs {
             at: Some(at),
             bet: self.bet,
             genre_ok: self.genre_ok,
+            searched: false,
         })
     }
 }

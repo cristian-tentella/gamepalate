@@ -1,5 +1,6 @@
 use gamepalate_app::{
-    Blame, Controller, Currency, Price, Reviews, SearchOptions, SteamDeck, Timestamp, VoteKind,
+    Blame, Controller, Currency, DiscoverPlace, LeftOut, Price, Reviews, SearchOptions, SteamDeck,
+    Timestamp, VoteKind,
 };
 use jiff::{civil::Date, tz::TimeZone};
 
@@ -352,6 +353,44 @@ pub fn voted(name: &str, voted: Pick) -> String {
     format!("{name}: voted {}", pick(voted))
 }
 
+pub fn vote_removed(name: &str) -> String {
+    format!("{name}: vote removed")
+}
+
+/// Where a game stands in Discover. A game played elsewhere is left out as owned, but it is not
+/// yours.
+pub fn discover_place(place: &DiscoverPlace, played_elsewhere: bool) -> String {
+    let left_out = match place {
+        DiscoverPlace::Shown { position } => {
+            return format!("#{} in Discover", count(*position as u32));
+        }
+        DiscoverPlace::NoMatch => "no match with your tastes".to_string(),
+        DiscoverPlace::LeftOut(LeftOut::Owned) if played_elsewhere => {
+            "you played it elsewhere".to_string()
+        }
+        DiscoverPlace::LeftOut(left_out) => match left_out {
+            LeftOut::Owned => "you own it".to_string(),
+            LeftOut::FamilyGame => "it's in a family".to_string(),
+            LeftOut::Hidden => "you hid it".to_string(),
+            LeftOut::Voted => "you voted it".to_string(),
+            LeftOut::BannedTag(tag) => format!("banned tag {tag}"),
+            LeftOut::FewReviews(min) => format!("fewer than {} reviews", count(*min)),
+            LeftOut::ManyReviews(max) => format!("more than {} reviews", count(*max)),
+            LeftOut::LowPositive(min) => format!("under {min}% positive"),
+            LeftOut::EarlyAccess => "early access".to_string(),
+            LeftOut::Price => "outside your price range".to_string(),
+            LeftOut::Discount => "not discounted enough".to_string(),
+            LeftOut::MissingTag(tag) => format!("no tag {tag}"),
+            LeftOut::ExcludedTag(tag) => format!("tag {tag}"),
+        },
+    };
+    format!("Not in Discover: {left_out}")
+}
+
+pub fn added_to_family(family: &str) -> String {
+    format!("Added to {}", family.trim())
+}
+
 pub fn voted_day(date: &str, today: Date) -> String {
     let Ok(day) = date.parse::<Date>() else {
         return date.to_string();
@@ -430,6 +469,41 @@ mod tests {
     use gamepalate_app::{Discount, SortBy};
 
     use super::*;
+
+    #[test]
+    fn the_place_in_discover_says_the_position_or_what_leaves_the_game_out() {
+        assert_eq!(
+            discover_place(&DiscoverPlace::Shown { position: 1214 }, false),
+            "#1,214 in Discover"
+        );
+        assert_eq!(
+            discover_place(&DiscoverPlace::LeftOut(LeftOut::Owned), false),
+            "Not in Discover: you own it"
+        );
+        assert_eq!(
+            discover_place(&DiscoverPlace::LeftOut(LeftOut::Owned), true),
+            "Not in Discover: you played it elsewhere"
+        );
+        assert_eq!(
+            discover_place(
+                &DiscoverPlace::LeftOut(LeftOut::BannedTag("Horror".to_string())),
+                false
+            ),
+            "Not in Discover: banned tag Horror"
+        );
+        assert_eq!(
+            discover_place(&DiscoverPlace::LeftOut(LeftOut::ManyReviews(5000)), false),
+            "Not in Discover: more than 5,000 reviews"
+        );
+        assert_eq!(
+            discover_place(&DiscoverPlace::LeftOut(LeftOut::LowPositive(70)), false),
+            "Not in Discover: under 70% positive"
+        );
+        assert_eq!(
+            discover_place(&DiscoverPlace::NoMatch, false),
+            "Not in Discover: no match with your tastes"
+        );
+    }
 
     #[test]
     fn a_deadline_has_day_month_and_time() {

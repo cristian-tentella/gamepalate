@@ -23,6 +23,7 @@ const HEADER: &str = "\
 # not_for_me  not for you, it leaves the recommendations
 # bet = true  the vote was given to a bet
 # genre_ok = true  a not_for_me given as Not this one: the genre is fine, the game is not
+# searched = true  the vote was given to a game you looked up, not to a recommendation
 # at          when the vote was cast, in milliseconds since 1970 (for the last 24 hours and the 30 days of a later)
 ";
 
@@ -51,6 +52,9 @@ pub enum VotesError {
 
     #[error("the vote for {0} has genre_ok, which only a not_for_me can have")]
     GenreOkNotNotForMe(u32),
+
+    #[error("the vote for {0} has searched = false, which can only be true")]
+    SearchedNotTrue(u32),
 }
 
 #[derive(Deserialize)]
@@ -68,6 +72,7 @@ struct VoteEntry {
     at: Option<i64>,
     bet: Option<bool>,
     genre_ok: Option<bool>,
+    searched: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -107,6 +112,21 @@ pub fn load_votes(path: &Path) -> Result<ReadVotes, VotesError> {
     }
 }
 
+/// Saves `votes` without the vote for `id`, and gives them back. Without a vote for `id` the
+/// file is left as it is.
+pub fn remove_vote(
+    path: &Path,
+    votes: &Votes,
+    id: AppId,
+    name: impl Fn(AppId) -> Option<String>,
+) -> Result<Votes, VotesError> {
+    let mut changed = votes.clone();
+    if changed.remove(&id).is_some() {
+        save_votes(path, &changed, name)?;
+    }
+    Ok(changed)
+}
+
 pub fn save_votes(
     path: &Path,
     votes: &Votes,
@@ -137,9 +157,14 @@ fn votes_text(votes: &Votes, name: impl Fn(AppId) -> Option<String>) -> String {
         } else {
             ""
         };
+        let searched = if vote.searched {
+            ", searched = true"
+        } else {
+            ""
+        };
         let _ = write!(
             text,
-            "{} = {{ vote = \"{}\", date = \"{}\"{at}{bet}{genre_ok} }}",
+            "{} = {{ vote = \"{}\", date = \"{}\"{at}{bet}{genre_ok}{searched} }}",
             id.0,
             kind_name(vote.kind),
             vote.date
@@ -198,6 +223,11 @@ fn vote_from_entry(appid: u32, entry: VoteEntry) -> Result<Option<Vote>, VotesEr
         (Some(true), VoteKindEntry::NotForMe) => true,
         (Some(true), _) => return Err(VotesError::GenreOkNotNotForMe(appid)),
     };
+    let searched = match entry.searched {
+        None => false,
+        Some(true) => true,
+        Some(false) => return Err(VotesError::SearchedNotTrue(appid)),
+    };
 
     Ok(entry.vote.kind().map(|kind| Vote {
         kind,
@@ -205,6 +235,7 @@ fn vote_from_entry(appid: u32, entry: VoteEntry) -> Result<Option<Vote>, VotesEr
         at: entry.at.map(Timestamp),
         bet,
         genre_ok,
+        searched,
     }))
 }
 
@@ -303,6 +334,76 @@ mod tests {
             r#"votes = { 10 = { vote = "would_try", date = "2026-10-07", genre_ok = true } }"#,
         );
         assert!(matches!(result, Err(VotesError::GenreOkNotNotForMe(10))));
+    }
+
+    #[test]
+    fn a_vote_from_a_search_survives_saving_and_loading() {
+        let votes = parse_votes(
+            r#"
+            [votes]
+            1145360 = { vote = "would_try", date = "2026-11-13", searched = true } # Hades
+            620 = { vote = "would_try", date = "2026-11-13" }
+            "#,
+        )
+        .unwrap()
+        .votes;
+
+        assert!(votes[&AppId(1145360)].searched);
+        assert!(!votes[&AppId(620)].searched);
+        let text = votes_text(&votes, |_| None);
+        assert!(text.contains(
+            "1145360 = { vote = \"would_try\", date = \"2026-11-13\", searched = true }"
+        ));
+        assert!(text.contains("620 = { vote = \"would_try\", date = \"2026-11-13\" }"));
+        assert_eq!(parse_votes(&text).unwrap().votes, votes);
+    }
+
+    #[test]
+    fn parse_votes_rejects_searched_false() {
+        let result = parse_votes(
+            r#"votes = { 10 = { vote = "later", date = "2026-10-07", searched = false } }"#,
+        );
+        assert!(matches!(result, Err(VotesError::SearchedNotTrue(10))));
+    }
+
+    fn two_votes() -> Votes {
+        Votes::from([
+            (AppId(10), Vote::new(VoteKind::WouldTry, "2026-11-13")),
+            (AppId(20), Vote::new(VoteKind::NotForMe, "2026-11-13")),
+        ])
+    }
+
+    #[test]
+    fn removing_a_vote_leaves_the_others_in_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+        save_votes(&path, &two_votes(), |_| None).unwrap();
+
+        let votes = remove_vote(&path, &two_votes(), AppId(10), |_| None).unwrap();
+
+        assert_eq!(votes.keys().copied().collect::<Vec<_>>(), [AppId(20)]);
+        assert_eq!(load_votes(&path).unwrap().votes, votes);
+    }
+
+    #[test]
+    fn removing_a_vote_that_is_not_there_leaves_the_file_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+        std::fs::write(
+            &path,
+            "# by hand
+",
+        )
+        .unwrap();
+
+        let votes = remove_vote(&path, &two_votes(), AppId(30), |_| None).unwrap();
+
+        assert_eq!(votes, two_votes());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# by hand
+"
+        );
     }
 
     #[test]

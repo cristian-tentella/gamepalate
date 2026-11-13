@@ -1,15 +1,15 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::Path,
-};
+use std::{collections::BTreeMap, path::Path};
 
 use gamepalate_core::{
     corrections::Corrections,
     effective_hours::{HoursSource, hours_by_source},
+    game::{Price, Reviews},
     ids::AppId,
     profile::{heaviest_tags, profile_games},
     search::SearchInputs,
     taste::{game_name, signals_taste},
+    timestamp::Timestamp,
+    votes::{Vote, VoteKind, standing},
 };
 use gamepalate_store::{
     corrections::CorrectionsError,
@@ -205,10 +205,114 @@ fn in_steam_signals(id: AppId, inputs: &SearchInputs) -> bool {
         || signals.followed.contains(&id)
 }
 
-pub(crate) fn library_ids(inputs: &SearchInputs) -> BTreeSet<AppId> {
-    let mut ids: BTreeSet<AppId> = inputs.signals.ids().into_iter().collect();
-    ids.extend(&inputs.corrections.played_elsewhere);
-    ids
+/// Where a game stands for you, the first that holds: in the Library, played elsewhere, or the
+/// vote that still counts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GameStanding {
+    InLibrary { hours: f64 },
+    PlayedElsewhere,
+    WouldTry,
+    NotThisOne,
+    NotForMe,
+    Later { days_left: i64 },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FoundGame {
+    pub id: AppId,
+    pub name: String,
+    pub standing: Option<GameStanding>,
+}
+
+/// A game of the catalog opened on its own, with everything its page can change.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GameView {
+    pub id: AppId,
+    pub name: String,
+    pub price: Price,
+    pub reviews: Reviews,
+    pub store_url: String,
+    pub standing: Option<GameStanding>,
+    /// The vote that still counts: a Later that is over is none.
+    pub vote: Option<Vote>,
+    pub in_library: bool,
+    pub played_elsewhere: bool,
+    /// The families the game is not in yet.
+    pub other_families: Vec<String>,
+}
+
+/// A game is in the Library when you own it, borrow it or played it lately: the wishlist and the
+/// followed games are in the Library page, but they are not games you have.
+fn in_library(id: AppId, inputs: &SearchInputs) -> bool {
+    let signals = inputs.signals;
+    signals.played().any(|played| played == id) || signals.recent.iter().any(|game| game.id == id)
+}
+
+pub(crate) fn game_standing(
+    id: AppId,
+    inputs: &SearchInputs,
+    now: Timestamp,
+) -> Option<GameStanding> {
+    let signals = inputs.signals;
+    if in_library(id, inputs) {
+        let hours = hours_by_source(
+            signals,
+            inputs.votes,
+            &inputs.corrections.played_elsewhere,
+            &inputs.config.signals,
+        )
+        .get(&id)
+        .map_or(0.0, |&(hours, _)| hours);
+        return Some(GameStanding::InLibrary { hours });
+    }
+    if inputs.corrections.played_elsewhere.contains(&id) {
+        return Some(GameStanding::PlayedElsewhere);
+    }
+    let vote = standing(inputs.votes, id, now)?;
+    Some(match vote.kind {
+        VoteKind::WouldTry => GameStanding::WouldTry,
+        VoteKind::NotForMe if vote.genre_ok => GameStanding::NotThisOne,
+        VoteKind::NotForMe => GameStanding::NotForMe,
+        VoteKind::Later => GameStanding::Later {
+            days_left: vote.days_left(now)?,
+        },
+    })
+}
+
+pub(crate) fn found_games(ids: &[AppId], inputs: &SearchInputs, now: Timestamp) -> Vec<FoundGame> {
+    ids.iter()
+        .filter_map(|&id| {
+            inputs.catalog.game(id).map(|game| FoundGame {
+                id,
+                name: game.name.clone(),
+                standing: game_standing(id, inputs, now),
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn game_view(id: AppId, inputs: &SearchInputs, now: Timestamp) -> Option<GameView> {
+    let game = inputs.catalog.game(id)?;
+    let other_families = inputs
+        .families
+        .families
+        .iter()
+        .filter(|family| !family.games.contains(&id))
+        .map(|family| family.name.clone())
+        .collect();
+
+    Some(GameView {
+        id,
+        name: game.name.clone(),
+        price: game.price.as_of(now),
+        reviews: game.reviews,
+        store_url: format!("https://store.steampowered.com/app/{}/", id.0),
+        standing: game_standing(id, inputs, now),
+        vote: standing(inputs.votes, id, now).cloned(),
+        in_library: in_library(id, inputs),
+        played_elsewhere: inputs.corrections.played_elsewhere.contains(&id),
+        other_families,
+    })
 }
 
 pub fn game_correction(id: AppId, corrections: &Corrections) -> GameCorrection {
@@ -321,6 +425,8 @@ pub(crate) fn changed_played_elsewhere(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use gamepalate_core::{
         catalog::{Catalog, Freshness, TagName},
         config::Config,
@@ -502,6 +608,236 @@ mod tests {
         assert_eq!(view.wishlist_hours, 5.0);
         assert_eq!(view.followed_hours, 3.0);
         assert_eq!(view.dampen, 0.5);
+    }
+
+    const NOW: Timestamp = Timestamp(1_794_404_475_152);
+    const DAY: i64 = 24 * 60 * 60 * 1000;
+
+    fn standing_of(fixture: &Fixture, id: u32) -> Option<GameStanding> {
+        game_standing(AppId(id), &fixture.inputs(), NOW)
+    }
+
+    fn voted(fixture: &mut Fixture, vote: Vote) {
+        fixture.votes = Votes::from([(AppId(6), vote)]);
+    }
+
+    fn later_since(days_ago: i64, hours_ago: i64) -> Vote {
+        Vote {
+            at: Some(Timestamp(
+                NOW.0 - days_ago * DAY - hours_ago * 60 * 60 * 1000,
+            )),
+            ..Vote::new(VoteKind::Later, "2026-10-01")
+        }
+    }
+
+    #[test]
+    fn a_game_of_the_library_says_its_hours() {
+        let fixture = Fixture::new();
+
+        assert_eq!(
+            standing_of(&fixture, 1),
+            Some(GameStanding::InLibrary { hours: 50.0 })
+        );
+        assert_eq!(
+            standing_of(&fixture, 90),
+            Some(GameStanding::InLibrary { hours: 6.0 })
+        );
+    }
+
+    #[test]
+    fn the_wishlist_and_the_followed_games_are_not_in_the_library() {
+        let fixture = Fixture::new();
+
+        assert_eq!(standing_of(&fixture, 3), None);
+        assert_eq!(standing_of(&fixture, 4), None);
+    }
+
+    #[test]
+    fn a_game_played_elsewhere_says_so() {
+        let mut fixture = Fixture::new();
+        fixture.corrections.played_elsewhere.insert(AppId(6));
+
+        assert_eq!(
+            standing_of(&fixture, 6),
+            Some(GameStanding::PlayedElsewhere)
+        );
+    }
+
+    #[test]
+    fn a_game_owned_and_played_elsewhere_is_in_the_library() {
+        let mut fixture = Fixture::new();
+        fixture.corrections.played_elsewhere.insert(AppId(1));
+
+        assert!(matches!(
+            standing_of(&fixture, 1),
+            Some(GameStanding::InLibrary { .. })
+        ));
+    }
+
+    #[test]
+    fn a_vote_comes_after_the_library_and_the_games_played_elsewhere() {
+        let mut fixture = Fixture::new();
+        fixture
+            .votes
+            .insert(AppId(1), Vote::new(VoteKind::NotForMe, "2026-10-01"));
+        fixture
+            .votes
+            .insert(AppId(6), Vote::new(VoteKind::WouldTry, "2026-10-01"));
+        fixture.corrections.played_elsewhere.insert(AppId(6));
+
+        assert!(matches!(
+            standing_of(&fixture, 1),
+            Some(GameStanding::InLibrary { .. })
+        ));
+        assert_eq!(
+            standing_of(&fixture, 6),
+            Some(GameStanding::PlayedElsewhere)
+        );
+    }
+
+    #[test]
+    fn each_vote_has_its_own_standing() {
+        let mut fixture = Fixture::new();
+        let not_for_me = Vote::new(VoteKind::NotForMe, "2026-10-01");
+
+        voted(&mut fixture, Vote::new(VoteKind::WouldTry, "2026-10-01"));
+        assert_eq!(standing_of(&fixture, 6), Some(GameStanding::WouldTry));
+        voted(&mut fixture, not_for_me.clone());
+        assert_eq!(standing_of(&fixture, 6), Some(GameStanding::NotForMe));
+        voted(
+            &mut fixture,
+            Vote {
+                genre_ok: true,
+                ..not_for_me
+            },
+        );
+        assert_eq!(standing_of(&fixture, 6), Some(GameStanding::NotThisOne));
+        assert_eq!(
+            standing_of(&fixture, 5),
+            Some(GameStanding::InLibrary { hours: 0.5 })
+        );
+    }
+
+    #[test]
+    fn a_later_says_how_many_days_are_left() {
+        let mut fixture = Fixture::new();
+
+        voted(&mut fixture, later_since(0, 0));
+        assert_eq!(
+            standing_of(&fixture, 6),
+            Some(GameStanding::Later { days_left: 30 })
+        );
+        voted(&mut fixture, later_since(29, 12));
+        assert_eq!(
+            standing_of(&fixture, 6),
+            Some(GameStanding::Later { days_left: 1 })
+        );
+    }
+
+    #[test]
+    fn a_later_that_is_over_is_no_vote() {
+        let mut fixture = Fixture::new();
+
+        voted(&mut fixture, later_since(30, 0));
+
+        assert_eq!(standing_of(&fixture, 6), None);
+    }
+
+    #[test]
+    fn a_game_without_anything_has_no_standing() {
+        let mut fixture = Fixture::new();
+        fixture.votes.clear();
+
+        assert_eq!(standing_of(&fixture, 6), None);
+    }
+
+    #[test]
+    fn the_found_games_come_in_order_with_their_names_and_without_the_ones_out_of_the_catalog() {
+        let fixture = Fixture::new();
+
+        let found = found_games(&[AppId(2), AppId(80), AppId(6)], &fixture.inputs(), NOW);
+
+        assert_eq!(
+            found,
+            [
+                FoundGame {
+                    id: AppId(2),
+                    name: "Aseprite".to_string(),
+                    standing: Some(GameStanding::InLibrary { hours: 30.0 }),
+                },
+                FoundGame {
+                    id: AppId(6),
+                    name: "Balatro".to_string(),
+                    standing: Some(GameStanding::WouldTry),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_game_of_the_library_opens_with_the_families_it_can_join() {
+        let mut fixture = Fixture::new();
+        fixture.families = Families {
+            families: vec![
+                Family {
+                    name: "mysteries".to_string(),
+                    games: vec![AppId(1)],
+                    automatic: None,
+                },
+                Family {
+                    name: "cozy".to_string(),
+                    games: vec![AppId(5)],
+                    automatic: None,
+                },
+            ],
+            held_out: Vec::new(),
+        };
+
+        let view = game_view(AppId(1), &fixture.inputs(), NOW).unwrap();
+
+        assert_eq!(view.name, "Outer Wilds");
+        assert!(view.in_library && !view.played_elsewhere);
+        assert_eq!(view.standing, Some(GameStanding::InLibrary { hours: 50.0 }));
+        assert_eq!(view.vote, None);
+        assert_eq!(view.other_families, ["cozy"]);
+        assert_eq!(view.store_url, "https://store.steampowered.com/app/1/");
+    }
+
+    #[test]
+    fn a_vote_given_from_a_search_shows_at_once_and_is_never_a_bet() {
+        let mut fixture = Fixture::new();
+        fixture.votes.clear();
+        gamepalate_core::votes::cast(
+            &mut fixture.votes,
+            AppId(4),
+            Vote {
+                bet: true,
+                searched: true,
+                ..Vote::new(VoteKind::NotForMe, "2026-11-13")
+            },
+        );
+
+        let view = game_view(AppId(4), &fixture.inputs(), NOW).unwrap();
+
+        assert_eq!(view.standing, Some(GameStanding::NotForMe));
+        let vote = view.vote.unwrap();
+        assert!(vote.searched && !vote.bet);
+        assert!(!view.in_library && !view.played_elsewhere);
+    }
+
+    #[test]
+    fn a_later_that_is_over_leaves_the_game_without_a_vote() {
+        let mut fixture = Fixture::new();
+        voted(&mut fixture, later_since(30, 0));
+
+        let view = game_view(AppId(6), &fixture.inputs(), NOW).unwrap();
+
+        assert_eq!((view.standing, view.vote), (None, None));
+    }
+
+    #[test]
+    fn a_game_out_of_the_catalog_has_no_page() {
+        assert_eq!(game_view(AppId(80), &Fixture::new().inputs(), NOW), None);
     }
 
     #[test]
@@ -888,16 +1224,5 @@ mod tests {
             )
         );
         assert!(!path.exists());
-    }
-
-    #[test]
-    fn the_ids_of_the_library_include_the_games_played_elsewhere() {
-        let mut fixture = Fixture::new();
-        fixture.corrections.played_elsewhere.insert(AppId(7));
-
-        let ids = library_ids(&fixture.inputs());
-
-        assert!([7, 1, 90].iter().all(|&id| ids.contains(&AppId(id))));
-        assert!(!ids.contains(&AppId(8)));
     }
 }

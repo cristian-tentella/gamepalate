@@ -1,0 +1,832 @@
+use std::sync::Arc;
+
+use gamepalate_app::{
+    AppId, DiscoverPlace, FamilyChange, GameStanding, GameView, Gamepalate, VoteKind,
+};
+use iced::{
+    Center, ContentFit, Element, Fill, Size, Subscription, Task,
+    keyboard::{self, Key, key::Named},
+    never, padding,
+    widget::{
+        button, column, container, image, mouse_area, opaque, pick_list, responsive, rich_text,
+        row, space, span, stack, text,
+    },
+};
+use jiff::civil::Date;
+
+use super::search::standing_text;
+use crate::{
+    font, format,
+    screen::{
+        Toasts, discover,
+        game::{self, Link, Pick, VOTE_HEIGHT},
+        sentence,
+        showcase::{self, Showcase},
+    },
+    style,
+};
+
+/// The share of the area below the top bar the sheet takes: the blurred page stays in sight
+/// around it.
+const SHEET_SHARE: f32 = 0.9;
+const SHEET_MAX_WIDTH: f32 = 1200.0;
+const CLOSE: char = '\u{E5CD}';
+const HEAD_HEIGHT: f32 = 44.0;
+const BESIDE_VOTES: f32 = 520.0;
+
+/// A game found by name, on a sheet over the page you were on until you go back.
+pub struct GamePage {
+    gamepalate: Arc<Gamepalate>,
+    game: GameView,
+    place: Place,
+    showcase: Showcase,
+    toasts: Toasts,
+    /// The page under the sheet, blurred by the search that opened the game.
+    backdrop: Option<image::Handle>,
+    played: bool,
+    changed: bool,
+}
+
+#[derive(Clone, Debug)]
+pub enum Message {
+    Vote(Pick),
+    Later,
+    Played,
+    RemoveVote,
+    AddToFamily(String),
+    Saved(String, bool, Result<Option<GameView>, String>),
+    Placed(u64, Option<DiscoverPlace>),
+    Undo,
+    Open(Link),
+    Back,
+    HideToast(u64),
+    Showcase(showcase::Message),
+}
+
+pub enum Action {
+    Run(Task<Message>),
+    /// `changed` says whether the votes, the Library or the families are no longer what the page
+    /// under it shows.
+    Close {
+        changed: bool,
+    },
+}
+
+#[derive(Debug, PartialEq)]
+enum Status {
+    Voted(Pick, String),
+    Plain(String),
+}
+
+impl GamePage {
+    pub fn new(
+        gamepalate: &Arc<Gamepalate>,
+        id: AppId,
+        backdrop: Option<image::Handle>,
+    ) -> Option<(GamePage, Task<Message>)> {
+        let game = gamepalate.game_view(id)?;
+        let mut page = GamePage {
+            gamepalate: Arc::clone(gamepalate),
+            game,
+            place: Place::default(),
+            showcase: Showcase::new(gamepalate),
+            toasts: Toasts::default(),
+            backdrop,
+            played: false,
+            changed: false,
+        };
+        let task = Task::batch([page.load(), page.find_place()]);
+
+        Some((page, task))
+    }
+
+    pub fn changed(&self) -> bool {
+        self.changed
+    }
+
+    /// The blurred page no longer fits the window: the veil stays alone.
+    pub fn resized(&mut self) {
+        self.backdrop = None;
+    }
+
+    pub fn use_gamepalate(&mut self, gamepalate: &Arc<Gamepalate>) -> Task<Message> {
+        self.gamepalate = Arc::clone(gamepalate);
+        if let Some(game) = gamepalate.game_view(self.game.id) {
+            self.game = game;
+        }
+        self.find_place()
+    }
+
+    pub fn update(&mut self, message: Message) -> Action {
+        if self.showcase.is_open() && stopped_by_popup(&message) {
+            return Action::Run(Task::none());
+        }
+        let task = match self.handle(message) {
+            Action::Run(task) => task,
+            close @ Action::Close { .. } => return close,
+        };
+
+        Action::Run(Task::batch([task, self.load()]))
+    }
+
+    fn handle(&mut self, message: Message) -> Action {
+        let id = self.game.id;
+        let task = match message {
+            Message::Vote(pick) => match pick.ballot() {
+                Some((kind, genre_ok)) => self.save(
+                    format::voted(&self.game.name, pick),
+                    false,
+                    move |gamepalate| {
+                        gamepalate
+                            .vote(id, kind, genre_ok, false, true)
+                            .map_err(|error| error.to_string())
+                    },
+                ),
+                None => Task::none(),
+            },
+            Message::Later => self.save(
+                format::voted(&self.game.name, Pick::Vote(VoteKind::Later)),
+                false,
+                move |gamepalate| {
+                    gamepalate
+                        .vote(id, VoteKind::Later, false, false, true)
+                        .map_err(|error| error.to_string())
+                },
+            ),
+            Message::Played if offers_played(&self.game) && !self.game.played_elsewhere => self
+                .save(
+                    format::elsewhere_text(&self.game.name, true),
+                    true,
+                    move |gamepalate| {
+                        gamepalate
+                            .set_played_elsewhere(id, true)
+                            .map(|_| ())
+                            .map_err(|error| sentence(&error.to_string()))
+                    },
+                ),
+            Message::Played => Task::none(),
+            Message::RemoveVote if self.game.vote.is_some() => self.save(
+                format::vote_removed(&self.game.name),
+                false,
+                move |gamepalate| {
+                    gamepalate
+                        .remove_vote(id)
+                        .map_err(|error| error.to_string())
+                },
+            ),
+            Message::RemoveVote => Task::none(),
+            Message::AddToFamily(family) if joins_families(&self.game) => {
+                let text = format::added_to_family(&family);
+                let change = FamilyChange::AddGame { family, game: id };
+                self.save(text, false, move |gamepalate| {
+                    gamepalate
+                        .change_families(&change)
+                        .map(|_| ())
+                        .map_err(|error| sentence(&error.to_string()))
+                })
+            }
+            Message::AddToFamily(_) => Task::none(),
+            Message::Saved(text, undo, Ok(game)) => {
+                if let Some(game) = game {
+                    self.game = game;
+                }
+                self.changed = true;
+                self.played = undo;
+                Task::batch([
+                    self.toasts.show(text, undo, Message::HideToast),
+                    self.find_place(),
+                ])
+            }
+            Message::Saved(_, _, Err(error)) => self.show_toast(error),
+            Message::Placed(asked, place) => {
+                self.place.answer(asked, place);
+                Task::none()
+            }
+            Message::Undo if self.played => {
+                self.played = false;
+                self.save("Undone".to_string(), false, move |gamepalate| {
+                    gamepalate
+                        .set_played_elsewhere(id, false)
+                        .map(|_| ())
+                        .map_err(|error| sentence(&error.to_string()))
+                })
+            }
+            Message::Undo => Task::none(),
+            Message::Open(link) => {
+                game::open(link, &self.game.name, &self.game.store_url);
+                Task::none()
+            }
+            Message::Back if self.showcase.is_open() => self
+                .showcase
+                .update(showcase::Message::Close)
+                .map(Message::Showcase),
+            Message::Back => {
+                return Action::Close {
+                    changed: self.changed,
+                };
+            }
+            Message::HideToast(toast) => {
+                self.toasts.hide(toast);
+                Task::none()
+            }
+            Message::Showcase(message) => self.showcase.update(message).map(Message::Showcase),
+        };
+
+        Action::Run(task)
+    }
+
+    pub fn subscription(keys: bool) -> Subscription<Message> {
+        if !keys {
+            return Subscription::none();
+        }
+        keyboard::listen().filter_map(key_message)
+    }
+
+    /// The sheet over the blurred page. `area` is the size below the top bar, `under` names the
+    /// page the sheet goes back to.
+    pub fn view(&self, scale: f32, area: Size, under: &'static str) -> Element<'_, Message> {
+        let toast = self.toasts.view(Message::Undo);
+        let body = container(responsive(move |size| self.details(size, scale)))
+            .padding(padding::top(16).bottom(16).left(20).right(8))
+            .width(Fill)
+            .height(Fill)
+            .clip(true);
+        let actions = container(
+            container(responsive(|size| self.action_row(size.width))).height(VOTE_HEIGHT),
+        )
+        .padding([10, 20])
+        .width(Fill);
+        let sheet = container(column![
+            self.head(under),
+            style::separator(),
+            stack![body].push(toast),
+            style::separator(),
+            actions
+        ])
+        .width(sheet_size(area).width)
+        .height(sheet_size(area).height)
+        .style(style::popup);
+
+        let backdrop = self.backdrop.as_ref().map(|handle| {
+            image(handle.clone())
+                .width(Fill)
+                .height(Fill)
+                .content_fit(ContentFit::Fill)
+        });
+        let veil = opaque(
+            mouse_area(
+                container(space())
+                    .width(Fill)
+                    .height(Fill)
+                    .style(style::frosted_veil),
+            )
+            .on_press(Message::Back),
+        );
+
+        stack![]
+            .push(backdrop)
+            .push(veil)
+            .push(container(opaque(sheet)).center(Fill))
+            .push(self.showcase.zoom().map(|zoom| zoom.map(Message::Showcase)))
+            .push(
+                self.showcase
+                    .popup(&self.game.name)
+                    .map(|popup| popup.map(Message::Showcase)),
+            )
+            .into()
+    }
+
+    /// The way back to the page under the sheet, and the links of the game.
+    fn head(&self, under: &'static str) -> Element<'_, Message> {
+        let back = button(
+            row![
+                container(text("Esc").size(font::NOTE_SIZE - 1.0))
+                    .padding([1, 6])
+                    .style(style::muted_keycap),
+                text(format!("Back to {under}")).size(font::NOTE_SIZE),
+                text(CLOSE).font(font::ICONS).size(font::icon(11.0)),
+            ]
+            .spacing(8)
+            .align_y(Center),
+        )
+        .padding([4, 8])
+        .style(style::text_button)
+        .on_press(Message::Back);
+        row![
+            space().width(Fill),
+            game::link_buttons(font::NOTE_SIZE, |link| Some(Message::Open(link))),
+            style::divider(),
+            back,
+        ]
+        .spacing(game::ACTION_SPACING)
+        .padding(padding::left(20).right(12))
+        .height(HEAD_HEIGHT)
+        .align_y(Center)
+        .into()
+    }
+
+    fn details(&self, size: Size, scale: f32) -> Element<'_, Message> {
+        let game = &self.game;
+        let status = status(game, jiff::Zoned::now().date()).map(|status| {
+            let spans = match status {
+                Status::Voted(pick, day) => vec![
+                    span("Voted "),
+                    span(format::pick(pick)).font(font::SEMIBOLD),
+                    span(format!(" · {day}")),
+                ],
+                Status::Plain(line) => vec![span(line)],
+            };
+            rich_text(spans)
+                .size(font::BAR_SIZE)
+                .style(style::muted)
+                .on_link_click(never)
+        });
+        // An empty line while the place is found, so the columns below don't move
+        let place = match &self.place.found {
+            None => Some(" ".to_string()),
+            Some(Some(place)) => Some(format::discover_place(
+                place,
+                game.played_elsewhere && !game.in_library,
+            )),
+            Some(None) => None,
+        }
+        .map(|line| text(line).size(font::BAR_SIZE).style(style::muted));
+        let showcase = &self.showcase;
+
+        game::body(
+            game::Body {
+                heading: column![game::title(&game.name)]
+                    .push(status)
+                    .push(place)
+                    .spacing(4)
+                    .into(),
+                figures: row![
+                    game::reviews(&game.reviews),
+                    game::price_row(&game.price, self.gamepalate.currency(), game::PRICE_GAP),
+                ]
+                .spacing(28)
+                .into(),
+                gallery: Box::new(move |width, height| {
+                    showcase
+                        .gallery(game.id, width, height)
+                        .map(Message::Showcase)
+                }),
+                header: Box::new(move |width, height| {
+                    showcase
+                        .header(game.id, width, height)
+                        .map(Message::Showcase)
+                }),
+                side: [
+                    showcase.description(game.id),
+                    showcase.facts(game.id, &showcase.used_tags()),
+                ]
+                .into_iter()
+                .flatten()
+                .map(|part| part.map(Message::Showcase))
+                .collect(),
+            },
+            size,
+            showcase::max_screenshot_width(scale),
+        )
+    }
+
+    fn action_row(&self, width: f32) -> Element<'_, Message> {
+        let game = &self.game;
+        let vote_width = game::vote_width(width, BESIDE_VOTES);
+        let current = game.vote.as_ref().map(Pick::of);
+        let (would_try_hours, elsewhere_hours) = (
+            self.gamepalate.would_try_hours(),
+            self.gamepalate.elsewhere_hours(),
+        );
+        let votes = game::vote_buttons(
+            |key, pick| {
+                let (message, current) = match pick {
+                    Pick::Played => (
+                        (!game.played_elsewhere).then_some(Message::Played),
+                        game.played_elsewhere,
+                    ),
+                    pick => (Some(Message::Vote(pick)), current == Some(pick)),
+                };
+                game::vote_button(
+                    key,
+                    pick,
+                    game::tip(pick, would_try_hours, elsewhere_hours),
+                    true,
+                    vote_width,
+                    message,
+                    current,
+                )
+            },
+            offers_played(game),
+        )
+        .push(
+            row![
+                style::divider(),
+                game::moves(Some(Message::Later), Some(Message::Back)),
+            ]
+            .spacing(game::ACTION_SPACING)
+            .align_y(Center),
+        );
+        let remove = game.vote.is_some().then(|| {
+            button(text("Remove vote").size(font::BAR_SIZE))
+                .padding(0)
+                .style(style::key_action)
+                .on_press(Message::RemoveVote)
+        });
+        let families = (joins_families(game) && !game.other_families.is_empty()).then(|| {
+            pick_list(
+                game.other_families.as_slice(),
+                None::<String>,
+                Message::AddToFamily,
+            )
+            .placeholder("Add to family")
+            .text_size(font::NOTE_SIZE)
+            .padding([4, 8])
+            .style(style::dropdown)
+            .menu_style(style::menu)
+        });
+
+        row![votes, space().width(Fill)]
+            .push(remove)
+            .push(families)
+            .spacing(game::ACTION_SPACING)
+            .height(Fill)
+            .align_y(Center)
+            .into()
+    }
+
+    fn save(
+        &self,
+        text: String,
+        undo: bool,
+        change: impl FnOnce(&Gamepalate) -> Result<(), String> + Send + 'static,
+    ) -> Task<Message> {
+        let gamepalate = Arc::clone(&self.gamepalate);
+        let id = self.game.id;
+
+        Task::perform(
+            async move {
+                change(&gamepalate)?;
+                Ok(gamepalate.game_view(id))
+            },
+            move |result| Message::Saved(text.clone(), undo, result),
+        )
+    }
+
+    fn load(&mut self) -> Task<Message> {
+        let id = [self.game.id];
+        self.showcase.follow(Some(self.game.id));
+
+        self.showcase.load(&id, &id, &[]).map(Message::Showcase)
+    }
+
+    /// Where the game stands in Discover, said again after each change.
+    fn find_place(&mut self) -> Task<Message> {
+        let asked = self.place.ask();
+        let gamepalate = Arc::clone(&self.gamepalate);
+        let id = self.game.id;
+
+        Task::perform(
+            async move { gamepalate.discover_place(id, &discover::saved_options(&gamepalate)) },
+            move |place| Message::Placed(asked, place),
+        )
+    }
+
+    fn show_toast(&mut self, text: String) -> Task<Message> {
+        self.toasts.show(text, false, Message::HideToast)
+    }
+}
+
+/// Where the game stands in Discover. Finding it takes about a second, so an answer asked before
+/// the last change is old.
+#[derive(Debug, Default)]
+struct Place {
+    asked: u64,
+    /// `None` while it is being found.
+    found: Option<Option<DiscoverPlace>>,
+}
+
+impl Place {
+    fn ask(&mut self) -> u64 {
+        self.asked += 1;
+        self.found = None;
+        self.asked
+    }
+
+    fn answer(&mut self, asked: u64, place: Option<DiscoverPlace>) {
+        if asked == self.asked {
+            self.found = Some(place);
+        }
+    }
+}
+
+/// A game of the Library is played already: 4 is not offered there.
+fn sheet_size(area: Size) -> Size {
+    Size::new(
+        (area.width * SHEET_SHARE).min(SHEET_MAX_WIDTH),
+        area.height * SHEET_SHARE,
+    )
+}
+
+fn offers_played(game: &GameView) -> bool {
+    !game.in_library
+}
+
+/// The families are made of games you played, as in the Library.
+fn joins_families(game: &GameView) -> bool {
+    game.in_library || game.played_elsewhere
+}
+
+fn status(game: &GameView, today: Date) -> Option<Status> {
+    let standing = game.standing?;
+    let voted = matches!(
+        standing,
+        GameStanding::WouldTry | GameStanding::NotThisOne | GameStanding::NotForMe
+    );
+
+    match &game.vote {
+        Some(vote) if voted => Some(Status::Voted(
+            Pick::of(vote),
+            format::voted_day(&vote.date, today),
+        )),
+        _ => Some(Status::Plain(standing_text(standing))),
+    }
+}
+
+fn stopped_by_popup(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::Vote(_)
+            | Message::Later
+            | Message::Played
+            | Message::RemoveVote
+            | Message::AddToFamily(_)
+            | Message::Open(_)
+    )
+}
+
+fn key_message(event: keyboard::Event) -> Option<Message> {
+    let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+        return None;
+    };
+
+    if modifiers.command() {
+        return match key.as_ref() {
+            Key::Character("z" | "Z") => Some(Message::Undo),
+            _ => None,
+        };
+    }
+
+    match key {
+        Key::Named(Named::Escape | Named::Backspace) => Some(Message::Back),
+        Key::Named(Named::Space) => Some(Message::Later),
+        Key::Named(Named::ArrowUp) => Some(Message::Showcase(showcase::Message::ScrollUp)),
+        Key::Named(Named::ArrowDown) => Some(Message::Showcase(showcase::Message::ScrollDown)),
+        Key::Named(Named::ArrowRight) => Some(Message::Showcase(showcase::Message::NextScreenshot)),
+        Key::Named(Named::ArrowLeft) => {
+            Some(Message::Showcase(showcase::Message::PreviousScreenshot))
+        }
+        Key::Character(key) if key.eq_ignore_ascii_case("d") => {
+            Some(Message::Showcase(showcase::Message::ToggleAbout))
+        }
+        Key::Character(key) if key.eq_ignore_ascii_case("t") => {
+            Some(Message::Showcase(showcase::Message::ToggleTags))
+        }
+        Key::Character(key) if key.eq_ignore_ascii_case("k") => {
+            Some(Message::Showcase(showcase::Message::ScrollUp))
+        }
+        Key::Character(key) if key.eq_ignore_ascii_case("j") => {
+            Some(Message::Showcase(showcase::Message::ScrollDown))
+        }
+        Key::Character(key) => game::pick_key(key.as_str())
+            .map(|pick| match pick {
+                Pick::Played => Message::Played,
+                pick => Message::Vote(pick),
+            })
+            .or_else(|| game::link_key(key.as_str()).map(Message::Open)),
+        Key::Named(_) | Key::Unidentified => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gamepalate_app::{LeftOut, Price, Reviews, Vote};
+    use iced::keyboard::{Location, Modifiers, key};
+
+    use super::*;
+
+    fn found(standing: Option<GameStanding>, vote: Option<Vote>) -> GameView {
+        GameView {
+            id: AppId(1145360),
+            name: "Hades".to_string(),
+            price: Price {
+                original_cents: 2450,
+                discount: None,
+            },
+            reviews: Reviews {
+                total: 100,
+                positive: 98,
+            },
+            store_url: String::new(),
+            standing,
+            vote,
+            in_library: matches!(standing, Some(GameStanding::InLibrary { .. })),
+            played_elsewhere: standing == Some(GameStanding::PlayedElsewhere),
+            other_families: vec!["cozy".to_string()],
+        }
+    }
+
+    fn today() -> Date {
+        "2026-11-13".parse().unwrap()
+    }
+
+    #[test]
+    fn the_keys_vote_mark_played_and_open_the_links() {
+        assert!(matches!(
+            key_message(pressed(Key::Character("1".into()))),
+            Some(Message::Vote(Pick::Vote(VoteKind::WouldTry)))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("2".into()))),
+            Some(Message::Vote(Pick::NotThisOne))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("3".into()))),
+            Some(Message::Vote(Pick::Vote(VoteKind::NotForMe)))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("4".into()))),
+            Some(Message::Played)
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Named(Named::Space))),
+            Some(Message::Later)
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("Q".into()))),
+            Some(Message::Open(Link::Steam))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("e".into()))),
+            Some(Message::Open(Link::Hltb))
+        ));
+        assert!(key_message(pressed(Key::Character("5".into()))).is_none());
+    }
+
+    #[test]
+    fn escape_and_backspace_go_back() {
+        for key in [Named::Escape, Named::Backspace] {
+            assert!(matches!(
+                key_message(pressed(Key::Named(key))),
+                Some(Message::Back)
+            ));
+        }
+    }
+
+    #[test]
+    fn the_description_tags_and_screenshots_have_the_keys_of_discover() {
+        assert!(matches!(
+            key_message(pressed(Key::Character("d".into()))),
+            Some(Message::Showcase(showcase::Message::ToggleAbout))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("T".into()))),
+            Some(Message::Showcase(showcase::Message::ToggleTags))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Named(Named::ArrowRight))),
+            Some(Message::Showcase(showcase::Message::NextScreenshot))
+        ));
+    }
+
+    #[test]
+    fn ctrl_z_undoes_the_game_played_elsewhere() {
+        assert!(matches!(
+            key_message(pressed_with(Key::Character("z".into()), Modifiers::CTRL)),
+            Some(Message::Undo)
+        ));
+        assert!(key_message(pressed_with(Key::Character("1".into()), Modifiers::CTRL)).is_none());
+    }
+
+    #[test]
+    fn an_open_popup_stops_the_actions_but_not_going_back() {
+        assert!(stopped_by_popup(&Message::Vote(Pick::NotThisOne)));
+        assert!(stopped_by_popup(&Message::Later));
+        assert!(stopped_by_popup(&Message::Played));
+        assert!(stopped_by_popup(&Message::RemoveVote));
+        assert!(stopped_by_popup(&Message::Open(Link::Eneba)));
+        assert!(!stopped_by_popup(&Message::Back));
+        assert!(!stopped_by_popup(&Message::Showcase(
+            showcase::Message::Close
+        )));
+    }
+
+    #[test]
+    fn the_sheet_leaves_a_tenth_of_the_area_around_it() {
+        assert_eq!(
+            sheet_size(Size::new(1280.0, 755.0)),
+            Size::new(1152.0, 679.5)
+        );
+        assert_eq!(sheet_size(Size::new(1920.0, 1000.0)).width, SHEET_MAX_WIDTH);
+    }
+
+    #[test]
+    fn a_game_of_the_library_has_no_played_and_can_join_a_family() {
+        let owned = found(Some(GameStanding::InLibrary { hours: 42.0 }), None);
+        let elsewhere = found(Some(GameStanding::PlayedElsewhere), None);
+        let unknown = found(None, None);
+
+        assert!(!offers_played(&owned) && joins_families(&owned));
+        assert!(offers_played(&elsewhere) && joins_families(&elsewhere));
+        assert!(offers_played(&unknown) && !joins_families(&unknown));
+    }
+
+    #[test]
+    fn the_status_says_the_vote_and_its_day() {
+        let vote = Vote {
+            genre_ok: true,
+            ..Vote::new(VoteKind::NotForMe, "2026-11-13")
+        };
+
+        assert_eq!(
+            status(&found(Some(GameStanding::NotThisOne), Some(vote)), today()),
+            Some(Status::Voted(Pick::NotThisOne, "today".to_string()))
+        );
+        assert_eq!(
+            status(
+                &found(
+                    Some(GameStanding::WouldTry),
+                    Some(Vote::new(VoteKind::WouldTry, "2026-11-02"))
+                ),
+                today()
+            ),
+            Some(Status::Voted(
+                Pick::Vote(VoteKind::WouldTry),
+                "2 Nov".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn the_status_says_the_library_the_games_played_elsewhere_and_the_laters() {
+        let later = Vote::new(VoteKind::Later, "2026-11-01");
+
+        assert_eq!(
+            status(
+                &found(Some(GameStanding::InLibrary { hours: 42.0 }), None),
+                today()
+            ),
+            Some(Status::Plain("In your library · 42 h".to_string()))
+        );
+        assert_eq!(
+            status(&found(Some(GameStanding::PlayedElsewhere), None), today()),
+            Some(Status::Plain("Played elsewhere".to_string()))
+        );
+        assert_eq!(
+            status(
+                &found(Some(GameStanding::Later { days_left: 12 }), Some(later)),
+                today()
+            ),
+            Some(Status::Plain("Later · back in 12 days".to_string()))
+        );
+        assert_eq!(status(&found(None, None), today()), None);
+    }
+
+    #[test]
+    fn a_place_asked_before_the_last_change_is_dropped() {
+        let mut place = Place::default();
+        let before_the_vote = place.ask();
+        let after_the_vote = place.ask();
+
+        place.answer(
+            before_the_vote,
+            Some(DiscoverPlace::Shown { position: 214 }),
+        );
+        assert_eq!(place.found, None);
+
+        place.answer(after_the_vote, Some(DiscoverPlace::LeftOut(LeftOut::Voted)));
+        assert_eq!(
+            place.found,
+            Some(Some(DiscoverPlace::LeftOut(LeftOut::Voted)))
+        );
+
+        place.ask();
+        assert_eq!(place.found, None);
+    }
+
+    fn pressed(key: Key) -> keyboard::Event {
+        pressed_with(key, Modifiers::empty())
+    }
+
+    fn pressed_with(key: Key, modifiers: Modifiers) -> keyboard::Event {
+        keyboard::Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: key::Physical::Unidentified(key::NativeCode::Unidentified),
+            location: Location::Standard,
+            modifiers,
+            text: None,
+            repeat: false,
+        }
+    }
+}

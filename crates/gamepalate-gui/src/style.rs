@@ -126,19 +126,6 @@ pub fn key_action(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// A key action fainter than the others, for links that sit beside the content.
-pub fn muted_action(theme: &Theme, status: button::Status) -> button::Style {
-    let text_color = match status {
-        button::Status::Hovered | button::Status::Pressed => faded(theme, 0.85),
-        button::Status::Active | button::Status::Disabled => faded(theme, MUTED),
-    };
-
-    button::Style {
-        text_color,
-        ..button::Style::default()
-    }
-}
-
 pub fn muted_keycap(theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(faded(theme, MUTED)),
@@ -653,6 +640,27 @@ pub fn field(theme: &Theme, status: text_input::Status) -> text_input::Style {
             ..style.border
         },
         ..style
+    }
+}
+
+/// A field with no box of its own, inside a panel that draws one.
+pub fn bare_field(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    text_input::Style {
+        background: Color::TRANSPARENT.into(),
+        border: Border::default(),
+        ..text_input::default(theme, status)
+    }
+}
+
+/// The veil over the page under the game search and a game's sheet: the blurred page shows
+/// through it.
+pub fn frosted_veil(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    let alpha = if palette.is_dark { 0.55 } else { 0.45 };
+
+    container::Style {
+        background: Some(palette.background.base.color.scale_alpha(alpha).into()),
+        ..container::Style::default()
     }
 }
 

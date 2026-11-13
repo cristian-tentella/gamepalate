@@ -1,11 +1,17 @@
-use gamepalate_core::{ids::AppId, search::SearchInputs, taste::game_name};
+use gamepalate_core::{
+    ids::AppId,
+    search::{SearchInputs, SearchOptions},
+    taste::game_name,
+    timestamp::Timestamp,
+};
 
 use super::Gamepalate;
 use crate::{
-    catalog_search::CatalogMatch,
+    discover_place::{DiscoverPlace, discover_place},
     library::{
-        GameCorrection, GameCorrectionError, LibraryView, PlayedElsewhereError,
-        changed_played_elsewhere, corrected_game, game_correction, library_ids, library_view,
+        FoundGame, GameCorrection, GameCorrectionError, GameView, LibraryView,
+        PlayedElsewhereError, changed_played_elsewhere, corrected_game, found_games,
+        game_correction, game_view, library_view,
     },
     log::failed,
     profile::{ProfileView, profile_view},
@@ -68,16 +74,24 @@ impl Gamepalate {
         Ok(before)
     }
 
-    pub fn search_catalog(&self, text: &str) -> Vec<CatalogMatch> {
-        let in_library = self.with_inputs(library_ids);
-        self.names
-            .search(text, &in_library)
-            .into_iter()
-            .filter_map(|id| self.files.catalog.game(id))
-            .map(|game| CatalogMatch {
-                id: game.id,
-                name: game.name.clone(),
-            })
-            .collect()
+    /// The games of the whole catalog for a name, an appid or a store link, Library included,
+    /// each with where it stands for you.
+    pub fn find_games(&self, text: &str) -> Vec<FoundGame> {
+        let ids = self.names.find(text, &self.files.catalog);
+        let now = Timestamp(jiff::Timestamp::now().as_millisecond());
+        self.with_inputs(|inputs| found_games(&ids, inputs, now))
+    }
+
+    /// One game of the catalog for its page, read again after each change.
+    pub fn game_view(&self, id: AppId) -> Option<GameView> {
+        let now = Timestamp(jiff::Timestamp::now().as_millisecond());
+        self.with_inputs(|inputs| game_view(id, inputs, now))
+    }
+
+    /// Where a game of the catalog stands in a Discover opened now with these options: its
+    /// position, or the first filter that leaves it out.
+    pub fn discover_place(&self, id: AppId, options: &SearchOptions) -> Option<DiscoverPlace> {
+        let now = Timestamp(jiff::Timestamp::now().as_millisecond());
+        self.with_inputs(|inputs| discover_place(id, options, inputs, now))
     }
 }

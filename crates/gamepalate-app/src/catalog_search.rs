@@ -1,17 +1,11 @@
-use std::{cmp::Reverse, collections::BTreeSet};
+use std::cmp::Reverse;
 
 use gamepalate_core::{catalog::Catalog, ids::AppId};
 
 use crate::names::folded;
 
 pub const MIN_SEARCH_CHARS: usize = 3;
-pub const MAX_MATCHES: usize = 20;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CatalogMatch {
-    pub id: AppId,
-    pub name: String,
-}
+pub const MAX_MATCHES: usize = 8;
 
 #[derive(Debug)]
 pub(crate) struct NameIndex {
@@ -40,7 +34,16 @@ impl NameIndex {
         }
     }
 
-    pub(crate) fn search(&self, text: &str, excluded: &BTreeSet<AppId>) -> Vec<AppId> {
+    /// The games of the whole catalog for `text`: the game of an appid or of a store link when
+    /// there is one in the catalog, else the ones with that name.
+    pub(crate) fn find(&self, text: &str, catalog: &Catalog) -> Vec<AppId> {
+        match appid_in(text) {
+            Some(id) => catalog.game(id).map(|game| game.id).into_iter().collect(),
+            None => self.search(text),
+        }
+    }
+
+    fn search(&self, text: &str) -> Vec<AppId> {
         let text = folded(text.trim());
         if text.chars().count() < MIN_SEARCH_CHARS {
             return Vec::new();
@@ -53,7 +56,7 @@ impl NameIndex {
             if equal.len() == MAX_MATCHES {
                 break;
             }
-            if !entry.name.contains(&text) || excluded.contains(&entry.id) {
+            if !entry.name.contains(&text) {
                 continue;
             }
             let group = if *entry.name == *text {
@@ -75,6 +78,22 @@ impl NameIndex {
             .take(MAX_MATCHES)
             .collect()
     }
+}
+
+/// The appid in a text that is only digits (`10`) or has `/app/<digits>` in it, like the
+/// link of a game in the store or in the community.
+fn appid_in(text: &str) -> Option<AppId> {
+    let text = text.trim();
+    let digits = if text.bytes().all(|byte| byte.is_ascii_digit()) {
+        text
+    } else {
+        let (_, after) = text.split_once("/app/")?;
+        let end = after
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(after.len());
+        &after[..end]
+    };
+    digits.parse().ok().filter(|&id| id != 0).map(AppId)
 }
 
 #[cfg(test)]
@@ -125,13 +144,8 @@ mod tests {
     }
 
     fn search(games: Vec<Game>, text: &str) -> Vec<u32> {
-        search_without(games, text, &[])
-    }
-
-    fn search_without(games: Vec<Game>, text: &str, excluded: &[u32]) -> Vec<u32> {
-        let excluded = excluded.iter().map(|&id| AppId(id)).collect();
         NameIndex::new(&catalog(games))
-            .search(text, &excluded)
+            .search(text)
             .into_iter()
             .map(|id| id.0)
             .collect()
@@ -154,13 +168,6 @@ mod tests {
         assert!(search(games.clone(), " it ").is_empty());
         assert!(search(games.clone(), "").is_empty());
         assert_eq!(search(games, "it t"), [1]);
-    }
-
-    #[test]
-    fn the_games_of_the_library_are_left_out() {
-        let games = vec![game(1, "Portal", 10), game(2, "Portal 2", 20)];
-
-        assert_eq!(search_without(games, "portal", &[2]), [1]);
     }
 
     #[test]
@@ -216,14 +223,68 @@ mod tests {
         assert!(found.iter().all(|&id| id != 100));
     }
 
+    fn find(games: Vec<Game>, text: &str) -> Vec<u32> {
+        let catalog = catalog(games);
+        NameIndex::new(&catalog)
+            .find(text, &catalog)
+            .into_iter()
+            .map(|id| id.0)
+            .collect()
+    }
+
+    #[test]
+    fn find_does_not_leave_out_any_game() {
+        let games = vec![game(1, "Portal", 10), game(2, "Portal 2", 20)];
+
+        assert_eq!(find(games, "portal"), [1, 2]);
+    }
+
+    #[test]
+    fn an_appid_gives_that_game_even_when_it_is_short() {
+        let games = vec![game(10, "Counter-Strike", 10), game(1145360, "Hades", 10)];
+
+        assert_eq!(find(games.clone(), "10"), [10]);
+        assert_eq!(find(games.clone(), " 1145360 "), [1145360]);
+        assert!(find(games, "999").is_empty());
+    }
+
+    #[test]
+    fn a_store_link_gives_its_game() {
+        let games = vec![game(1145360, "Hades", 10), game(10, "Counter-Strike", 10)];
+
+        for link in [
+            "https://store.steampowered.com/app/1145360/Hades/",
+            "store.steampowered.com/app/1145360",
+            "https://steamcommunity.com/app/1145360/discussions/",
+            "http://store.steampowered.com/app/1145360?l=italian",
+        ] {
+            assert_eq!(find(games.clone(), link), [1145360], "{link}");
+        }
+    }
+
+    #[test]
+    fn an_appid_out_of_the_catalog_gives_nothing() {
+        let games = vec![game(1145360, "Hades", 10)];
+
+        assert!(find(games.clone(), "store.steampowered.com/app/620/Portal_2/").is_empty());
+        assert!(find(games, "620").is_empty());
+    }
+
+    #[test]
+    fn a_link_without_an_appid_is_a_name() {
+        let games = vec![game(1, "Steam Cleaner", 10)];
+
+        assert!(find(games.clone(), "store.steampowered.com/app/").is_empty());
+        assert_eq!(find(games, "steam clean"), [1]);
+    }
+
     #[test]
     fn a_new_catalog_gives_a_new_index() {
         let before = NameIndex::new(&catalog(vec![game(1, "Portal", 10)]));
         let after = NameIndex::new(&catalog(vec![game(2, "Portal 2", 10)]));
-        let none = BTreeSet::new();
 
-        assert_eq!(before.search("portal", &none), [AppId(1)]);
-        assert_eq!(after.search("portal", &none), [AppId(2)]);
+        assert_eq!(before.search("portal"), [AppId(1)]);
+        assert_eq!(after.search("portal"), [AppId(2)]);
     }
 
     #[test]
@@ -254,14 +315,13 @@ mod tests {
                 .iter()
                 .map(|entry| entry.name.len())
                 .sum::<usize>();
-        let none = BTreeSet::new();
 
         for text in ["por", "portal", "dark of the", "hades", "zzz", "the 1"] {
             let started = Instant::now();
             let runs = 50;
             let mut found = 0;
             for _ in 0..runs {
-                found = index.search(text, &none).len();
+                found = index.search(text).len();
             }
             println!(
                 "{text:?}: {found} games, {:?} per search",

@@ -13,10 +13,10 @@ use iced::{
         future::{AbortHandle, Abortable, Aborted},
     },
     stream, task,
-    widget::{button, container, progress_bar, row, text, tooltip},
+    widget::{button, container, progress_bar, row, space, text, tooltip},
 };
 
-use super::{App, BAR_ICON_SCALE, Message, Start, bar_icon, frame::CLOSE, with_tooltip};
+use super::{App, BAR_ICON_SCALE, Message, Start, bar_icon, frame::CLOSE, with_dot, with_tooltip};
 use crate::{
     font, format,
     progress::{self, Stage, Tracker},
@@ -204,7 +204,12 @@ fn refresh_failed<'a>(error: &str) -> Element<'a, Message> {
     .into()
 }
 
-pub(super) fn refresh_button<'a>(refresh: &Refresh, idle_tip: String) -> Element<'a, Message> {
+pub(super) fn refresh_button<'a>(
+    refresh: &Refresh,
+    idle_tip: String,
+    times: String,
+    dot: bool,
+) -> Element<'a, Message> {
     let (icon, message, tip) = match refresh {
         Refresh::Running(refreshing, ..) if refreshing.can_cancel() => (
             CANCEL,
@@ -214,22 +219,35 @@ pub(super) fn refresh_button<'a>(refresh: &Refresh, idle_tip: String) -> Element
         Refresh::Running(..) => (REFRESH, None, idle_tip),
         Refresh::Idle | Refresh::Failed(_) => (REFRESH, Some(Message::Refresh), idle_tip),
     };
+    let dot = dot && !matches!(refresh, Refresh::Running(..));
 
-    with_tooltip(bar_icon(icon, message).into(), tip)
+    with_tooltip(
+        with_dot(bar_icon(icon, message), dot),
+        two_lines(&tip, &times),
+    )
 }
 
-fn freshness<'a>(gamepalate: &Gamepalate) -> Element<'a, Message> {
+/// The dot on the refresh button: an update to resume, or one that stopped at startup. A
+/// renewal that is due needs none, since it starts by itself at startup.
+pub(super) fn refresh_dot(pending: Option<PendingUpdate>, startup_error: Option<&str>) -> bool {
+    pending.is_some() || startup_error.is_some()
+}
+
+fn two_lines(first: &str, second: &str) -> String {
+    format!("{first}\n{second}")
+}
+
+pub(super) fn data_times(gamepalate: &Gamepalate) -> String {
     let now = Timestamp(jiff::Timestamp::now().as_millisecond());
-    let signals = format::when(gamepalate.signals_read_at(), now);
-    let prices = prices_text(
+    times_text(
+        format::when(gamepalate.signals_read_at(), now),
         format::when(gamepalate.prices_updated_at(), now),
         gamepalate.prices_region(),
-    );
+    )
+}
 
-    text!("Signals {signals} · {prices}")
-        .size(font::NOTE_SIZE)
-        .style(style::muted)
-        .into()
+fn times_text(signals: String, prices: String, other_region: Option<Region>) -> String {
+    format!("Signals {signals} · {}", prices_text(prices, other_region))
 }
 
 fn prices_text(when: String, other_region: Option<Region>) -> String {
@@ -270,8 +288,7 @@ impl App {
                 if let Refresh::Running(refreshing, ..) = &mut self.refresh {
                     *refreshing = Refreshing::Renewal(Tracker::default());
                 }
-                self.enter(gamepalate);
-                Task::none()
+                self.enter(gamepalate)
             }
             Message::Refreshed(start, result) => {
                 self.refresh = Refresh::Idle;
@@ -292,16 +309,17 @@ impl App {
                     }
                 };
                 if !reopens_the_screen(start) {
-                    self.enter(gamepalate);
-                    return read;
+                    let entered = self.enter(gamepalate);
+                    return Task::batch([read, entered]);
                 }
+                let placed = self.game_page_uses(&gamepalate);
                 self.gamepalate = Some(gamepalate);
                 self.find_pending();
                 let open = match self.page() {
                     Some(page) => self.open(page),
                     None => Task::none(),
                 };
-                Task::batch([open, read])
+                Task::batch([open, read, placed])
             }
             Message::CancelRefresh => {
                 if let Refresh::Running(refreshing, handle) = &self.refresh
@@ -324,9 +342,9 @@ impl App {
         }
     }
 
-    pub(super) fn status<'a>(&'a self, gamepalate: &Gamepalate) -> Element<'a, Message> {
+    pub(super) fn status(&self) -> Element<'_, Message> {
         let refreshing = match &self.refresh {
-            Refresh::Idle => return freshness(gamepalate),
+            Refresh::Idle => return space().into(),
             Refresh::Failed(error) => return refresh_failed(error),
             Refresh::Running(refreshing, ..) => refreshing,
         };
@@ -412,12 +430,14 @@ impl App {
         )
     }
 
-    fn enter(&mut self, gamepalate: Arc<Gamepalate>) {
+    fn enter(&mut self, gamepalate: Arc<Gamepalate>) -> Task<Message> {
         if let Screen::Discover(discover) = &mut self.screen {
             discover.use_gamepalate(&gamepalate);
         }
+        let placed = self.game_page_uses(&gamepalate);
         self.gamepalate = Some(gamepalate);
         self.find_pending();
+        placed
     }
 
     pub(super) fn find_pending(&mut self) {
@@ -583,6 +603,40 @@ mod tests {
     fn only_the_button_opens_the_screen_again() {
         assert!(reopens_the_screen(Start::Button));
         assert!(!reopens_the_screen(Start::Startup));
+    }
+
+    #[test]
+    fn the_tooltip_says_the_time_of_the_data_on_a_second_line() {
+        let times = times_text("today 10:32".to_string(), "today 10:30".to_string(), None);
+
+        assert_eq!(
+            two_lines(&refresh_tooltip(None, false, None), &times),
+            "Update prices and Signals\nSignals today 10:32 · Prices today 10:30"
+        );
+        assert_eq!(
+            two_lines("Pause the update", &times),
+            "Pause the update\nSignals today 10:32 · Prices today 10:30"
+        );
+        assert_eq!(
+            times_text(
+                "today 10:32".to_string(),
+                "28 Oct".to_string(),
+                Some(Region::ITALY)
+            ),
+            "Signals today 10:32 · Prices 28 Oct · IT"
+        );
+    }
+
+    #[test]
+    fn the_dot_shows_an_update_to_resume_or_an_error_at_startup() {
+        let pending = PendingUpdate {
+            started_at: Timestamp(1_793_369_460_000),
+            responses: 3,
+        };
+
+        assert!(!refresh_dot(None, None));
+        assert!(refresh_dot(Some(pending), None));
+        assert!(refresh_dot(None, Some("Steam is not responding")));
     }
 
     #[test]

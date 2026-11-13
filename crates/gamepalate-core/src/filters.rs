@@ -286,6 +286,19 @@ pub fn active_filters(
     Ok(filters)
 }
 
+/// The first filter that leaves the game out, in the order of the filters.
+pub fn first_failed<'f>(
+    game: &Game,
+    filters: &'f [Filter],
+    context: &FilterContext,
+    now: Timestamp,
+) -> Option<&'f Filter> {
+    let price = game.price.as_of(now);
+    filters
+        .iter()
+        .find(|filter| !filter.passes(game, price, context, now))
+}
+
 pub fn apply_filters(
     catalog: &Catalog,
     filters: &[Filter],
@@ -385,5 +398,50 @@ mod tests {
         let context = FilterContext::new(&signals, &Families::default(), &votes, &corrections);
 
         assert_eq!(context.owned, BTreeSet::from([AppId(5)]));
+    }
+
+    #[test]
+    fn the_first_failed_filter_is_the_first_in_order() {
+        let game = Game {
+            id: AppId(7),
+            name: "game 7".to_string(),
+            price: Price {
+                original_cents: 999,
+                discount: None,
+            },
+            reviews: crate::game::Reviews {
+                total: 40,
+                positive: 20,
+            },
+            is_early_access: false,
+            tags: Vec::new(),
+            developers: Vec::new(),
+            franchises: Vec::new(),
+        };
+        let signals = Signals {
+            read_at: Timestamp(0),
+            library: vec![],
+            borrowed: vec![],
+            recent: vec![],
+            wishlist: vec![],
+            followed: vec![],
+        };
+        let votes = Votes::new();
+        let corrections = Corrections::default();
+        let context = FilterContext::new(&signals, &Families::default(), &votes, &corrections);
+        let filters = [
+            Filter::Hidden,
+            Filter::MinReviews(50),
+            Filter::MinPositivePercent(70),
+        ];
+
+        assert_eq!(
+            first_failed(&game, &filters, &context, Timestamp(0)),
+            Some(&Filter::MinReviews(50))
+        );
+        assert_eq!(
+            first_failed(&game, &filters[..1], &context, Timestamp(0)),
+            None
+        );
     }
 }

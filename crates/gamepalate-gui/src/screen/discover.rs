@@ -132,7 +132,7 @@ impl Discover {
     }
 
     fn opened(gamepalate: &Arc<Gamepalate>, family: Option<String>) -> (Discover, Task<Message>) {
-        let saved = discover_options(gamepalate.gui_settings().search);
+        let saved = saved_options(gamepalate);
         let options = match &family {
             Some(family) => family_options(&saved, family),
             None => saved.clone(),
@@ -257,7 +257,7 @@ impl Discover {
                     Task::perform(
                         async move {
                             gamepalate
-                                .vote(id, VoteKind::Later, false, bet)
+                                .vote(id, VoteKind::Later, false, bet, false)
                                 .map_err(|error| error.to_string())
                         },
                         Message::LaterSaved,
@@ -275,7 +275,7 @@ impl Discover {
                     let save = Task::perform(
                         async move {
                             gamepalate
-                                .vote(id, kind, genre_ok, bet)
+                                .vote(id, kind, genre_ok, bet, false)
                                 .map_err(|error| error.to_string())
                         },
                         Message::VoteSaved,
@@ -390,7 +390,10 @@ impl Discover {
         Task::none()
     }
 
-    pub fn subscription() -> Subscription<Message> {
+    pub fn subscription(keys: bool) -> Subscription<Message> {
+        if !keys {
+            return Subscription::none();
+        }
         Subscription::batch([
             keyboard::listen().filter_map(key_message),
             event::listen_with(escape_message),
@@ -553,21 +556,24 @@ impl Discover {
             self.gamepalate.would_try_hours(),
             self.gamepalate.elsewhere_hours(),
         );
-        let votes = game::vote_buttons(|key, pick| {
-            let message = match pick {
-                Pick::Played => Message::Played,
-                pick => Message::Vote(pick),
-            };
-            game::vote_button(
-                key,
-                pick,
-                game::tip(pick, would_try_hours, elsewhere_hours),
-                compact,
-                vote_width,
-                game.is_some().then_some(message),
-                flashed == Some(pick),
-            )
-        })
+        let votes = game::vote_buttons(
+            |key, pick| {
+                let message = match pick {
+                    Pick::Played => Message::Played,
+                    pick => Message::Vote(pick),
+                };
+                game::vote_button(
+                    key,
+                    pick,
+                    game::tip(pick, would_try_hours, elsewhere_hours),
+                    compact,
+                    vote_width,
+                    game.is_some().then_some(message),
+                    flashed == Some(pick),
+                )
+            },
+            true,
+        )
         .push(hints);
         let links = game::links(|link| game.is_some().then_some(Message::Open(link)));
         let (votes, spacing) = match layout {
@@ -918,6 +924,11 @@ fn small_button(label: &str, message: Message) -> Element<'_, Message> {
         .padding([4, 12])
         .on_press(message)
         .into()
+}
+
+/// The options of a Discover opened now from the start.
+pub fn saved_options(gamepalate: &Gamepalate) -> SearchOptions {
+    discover_options(gamepalate.gui_settings().search)
 }
 
 fn discover_options(saved: SearchOptions) -> SearchOptions {

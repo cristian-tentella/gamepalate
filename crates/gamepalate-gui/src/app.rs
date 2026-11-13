@@ -1,6 +1,9 @@
+mod backdrop;
 mod frame;
+mod game_page;
 mod install;
 mod refresh;
+mod search;
 mod theme;
 
 use std::{
@@ -39,10 +42,15 @@ use frame::{
     CLOSE, MAXIMIZE, MINIMIZE, RESTORE, WindowAction, rescaled, resize_borders, saved_size,
     window_button,
 };
-use refresh::{Refresh, refresh_button, refresh_tooltip};
+use game_page::GamePage;
+use refresh::{Refresh, data_times, refresh_button, refresh_dot, refresh_tooltip};
+use search::Search;
 use theme::{choice, light, theme, theme_button, toggled};
 
 const UNDERLINE_HEIGHT: f32 = 2.0;
+const BAR_HEIGHT: f32 = 44.0;
+/// The top bar and the line under it: the game search leaves them sharp.
+const SEARCH_TOP: f32 = BAR_HEIGHT + 1.0;
 const LOGO_BYTES: &[u8] = include_bytes!("../gamepalate-24.png");
 const LOGO_SIZE: f32 = 24.0;
 const LOGO_SPACING: f32 = 8.0;
@@ -70,6 +78,8 @@ pub struct App {
     installed: Option<Installed>,
     logo: image::Handle,
     families_notice: Option<usize>,
+    search: Search,
+    game_page: Option<Box<GamePage>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -87,6 +97,8 @@ pub enum Message {
     Profile(profile::Message),
     Settings(settings::Message),
     Setup(setup::Message),
+    Search(search::Message),
+    GamePage(game_page::Message),
     WindowFound(Option<window::Id>),
     Window(WindowAction),
     BarPressed,
@@ -141,6 +153,8 @@ impl App {
             installed: None,
             logo: image::Handle::from_bytes(LOGO_BYTES),
             families_notice: None,
+            search: Search::default(),
+            game_page: None,
         };
         let task = match setup::start(FirstRun::check(None)) {
             Ok(gamepalate) => {
@@ -181,7 +195,11 @@ impl App {
                 let back = self.back_page();
                 self.leave(back)
             }
-            Message::Navigate(page) if self.page() == Some(page) => Task::none(),
+            Message::Navigate(page) if self.page() == Some(page) => {
+                self.search.close();
+                let changed = self.game_page.take().is_some_and(|page| page.changed());
+                self.close_game_page(changed)
+            }
             Message::Navigate(page) => self.leave(page),
             Message::Discover(discover::Message::OpenSimilar(id)) => self.show_game(id),
             Message::Discover(message) => {
@@ -279,14 +297,15 @@ impl App {
                 if let Screen::Settings(screen) = &mut self.screen {
                     screen.reopened(&gamepalate);
                 }
+                let placed = self.game_page_uses(&gamepalate);
                 self.gamepalate = Some(gamepalate);
                 self.find_pending();
                 if matches!(self.screen, Screen::Settings(_)) {
-                    return Task::none();
+                    return placed;
                 }
                 match self.page() {
-                    Some(page) => self.open(page),
-                    None => Task::none(),
+                    Some(page) => Task::batch([self.open(page), placed]),
+                    None => placed,
                 }
             }
             Message::Reopened(Err(error)) => {
@@ -294,6 +313,30 @@ impl App {
                     screen.failed(error);
                 }
                 Task::none()
+            }
+            Message::Search(message) => {
+                let Some(gamepalate) = &self.gamepalate else {
+                    return Task::none();
+                };
+                match self
+                    .search
+                    .update(message, gamepalate, self.window, SEARCH_TOP)
+                {
+                    search::Action::Run(task) => task.map(Message::Search),
+                    search::Action::Open(id, backdrop) => {
+                        let saving = self.save_settings();
+                        Task::batch([self.open_game(id, backdrop), saving])
+                    }
+                }
+            }
+            Message::GamePage(message) => {
+                let Some(page) = &mut self.game_page else {
+                    return Task::none();
+                };
+                match page.update(message) {
+                    game_page::Action::Run(task) => task.map(Message::GamePage),
+                    game_page::Action::Close { changed } => self.close_game_page(changed),
+                }
             }
             Message::Setup(message) => {
                 let Screen::Setup(screen) = &mut self.screen else {
@@ -373,13 +416,21 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
+        let search_open = self.search.is_open();
+        let keys = !search_open && self.game_page.is_none();
         let screen = match &self.screen {
-            Screen::Discover(_) => Discover::subscription().map(Message::Discover),
-            Screen::Votes(_) => Votes::subscription().map(Message::Votes),
-            Screen::Library(_) => Library::subscription().map(Message::Library),
-            Screen::Profile(_) => Profile::subscription().map(Message::Profile),
-            Screen::Settings(screen) => screen.subscription().map(Message::Settings),
+            Screen::Discover(_) => Discover::subscription(keys).map(Message::Discover),
+            Screen::Votes(_) => Votes::subscription(keys).map(Message::Votes),
+            Screen::Library(_) => Library::subscription(keys).map(Message::Library),
+            Screen::Profile(_) => Profile::subscription(keys).map(Message::Profile),
+            Screen::Settings(screen) => screen.subscription(keys).map(Message::Settings),
             Screen::Setup(_) | Screen::Starting => Subscription::none(),
+        };
+        let search = self.search.subscription().map(Message::Search);
+        let game_page = if self.game_page.is_some() {
+            GamePage::subscription(!search_open).map(Message::GamePage)
+        } else {
+            Subscription::none()
         };
 
         Subscription::batch([
@@ -388,6 +439,8 @@ impl App {
             window::close_requests().map(|_| Message::Window(WindowAction::Close)),
             keyboard::listen().filter_map(page_key),
             screen,
+            search,
+            game_page,
         ])
     }
 
@@ -422,19 +475,27 @@ impl App {
                 .spacing(24)
                 .height(Fill)
             }))
-            .push(space().width(Fill))
-            .push(self.gamepalate.as_deref().map(|gamepalate| {
-                column![
-                    container(self.status(gamepalate))
-                        .height(Fill)
-                        .align_y(Center),
-                    space().height(UNDERLINE_HEIGHT),
-                ]
+            .push(
+                container(self.gamepalate.as_deref().map(|_| {
+                    column![
+                        container(self.status()).height(Fill).align_y(Center),
+                        space().height(UNDERLINE_HEIGHT),
+                    ]
+                    .height(Fill)
+                }))
+                .width(Fill)
                 .height(Fill)
-            }))
+                .align_x(Right)
+                .clip(true),
+            )
             .push(
                 row![]
-                    .push(self.gamepalate.is_some().then(|| {
+                    .push(
+                        self.gamepalate
+                            .is_some()
+                            .then(|| search_button(self.search.is_open())),
+                    )
+                    .push(self.gamepalate.as_deref().map(|gamepalate| {
                         refresh_button(
                             &self.refresh,
                             refresh_tooltip(
@@ -442,6 +503,8 @@ impl App {
                                 self.renewal_due,
                                 self.startup_error.as_deref(),
                             ),
+                            data_times(gamepalate),
+                            refresh_dot(self.pending, self.startup_error.as_deref()),
                         )
                     }))
                     .push(self.gamepalate.is_some().then(|| {
@@ -465,7 +528,7 @@ impl App {
         )
         .padding(padding::left(20))
         .width(Fill)
-        .height(44)
+        .height(BAR_HEIGHT)
         .style(style::top_bar);
         let bar = mouse_area(bar).on_press(Message::BarPressed);
 
@@ -485,6 +548,17 @@ impl App {
                 .map(Message::Settings),
             Screen::Starting => column![].into(),
         };
+        let area = Size::new(self.resized.width, self.resized.height - SEARCH_TOP);
+        let content = stack![content]
+            .push(self.game_page.as_ref().map(|page| {
+                page.view(self.scale, area, page_name(self.page()))
+                    .map(Message::GamePage)
+            }))
+            .push(
+                self.search
+                    .view(area)
+                    .map(|search| search.map(Message::Search)),
+            );
 
         let app = column![
             bar,
@@ -553,12 +627,18 @@ impl App {
     }
 
     fn leave(&mut self, page: Page) -> Task<Message> {
-        let saving = match &mut self.screen {
-            Screen::Settings(screen) => screen.leave().map(Message::Settings),
-            _ => Task::none(),
-        };
+        self.search.close();
+        self.game_page = None;
+        let saving = self.save_settings();
 
         Task::batch([self.open(page), saving])
+    }
+
+    fn save_settings(&mut self) -> Task<Message> {
+        match &mut self.screen {
+            Screen::Settings(screen) => screen.leave().map(Message::Settings),
+            _ => Task::none(),
+        }
     }
 
     fn open(&mut self, page: Page) -> Task<Message> {
@@ -592,6 +672,42 @@ impl App {
                 self.screen = Screen::Settings(Box::new(settings));
                 task.map(Message::Settings)
             }
+        }
+    }
+
+    /// A game found by name opens over the page, which keeps its state. A game out of the catalog
+    /// has no page of its own: it opens where it is.
+    fn open_game(&mut self, id: AppId, backdrop: Option<image::Handle>) -> Task<Message> {
+        let Some(gamepalate) = &self.gamepalate else {
+            return Task::none();
+        };
+        let Some((page, task)) = GamePage::new(gamepalate, id, backdrop) else {
+            return self.show_game(id);
+        };
+        let changed = self.game_page.take().is_some_and(|page| page.changed());
+        let refreshed = self.close_game_page(changed);
+        self.game_page = Some(Box::new(page));
+
+        Task::batch([refreshed, task.map(Message::GamePage)])
+    }
+
+    /// The page of a game saves on the new facade, and finds its place in Discover again.
+    fn game_page_uses(&mut self, gamepalate: &Arc<Gamepalate>) -> Task<Message> {
+        match &mut self.game_page {
+            Some(page) => page.use_gamepalate(gamepalate).map(Message::GamePage),
+            None => Task::none(),
+        }
+    }
+
+    /// The lists of Votes, Library and Profile are made when they open: after a change they open
+    /// again. Discover keeps its queue.
+    fn close_game_page(&mut self, changed: bool) -> Task<Message> {
+        self.game_page = None;
+        match self.page() {
+            Some(page @ (Page::Votes | Page::Library | Page::Profile)) if changed => {
+                self.open(page)
+            }
+            _ => Task::none(),
         }
     }
 
@@ -631,8 +747,19 @@ impl App {
         .padding(0)
         .height(Fill)
         .style(style::tab(current))
-        .on_press_maybe((!current).then_some(Message::Navigate(page)))
+        .on_press_maybe((!current || self.game_page.is_some()).then_some(Message::Navigate(page)))
         .into()
+    }
+}
+
+/// The page under a game's sheet, for its way back.
+fn page_name(page: Option<Page>) -> &'static str {
+    match page {
+        Some(Page::Discover) | None => "Discover",
+        Some(Page::Votes) => "Votes",
+        Some(Page::Library) => "Library",
+        Some(Page::Profile) => "Profile",
+        Some(Page::Settings) => "Settings",
     }
 }
 
@@ -645,6 +772,7 @@ fn page_key(event: keyboard::Event) -> Option<Message> {
     }
 
     match key.as_ref() {
+        Key::Character("k" | "K") => Some(Message::Search(search::Message::Toggle)),
         Key::Character("1") => Some(Message::Navigate(Page::Discover)),
         Key::Character("2") => Some(Message::Navigate(Page::Votes)),
         Key::Character("3") => Some(Message::Navigate(Page::Library)),
@@ -689,6 +817,16 @@ fn families_notice<'a>(count: usize) -> Element<'a, Message> {
     .into()
 }
 
+fn search_button<'a>(open: bool) -> Element<'a, Message> {
+    let button = bar_icon(search::LENS, Some(Message::Search(search::Message::Toggle)));
+    let button = if open {
+        button.style(style::open_bar_icon)
+    } else {
+        button
+    };
+    with_tooltip(button.into(), search::TIP.to_string())
+}
+
 fn settings_button<'a>(open: bool, new_version: bool) -> Element<'a, Message> {
     let button = bar_icon(GEAR, Some(Message::Navigate(Page::Settings)));
     let button = if open {
@@ -696,27 +834,31 @@ fn settings_button<'a>(open: bool, new_version: bool) -> Element<'a, Message> {
     } else {
         button
     };
-    let icon: Element<'a, Message> = if new_version {
-        stack![
-            button,
-            container(
-                container(space())
-                    .width(DOT_SIZE)
-                    .height(DOT_SIZE)
-                    .style(style::badge)
-            )
-            .width(Fill)
-            .height(Fill)
-            .align_x(Right)
-            .align_y(Top)
-            .padding(padding::top(11).right(12)),
-        ]
-        .into()
-    } else {
-        button.into()
-    };
+    with_tooltip(
+        with_dot(button, new_version),
+        settings_tip(open, new_version).to_string(),
+    )
+}
 
-    with_tooltip(icon, settings_tip(open, new_version).to_string())
+fn with_dot<'a>(button: button::Button<'a, Message>, dot: bool) -> Element<'a, Message> {
+    if !dot {
+        return button.into();
+    }
+    stack![
+        button,
+        container(
+            container(space())
+                .width(DOT_SIZE)
+                .height(DOT_SIZE)
+                .style(style::badge)
+        )
+        .width(Fill)
+        .height(Fill)
+        .align_x(Right)
+        .align_y(Top)
+        .padding(padding::top(11).right(12)),
+    ]
+    .into()
 }
 
 fn settings_tip(open: bool, new_version: bool) -> &'static str {
@@ -804,5 +946,28 @@ mod tests {
         assert_eq!(page("4", keyboard::Modifiers::CTRL), Some(Page::Profile));
         assert_eq!(page("3", keyboard::Modifiers::empty()), None);
         assert_eq!(page("5", keyboard::Modifiers::CTRL), None);
+    }
+
+    #[test]
+    fn the_sheet_of_a_game_names_the_page_it_goes_back_to() {
+        assert_eq!(page_name(Some(Page::Library)), "Library");
+        assert_eq!(page_name(Some(Page::Votes)), "Votes");
+        assert_eq!(page_name(None), "Discover");
+    }
+
+    #[test]
+    fn ctrl_k_goes_to_the_game_search() {
+        assert!(matches!(
+            page_key(pressed("k", keyboard::Modifiers::CTRL)),
+            Some(Message::Search(search::Message::Toggle))
+        ));
+        assert!(matches!(
+            page_key(pressed(
+                "K",
+                keyboard::Modifiers::CTRL | keyboard::Modifiers::SHIFT
+            )),
+            Some(Message::Search(search::Message::Toggle))
+        ));
+        assert!(page_key(pressed("k", keyboard::Modifiers::empty())).is_none());
     }
 }

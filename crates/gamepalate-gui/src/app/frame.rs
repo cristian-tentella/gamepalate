@@ -169,6 +169,10 @@ impl App {
             Message::BarPressed => self.bar_pressed(),
             Message::Resized(size) => {
                 self.resized = size;
+                self.search.resized();
+                if let Some(page) = &mut self.game_page {
+                    page.resized();
+                }
                 match self.window {
                     Some(id) => window::is_maximized(id).map(Message::Maximized),
                     None => Task::none(),

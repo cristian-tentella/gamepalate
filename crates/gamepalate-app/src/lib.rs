@@ -4,6 +4,7 @@ mod capsules;
 mod catalog_search;
 mod data_dir;
 mod details;
+mod discover_place;
 pub mod families;
 mod images;
 pub mod install;
@@ -23,8 +24,9 @@ pub mod tags;
 pub mod update;
 pub use app::{Gamepalate, OpenError, RecommendError, VoteError, VotedGame};
 pub use capsules::{CAPSULE_HEIGHT, CAPSULE_WIDTH, Capsule};
-pub use catalog_search::{CatalogMatch, MAX_MATCHES, MIN_SEARCH_CHARS};
+pub use catalog_search::{MAX_MATCHES, MIN_SEARCH_CHARS};
 pub use details::GameDetails;
+pub use discover_place::{DiscoverPlace, LeftOut};
 pub use families::{
     AutomaticFamilies, CreatedFamilies, FamiliesChanged, FamiliesRemade, FamiliesUndo,
     FamilyChange, FamilyChangeError, FamilyGame, MAX_FAMILIES, Remade, RemadeFamilies,
@@ -57,7 +59,8 @@ pub use gamepalate_store::families_edit::NEW_FILE as NEW_FAMILIES_FILE;
 pub use gamepalate_store::gui::{GuiSettings, SavedWindow, ThemeChoice};
 pub use images::{DecodedImage, ImageKind, LoadImageError};
 pub use library::{
-    GameCorrection, GameCorrectionError, LibraryGameView, LibraryView, PlayedElsewhereError,
+    FoundGame, GameCorrection, GameCorrectionError, GameStanding, GameView, LibraryGameView,
+    LibraryView, PlayedElsewhereError,
 };
 pub use profile::{
     CorrectedGameView, CorrectionsView, FamilyView, HoursGame, ProfileView, SourceView, TagView,
