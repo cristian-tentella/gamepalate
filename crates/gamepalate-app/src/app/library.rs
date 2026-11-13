@@ -1,8 +1,14 @@
-use gamepalate_core::{ids::AppId, search::SearchInputs, taste::game_name, timestamp::Timestamp};
+use gamepalate_core::{
+    ids::AppId,
+    search::{SearchInputs, SearchOptions},
+    taste::game_name,
+    timestamp::Timestamp,
+};
 
 use super::Gamepalate;
 use crate::{
     catalog_search::CatalogMatch,
+    discover_place::{DiscoverPlace, discover_place},
     library::{
         FoundGame, GameCorrection, GameCorrectionError, GameView, LibraryView,
         PlayedElsewhereError, changed_played_elsewhere, corrected_game, found_games,
@@ -81,6 +87,13 @@ impl Gamepalate {
     pub fn game_view(&self, id: AppId) -> Option<GameView> {
         let now = Timestamp(jiff::Timestamp::now().as_millisecond());
         self.with_inputs(|inputs| game_view(id, inputs, now))
+    }
+
+    /// Where a game of the catalog stands in a Discover opened now with these options: its
+    /// position, or the first filter that leaves it out.
+    pub fn discover_place(&self, id: AppId, options: &SearchOptions) -> Option<DiscoverPlace> {
+        let now = Timestamp(jiff::Timestamp::now().as_millisecond());
+        self.with_inputs(|inputs| discover_place(id, options, inputs, now))
     }
 
     pub fn search_catalog(&self, text: &str) -> Vec<CatalogMatch> {

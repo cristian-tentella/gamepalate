@@ -270,8 +270,7 @@ impl App {
                 if let Refresh::Running(refreshing, ..) = &mut self.refresh {
                     *refreshing = Refreshing::Renewal(Tracker::default());
                 }
-                self.enter(gamepalate);
-                Task::none()
+                self.enter(gamepalate)
             }
             Message::Refreshed(start, result) => {
                 self.refresh = Refresh::Idle;
@@ -292,16 +291,17 @@ impl App {
                     }
                 };
                 if !reopens_the_screen(start) {
-                    self.enter(gamepalate);
-                    return read;
+                    let entered = self.enter(gamepalate);
+                    return Task::batch([read, entered]);
                 }
+                let placed = self.game_page_uses(&gamepalate);
                 self.gamepalate = Some(gamepalate);
                 self.find_pending();
                 let open = match self.page() {
                     Some(page) => self.open(page),
                     None => Task::none(),
                 };
-                Task::batch([open, read])
+                Task::batch([open, read, placed])
             }
             Message::CancelRefresh => {
                 if let Refresh::Running(refreshing, handle) = &self.refresh
@@ -412,15 +412,14 @@ impl App {
         )
     }
 
-    fn enter(&mut self, gamepalate: Arc<Gamepalate>) {
+    fn enter(&mut self, gamepalate: Arc<Gamepalate>) -> Task<Message> {
         if let Screen::Discover(discover) = &mut self.screen {
             discover.use_gamepalate(&gamepalate);
         }
-        if let Some(page) = &mut self.game_page {
-            page.use_gamepalate(&gamepalate);
-        }
+        let placed = self.game_page_uses(&gamepalate);
         self.gamepalate = Some(gamepalate);
         self.find_pending();
+        placed
     }
 
     pub(super) fn find_pending(&mut self) {

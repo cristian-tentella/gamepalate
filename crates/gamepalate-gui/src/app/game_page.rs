@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use gamepalate_app::{AppId, FamilyChange, GameStanding, GameView, Gamepalate, VoteKind};
+use gamepalate_app::{
+    AppId, DiscoverPlace, FamilyChange, GameStanding, GameView, Gamepalate, VoteKind,
+};
 use iced::{
     Center, Element, Fill, Size, Subscription, Task,
     keyboard::{self, Key, key::Named},
@@ -16,7 +18,7 @@ use super::search::standing_text;
 use crate::{
     font, format,
     screen::{
-        Toasts,
+        Toasts, discover,
         game::{self, Link, Pick, VOTE_HEIGHT},
         sentence,
         showcase::{self, Showcase},
@@ -36,6 +38,7 @@ const BESIDE_VOTES: f32 = 520.0;
 pub struct GamePage {
     gamepalate: Arc<Gamepalate>,
     game: GameView,
+    place: Place,
     showcase: Showcase,
     toasts: Toasts,
     played: bool,
@@ -50,6 +53,7 @@ pub enum Message {
     RemoveVote,
     AddToFamily(String),
     Saved(String, bool, Result<Option<GameView>, String>),
+    Placed(u64, Option<DiscoverPlace>),
     Undo,
     Open(Link),
     Back,
@@ -78,12 +82,13 @@ impl GamePage {
         let mut page = GamePage {
             gamepalate: Arc::clone(gamepalate),
             game,
+            place: Place::default(),
             showcase: Showcase::new(gamepalate),
             toasts: Toasts::default(),
             played: false,
             changed: false,
         };
-        let task = page.load();
+        let task = Task::batch([page.load(), page.find_place()]);
 
         Some((page, task))
     }
@@ -92,11 +97,12 @@ impl GamePage {
         self.changed
     }
 
-    pub fn use_gamepalate(&mut self, gamepalate: &Arc<Gamepalate>) {
+    pub fn use_gamepalate(&mut self, gamepalate: &Arc<Gamepalate>) -> Task<Message> {
         self.gamepalate = Arc::clone(gamepalate);
         if let Some(game) = gamepalate.game_view(self.game.id) {
             self.game = game;
         }
+        self.find_place()
     }
 
     pub fn update(&mut self, message: Message) -> Action {
@@ -174,9 +180,16 @@ impl GamePage {
                 }
                 self.changed = true;
                 self.played = undo;
-                self.toasts.show(text, undo, Message::HideToast)
+                Task::batch([
+                    self.toasts.show(text, undo, Message::HideToast),
+                    self.find_place(),
+                ])
             }
             Message::Saved(_, _, Err(error)) => self.show_toast(error),
+            Message::Placed(asked, place) => {
+                self.place.answer(asked, place);
+                Task::none()
+            }
             Message::Undo if self.played => {
                 self.played = false;
                 self.save("Undone".to_string(), false, move |gamepalate| {
@@ -270,8 +283,19 @@ impl GamePage {
                 .style(style::muted)
                 .on_link_click(never)
         });
+        // An empty line while the place is found, so the price below doesn't move
+        let place = match &self.place.found {
+            None => Some(" ".to_string()),
+            Some(Some(place)) => Some(format::discover_place(
+                place,
+                game.played_elsewhere && !game.in_library,
+            )),
+            Some(None) => None,
+        }
+        .map(|line| text(line).size(font::BAR_SIZE).style(style::muted));
         let info = column![game::title(&game.name)]
             .push(status)
+            .push(place)
             .push(game::reviews(&game.reviews))
             .push(game::price_row(
                 &game.price,
@@ -403,8 +427,43 @@ impl GamePage {
         self.showcase.load(&id, &id, &[]).map(Message::Showcase)
     }
 
+    /// Where the game stands in Discover, said again after each change.
+    fn find_place(&mut self) -> Task<Message> {
+        let asked = self.place.ask();
+        let gamepalate = Arc::clone(&self.gamepalate);
+        let id = self.game.id;
+
+        Task::perform(
+            async move { gamepalate.discover_place(id, &discover::saved_options(&gamepalate)) },
+            move |place| Message::Placed(asked, place),
+        )
+    }
+
     fn show_toast(&mut self, text: String) -> Task<Message> {
         self.toasts.show(text, false, Message::HideToast)
+    }
+}
+
+/// Where the game stands in Discover. Finding it takes about a second, so an answer asked before
+/// the last change is old.
+#[derive(Debug, Default)]
+struct Place {
+    asked: u64,
+    /// `None` while it is being found.
+    found: Option<Option<DiscoverPlace>>,
+}
+
+impl Place {
+    fn ask(&mut self) -> u64 {
+        self.asked += 1;
+        self.found = None;
+        self.asked
+    }
+
+    fn answer(&mut self, asked: u64, place: Option<DiscoverPlace>) {
+        if asked == self.asked {
+            self.found = Some(place);
+        }
     }
 }
 
@@ -491,7 +550,7 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
 
 #[cfg(test)]
 mod tests {
-    use gamepalate_app::{Price, Reviews, Vote};
+    use gamepalate_app::{LeftOut, Price, Reviews, Vote};
     use iced::keyboard::{Location, Modifiers, key};
 
     use super::*;
@@ -662,6 +721,28 @@ mod tests {
             Some(Status::Plain("Later · back in 12 days".to_string()))
         );
         assert_eq!(status(&found(None, None), today()), None);
+    }
+
+    #[test]
+    fn a_place_asked_before_the_last_change_is_dropped() {
+        let mut place = Place::default();
+        let before_the_vote = place.ask();
+        let after_the_vote = place.ask();
+
+        place.answer(
+            before_the_vote,
+            Some(DiscoverPlace::Shown { position: 214 }),
+        );
+        assert_eq!(place.found, None);
+
+        place.answer(after_the_vote, Some(DiscoverPlace::LeftOut(LeftOut::Voted)));
+        assert_eq!(
+            place.found,
+            Some(Some(DiscoverPlace::LeftOut(LeftOut::Voted)))
+        );
+
+        place.ask();
+        assert_eq!(place.found, None);
     }
 
     fn pressed(key: Key) -> keyboard::Event {

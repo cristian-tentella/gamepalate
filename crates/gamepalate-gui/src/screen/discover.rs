@@ -132,7 +132,7 @@ impl Discover {
     }
 
     fn opened(gamepalate: &Arc<Gamepalate>, family: Option<String>) -> (Discover, Task<Message>) {
-        let saved = discover_options(gamepalate.gui_settings().search);
+        let saved = saved_options(gamepalate);
         let options = match &family {
             Some(family) => family_options(&saved, family),
             None => saved.clone(),
@@ -924,6 +924,11 @@ fn small_button(label: &str, message: Message) -> Element<'_, Message> {
         .padding([4, 12])
         .on_press(message)
         .into()
+}
+
+/// The options of a Discover opened now from the start.
+pub fn saved_options(gamepalate: &Gamepalate) -> SearchOptions {
+    discover_options(gamepalate.gui_settings().search)
 }
 
 fn discover_options(saved: SearchOptions) -> SearchOptions {

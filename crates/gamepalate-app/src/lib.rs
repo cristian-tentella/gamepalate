@@ -4,6 +4,7 @@ mod capsules;
 mod catalog_search;
 mod data_dir;
 mod details;
+mod discover_place;
 pub mod families;
 mod images;
 pub mod install;
@@ -25,6 +26,7 @@ pub use app::{Gamepalate, OpenError, RecommendError, VoteError, VotedGame};
 pub use capsules::{CAPSULE_HEIGHT, CAPSULE_WIDTH, Capsule};
 pub use catalog_search::{CatalogMatch, MAX_MATCHES, MIN_SEARCH_CHARS};
 pub use details::GameDetails;
+pub use discover_place::{DiscoverPlace, LeftOut};
 pub use families::{
     AutomaticFamilies, CreatedFamilies, FamiliesChanged, FamiliesRemade, FamiliesUndo,
     FamilyChange, FamilyChangeError, FamilyGame, MAX_FAMILIES, Remade, RemadeFamilies,
