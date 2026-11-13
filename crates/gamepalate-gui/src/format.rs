@@ -12,23 +12,29 @@ pub fn when(at: Timestamp, now: Timestamp) -> String {
     when_in(at, now, &TimeZone::system())
 }
 
-fn when_in(at: Timestamp, now: Timestamp, zone: &TimeZone) -> String {
-    let (Ok(at), Ok(now)) = (
-        jiff::Timestamp::from_millisecond(at.0),
-        jiff::Timestamp::from_millisecond(now.0),
-    ) else {
-        return "unknown".to_string();
-    };
-    let at = at.to_zoned(zone.clone());
-    let now = now.to_zoned(zone.clone());
+pub fn day(at: Timestamp, now: Timestamp) -> String {
+    day_in(at, now, &TimeZone::system())
+}
 
-    if at.date() == now.date() {
-        at.strftime("today %H:%M").to_string()
-    } else if at.year() == now.year() {
-        at.strftime("%-d %b").to_string()
-    } else {
-        at.strftime("%-d %b %Y").to_string()
+fn when_in(at: Timestamp, now: Timestamp, zone: &TimeZone) -> String {
+    match zoned(at, now, zone) {
+        Some((at, now)) if at.date() == now.date() => at.strftime("today %H:%M").to_string(),
+        _ => day_in(at, now, zone),
     }
+}
+
+fn day_in(at: Timestamp, now: Timestamp, zone: &TimeZone) -> String {
+    match zoned(at, now, zone) {
+        Some((at, now)) if at.year() == now.year() => at.strftime("%-d %b").to_string(),
+        Some((at, _)) => at.strftime("%-d %b %Y").to_string(),
+        None => "unknown".to_string(),
+    }
+}
+
+fn zoned(at: Timestamp, now: Timestamp, zone: &TimeZone) -> Option<(jiff::Zoned, jiff::Zoned)> {
+    let at = jiff::Timestamp::from_millisecond(at.0).ok()?;
+    let now = jiff::Timestamp::from_millisecond(now.0).ok()?;
+    Some((at.to_zoned(zone.clone()), now.to_zoned(zone.clone())))
 }
 
 // Whole filters while they fit, then …; None when the summary fits as it is.
@@ -617,6 +623,18 @@ mod tests {
     #[test]
     fn shows_day_and_month_for_an_earlier_day_this_year() {
         assert_eq!(when_utc(Timestamp(NOW.0 - 48 * HOUR)), "31 Oct");
+    }
+
+    #[test]
+    fn a_day_has_no_time_even_today() {
+        assert_eq!(
+            day_in(Timestamp(NOW.0 - 3 * HOUR), NOW, &TimeZone::UTC),
+            "2 Nov"
+        );
+        assert_eq!(
+            day_in(Timestamp(NOW.0 - 365 * 24 * HOUR), NOW, &TimeZone::UTC),
+            "2 Nov 2025"
+        );
     }
 
     #[test]
