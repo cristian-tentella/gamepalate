@@ -9,7 +9,7 @@ use iced::{
     never, padding,
     widget::{
         button, column, container, image, mouse_area, opaque, pick_list, responsive, rich_text,
-        row, scrollable, space, span, stack, text,
+        row, space, span, stack, text,
     },
 };
 use jiff::civil::Date;
@@ -32,16 +32,6 @@ const SHEET_SHARE: f32 = 0.9;
 const SHEET_MAX_WIDTH: f32 = 1200.0;
 const CLOSE: char = '\u{E5CD}';
 const HEAD_HEIGHT: f32 = 44.0;
-const SIDE_WIDTH: f32 = 340.0;
-/// Below this width the side column goes under the screenshots.
-const BESIDE_MIN_WIDTH: f32 = 900.0;
-/// The title, the status and the place above the columns.
-const TITLE_HEIGHT: f32 = 84.0;
-const MIN_SHOT_WIDTH: f32 = 480.0;
-const CONTENT_SPACING: f32 = 18.0;
-const COLUMN_GAP: f32 = 24.0;
-const SIDE_SPACING: f32 = 14.0;
-const SCROLLBAR_GAP: f32 = 12.0;
 const BESIDE_VOTES: f32 = 520.0;
 
 /// A game found by name, on a sheet over the page you were on until you go back.
@@ -322,15 +312,9 @@ impl GamePage {
         .padding([4, 8])
         .style(style::text_button)
         .on_press(Message::Back);
-        let link = |key, label, link| {
-            game::key_button(key, label, font::NOTE_SIZE, Some(Message::Open(link)))
-        };
-
         row![
             space().width(Fill),
-            link("Q", "Steam ↗", Link::Steam),
-            link("W", "Eneba ↗", Link::Eneba),
-            link("E", "HLTB ↗", Link::Hltb),
+            game::link_buttons(font::NOTE_SIZE, |link| Some(Message::Open(link))),
             style::divider(),
             back,
         ]
@@ -342,50 +326,6 @@ impl GamePage {
     }
 
     fn details(&self, size: Size, scale: f32) -> Element<'_, Message> {
-        let game = &self.game;
-        let beside = size.width >= BESIDE_MIN_WIDTH;
-        let room = size.width - SCROLLBAR_GAP;
-        let shot_width = if beside {
-            showcase::screenshot_width(
-                room - SIDE_WIDTH - COLUMN_GAP,
-                size.height - TITLE_HEIGHT - CONTENT_SPACING,
-                MIN_SHOT_WIDTH,
-                showcase::max_screenshot_width(scale),
-            )
-        } else {
-            room.min(showcase::max_screenshot_width(scale))
-        };
-        let gallery = self
-            .showcase
-            .gallery(game.id, shot_width, shot_width * 9.0 / 16.0)
-            .map(Message::Showcase);
-
-        let content: Element<'_, Message> = if beside {
-            column![
-                self.title_block(),
-                row![gallery, self.side(SIDE_WIDTH)].spacing(COLUMN_GAP),
-            ]
-            .spacing(CONTENT_SPACING)
-            .width(shot_width + COLUMN_GAP + SIDE_WIDTH)
-            .into()
-        } else {
-            column![self.title_block(), gallery, self.side(shot_width)]
-                .spacing(CONTENT_SPACING)
-                .width(shot_width)
-                .into()
-        };
-
-        scrollable(
-            container(content)
-                .center_x(Fill)
-                .padding(padding::right(SCROLLBAR_GAP)),
-        )
-        .height(Fill)
-        .into()
-    }
-
-    /// The name and where the game stands, with the reviews and the price on the right.
-    fn title_block(&self) -> Element<'_, Message> {
         let game = &self.game;
         let status = status(game, jiff::Zoned::now().date()).map(|status| {
             let spans = match status {
@@ -411,43 +351,43 @@ impl GamePage {
             Some(None) => None,
         }
         .map(|line| text(line).size(font::BAR_SIZE).style(style::muted));
+        let showcase = &self.showcase;
 
-        row![
-            column![game::title(&game.name)]
-                .push(status)
-                .push(place)
-                .spacing(4)
-                .width(Fill),
-            game::reviews(&game.reviews),
-            game::price_row(&game.price, self.gamepalate.currency(), game::PRICE_GAP),
-        ]
-        .spacing(28)
-        .into()
-    }
-
-    /// The column beside the screenshots: the header image, the short description and the facts.
-    fn side(&self, width: f32) -> Element<'_, Message> {
-        let game = &self.game;
-        let header_width = width.min(SIDE_WIDTH);
-
-        column![
-            self.showcase
-                .header(game.id, header_width, header_width * 215.0 / 460.0)
-                .map(Message::Showcase),
-        ]
-        .push(
-            self.showcase
-                .description(game.id)
-                .map(|description| description.map(Message::Showcase)),
+        game::body(
+            game::Body {
+                heading: column![game::title(&game.name)]
+                    .push(status)
+                    .push(place)
+                    .spacing(4)
+                    .into(),
+                figures: row![
+                    game::reviews(&game.reviews),
+                    game::price_row(&game.price, self.gamepalate.currency(), game::PRICE_GAP),
+                ]
+                .spacing(28)
+                .into(),
+                gallery: Box::new(move |width, height| {
+                    showcase
+                        .gallery(game.id, width, height)
+                        .map(Message::Showcase)
+                }),
+                header: Box::new(move |width, height| {
+                    showcase
+                        .header(game.id, width, height)
+                        .map(Message::Showcase)
+                }),
+                side: [
+                    showcase.description(game.id),
+                    showcase.facts(game.id, &showcase.used_tags()),
+                ]
+                .into_iter()
+                .flatten()
+                .map(|part| part.map(Message::Showcase))
+                .collect(),
+            },
+            size,
+            showcase::max_screenshot_width(scale),
         )
-        .push(
-            self.showcase
-                .facts(game.id, &self.showcase.used_tags())
-                .map(|facts| facts.map(Message::Showcase)),
-        )
-        .spacing(SIDE_SPACING)
-        .width(width)
-        .into()
     }
 
     fn action_row(&self, width: f32) -> Element<'_, Message> {

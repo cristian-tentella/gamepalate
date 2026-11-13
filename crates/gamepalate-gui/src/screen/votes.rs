@@ -44,11 +44,6 @@ const LIST: Id = Id::new("votes-list");
 const SEARCH: Id = Id::new("votes-search");
 const LIST_WIDTH: f32 = 340.0;
 const ROW_HEIGHT: f32 = 32.0;
-const HEADER_WIDTH: f32 = 230.0;
-const HEADER_HEIGHT: f32 = HEADER_WIDTH * 215.0 / 460.0;
-const TOP_HEIGHT: f32 = 160.0;
-const MIN_SHOT_WIDTH: f32 = 480.0;
-const CONTENT_SPACING: f32 = 18.0;
 const SCROLLBAR_GAP: f32 = 12.0;
 const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–4.";
 
@@ -442,12 +437,6 @@ impl Votes {
     }
 
     fn details<'a>(&'a self, game: &'a VotedGame, size: Size, scale: f32) -> Element<'a, Message> {
-        let shot_width = showcase::screenshot_width(
-            size.width - SCROLLBAR_GAP,
-            size.height - TOP_HEIGHT - CONTENT_SPACING,
-            MIN_SHOT_WIDTH,
-            showcase::max_screenshot_width(scale),
-        );
         let today = jiff::Zoned::now().date();
         let price = match &game.price {
             Some(price) => game::price_row(price, self.gamepalate.currency(), game::PRICE_GAP),
@@ -464,46 +453,45 @@ impl Votes {
         .size(font::BAR_SIZE)
         .style(style::muted)
         .on_link_click(never);
-        let info = column![game::title(&game.name), voted]
-            .push(game.reviews.as_ref().map(game::reviews))
-            .push(price)
-            .spacing(10)
-            .width(Fill);
-        let top = row![
-            game::with_bet(
-                self.showcase
-                    .header(game.id, HEADER_WIDTH, HEADER_HEIGHT)
-                    .map(Message::Showcase),
-                game.vote.bet.then(|| self.gamepalate.bet_every()),
-            ),
-            info,
-            // Here the links leave the row of the votes all its width.
-            game::header_links(HEADER_HEIGHT, |link| Some(Message::Open(link))),
-        ]
-        .spacing(20)
-        .align_y(Center);
+        let showcase = &self.showcase;
+        let bet = game.vote.bet.then(|| self.gamepalate.bet_every());
+        let links: Element<'a, Message> =
+            game::link_buttons(font::NOTE_SIZE, |link| Some(Message::Open(link))).into();
 
-        let content = column![
-            top,
-            self.showcase
-                .media(game.id, shot_width, shot_width * 9.0 / 16.0)
-                .map(Message::Showcase),
-        ]
-        .push(
-            self.showcase
-                .facts(game.id, &self.showcase.used_tags())
-                .map(|facts| facts.map(Message::Showcase)),
+        game::body(
+            game::Body {
+                heading: column![game::title(&game.name), voted].spacing(4).into(),
+                figures: row![]
+                    .push(game.reviews.as_ref().map(game::reviews))
+                    .push(price)
+                    .spacing(28)
+                    .into(),
+                gallery: Box::new(move |width, height| {
+                    showcase
+                        .gallery(game.id, width, height)
+                        .map(Message::Showcase)
+                }),
+                header: Box::new(move |width, height| {
+                    game::with_bet(
+                        showcase
+                            .header(game.id, width, height)
+                            .map(Message::Showcase),
+                        bet,
+                    )
+                }),
+                side: [
+                    showcase.description(game.id),
+                    showcase.facts(game.id, &showcase.used_tags()),
+                ]
+                .into_iter()
+                .flatten()
+                .map(|part| part.map(Message::Showcase))
+                .chain([links])
+                .collect(),
+            },
+            size,
+            showcase::max_screenshot_width(scale),
         )
-        .spacing(CONTENT_SPACING)
-        .max_width(shot_width);
-
-        scrollable(
-            container(content)
-                .center_x(Fill)
-                .padding(padding::right(SCROLLBAR_GAP)),
-        )
-        .height(Fill)
-        .into()
     }
 
     fn vote_row(&self, width: f32) -> Element<'_, Message> {

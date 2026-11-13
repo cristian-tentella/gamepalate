@@ -126,19 +126,6 @@ pub fn key_action(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// A key action fainter than the others, for links that sit beside the content.
-pub fn muted_action(theme: &Theme, status: button::Status) -> button::Style {
-    let text_color = match status {
-        button::Status::Hovered | button::Status::Pressed => faded(theme, 0.85),
-        button::Status::Active | button::Status::Disabled => faded(theme, MUTED),
-    };
-
-    button::Style {
-        text_color,
-        ..button::Style::default()
-    }
-}
-
 pub fn muted_keycap(theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(faded(theme, MUTED)),

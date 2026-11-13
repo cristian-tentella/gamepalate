@@ -2,13 +2,14 @@ use std::process::Command;
 
 use gamepalate_app::{Currency, LATER_DAYS, Price, Reviews, Vote, VoteKind};
 use iced::{
-    Center, Element, Fill, Left, Length, never, padding,
+    Center, Element, Fill, Length, Size, never, padding,
     widget::{
-        Container, Row, button, column, container, rich_text, row, rule, space, span, stack, text,
-        tooltip,
+        Container, Row, button, column, container, rich_text, row, rule, scrollable, span, stack,
+        text, tooltip,
     },
 };
 
+use super::showcase;
 use crate::{font, format, style};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -55,6 +56,18 @@ const KEY_SPACING: f32 = 6.0;
 const TITLE_LINE_HEIGHT: f32 = 1.1;
 const BET_INSET: f32 = 8.0;
 const BADGE_PADDING: f32 = 2.0;
+/// The column beside the screenshots.
+const SIDE_WIDTH: f32 = 340.0;
+/// Below this width the column goes under the screenshots.
+const BESIDE_MIN_WIDTH: f32 = 900.0;
+/// The heading above the screenshots: the name and two lines.
+const HEADING_HEIGHT: f32 = 84.0;
+/// The screenshots shrink down to this to fit the height.
+const MIN_SHOT_WIDTH: f32 = 240.0;
+const BODY_SPACING: f32 = 18.0;
+const BODY_GAP: f32 = 24.0;
+const SIDE_SPACING: f32 = 14.0;
+const SCROLLBAR_GAP: f32 = 12.0;
 pub const PRICE_GAP: f32 = 4.0;
 const COMPACT_VOTE_SIZE: f32 = 14.0;
 const VOTE_INSET: f32 = 16.0;
@@ -361,52 +374,125 @@ pub fn vote_width(available: f32, beside: f32) -> Length {
     }
 }
 
-/// The links as a muted column, from the top to the bottom of the header image.
-pub fn header_links<'a, Message: Clone + 'a>(
-    height: f32,
-    on_press: impl Fn(Link) -> Option<Message>,
-) -> Element<'a, Message> {
-    let link = |key: &'a str, label: &'a str, link: Link| {
-        let keycap = keycap(key).style(style::muted_keycap);
-        button(
-            row![keycap, text(label).size(font::NOTE_SIZE)]
-                .spacing(KEY_SPACING)
-                .align_y(Center),
-        )
-        .padding(0)
-        .style(style::muted_action)
-        .on_press_maybe(on_press(link))
-    };
-
-    column![
-        link("Q", "Steam ↗", Link::Steam),
-        space().height(Fill),
-        link("W", "Eneba ↗", Link::Eneba),
-        space().height(Fill),
-        link("E", "HLTB ↗", Link::Hltb),
-    ]
-    .height(height)
-    .align_x(Left)
-    .into()
-}
-
 pub fn links<'a, Message: Clone + 'a>(
     on_press: impl Fn(Link) -> Option<Message>,
 ) -> Element<'a, Message> {
+    row![style::divider(), link_buttons(font::BAR_SIZE, on_press)]
+        .spacing(ACTION_SPACING)
+        .align_y(Center)
+        .into()
+}
+
+/// Steam, Eneba and HLTB with their keys, in a row.
+pub fn link_buttons<'a, Message: Clone + 'a>(
+    size: f32,
+    on_press: impl Fn(Link) -> Option<Message>,
+) -> Row<'a, Message> {
     row![
-        style::divider(),
-        key_button("Q", "Steam ↗", font::BAR_SIZE, on_press(Link::Steam)),
-        key_button("W", "Eneba ↗", font::BAR_SIZE, on_press(Link::Eneba)),
-        key_button("E", "HLTB ↗", font::BAR_SIZE, on_press(Link::Hltb)),
+        key_button("Q", "Steam ↗", size, on_press(Link::Steam)),
+        key_button("W", "Eneba ↗", size, on_press(Link::Eneba)),
+        key_button("E", "HLTB ↗", size, on_press(Link::Hltb)),
     ]
     .spacing(ACTION_SPACING)
     .align_y(Center)
+}
+
+/// The parts of one game's page, which [`body`] lays out.
+pub struct Body<'a, Message> {
+    /// The name and the lines under it.
+    pub heading: Element<'a, Message>,
+    /// The reviews and the price, right of the heading.
+    pub figures: Element<'a, Message>,
+    /// The screenshots, at the width and height given.
+    pub gallery: Box<dyn FnOnce(f32, f32) -> Element<'a, Message> + 'a>,
+    /// The header image, at the width and height given.
+    pub header: Box<dyn FnOnce(f32, f32) -> Element<'a, Message> + 'a>,
+    /// What goes under the header image: the description, the facts.
+    pub side: Vec<Element<'a, Message>>,
+}
+
+/// One game in `size`: the heading and the figures on top, then the screenshots with a column
+/// beside them, or above it when the room is narrow. The screenshots shrink until they fit the
+/// height.
+pub fn body<'a, Message: 'a>(
+    parts: Body<'a, Message>,
+    size: Size,
+    max_shot_width: f32,
+) -> Element<'a, Message> {
+    let (beside, shot_width) = body_layout(size, max_shot_width);
+    let side_width = if beside { SIDE_WIDTH } else { shot_width };
+    let header_width = side_width.min(SIDE_WIDTH);
+    let side = column![(parts.header)(header_width, header_width * 215.0 / 460.0)]
+        .extend(parts.side)
+        .spacing(SIDE_SPACING)
+        .width(side_width);
+    let gallery = (parts.gallery)(shot_width, shot_width * 9.0 / 16.0);
+    let top = row![container(parts.heading).width(Fill), parts.figures].spacing(BODY_GAP);
+
+    let content: Element<'a, Message> = if beside {
+        column![top, row![gallery, side].spacing(BODY_GAP)]
+            .spacing(BODY_SPACING)
+            .width(shot_width + BODY_GAP + SIDE_WIDTH)
+            .into()
+    } else {
+        column![top, gallery, side]
+            .spacing(BODY_SPACING)
+            .width(shot_width)
+            .into()
+    };
+
+    scrollable(
+        container(content)
+            .center_x(Fill)
+            .padding(padding::right(SCROLLBAR_GAP)),
+    )
+    .height(Fill)
     .into()
+}
+
+/// Whether the column goes beside the screenshots, and how wide the screenshots are.
+fn body_layout(size: Size, max_shot_width: f32) -> (bool, f32) {
+    let beside = size.width >= BESIDE_MIN_WIDTH;
+    let room = size.width - SCROLLBAR_GAP - if beside { SIDE_WIDTH + BODY_GAP } else { 0.0 };
+    let width = showcase::screenshot_width(
+        room,
+        size.height - HEADING_HEIGHT - BODY_SPACING,
+        MIN_SHOT_WIDTH,
+        max_shot_width,
+    );
+
+    (beside, width)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wide_room_puts_the_column_beside_the_screenshots() {
+        let (beside, width) = body_layout(Size::new(1100.0, 900.0), 1200.0);
+
+        assert!(beside);
+        assert_eq!(width, 1100.0 - SCROLLBAR_GAP - SIDE_WIDTH - BODY_GAP);
+    }
+
+    #[test]
+    fn a_narrow_room_stacks_the_column_under_the_screenshots() {
+        let (beside, width) = body_layout(Size::new(700.0, 900.0), 1200.0);
+
+        assert!(!beside);
+        assert_eq!(width, 700.0 - SCROLLBAR_GAP);
+    }
+
+    #[test]
+    fn the_screenshots_shrink_to_fit_a_short_room() {
+        let (_, tall) = body_layout(Size::new(1100.0, 900.0), 1200.0);
+        let (_, short) = body_layout(Size::new(1100.0, 400.0), 1200.0);
+        let (_, tiny) = body_layout(Size::new(1100.0, 150.0), 1200.0);
+
+        assert!(short < tall);
+        assert_eq!(tiny, MIN_SHOT_WIDTH);
+    }
 
     #[test]
     fn beside_the_reviews_the_price_lines_up_with_them() {
