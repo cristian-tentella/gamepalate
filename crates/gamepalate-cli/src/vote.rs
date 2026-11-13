@@ -60,7 +60,7 @@ impl VoteChoice {
 impl VoteArgs {
     fn vote(&self, date: String, at: Timestamp) -> anyhow::Result<Vote> {
         let kind = self.vote.kind();
-        if self.genre_ok && kind != VoteKind::NotForMe {
+        if self.genre_ok && !kind.is_no() {
             anyhow::bail!("--genre-ok goes only with not_for_me");
         }
         Ok(Vote {

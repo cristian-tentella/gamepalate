@@ -194,16 +194,7 @@ mod tests {
             game(10, &["Voted"], &["Voted"]),
         ]);
         let signals = signals(Vec::new(), &[]);
-        let votes = Votes::from([(
-            AppId(1),
-            Vote {
-                kind: VoteKind::WouldTry,
-                date: "2026-11-08".to_string(),
-                bet: false,
-                genre_ok: false,
-                at: None,
-            },
-        )]);
+        let votes = Votes::from([(AppId(1), Vote::new(VoteKind::WouldTry, "2026-11-08"))]);
 
         let liked = liked(&signals, &catalog);
 

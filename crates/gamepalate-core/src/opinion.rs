@@ -7,7 +7,7 @@ use crate::{
     creators::LikedCreators,
     game::Game,
     ids::{AppId, TagId},
-    votes::{VoteKind, Votes},
+    votes::Votes,
 };
 
 const MIN_TAG_GAMES: usize = 8;
@@ -61,11 +61,7 @@ fn training_rows<'a>(votes: &Votes, catalog: &'a Catalog) -> Vec<TrainingRow<'a>
     votes
         .iter()
         .filter_map(|(id, vote)| {
-            let label = match vote.kind {
-                VoteKind::WouldTry => 1.0,
-                VoteKind::NotForMe => 0.0,
-                _ => return None,
-            };
+            let label = vote.kind.label()?;
             let game = catalog.game(*id)?;
             Some(TrainingRow { game, label })
         })
@@ -306,7 +302,7 @@ mod tests {
         ids::AppId,
         region::Region,
         timestamp::Timestamp,
-        votes::Vote,
+        votes::{Vote, VoteKind},
     };
 
     fn game(id: u32) -> Game {
@@ -329,13 +325,7 @@ mod tests {
     }
 
     fn vote(kind: VoteKind) -> Vote {
-        Vote {
-            kind,
-            date: "2026-10-01".to_string(),
-            bet: false,
-            genre_ok: false,
-            at: None,
-        }
+        Vote::new(kind, "2026-10-01")
     }
 
     #[test]

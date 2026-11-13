@@ -89,7 +89,7 @@ impl Filter {
             Filter::Owned => !context.owned.contains(&game.id),
             Filter::FamilyGames => !context.family_games.contains(&game.id),
             Filter::Hidden => !context.corrections.hidden_games.contains(&game.id),
-            Filter::NotForMe => context.vote_kind(game.id) != Some(VoteKind::NotForMe),
+            Filter::NotForMe => !context.vote_kind(game.id).is_some_and(VoteKind::is_no),
             Filter::BannedTags => !context
                 .corrections
                 .banned_tags

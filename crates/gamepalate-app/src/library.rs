@@ -436,16 +436,7 @@ mod tests {
     }
 
     fn votes() -> Votes {
-        Votes::from([(
-            AppId(6),
-            Vote {
-                kind: VoteKind::WouldTry,
-                date: "2026-10-01".to_string(),
-                bet: false,
-                genre_ok: false,
-                at: None,
-            },
-        )])
+        Votes::from([(AppId(6), Vote::new(VoteKind::WouldTry, "2026-10-01"))])
     }
 
     fn corrections() -> Corrections {

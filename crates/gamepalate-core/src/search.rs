@@ -915,13 +915,7 @@ mod tests {
             wishlist: Vec::new(),
             followed: Vec::new(),
         };
-        let vote = |kind| Vote {
-            kind,
-            date: "2026-11-10".to_string(),
-            at: None,
-            bet: false,
-            genre_ok: false,
-        };
+        let vote = |kind| Vote::new(kind, "2026-11-10");
         let votes: Votes = (10..20)
             .map(|id| (AppId(id), vote(VoteKind::WouldTry)))
             .chain((20..30).map(|id| (AppId(id), vote(VoteKind::NotForMe))))
@@ -1034,11 +1028,8 @@ mod tests {
     fn a_later_comes_back_once_its_days_are_over() {
         let day = 24 * 60 * 60 * 1000;
         let later = |at: i64| Vote {
-            kind: VoteKind::Later,
-            date: "2026-10-01".to_string(),
             at: Some(Timestamp(at)),
-            bet: false,
-            genre_ok: false,
+            ..Vote::new(VoteKind::Later, "2026-10-01")
         };
         let votes = Votes::from([
             (AppId(2), later(NOW.0 - day)),

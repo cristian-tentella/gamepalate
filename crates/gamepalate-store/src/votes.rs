@@ -152,7 +152,8 @@ fn votes_text(votes: &Votes, name: impl Fn(AppId) -> Option<String>) -> String {
     text
 }
 
-fn kind_name(kind: VoteKind) -> &'static str {
+/// The name of the vote in `votes.toml`, which the CLI uses too.
+pub fn kind_name(kind: VoteKind) -> &'static str {
     match kind {
         VoteKind::WouldTry => "would_try",
         VoteKind::Later => "later",
@@ -234,22 +235,13 @@ mod tests {
 
         assert_eq!(
             votes[&AppId(1234)],
-            Vote {
-                kind: VoteKind::WouldTry,
-                date: "2026-10-07".to_string(),
-                at: None,
-                bet: false,
-                genre_ok: false,
-            }
+            Vote::new(VoteKind::WouldTry, "2026-10-07")
         );
         assert_eq!(
             votes[&AppId(5678)],
             Vote {
-                kind: VoteKind::NotForMe,
-                date: "2026-10-08".to_string(),
-                at: None,
                 bet: true,
-                genre_ok: false,
+                ..Vote::new(VoteKind::NotForMe, "2026-10-08")
             }
         );
     }
@@ -260,23 +252,12 @@ mod tests {
         votes.insert(
             AppId(10),
             Vote {
-                kind: VoteKind::Later,
-                date: "2026-11-07".to_string(),
                 at: Some(Timestamp(1_762_500_000_000)),
                 bet: true,
-                genre_ok: false,
+                ..Vote::new(VoteKind::Later, "2026-11-07")
             },
         );
-        votes.insert(
-            AppId(20),
-            Vote {
-                kind: VoteKind::NotForMe,
-                date: "2026-10-07".to_string(),
-                at: None,
-                bet: false,
-                genre_ok: false,
-            },
-        );
+        votes.insert(AppId(20), Vote::new(VoteKind::NotForMe, "2026-10-07"));
 
         let text = votes_text(&votes, |_| None);
 

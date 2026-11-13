@@ -151,11 +151,9 @@ mod tests {
             votes,
             AppId(620),
             Vote {
-                kind: VoteKind::WouldTry,
-                date: "2026-10-30".to_string(),
                 at: Some(Timestamp(1_762_500_000_000)),
                 bet: true,
-                genre_ok: false,
+                ..Vote::new(VoteKind::WouldTry, "2026-10-30")
             },
             |_| Some("Portal 2".to_string()),
         )
@@ -197,23 +195,14 @@ mod tests {
         cast(
             &mut votes,
             AppId(1),
-            Vote {
-                kind: VoteKind::Later,
-                date: "2026-10-01".to_string(),
-                at: None,
-                bet: false,
-                genre_ok: false,
-            },
+            Vote::new(VoteKind::Later, "2026-10-01"),
         );
         cast(
             &mut votes,
             AppId(2),
             Vote {
-                kind: VoteKind::WouldTry,
-                date: "2026-10-30".to_string(),
-                at: None,
                 bet: true,
-                genre_ok: false,
+                ..Vote::new(VoteKind::WouldTry, "2026-10-30")
             },
         );
         let mut catalog_game = Game {
@@ -259,13 +248,7 @@ mod tests {
         cast(
             &mut votes,
             AppId(72850),
-            Vote {
-                kind: VoteKind::NotForMe,
-                date: "2026-10-01".to_string(),
-                at: None,
-                bet: false,
-                genre_ok: false,
-            },
+            Vote::new(VoteKind::NotForMe, "2026-10-01"),
         );
         let off_catalog = OffCatalogGames::from([(
             AppId(72850),

@@ -1,11 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{
-    config::SignalsConfig,
-    ids::AppId,
-    signals::Signals,
-    votes::{VoteKind, Votes},
-};
+use crate::{config::SignalsConfig, ids::AppId, signals::Signals, votes::Votes};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HoursSource {
@@ -91,10 +86,7 @@ pub fn hours_by_source(
         );
     }
 
-    for (&id, _) in votes
-        .iter()
-        .filter(|(_, vote)| vote.kind == VoteKind::WouldTry)
-    {
+    for (&id, _) in votes.iter().filter(|(_, vote)| vote.kind.is_yes()) {
         keep_max_hours(
             &mut hours,
             id,
@@ -121,7 +113,7 @@ mod tests {
     use crate::{
         signals::{LibraryGame, RecentGame},
         timestamp::Timestamp,
-        votes::Vote,
+        votes::{Vote, VoteKind},
     };
 
     fn signals() -> Signals {
@@ -156,13 +148,7 @@ mod tests {
     }
 
     fn vote(kind: VoteKind) -> Vote {
-        Vote {
-            kind,
-            date: "2026-10-01".to_string(),
-            bet: false,
-            genre_ok: false,
-            at: None,
-        }
+        Vote::new(kind, "2026-10-01")
     }
 
     #[test]

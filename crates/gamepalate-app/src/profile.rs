@@ -389,13 +389,7 @@ mod tests {
     }
 
     fn vote(kind: VoteKind) -> Vote {
-        Vote {
-            kind,
-            date: "2026-10-01".to_string(),
-            bet: false,
-            genre_ok: false,
-            at: None,
-        }
+        Vote::new(kind, "2026-10-01")
     }
 
     fn votes() -> Votes {
