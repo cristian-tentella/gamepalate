@@ -25,6 +25,8 @@ use crate::{
 };
 
 const REFRESH: char = '\u{E5D5}';
+const NEVER_UPDATED: &str =
+    "Your catalog doesn't update on its own. Download it from Steam, 15-25 minutes.";
 const CANCEL: char = '\u{E5CD}';
 
 #[derive(Debug, Default)]
@@ -227,10 +229,23 @@ pub(super) fn refresh_button<'a>(
     )
 }
 
-/// The dot on the refresh button: an update to resume, or one that stopped at startup. A
-/// renewal that is due needs none, since it starts by itself at startup.
-pub(super) fn refresh_dot(pending: Option<PendingUpdate>, startup_error: Option<&str>) -> bool {
-    pending.is_some() || startup_error.is_some()
+/// The dot on the refresh button: an update to resume, one that stopped at startup, or a catalog
+/// that came from someone else and never updates by itself. A renewal that is due needs none,
+/// since it starts by itself at startup.
+pub(super) fn refresh_dot(
+    pending: Option<PendingUpdate>,
+    startup_error: Option<&str>,
+    never_updated: bool,
+) -> bool {
+    pending.is_some() || startup_error.is_some() || never_updated
+}
+
+pub(super) fn second_line(never_updated: bool, times: String) -> String {
+    if never_updated {
+        NEVER_UPDATED.to_string()
+    } else {
+        times
+    }
 }
 
 fn two_lines(first: &str, second: &str) -> String {
@@ -264,6 +279,7 @@ impl App {
             Message::ArchiveRead(start, result) => match result {
                 Ok(state) => {
                     self.renewal_due = state.renewal_due;
+                    self.never_updated = state.updated_at.is_none();
                     match start {
                         Start::Startup => {
                             self.run_refresh(startup_plan(&state, wall_clock()), Start::Startup)
@@ -634,9 +650,27 @@ mod tests {
             responses: 3,
         };
 
-        assert!(!refresh_dot(None, None));
-        assert!(refresh_dot(Some(pending), None));
-        assert!(refresh_dot(None, Some("Steam is not responding")));
+        assert!(!refresh_dot(None, None, false));
+        assert!(refresh_dot(Some(pending), None, false));
+        assert!(refresh_dot(None, Some("Steam is not responding"), false));
+    }
+
+    #[test]
+    fn a_catalog_without_a_completed_update_has_the_dot_and_says_why() {
+        let times = "Signals today 10:32 · Prices 13 Nov".to_string();
+
+        assert!(refresh_dot(None, None, true));
+        assert_eq!(
+            two_lines(
+                &refresh_tooltip(None, false, None),
+                &second_line(true, times.clone())
+            ),
+            "Update prices and Signals\nYour catalog doesn't update on its own. Download it from \
+            Steam, 15-25 minutes."
+        );
+
+        assert!(!refresh_dot(None, None, false));
+        assert_eq!(second_line(false, times.clone()), times);
     }
 
     #[test]

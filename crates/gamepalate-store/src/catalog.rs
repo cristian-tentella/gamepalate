@@ -92,11 +92,28 @@ pub fn load_catalog(path: &Path) -> Result<Catalog, CatalogError> {
         return Ok(catalog);
     }
 
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let catalog = read_catalog(&conn)?;
+    let catalog = read_catalog_file(path)?;
     write_cache(&cache, &catalog);
 
     Ok(catalog)
+}
+
+pub fn read_catalog_file(path: &Path) -> Result<Catalog, CatalogError> {
+    if !path.is_file() {
+        return Err(CatalogError::NotFound(path.to_path_buf()));
+    }
+
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    read_catalog(&conn)
+}
+
+pub fn read_catalog_freshness(path: &Path) -> Result<Freshness, CatalogError> {
+    if !path.is_file() {
+        return Err(CatalogError::NotFound(path.to_path_buf()));
+    }
+
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    Ok(read_freshness(&conn)?.0)
 }
 
 fn read_cache(cache: &Path, sqlite: &Path) -> Option<Catalog> {
@@ -788,6 +805,24 @@ mod tests {
             read_cache(&cache, &sqlite).unwrap().currency,
             dollar_catalog().currency
         );
+    }
+
+    #[test]
+    fn read_catalog_file_leaves_no_cache_or_other_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let sqlite = dir.path().join("import.sqlite");
+        write_catalog(&sqlite, &test_catalog(), &HashMap::new()).unwrap();
+
+        let catalog = read_catalog_file(&sqlite).unwrap();
+        let freshness = read_catalog_freshness(&sqlite).unwrap();
+
+        assert_eq!(catalog.games().len(), 3);
+        assert_eq!(freshness, catalog.freshness);
+        let files: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(files, ["import.sqlite"]);
     }
 
     #[test]

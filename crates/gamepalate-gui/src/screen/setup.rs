@@ -1,18 +1,20 @@
 use std::{
     cmp::Ordering,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use gamepalate_app::{
-    AppId, Gamepalate, SteamError,
+    AppId, Gamepalate, Region, SteamError, Timestamp,
     account::{ConnectError, connect, parse_profile},
+    catalog_file::{CatalogFileError, ImportedCatalog, import_catalog},
     ready::{ReadyCheck, check_ready},
     setup::{Covers, FirstRun, Part, error_chain, most_played},
     update::download_catalog,
 };
 use iced::{
-    Center, ContentFit, Element, Fill, Task,
+    Center, ContentFit, Element, Event, Fill, Subscription, Task, event,
     futures::{SinkExt, channel::mpsc},
     mouse, padding, stream,
     widget::{
@@ -32,6 +34,7 @@ use crate::{
 };
 
 const CHECK: char = '\u{E668}';
+const REFRESH: char = '\u{E5D5}';
 const WIDTH: f32 = 760.0;
 const LABEL_WIDTH: f32 = 96.0;
 const STEP_MARK: f32 = 28.0;
@@ -51,12 +54,16 @@ pub(crate) const KEY_DOMAIN_NOTE: &str =
     "Steam asks for a domain name. Any will do, like localhost.";
 pub(crate) const PROFILE_PLACEHOLDER: &str = "Steam profile address or Steam ID";
 const FIND_STEAM_ID: &str = "Open your profile on steamcommunity.com and copy the address";
+const DROP_CATALOG: &str = "Have a catalog file? Drop it on this window.";
+const IMPORTING: &str = "Importing the catalog…";
+const DROP_TO_IMPORT: &str = "Drop to import";
 
 pub struct Setup {
     first_run: FirstRun,
     error: Option<String>,
     account: Account,
     download: Download,
+    import: Import,
     ready: Option<Ready>,
     covers: Option<Arc<Covers>>,
     played: Vec<Played>,
@@ -118,6 +125,20 @@ struct Download {
 }
 
 #[derive(Debug, Default)]
+struct Import {
+    running: bool,
+    hovering: bool,
+    result: Option<Result<ImportedCatalog, String>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImportPlace {
+    Account,
+    Catalog,
+    Problems,
+}
+
+#[derive(Debug, Default)]
 struct Account {
     steam_id: String,
     key: String,
@@ -139,6 +160,9 @@ pub enum Message {
     Download,
     Progress(gamepalate_app::update::Progress),
     Downloaded(Result<(), String>),
+    Hovering(bool),
+    Import(PathBuf),
+    Imported(Result<ImportedCatalog, String>),
     Prepare(bool),
     Prepared(Result<ReadyCheck, String>),
     OpenLibrary,
@@ -159,8 +183,18 @@ pub fn start(first_run: FirstRun) -> Result<Gamepalate, Box<Setup>> {
         return Err(Box::new(Setup::new(first_run, None)));
     }
 
-    Gamepalate::open(first_run.data_dir.clone())
-        .map_err(|error| Box::new(Setup::new(first_run, Some(error_chain(&error)))))
+    Gamepalate::open(first_run.data_dir.clone()).map_err(|error| {
+        let message = error_chain(&error);
+        Box::new(if error.unreadable_catalog() {
+            let first_run = FirstRun {
+                catalog: Part::Invalid(message),
+                ..first_run
+            };
+            Setup::new(first_run, None)
+        } else {
+            Setup::new(first_run, Some(message))
+        })
+    })
 }
 
 impl Setup {
@@ -195,6 +229,7 @@ impl Setup {
             error,
             account,
             download: Download::default(),
+            import: Import::default(),
             ready: None,
             covers: Covers::new().ok().map(Arc::new),
             played,
@@ -204,7 +239,7 @@ impl Setup {
 
     pub fn begin(&mut self) -> Task<Message> {
         let covers = self.load_covers();
-        if current_step(&self.account, &self.first_run) != Step::Catalog {
+        if !downloads_at_start(&self.account, &self.first_run) {
             return covers;
         }
 
@@ -239,7 +274,8 @@ impl Setup {
 
     pub fn update(&mut self, message: Message) -> Action {
         match message {
-            Message::CheckAgain | Message::Connected(Ok(())) => self.check_again(),
+            Message::CheckAgain => self.check_again(),
+            Message::Connected(Ok(())) => self.connected(),
             Message::OpenFolder => {
                 if let Some(dir) = &self.first_run.data_dir {
                     let _ = std::fs::create_dir_all(dir);
@@ -279,6 +315,15 @@ impl Setup {
                 self.download = Download::default();
                 self.prepare(false)
             }
+            Message::Hovering(hovering) => {
+                self.import.hovering = hovering;
+                Action::None
+            }
+            Message::Import(file) => {
+                self.import.hovering = false;
+                self.import(file)
+            }
+            Message::Imported(result) => self.imported(result),
             Message::Prepare(read_signals_again) => self.prepare(read_signals_again),
             Message::Prepared(Ok(check)) if !check.empty_profile => self.check_again(),
             Message::Prepared(result) => {
@@ -346,7 +391,10 @@ impl Setup {
         let Some(dir) = self.first_run.data_dir.clone() else {
             return Action::None;
         };
-        if self.download.running || !account_done(&self.account, &self.first_run) {
+        if self.download.running
+            || self.import.running
+            || !account_done(&self.account, &self.first_run)
+        {
             return Action::None;
         }
         self.download = Download {
@@ -379,8 +427,66 @@ impl Setup {
         }
     }
 
+    fn connected(&mut self) -> Action {
+        let first_run = FirstRun::check(None);
+        if !prepares_after_connect(&first_run) {
+            return self.check_again();
+        }
+
+        *self = Setup::new(first_run, None);
+        let covers = self.begin();
+        match self.prepare(false) {
+            Action::Run(prepare) => Action::Run(Task::batch([covers, prepare])),
+            Action::None | Action::Open(_) => Action::Run(covers),
+        }
+    }
+
+    fn import_place(&self) -> Option<ImportPlace> {
+        import_place(
+            current_step(&self.account, &self.first_run),
+            &self.first_run,
+            &self.download,
+        )
+    }
+
+    fn import(&mut self, file: PathBuf) -> Action {
+        let Some(dir) = self.first_run.data_dir.clone() else {
+            return Action::None;
+        };
+        if !can_import(self.import_place(), &self.import, &self.account) {
+            return Action::None;
+        }
+        self.import = Import {
+            running: true,
+            ..Import::default()
+        };
+
+        Action::Run(Task::perform(
+            async move { import_catalog(&dir, &file).map_err(|error| import_error_text(&error)) },
+            Message::Imported,
+        ))
+    }
+
+    fn imported(&mut self, result: Result<ImportedCatalog, String>) -> Action {
+        let succeeded = result.is_ok();
+        self.import = Import {
+            result: Some(result),
+            ..Import::default()
+        };
+        if !succeeded {
+            return Action::None;
+        }
+
+        self.first_run = FirstRun::check(None);
+        if account_done(&self.account, &self.first_run) {
+            self.prepare(false)
+        } else {
+            Action::None
+        }
+    }
+
     fn connect(&mut self) -> Action {
-        if !can_connect(&self.account, &self.first_run) {
+        if self.import.running || !can_connect(&self.account, &self.first_run) {
             return Action::None;
         }
         let (Some(dir), Ok(profile)) = (
@@ -403,6 +509,10 @@ impl Setup {
         ))
     }
 
+    pub fn subscription() -> Subscription<Message> {
+        event::listen_with(drop_message)
+    }
+
     pub fn view(&self) -> Element<'_, Message> {
         let step = current_step(&self.account, &self.first_run);
         let card = container(self.step_view(step))
@@ -414,7 +524,12 @@ impl Setup {
             container(
                 column![]
                     .push(self.problems_view())
-                    .push(steps_view(step, &self.download))
+                    .push(steps_view(
+                        step,
+                        &self.account,
+                        &self.first_run,
+                        &self.download,
+                    ))
                     .push(
                         self.question
                             .as_ref()
@@ -424,6 +539,10 @@ impl Setup {
                             }),
                     )
                     .push(card)
+                    .push(
+                        (self.import_place() == Some(ImportPlace::Account))
+                            .then(|| self.import_view()),
+                    )
                     .push(self.most_played_view(step))
                     .spacing(28)
                     .max_width(WIDTH),
@@ -458,6 +577,10 @@ impl Setup {
                         .style(text::danger)
                         .into()
                 }))
+                .push(
+                    (self.import_place() == Some(ImportPlace::Problems))
+                        .then(|| self.import_view()),
+                )
                 .push(actions)
                 .spacing(12),
             )
@@ -571,7 +694,10 @@ impl Setup {
             )
             .style(style::primary)
             .padding([8, 20])
-            .on_press_maybe(can_connect(account, &self.first_run).then_some(Message::Connect)),
+            .on_press_maybe(
+                (!self.import.running && can_connect(account, &self.first_run))
+                    .then_some(Message::Connect),
+            ),
         ]
         .spacing(16)
         .align_y(Center);
@@ -644,13 +770,59 @@ impl Setup {
         ]
         .push(error)
         .push(
-            button(text(label).size(font::BAR_SIZE))
-                .style(style::primary)
-                .padding([8, 20])
-                .on_press(Message::Download),
+            row![
+                button(text(label).size(font::BAR_SIZE))
+                    .style(style::primary)
+                    .padding([8, 20])
+                    .on_press_maybe((!self.import.running).then_some(Message::Download)),
+            ]
+            .push((self.import_place() == Some(ImportPlace::Catalog)).then(|| self.import_view()))
+            .spacing(16)
+            .align_y(Center),
         )
         .spacing(12)
         .into()
+    }
+
+    fn import_view(&self) -> Element<'_, Message> {
+        let line = if self.import.running {
+            note(IMPORTING)
+        } else if self.import.hovering {
+            text(DROP_TO_IMPORT)
+                .size(font::NOTE_SIZE)
+                .style(style::accent)
+        } else {
+            note(DROP_CATALOG)
+        };
+        let result: Option<Element<'_, Message>> = match &self.import.result {
+            Some(Ok(imported)) => {
+                let now = Timestamp(jiff::Timestamp::now().as_millisecond());
+                let (before, after) =
+                    imported_note(&format::day(imported.prices_at, now), imported.region);
+                Some(
+                    row![
+                        note(before),
+                        text(REFRESH)
+                            .font(font::ICONS)
+                            .size(font::icon(font::NOTE_SIZE))
+                            .style(style::muted),
+                        note(after),
+                    ]
+                    .spacing(4)
+                    .align_y(Center)
+                    .into(),
+                )
+            }
+            Some(Err(error)) => Some(
+                text(error.clone())
+                    .size(font::NOTE_SIZE)
+                    .style(text::danger)
+                    .into(),
+            ),
+            None => None,
+        };
+
+        column![line].push(result).spacing(4).into()
     }
 
     fn progress_view(&self) -> Element<'_, Message> {
@@ -781,12 +953,70 @@ fn current_step(account: &Account, first_run: &FirstRun) -> Step {
     }
 }
 
-fn step_state(step: Step, current: Step) -> StepState {
+fn step_complete(step: Step, account: &Account, first_run: &FirstRun) -> bool {
+    match step {
+        Step::Account => account_done(account, first_run),
+        Step::Catalog => first_run.catalog == Part::Present,
+        Step::Profile => false,
+    }
+}
+
+fn step_state(step: Step, current: Step, complete: bool) -> StepState {
     match step.cmp(&current) {
         Ordering::Less => StepState::Done,
         Ordering::Equal => StepState::Current,
+        Ordering::Greater if complete => StepState::Done,
         Ordering::Greater => StepState::Next,
     }
+}
+
+fn downloads_at_start(account: &Account, first_run: &FirstRun) -> bool {
+    current_step(account, first_run) == Step::Catalog && first_run.catalog == Part::Missing
+}
+
+fn prepares_after_connect(first_run: &FirstRun) -> bool {
+    first_run.catalog == Part::Present && first_run.steam_id == Part::Present && first_run.api_key
+}
+
+fn import_place(step: Step, first_run: &FirstRun, download: &Download) -> Option<ImportPlace> {
+    if download.running || first_run.data_dir.is_none() {
+        return None;
+    }
+    if matches!(first_run.catalog, Part::Invalid(_)) {
+        return Some(ImportPlace::Problems);
+    }
+    match step {
+        Step::Account => Some(ImportPlace::Account),
+        Step::Catalog if download.error.is_some() => Some(ImportPlace::Catalog),
+        Step::Catalog | Step::Profile => None,
+    }
+}
+
+fn drop_message(event: Event, _: event::Status, _: iced::window::Id) -> Option<Message> {
+    match event {
+        Event::Window(iced::window::Event::FileHovered(_)) => Some(Message::Hovering(true)),
+        Event::Window(iced::window::Event::FilesHoveredLeft) => Some(Message::Hovering(false)),
+        Event::Window(iced::window::Event::FileDropped(file)) => Some(Message::Import(file)),
+        _ => None,
+    }
+}
+
+fn can_import(place: Option<ImportPlace>, import: &Import, account: &Account) -> bool {
+    place.is_some() && !import.running && !account.connecting
+}
+
+fn import_error_text(error: &CatalogFileError) -> String {
+    match error {
+        CatalogFileError::NotACatalog(_) => error.to_string(),
+        _ => error_chain(error),
+    }
+}
+
+fn imported_note(day: &str, region: Region) -> (String, &'static str) {
+    (
+        format!("Catalog from {day}, prices for {region}. Press"),
+        "later to download your own.",
+    )
 }
 
 fn download_status(
@@ -850,6 +1080,11 @@ fn file_problems(first_run: &FirstRun, error: Option<&str>) -> Vec<String> {
     if first_run.data_dir.is_none() {
         problems.push("Could not find the user data folder. Set GAMEPALATE_DATA_DIR.".to_string());
     }
+    if let Part::Invalid(message) = &first_run.catalog {
+        problems.push(format!(
+            "gamepalate could not open the data files: {message}"
+        ));
+    }
     if let Part::Invalid(message) = &first_run.signals {
         problems.push(message.clone());
     }
@@ -859,18 +1094,23 @@ fn file_problems(first_run: &FirstRun, error: Option<&str>) -> Vec<String> {
     problems
 }
 
-fn steps_view<'a>(current: Step, download: &Download) -> Element<'a, Message> {
+fn steps_view<'a>(
+    current: Step,
+    account: &Account,
+    first_run: &FirstRun,
+    download: &Download,
+) -> Element<'a, Message> {
     let mut steps = row![].spacing(12).align_y(Center);
     for (index, step) in Step::ALL.into_iter().enumerate() {
+        let state = step_state(step, current, step_complete(step, account, first_run));
         if index > 0 {
             steps = steps.push(
                 container(column![])
                     .width(Fill)
                     .height(2)
-                    .style(style::step_line(step <= current)),
+                    .style(style::step_line(state != StepState::Next)),
             );
         }
-        let state = step_state(step, current);
         let label = step_label(index + 1, step, state);
         steps = steps.push(if changes_account(step, state, download) {
             change_account(label)
@@ -1039,10 +1279,285 @@ mod tests {
 
     #[test]
     fn the_steps_before_the_current_one_are_done() {
-        assert_eq!(step_state(Step::Account, Step::Catalog), StepState::Done);
-        assert_eq!(step_state(Step::Catalog, Step::Catalog), StepState::Current);
-        assert_eq!(step_state(Step::Profile, Step::Catalog), StepState::Next);
-        assert_eq!(step_state(Step::Account, Step::Account), StepState::Current);
+        assert_eq!(
+            step_state(Step::Account, Step::Catalog, true),
+            StepState::Done
+        );
+        assert_eq!(
+            step_state(Step::Catalog, Step::Catalog, false),
+            StepState::Current
+        );
+        assert_eq!(
+            step_state(Step::Profile, Step::Catalog, false),
+            StepState::Next
+        );
+        assert_eq!(
+            step_state(Step::Account, Step::Account, false),
+            StepState::Current
+        );
+    }
+
+    #[test]
+    fn an_imported_catalog_is_done_before_the_account() {
+        let without_account = FirstRun {
+            steam_id: Part::Missing,
+            api_key: false,
+            ..first_run()
+        };
+        let account = account("", "");
+        let current = current_step(&account, &without_account);
+
+        assert_eq!(current, Step::Account);
+        assert_eq!(
+            step_state(
+                Step::Catalog,
+                current,
+                step_complete(Step::Catalog, &account, &without_account)
+            ),
+            StepState::Done
+        );
+        assert_eq!(
+            step_state(
+                Step::Profile,
+                current,
+                step_complete(Step::Profile, &account, &without_account)
+            ),
+            StepState::Next
+        );
+        assert!(!downloads_at_start(&account, &without_account));
+    }
+
+    #[test]
+    fn only_a_missing_catalog_starts_the_download() {
+        let saved = account("76561198000000000", "");
+        let missing = FirstRun {
+            catalog: Part::Missing,
+            ..first_run()
+        };
+        let invalid = FirstRun {
+            catalog: Part::Invalid("no such table: games".to_string()),
+            ..first_run()
+        };
+
+        assert!(downloads_at_start(&saved, &missing));
+        assert!(!downloads_at_start(&saved, &invalid));
+        assert!(!downloads_at_start(&saved, &first_run()));
+    }
+
+    #[test]
+    fn connect_with_a_catalog_prepares_the_profile() {
+        let without_catalog = FirstRun {
+            catalog: Part::Missing,
+            ..first_run()
+        };
+
+        assert!(prepares_after_connect(&first_run()));
+        assert!(!prepares_after_connect(&without_catalog));
+        assert!(!prepares_after_connect(&FirstRun {
+            api_key: false,
+            ..first_run()
+        }));
+    }
+
+    #[test]
+    fn the_import_line_shows_where_a_catalog_can_go() {
+        let failed = Download {
+            error: Some("Steam is not responding".to_string()),
+            ..Download::default()
+        };
+        let running = Download {
+            running: true,
+            ..Download::default()
+        };
+        let without_catalog = FirstRun {
+            catalog: Part::Missing,
+            ..first_run()
+        };
+        let invalid = FirstRun {
+            catalog: Part::Invalid("no such table: games".to_string()),
+            ..first_run()
+        };
+
+        assert_eq!(
+            import_place(Step::Account, &without_catalog, &Download::default()),
+            Some(ImportPlace::Account)
+        );
+        assert_eq!(
+            import_place(Step::Catalog, &without_catalog, &failed),
+            Some(ImportPlace::Catalog)
+        );
+        assert_eq!(
+            import_place(Step::Catalog, &without_catalog, &Download::default()),
+            None
+        );
+        assert_eq!(
+            import_place(Step::Catalog, &invalid, &Download::default()),
+            Some(ImportPlace::Problems)
+        );
+        assert_eq!(
+            import_place(Step::Account, &invalid, &Download::default()),
+            Some(ImportPlace::Problems)
+        );
+        assert_eq!(
+            import_place(Step::Profile, &first_run(), &Download::default()),
+            None
+        );
+        assert_eq!(
+            import_place(Step::Catalog, &without_catalog, &running),
+            None
+        );
+        assert_eq!(import_place(Step::Catalog, &invalid, &running), None);
+        assert_eq!(
+            import_place(
+                Step::Account,
+                &FirstRun {
+                    data_dir: None,
+                    ..without_catalog
+                },
+                &Download::default()
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn an_import_waits_for_the_one_running_and_for_connect() {
+        let running = Import {
+            running: true,
+            ..Import::default()
+        };
+        let connecting = Account {
+            connecting: true,
+            ..Account::default()
+        };
+        let place = Some(ImportPlace::Account);
+
+        assert!(can_import(place, &Import::default(), &Account::default()));
+        assert!(!can_import(None, &Import::default(), &Account::default()));
+        assert!(!can_import(place, &running, &Account::default()));
+        assert!(!can_import(place, &Import::default(), &connecting));
+    }
+
+    #[test]
+    fn a_file_dropped_during_the_download_or_an_import_does_nothing() {
+        let mut setup = Setup::new(
+            FirstRun {
+                catalog: Part::Missing,
+                ..first_run()
+            },
+            None,
+        );
+        setup.download.running = true;
+
+        assert!(matches!(
+            setup.update(Message::Import(PathBuf::from("catalog.zip"))),
+            Action::None
+        ));
+        assert!(!setup.import.running);
+
+        setup.download.running = false;
+        setup.import.running = true;
+        assert!(matches!(
+            setup.update(Message::Import(PathBuf::from("catalog.zip"))),
+            Action::None
+        ));
+    }
+
+    #[test]
+    fn only_window_file_events_reach_the_setup() {
+        let id = iced::window::Id::unique();
+        let file = PathBuf::from("catalog.zip");
+        let message = |event| drop_message(Event::Window(event), event::Status::Ignored, id);
+
+        assert!(matches!(
+            message(iced::window::Event::FileHovered(file.clone())),
+            Some(Message::Hovering(true))
+        ));
+        assert!(matches!(
+            message(iced::window::Event::FilesHoveredLeft),
+            Some(Message::Hovering(false))
+        ));
+        assert!(matches!(
+            message(iced::window::Event::FileDropped(file.clone())),
+            Some(Message::Import(dropped)) if dropped == file
+        ));
+        assert!(message(iced::window::Event::Focused).is_none());
+    }
+
+    #[test]
+    fn a_dropped_file_imports_only_where_the_line_shows() {
+        let mut setup = Setup::new(
+            FirstRun {
+                steam_id: Part::Missing,
+                catalog: Part::Missing,
+                ..first_run()
+            },
+            None,
+        );
+        setup.update(Message::Hovering(true));
+        assert!(setup.import.hovering);
+
+        assert!(matches!(
+            setup.update(Message::Import(PathBuf::from("catalog.zip"))),
+            Action::Run(_)
+        ));
+        assert!(setup.import.running);
+        assert!(!setup.import.hovering);
+
+        let mut setup = Setup::new(first_run(), None);
+        assert!(setup.import_place().is_none());
+        assert!(matches!(
+            setup.update(Message::Import(PathBuf::from("catalog.zip"))),
+            Action::None
+        ));
+        assert!(!setup.import.running);
+    }
+
+    #[test]
+    fn a_failed_import_keeps_the_setup_where_it_was() {
+        let mut setup = Setup::new(
+            FirstRun {
+                catalog: Part::Missing,
+                ..first_run()
+            },
+            None,
+        );
+        setup.import.running = true;
+
+        let action = setup.update(Message::Imported(Err(
+            "This file has no catalog in it".to_string()
+        )));
+
+        assert!(matches!(action, Action::None));
+        assert!(!setup.import.running);
+        assert_eq!(
+            setup.import.result,
+            Some(Err("This file has no catalog in it".to_string()))
+        );
+        assert_eq!(setup.first_run.catalog, Part::Missing);
+    }
+
+    #[test]
+    fn the_import_note_says_where_the_prices_come_from() {
+        let (before, after) = imported_note("13 Nov", Region::ITALY);
+
+        assert_eq!(
+            format!("{before} ⟳ {after}"),
+            "Catalog from 13 Nov, prices for IT. Press ⟳ later to download your own."
+        );
+    }
+
+    #[test]
+    fn an_unreadable_catalog_is_a_problem() {
+        let invalid = FirstRun {
+            catalog: Part::Invalid("no such table: games".to_string()),
+            ..first_run()
+        };
+
+        assert_eq!(
+            file_problems(&invalid, None),
+            ["gamepalate could not open the data files: no such table: games"]
+        );
     }
 
     #[test]

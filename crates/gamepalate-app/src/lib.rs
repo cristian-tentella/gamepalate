@@ -1,6 +1,7 @@
 pub mod account;
 pub mod app;
 mod capsules;
+pub mod catalog_file;
 mod catalog_search;
 mod data_dir;
 mod details;

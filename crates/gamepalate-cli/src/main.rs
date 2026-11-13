@@ -1,3 +1,4 @@
+mod catalog_file;
 mod correct;
 mod corrections;
 mod data_dir;
@@ -68,6 +69,10 @@ enum Command {
     Update,
     /// Rebuild catalog.sqlite from the last completed update, without network
     Rebuild,
+    /// Write catalog.sqlite to a zip file, to pass it to a friend
+    ExportCatalog(catalog_file::ExportArgs),
+    /// Replace catalog.sqlite with one from a zip file or a catalog.sqlite
+    ImportCatalog(catalog_file::ImportArgs),
     /// Check GitHub for a new version of gamepalate, and install it with --install
     NewVersion(new_version::NewVersionArgs),
 }
@@ -155,6 +160,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Update => update::run(&data_dir)?,
         Command::Rebuild => rebuild::run(&data_dir)?,
+        Command::ExportCatalog(args) => catalog_file::export(&args, &data_dir)?,
+        Command::ImportCatalog(args) => catalog_file::import(&args, &data_dir)?,
         Command::NewVersion(args) => new_version::run(&args, &data_dir)?,
     }
 

@@ -215,6 +215,12 @@ pub enum OpenError {
     Steam(#[from] SteamError),
 }
 
+impl OpenError {
+    pub fn unreadable_catalog(&self) -> bool {
+        matches!(self, OpenError::DataFiles(DataFilesError::Catalog(_)))
+    }
+}
+
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("{}", search_error_text(.0))]
 pub struct RecommendError(pub SearchError);
