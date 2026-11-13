@@ -212,7 +212,8 @@ impl Votes {
             }
             Message::VoteSaved(Ok(())) => {
                 self.games = by_id(self.gamepalate.voted_games());
-                return self.find_matches();
+                // A game voted into another kind leaves the list of this filter at once.
+                return Task::batch([self.refresh(), self.find_matches()]);
             }
             Message::VoteSaved(Err(error)) => return self.show_toast(error),
             Message::Played => {
@@ -546,9 +547,7 @@ impl Votes {
     fn refresh(&mut self) -> Task<Message> {
         let selected = self.current().map(|game| game.id);
         self.rows = self.shown_rows();
-        self.selected = selected
-            .and_then(|id| self.rows.iter().position(|&row| row == id))
-            .unwrap_or(0);
+        self.selected = kept_selection(&self.rows, selected, self.selected);
 
         self.reveal()
     }
@@ -663,6 +662,14 @@ fn count(games: &BTreeMap<AppId, VotedGame>, filter: Filter, only_on_sale: bool)
         .values()
         .filter(|game| filter.keeps(&game.vote) && (!only_on_sale || on_sale(game)))
         .count()
+}
+
+/// Where the selection goes once the rows change: on the same game if it is still
+/// there, otherwise on the row that took its place.
+fn kept_selection(rows: &[AppId], selected: Option<AppId>, index: usize) -> usize {
+    selected
+        .and_then(|id| rows.iter().position(|&row| row == id))
+        .unwrap_or_else(|| index.min(rows.len().saturating_sub(1)))
 }
 
 fn rows(
@@ -913,6 +920,36 @@ mod tests {
         );
 
         assert_eq!(rows, ids(&[2, 1, 4]));
+    }
+
+    #[test]
+    fn a_game_voted_into_another_kind_leaves_the_filter() {
+        let mut games = games();
+        games.get_mut(&AppId(2)).unwrap().vote.kind = VoteKind::NotForMe;
+
+        let rows = rows(
+            &games,
+            Filter::Kind(VoteKind::WouldTry),
+            Order::Newest,
+            false,
+            "",
+            None,
+        );
+
+        assert_eq!(rows, ids(&[1, 4]));
+    }
+
+    #[test]
+    fn the_selection_stays_on_its_game_when_the_rows_change() {
+        assert_eq!(kept_selection(&ids(&[1, 4]), Some(AppId(4)), 2), 1);
+    }
+
+    #[test]
+    fn a_selected_game_that_left_the_list_gives_its_place_to_the_next() {
+        assert_eq!(kept_selection(&ids(&[2, 4]), Some(AppId(1)), 1), 1);
+        assert_eq!(kept_selection(&ids(&[2, 1]), Some(AppId(4)), 2), 1);
+        assert_eq!(kept_selection(&[], Some(AppId(4)), 2), 0);
+        assert_eq!(kept_selection(&ids(&[2, 1]), None, 0), 0);
     }
 
     #[test]
