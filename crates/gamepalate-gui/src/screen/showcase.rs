@@ -187,7 +187,7 @@ impl Showcase {
                     .map(move |allocation| Message::ExtraAllocated(url.clone(), allocation.ok()));
             }
             Message::ExtraAllocated(url, allocation) => self.extras.loaded(url, allocation),
-            Message::OpenLink(url) => game::open_url(&url),
+            Message::OpenLink(url) => super::open(url),
             Message::PreviousScreenshot | Message::NextScreenshot if self.popups.open.is_some() => {
             }
             Message::PreviousScreenshot => self.show_screenshot(self.screenshot.saturating_sub(1)),
