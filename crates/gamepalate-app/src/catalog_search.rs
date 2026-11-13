@@ -1,4 +1,4 @@
-use std::{cmp::Reverse, collections::BTreeSet};
+use std::cmp::Reverse;
 
 use gamepalate_core::{catalog::Catalog, ids::AppId};
 
@@ -6,12 +6,6 @@ use crate::names::folded;
 
 pub const MIN_SEARCH_CHARS: usize = 3;
 pub const MAX_MATCHES: usize = 20;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CatalogMatch {
-    pub id: AppId,
-    pub name: String,
-}
 
 #[derive(Debug)]
 pub(crate) struct NameIndex {
@@ -45,11 +39,11 @@ impl NameIndex {
     pub(crate) fn find(&self, text: &str, catalog: &Catalog) -> Vec<AppId> {
         match appid_in(text) {
             Some(id) => catalog.game(id).map(|game| game.id).into_iter().collect(),
-            None => self.search(text, &BTreeSet::new()),
+            None => self.search(text),
         }
     }
 
-    pub(crate) fn search(&self, text: &str, excluded: &BTreeSet<AppId>) -> Vec<AppId> {
+    fn search(&self, text: &str) -> Vec<AppId> {
         let text = folded(text.trim());
         if text.chars().count() < MIN_SEARCH_CHARS {
             return Vec::new();
@@ -62,7 +56,7 @@ impl NameIndex {
             if equal.len() == MAX_MATCHES {
                 break;
             }
-            if !entry.name.contains(&text) || excluded.contains(&entry.id) {
+            if !entry.name.contains(&text) {
                 continue;
             }
             let group = if *entry.name == *text {
@@ -150,13 +144,8 @@ mod tests {
     }
 
     fn search(games: Vec<Game>, text: &str) -> Vec<u32> {
-        search_without(games, text, &[])
-    }
-
-    fn search_without(games: Vec<Game>, text: &str, excluded: &[u32]) -> Vec<u32> {
-        let excluded = excluded.iter().map(|&id| AppId(id)).collect();
         NameIndex::new(&catalog(games))
-            .search(text, &excluded)
+            .search(text)
             .into_iter()
             .map(|id| id.0)
             .collect()
@@ -179,13 +168,6 @@ mod tests {
         assert!(search(games.clone(), " it ").is_empty());
         assert!(search(games.clone(), "").is_empty());
         assert_eq!(search(games, "it t"), [1]);
-    }
-
-    #[test]
-    fn the_games_of_the_library_are_left_out() {
-        let games = vec![game(1, "Portal", 10), game(2, "Portal 2", 20)];
-
-        assert_eq!(search_without(games, "portal", &[2]), [1]);
     }
 
     #[test]
@@ -300,10 +282,9 @@ mod tests {
     fn a_new_catalog_gives_a_new_index() {
         let before = NameIndex::new(&catalog(vec![game(1, "Portal", 10)]));
         let after = NameIndex::new(&catalog(vec![game(2, "Portal 2", 10)]));
-        let none = BTreeSet::new();
 
-        assert_eq!(before.search("portal", &none), [AppId(1)]);
-        assert_eq!(after.search("portal", &none), [AppId(2)]);
+        assert_eq!(before.search("portal"), [AppId(1)]);
+        assert_eq!(after.search("portal"), [AppId(2)]);
     }
 
     #[test]
@@ -334,14 +315,13 @@ mod tests {
                 .iter()
                 .map(|entry| entry.name.len())
                 .sum::<usize>();
-        let none = BTreeSet::new();
 
         for text in ["por", "portal", "dark of the", "hades", "zzz", "the 1"] {
             let started = Instant::now();
             let runs = 50;
             let mut found = 0;
             for _ in 0..runs {
-                found = index.search(text, &none).len();
+                found = index.search(text).len();
             }
             println!(
                 "{text:?}: {found} games, {:?} per search",

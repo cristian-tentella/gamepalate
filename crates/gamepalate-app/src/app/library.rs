@@ -7,12 +7,11 @@ use gamepalate_core::{
 
 use super::Gamepalate;
 use crate::{
-    catalog_search::CatalogMatch,
     discover_place::{DiscoverPlace, discover_place},
     library::{
         FoundGame, GameCorrection, GameCorrectionError, GameView, LibraryView,
         PlayedElsewhereError, changed_played_elsewhere, corrected_game, found_games,
-        game_correction, game_view, library_ids, library_view,
+        game_correction, game_view, library_view,
     },
     log::failed,
     profile::{ProfileView, profile_view},
@@ -94,18 +93,5 @@ impl Gamepalate {
     pub fn discover_place(&self, id: AppId, options: &SearchOptions) -> Option<DiscoverPlace> {
         let now = Timestamp(jiff::Timestamp::now().as_millisecond());
         self.with_inputs(|inputs| discover_place(id, options, inputs, now))
-    }
-
-    pub fn search_catalog(&self, text: &str) -> Vec<CatalogMatch> {
-        let in_library = self.with_inputs(library_ids);
-        self.names
-            .search(text, &in_library)
-            .into_iter()
-            .filter_map(|id| self.files.catalog.game(id))
-            .map(|game| CatalogMatch {
-                id: game.id,
-                name: game.name.clone(),
-            })
-            .collect()
     }
 }

@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::Path,
-};
+use std::{collections::BTreeMap, path::Path};
 
 use gamepalate_core::{
     corrections::Corrections,
@@ -318,12 +315,6 @@ pub(crate) fn game_view(id: AppId, inputs: &SearchInputs, now: Timestamp) -> Opt
     })
 }
 
-pub(crate) fn library_ids(inputs: &SearchInputs) -> BTreeSet<AppId> {
-    let mut ids: BTreeSet<AppId> = inputs.signals.ids().into_iter().collect();
-    ids.extend(&inputs.corrections.played_elsewhere);
-    ids
-}
-
 pub fn game_correction(id: AppId, corrections: &Corrections) -> GameCorrection {
     GameCorrection {
         multiplier: corrections.game_multipliers.get(&id).copied(),
@@ -434,6 +425,8 @@ pub(crate) fn changed_played_elsewhere(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use gamepalate_core::{
         catalog::{Catalog, Freshness, TagName},
         config::Config,
@@ -1231,16 +1224,5 @@ mod tests {
             )
         );
         assert!(!path.exists());
-    }
-
-    #[test]
-    fn the_ids_of_the_library_include_the_games_played_elsewhere() {
-        let mut fixture = Fixture::new();
-        fixture.corrections.played_elsewhere.insert(AppId(7));
-
-        let ids = library_ids(&fixture.inputs());
-
-        assert!([7, 1, 90].iter().all(|&id| ids.contains(&AppId(id))));
-        assert!(!ids.contains(&AppId(8)));
     }
 }

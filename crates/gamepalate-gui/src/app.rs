@@ -42,7 +42,7 @@ use frame::{
     window_button,
 };
 use game_page::GamePage;
-use refresh::{Refresh, refresh_button, refresh_tooltip};
+use refresh::{Refresh, data_times, refresh_button, refresh_dot, refresh_tooltip};
 use search::Search;
 use theme::{choice, light, theme, theme_button, toggled};
 
@@ -482,11 +482,9 @@ impl App {
                 .height(Fill)
             }))
             .push(
-                container(self.gamepalate.as_deref().map(|gamepalate| {
+                container(self.gamepalate.as_deref().map(|_| {
                     column![
-                        container(self.status(gamepalate))
-                            .height(Fill)
-                            .align_y(Center),
+                        container(self.status()).height(Fill).align_y(Center),
                         space().height(UNDERLINE_HEIGHT),
                     ]
                     .height(Fill)
@@ -498,7 +496,7 @@ impl App {
             )
             .push(
                 row![]
-                    .push(self.gamepalate.is_some().then(|| {
+                    .push(self.gamepalate.as_deref().map(|gamepalate| {
                         refresh_button(
                             &self.refresh,
                             refresh_tooltip(
@@ -506,6 +504,8 @@ impl App {
                                 self.renewal_due,
                                 self.startup_error.as_deref(),
                             ),
+                            data_times(gamepalate),
+                            refresh_dot(self.pending, self.startup_error.as_deref()),
                         )
                     }))
                     .push(self.gamepalate.is_some().then(|| {
@@ -541,7 +541,7 @@ impl App {
                     .into()
             }
             Screen::Votes(screen) => screen.view(self.scale).map(Message::Votes),
-            Screen::Library(screen) => screen.view().map(Message::Library),
+            Screen::Library(screen) => screen.view().map(from_library),
             Screen::Setup(screen) => screen.view().map(Message::Setup),
             Screen::Profile(screen) => screen.view().map(Message::Profile),
             Screen::Settings(screen) => screen
@@ -808,27 +808,39 @@ fn settings_button<'a>(open: bool, new_version: bool) -> Element<'a, Message> {
     } else {
         button
     };
-    let icon: Element<'a, Message> = if new_version {
-        stack![
-            button,
-            container(
-                container(space())
-                    .width(DOT_SIZE)
-                    .height(DOT_SIZE)
-                    .style(style::badge)
-            )
-            .width(Fill)
-            .height(Fill)
-            .align_x(Right)
-            .align_y(Top)
-            .padding(padding::top(11).right(12)),
-        ]
-        .into()
-    } else {
-        button.into()
-    };
+    with_tooltip(
+        with_dot(button, new_version),
+        settings_tip(open, new_version).to_string(),
+    )
+}
 
-    with_tooltip(icon, settings_tip(open, new_version).to_string())
+fn with_dot<'a>(button: button::Button<'a, Message>, dot: bool) -> Element<'a, Message> {
+    if !dot {
+        return button.into();
+    }
+    stack![
+        button,
+        container(
+            container(space())
+                .width(DOT_SIZE)
+                .height(DOT_SIZE)
+                .style(style::badge)
+        )
+        .width(Fill)
+        .height(Fill)
+        .align_x(Right)
+        .align_y(Top)
+        .padding(padding::top(11).right(12)),
+    ]
+    .into()
+}
+
+/// The messages of the Library, with "+ Add a game" turned into the search of the top bar.
+fn from_library(message: library::Message) -> Message {
+    match message {
+        library::Message::AddGame => Message::Search(search::Message::Focus),
+        message => Message::Library(message),
+    }
 }
 
 fn settings_tip(open: bool, new_version: bool) -> &'static str {
@@ -916,6 +928,18 @@ mod tests {
         assert_eq!(page("4", keyboard::Modifiers::CTRL), Some(Page::Profile));
         assert_eq!(page("3", keyboard::Modifiers::empty()), None);
         assert_eq!(page("5", keyboard::Modifiers::CTRL), None);
+    }
+
+    #[test]
+    fn add_a_game_in_the_library_goes_to_the_game_search() {
+        assert!(matches!(
+            from_library(library::Message::AddGame),
+            Message::Search(search::Message::Focus)
+        ));
+        assert!(matches!(
+            from_library(library::Message::FocusSearch),
+            Message::Library(library::Message::FocusSearch)
+        ));
     }
 
     #[test]

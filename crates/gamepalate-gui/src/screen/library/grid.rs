@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use gamepalate_app::{CatalogMatch, GameCorrection, HoursSource, LibraryGameView};
+use gamepalate_app::{GameCorrection, HoursSource, LibraryGameView};
 use iced::{
     Center, ContentFit, Element, Fill, Point, mouse,
     widget::{
@@ -9,7 +9,7 @@ use iced::{
     },
 };
 
-use super::{GRID, Library, Message, Move, filter::empty_text, hours, hours_text, multiplier};
+use super::{GRID, Library, Message, Move, hours, hours_text, multiplier};
 use crate::{font, screen::showcase::images::Picture, style};
 
 pub(super) const TILE_WIDTH: f32 = 150.0;
@@ -17,8 +17,6 @@ const TILE_HEIGHT: f32 = 225.0;
 const GAP: f32 = 12.0;
 pub(super) const GRID_PADDING: f32 = 24.0;
 const DIVIDER_HEIGHT: f32 = 56.0;
-const NO_MATCH_HEIGHT: f32 = 40.0;
-const FROM_STEAM: &str = "From Steam, add a game you played elsewhere";
 const DIMMED: f32 = 0.45;
 const SCREENS_AHEAD: f32 = 2.0;
 const IMAGE_RADIUS: f32 = 6.0;
@@ -27,8 +25,6 @@ const IMAGE_RADIUS: f32 = 6.0;
 pub(super) enum Row {
     Games(Range<usize>),
     Divider,
-    NoMatch,
-    FromSteam,
 }
 
 pub(super) fn columns(width: f32) -> usize {
@@ -40,13 +36,7 @@ fn grid_width(columns: usize) -> f32 {
     columns as f32 * (TILE_WIDTH + GAP) - GAP
 }
 
-pub(super) fn rows(
-    counting: usize,
-    total: usize,
-    found: usize,
-    columns: usize,
-    divided: bool,
-) -> Vec<Row> {
+pub(super) fn rows(counting: usize, total: usize, columns: usize, divided: bool) -> Vec<Row> {
     let chunks = |range: Range<usize>| {
         range
             .clone()
@@ -54,29 +44,20 @@ pub(super) fn rows(
             .map(move |start| Row::Games(start..(start + columns).min(range.end)))
     };
 
-    let mut rows: Vec<Row> = if divided && counting < total {
+    if divided && counting < total {
         chunks(0..counting)
             .chain([Row::Divider])
             .chain(chunks(counting..total))
             .collect()
     } else {
         chunks(0..total).collect()
-    };
-    if found > 0 {
-        if total == 0 {
-            rows.push(Row::NoMatch);
-        }
-        rows.push(Row::FromSteam);
-        rows.extend(chunks(total..total + found));
     }
-    rows
 }
 
 fn row_height(row: &Row) -> f32 {
     match row {
         Row::Games(_) => TILE_HEIGHT + GAP,
-        Row::Divider | Row::FromSteam => DIVIDER_HEIGHT,
-        Row::NoMatch => NO_MATCH_HEIGHT,
+        Row::Divider => DIVIDER_HEIGHT,
     }
 }
 
@@ -163,7 +144,7 @@ pub(super) fn moved(rows: &[Row], position: Option<usize>, direction: Move) -> O
         .iter()
         .filter_map(|row| match row {
             Row::Games(games) => Some(games),
-            Row::Divider | Row::NoMatch | Row::FromSteam => None,
+            Row::Divider => None,
         })
         .collect();
     let last = games.last()?.end.checked_sub(1)?;
@@ -243,29 +224,12 @@ impl Library {
 
     fn line<'a>(&'a self, line: &Row) -> Element<'a, Message> {
         match line {
-            Row::Games(games) => {
-                row(games
-                    .clone()
-                    .map(|position| match self.shown.get(position) {
-                        Some(&index) => self.tile(&self.view.games[index]),
-                        None => self.found_tile(&self.found.games[position - self.shown.len()]),
-                    }))
-                .spacing(GAP)
-                .height(TILE_HEIGHT + GAP)
-                .into()
-            }
-            Row::NoMatch => container(
-                text(empty_text(false, self.filter, &self.search))
-                    .size(font::BAR_SIZE)
-                    .style(style::muted),
-            )
-            .height(NO_MATCH_HEIGHT)
-            .align_y(Center)
+            Row::Games(games) => row(games
+                .clone()
+                .map(|position| self.tile(&self.view.games[self.shown[position]])))
+            .spacing(GAP)
+            .height(TILE_HEIGHT + GAP)
             .into(),
-            Row::FromSteam => container(text(FROM_STEAM).size(font::BAR_SIZE).font(font::SEMIBOLD))
-                .height(DIVIDER_HEIGHT)
-                .align_y(Center)
-                .into(),
             Row::Divider => container(
                 column![
                     text("Doesn't count")
@@ -360,63 +324,12 @@ impl Library {
         )
         .into()
     }
-
-    fn found_tile<'a>(&'a self, game: &'a CatalogMatch) -> Element<'a, Message> {
-        let picture: Element<'a, Message> = match self.capsules.get(&game.id) {
-            Some(Picture::Ready(allocation)) => image(allocation.handle().clone())
-                .width(TILE_WIDTH)
-                .height(TILE_HEIGHT)
-                .content_fit(ContentFit::Cover)
-                .border_radius(IMAGE_RADIUS)
-                .into(),
-            Some(Picture::Failed | Picture::Loading) | None => container(
-                text(&game.name)
-                    .size(font::BAR_SIZE)
-                    .center()
-                    .style(style::muted),
-            )
-            .padding(12)
-            .center_x(TILE_WIDTH)
-            .center_y(TILE_HEIGHT)
-            .style(style::picture)
-            .into(),
-        };
-        let plus = container(
-            container(text("+").size(font::PRICE_SIZE).font(font::SEMIBOLD))
-                .padding([0, 12])
-                .style(style::capsule_badge),
-        )
-        .center_x(TILE_WIDTH)
-        .center_y(TILE_HEIGHT);
-        let frame = (self.selected == Some(game.id)).then(|| {
-            container(space())
-                .width(TILE_WIDTH)
-                .height(TILE_HEIGHT)
-                .style(style::capsule_selected)
-        });
-
-        tooltip(
-            mouse_area(
-                stack![picture, plus]
-                    .push(frame)
-                    .width(TILE_WIDTH)
-                    .height(TILE_HEIGHT),
-            )
-            .interaction(mouse::Interaction::Pointer)
-            .on_press(Message::PlayElsewhere(game.id, game.name.clone(), true)),
-            container(text(&game.name).size(font::NOTE_SIZE))
-                .padding([6, 10])
-                .style(style::popup),
-            tooltip::Position::Bottom,
-        )
-        .into()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::fixtures::*;
-    use super::super::{Enter, Filter, enter, heaviest};
+    use super::super::heaviest;
     use super::*;
 
     #[test]
@@ -436,7 +349,7 @@ mod tests {
     #[test]
     fn the_rows_break_at_the_divider() {
         assert_eq!(
-            rows(3, 7, 0, 2, true),
+            rows(3, 7, 2, true),
             [
                 Row::Games(0..2),
                 Row::Games(2..3),
@@ -445,17 +358,14 @@ mod tests {
                 Row::Games(5..7),
             ]
         );
-        assert_eq!(
-            rows(3, 7, 0, 4, false),
-            [Row::Games(0..4), Row::Games(4..7)]
-        );
-        assert_eq!(rows(5, 5, 0, 4, true), [Row::Games(0..4), Row::Games(4..5)]);
-        assert_eq!(rows(0, 2, 0, 4, true), [Row::Divider, Row::Games(0..2)]);
+        assert_eq!(rows(3, 7, 4, false), [Row::Games(0..4), Row::Games(4..7)]);
+        assert_eq!(rows(5, 5, 4, true), [Row::Games(0..4), Row::Games(4..5)]);
+        assert_eq!(rows(0, 2, 4, true), [Row::Divider, Row::Games(0..2)]);
     }
 
     #[test]
     fn only_the_rows_in_view_are_drawn() {
-        let rows = rows(20, 40, 0, 4, true);
+        let rows = rows(20, 40, 4, true);
         let row = TILE_HEIGHT + GAP;
 
         assert_eq!(visible_rows(&rows, 0.0, row), 0..1);
@@ -471,7 +381,7 @@ mod tests {
 
     #[test]
     fn loads_the_rows_in_view_then_two_screens_the_way_it_scrolls() {
-        let rows = rows(20, 40, 0, 4, true);
+        let rows = rows(20, 40, 4, true);
         let row = TILE_HEIGHT + GAP;
 
         assert_eq!(
@@ -535,7 +445,7 @@ mod tests {
     #[test]
     fn the_tile_corner_follows_the_column_the_divider_and_the_scroll() {
         let width = 2.0 * GRID_PADDING + grid_width(4);
-        let rows = rows(5, 9, 0, 4, true);
+        let rows = rows(5, 9, 4, true);
 
         assert_eq!(
             tile_origin(&rows, 0, width, 0.0),
@@ -557,7 +467,7 @@ mod tests {
 
     #[test]
     fn the_open_game_is_scrolled_into_view() {
-        let rows = rows(20, 40, 0, 4, true);
+        let rows = rows(20, 40, 4, true);
         let row = TILE_HEIGHT + GAP;
 
         assert_eq!(reveal_offset(&rows, 0, 0.0, 600.0), None);
@@ -572,7 +482,7 @@ mod tests {
 
     #[test]
     fn the_arrows_walk_the_grid_across_the_divider() {
-        let rows = rows(5, 9, 0, 4, true);
+        let rows = rows(5, 9, 4, true);
         let to = |position, direction| moved(&rows, position, direction);
 
         assert_eq!(to(None, Move::Down), Some(0));
@@ -612,79 +522,6 @@ mod tests {
         assert_eq!(
             divider_note(0.5),
             "Under 0.5 hours of play, set to ×0, or without tags"
-        );
-    }
-
-    #[test]
-    fn the_games_from_steam_come_after_the_library_under_their_heading() {
-        assert_eq!(
-            rows(2, 3, 3, 2, true),
-            [
-                Row::Games(0..2),
-                Row::Divider,
-                Row::Games(2..3),
-                Row::FromSteam,
-                Row::Games(3..5),
-                Row::Games(5..6),
-            ]
-        );
-        assert_eq!(rows(3, 3, 0, 2, true), [Row::Games(0..2), Row::Games(2..3)]);
-        assert!(rows(0, 0, 0, 2, true).is_empty());
-    }
-
-    #[test]
-    fn without_library_matches_the_no_match_line_stays_above_the_games_from_steam() {
-        assert_eq!(
-            rows(0, 0, 3, 2, true),
-            [
-                Row::NoMatch,
-                Row::FromSteam,
-                Row::Games(0..2),
-                Row::Games(2..3)
-            ]
-        );
-        assert_eq!(
-            empty_text(false, Filter::All, "it takes"),
-            "No game matches \"it takes\""
-        );
-    }
-
-    #[test]
-    fn the_arrows_walk_from_the_library_to_the_games_from_steam_and_back() {
-        let rows = rows(3, 3, 2, 2, true);
-        let to = |position, direction| moved(&rows, Some(position), direction);
-
-        assert_eq!(to(2, Move::Down), Some(3));
-        assert_eq!(to(1, Move::Down), Some(2));
-        assert_eq!(to(2, Move::Right), Some(3));
-        assert_eq!(to(4, Move::Up), Some(2));
-        assert_eq!(to(3, Move::Left), Some(2));
-        assert_eq!(enter(2, 3), Enter::Open);
-        assert_eq!(enter(3, 3), Enter::Add);
-    }
-
-    #[test]
-    fn the_heading_counts_in_the_scroll_and_in_the_popup_place() {
-        let rows = rows(0, 0, 3, 2, true);
-
-        assert_eq!(
-            tile_origin(&rows, 0, 2.0 * GRID_PADDING + grid_width(2), 0.0),
-            Some(Point::new(
-                GRID_PADDING,
-                GRID_PADDING + NO_MATCH_HEIGHT + DIVIDER_HEIGHT
-            ))
-        );
-        assert_eq!(
-            reveal_offset(&rows, 2, 0.0, 300.0),
-            Some(
-                GRID_PADDING
-                    + NO_MATCH_HEIGHT
-                    + DIVIDER_HEIGHT
-                    + 2.0 * TILE_HEIGHT
-                    + GAP
-                    + GRID_PADDING
-                    - 300.0
-            )
         );
     }
 }

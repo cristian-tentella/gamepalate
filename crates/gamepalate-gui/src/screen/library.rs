@@ -2,11 +2,11 @@ mod filter;
 mod grid;
 mod popup;
 
-use std::{ops::Range, path::PathBuf, sync::Arc, time::Duration};
+use std::{ops::Range, path::PathBuf, sync::Arc};
 
 use gamepalate_app::{
-    AppId, Capsule, CatalogMatch, FamiliesChanged, FamiliesUndo, FamilyChange, GameCorrection,
-    GameTagsView, Gamepalate, LibraryGameView, LibraryView,
+    AppId, Capsule, FamiliesChanged, FamiliesUndo, FamilyChange, GameCorrection, GameTagsView,
+    Gamepalate, LibraryGameView, LibraryView,
 };
 use iced::{
     Center, Element, Fill, Size, Subscription, Task,
@@ -34,13 +34,12 @@ use popup::{changed_game, corrected_text, families_text};
 const GRID: Id = Id::new("library-grid");
 const SEARCH: Id = Id::new("library-search");
 const NEW_FAMILY: Id = Id::new("library-new-family");
-const SETTLE: Duration = Duration::from_millis(300);
 const SEARCH_WIDTH: f32 = 300.0;
 const SEARCH_PLACEHOLDER: &str = "Search by name (Ctrl+F)";
-const ADD_PLACEHOLDER: &str = "Search Steam for a game you played elsewhere";
 const SCREENS_KEPT: f32 = 2.0;
 const CHROME_HEIGHT: f32 = 110.0;
 const DEFAULT_AREA: Size = Size::new(1280.0, 700.0);
+const ADD_TIP: &str = "Search for a game you played elsewhere";
 const NOT_OWNED_TIP: &str =
     "Played but not in your library: Family Sharing, free weekends, removed games";
 
@@ -61,9 +60,7 @@ pub struct Library {
     filter: Filter,
     sort: Sort,
     search: String,
-    adding: bool,
     shown: Vec<usize>,
-    found: Found,
     offset: f32,
     upward: bool,
     area: Size,
@@ -114,31 +111,6 @@ enum Undo {
     Elsewhere(AppId, bool),
 }
 
-#[derive(Debug, Default)]
-struct Found {
-    games: Vec<CatalogMatch>,
-    settled: bool,
-}
-
-impl Found {
-    fn searched(&mut self, games: Vec<CatalogMatch>) {
-        self.games = games;
-        self.settled = false;
-    }
-
-    fn waited(&mut self, waited: &str, search: &str) {
-        if waited == search {
-            self.settled = true;
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Enter {
-    Open,
-    Add,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Move {
     Left,
@@ -152,7 +124,6 @@ pub enum Message {
     Filter(Filter),
     Sort(Sort),
     Search(String),
-    Settled(String),
     AddGame,
     PlayElsewhere(AppId, String, bool),
     PlayedElsewhere(AppId, String, bool, Result<bool, String>),
@@ -213,9 +184,7 @@ impl Library {
             filter,
             sort,
             search: String::new(),
-            adding: false,
             shown: Vec::new(),
-            found: Found::default(),
             offset: 0.0,
             upward: false,
             area: DEFAULT_AREA,
@@ -284,8 +253,6 @@ impl Library {
             Message::Filter(filter) => {
                 self.filter = filter;
                 self.search.clear();
-                self.adding = false;
-                self.found.searched(Vec::new());
                 return self.refresh();
             }
             Message::Sort(sort) => {
@@ -293,22 +260,10 @@ impl Library {
                 return self.refresh();
             }
             Message::Search(search) => {
-                self.found.searched(self.gamepalate.search_catalog(&search));
-                self.search = search.clone();
-                let settle = if self.found.games.is_empty() {
-                    Task::none()
-                } else {
-                    Task::perform(tokio::time::sleep(SETTLE), move |_| {
-                        Message::Settled(search)
-                    })
-                };
-                return Task::batch([self.refresh(), settle]);
+                self.search = search;
+                return self.refresh();
             }
-            Message::Settled(search) => self.found.waited(&search, &self.search),
-            Message::AddGame => {
-                self.adding = true;
-                return operation::focus(SEARCH);
-            }
+            Message::AddGame => {}
             Message::PlayElsewhere(id, name, played) => {
                 let gamepalate = Arc::clone(&self.gamepalate);
                 return Task::perform(
@@ -328,7 +283,6 @@ impl Library {
                     self.open = None;
                     self.new_family = None;
                 }
-                self.adding = false;
                 self.read_view();
                 return self.show_toast(format::elsewhere_text(&name, played), before != played);
             }
@@ -357,12 +311,10 @@ impl Library {
                 self.tags_popup.close();
                 self.selected = Some(id);
                 self.new_family = None;
-                self.adding = false;
             }
             Message::Close => {
                 self.open = None;
                 self.new_family = None;
-                self.adding = false;
             }
             Message::Move(direction) => {
                 let rows = self.rows(self.area.width);
@@ -375,29 +327,18 @@ impl Library {
                 };
                 self.selected = Some(id);
                 if self.open.is_some() {
-                    self.open = (next < self.shown.len()).then_some(id);
+                    self.open = Some(id);
                     self.new_family = None;
                 }
                 return self.reveal_selected();
             }
             Message::OpenSelected => {
-                let Some(position) = self.selected_position() else {
-                    return Task::none();
-                };
-                match enter(position, self.shown.len()) {
-                    Enter::Open => self.open = self.selected,
-                    Enter::Add => {
-                        let found = &self.found.games[position - self.shown.len()];
-                        let (id, name) = (found.id, found.name.clone());
-                        return self.update(Message::PlayElsewhere(id, name, true));
-                    }
+                if self.selected_position().is_some() {
+                    self.open = self.selected;
                 }
             }
             Message::Pick(index) => return self.pick(index),
-            Message::FocusSearch => {
-                self.adding = false;
-                return operation::focus(SEARCH);
-            }
+            Message::FocusSearch => return operation::focus(SEARCH),
             Message::Correct(id, correction) => {
                 let gamepalate = Arc::clone(&self.gamepalate);
                 return Task::perform(
@@ -548,7 +489,6 @@ impl Library {
         self.tags = None;
         self.heaviest = heaviest(&self.view.games);
         self.shown = shown(&self.view.games, self.filter, self.sort, &self.search);
-        self.found.games = self.gamepalate.search_catalog(&self.search);
     }
 
     fn selected_position(&self) -> Option<usize> {
@@ -556,24 +496,12 @@ impl Library {
         self.shown
             .iter()
             .position(|&index| self.view.games[index].id == id)
-            .or_else(|| {
-                self.found
-                    .games
-                    .iter()
-                    .position(|game| game.id == id)
-                    .map(|position| self.shown.len() + position)
-            })
     }
 
     fn id_at(&self, position: usize) -> Option<AppId> {
-        match self.shown.get(position) {
-            Some(&index) => Some(self.view.games[index].id),
-            None => self
-                .found
-                .games
-                .get(position - self.shown.len())
-                .map(|game| game.id),
-        }
+        self.shown
+            .get(position)
+            .map(|&index| self.view.games[index].id)
     }
 
     fn reveal_selected(&mut self) -> Task<Message> {
@@ -617,7 +545,6 @@ impl Library {
         rows(
             self.counting(),
             self.shown.len(),
-            self.found.games.len(),
             columns(width),
             self.sort == Sort::TasteWeight,
         )
@@ -633,17 +560,14 @@ impl Library {
     fn load(&mut self) -> Task<Message> {
         let rows = self.rows(self.area.width);
         let height = self.area.height;
-        let library = self.shown.len();
-        let settled = self.found.settled;
         let ids = |range: Range<usize>| -> Vec<AppId> {
             rows[range]
                 .iter()
                 .filter_map(|row| match row {
                     Row::Games(games) => Some(games.clone()),
-                    Row::Divider | Row::NoMatch | Row::FromSteam => None,
+                    Row::Divider => None,
                 })
                 .flatten()
-                .filter(|&position| asks_cover(position, library, settled))
                 .filter_map(|position| self.id_at(position))
                 .collect()
         };
@@ -715,22 +639,28 @@ impl Library {
                 .padding([4, 8])
                 .style(style::dropdown)
                 .menu_style(style::menu),
-            text_input(placeholder(self.adding), &self.search)
+            text_input(SEARCH_PLACEHOLDER, &self.search)
                 .style(style::field)
                 .id(SEARCH)
                 .on_input(Message::Search)
                 .size(font::NOTE_SIZE)
                 .padding([5, 8])
                 .width(SEARCH_WIDTH),
-            button(text("+ Add a game").size(font::NOTE_SIZE))
-                .padding([4, 12])
-                .style(style::chip)
-                .on_press(Message::AddGame),
+            tooltip(
+                button(text("+ Add a game").size(font::NOTE_SIZE))
+                    .padding([4, 12])
+                    .style(style::chip)
+                    .on_press(Message::AddGame),
+                container(text(ADD_TIP).size(font::NOTE_SIZE))
+                    .padding([6, 10])
+                    .style(style::popup),
+                tooltip::Position::Bottom,
+            ),
         ]
         .spacing(8)
         .align_y(Center);
 
-        let body: Element<'_, Message> = if self.shown.is_empty() && self.found.games.is_empty() {
+        let body: Element<'_, Message> = if self.shown.is_empty() {
             container(
                 text(empty_text(
                     self.view.games.is_empty(),
@@ -819,26 +749,6 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
 
 pub(crate) fn handle(capsule: Capsule) -> image::Handle {
     image::Handle::from_rgba(capsule.width, capsule.height, capsule.rgba)
-}
-
-fn enter(position: usize, library: usize) -> Enter {
-    if position < library {
-        Enter::Open
-    } else {
-        Enter::Add
-    }
-}
-
-fn asks_cover(position: usize, library: usize, settled: bool) -> bool {
-    position < library || settled
-}
-
-fn placeholder(adding: bool) -> &'static str {
-    if adding {
-        ADD_PLACEHOLDER
-    } else {
-        SEARCH_PLACEHOLDER
-    }
 }
 
 pub(crate) fn hours(hours: f64) -> String {
@@ -1073,32 +983,6 @@ mod tests {
         assert!(character("4", none).is_none());
     }
 
-    fn found(id: u32, name: &str) -> CatalogMatch {
-        CatalogMatch {
-            id: AppId(id),
-            name: name.to_string(),
-        }
-    }
-
-    #[test]
-    fn the_covers_from_steam_are_asked_only_once_the_text_stays_still() {
-        let mut matches = Found::default();
-
-        matches.searched(vec![found(1, "It Takes Two")]);
-        assert!(!asks_cover(0, 0, matches.settled));
-        assert!(asks_cover(0, 1, matches.settled));
-
-        matches.waited("it t", "it ta");
-        assert!(!matches.settled);
-
-        matches.waited("it ta", "it ta");
-        assert!(matches.settled);
-        assert!(asks_cover(0, 0, matches.settled));
-
-        matches.searched(vec![found(1, "It Takes Two")]);
-        assert!(!matches.settled);
-    }
-
     #[test]
     fn adding_and_removing_say_which_game_and_can_be_undone() {
         assert_eq!(
@@ -1114,14 +998,5 @@ mod tests {
             Some(Message::Undo)
         ));
         assert!(matches!(named(Named::Enter), Some(Message::OpenSelected)));
-    }
-
-    #[test]
-    fn adding_a_game_changes_what_the_search_field_asks() {
-        assert_eq!(placeholder(false), "Search by name (Ctrl+F)");
-        assert_eq!(
-            placeholder(true),
-            "Search Steam for a game you played elsewhere"
-        );
     }
 }
