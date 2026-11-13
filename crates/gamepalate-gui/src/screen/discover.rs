@@ -257,7 +257,7 @@ impl Discover {
                     Task::perform(
                         async move {
                             gamepalate
-                                .vote(id, VoteKind::Later, false, bet)
+                                .vote(id, VoteKind::Later, false, bet, false)
                                 .map_err(|error| error.to_string())
                         },
                         Message::LaterSaved,
@@ -275,7 +275,7 @@ impl Discover {
                     let save = Task::perform(
                         async move {
                             gamepalate
-                                .vote(id, kind, genre_ok, bet)
+                                .vote(id, kind, genre_ok, bet, false)
                                 .map_err(|error| error.to_string())
                         },
                         Message::VoteSaved,

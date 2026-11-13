@@ -202,7 +202,7 @@ impl Votes {
                     let save = Task::perform(
                         async move {
                             gamepalate
-                                .vote(id, kind, genre_ok, false)
+                                .vote(id, kind, genre_ok, false, false)
                                 .map_err(|error| error.to_string())
                         },
                         Message::VoteSaved,
@@ -736,7 +736,7 @@ pub(super) fn bets_summary(
     let (bets, others): (Vec<&Vote>, Vec<&Vote>) = games
         .values()
         .map(|game| &game.vote)
-        .filter(|vote| vote.kind.label().is_some())
+        .filter(|vote| vote.kind.label().is_some() && !vote.searched)
         .filter(|vote| vote.bet || vote.date.as_str() >= first)
         .partition(|vote| vote.bet);
     let would_try = |votes: &[&Vote]| votes.iter().filter(|vote| vote.kind.is_yes()).count();
@@ -1039,6 +1039,16 @@ mod tests {
             "2026-10-26",
             true,
         )]));
+
+        assert_eq!(bets_summary(&games), Some((1, 2, None)));
+    }
+
+    #[test]
+    fn the_bets_summary_leaves_out_the_votes_from_a_search() {
+        let mut games = games();
+        let mut found = voted(8, "Hades", VoteKind::WouldTry, "2026-10-27", false);
+        found.vote.searched = true;
+        games.extend(by_id(vec![found]));
 
         assert_eq!(bets_summary(&games), Some((1, 2, None)));
     }

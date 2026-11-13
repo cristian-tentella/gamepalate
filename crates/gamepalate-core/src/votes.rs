@@ -11,6 +11,7 @@ pub struct Vote {
     pub at: Option<Timestamp>,
     pub bet: bool,
     pub genre_ok: bool,
+    pub searched: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -49,8 +50,10 @@ impl VoteKind {
 }
 
 /// Saves `vote` in place of the old one. A bet stays a bet; `genre_ok` holds only on a Not for me.
+/// `searched` is the new vote's own: a vote from Discover after a search is a vote from Discover.
 pub fn cast(votes: &mut Votes, id: AppId, vote: Vote) {
-    let bet = vote.bet || votes.get(&id).is_some_and(|old| old.bet);
+    // A game found with a search was not recommended, so its vote does not answer a bet.
+    let bet = !vote.searched && (vote.bet || votes.get(&id).is_some_and(|old| old.bet));
     let genre_ok = vote.genre_ok && vote.kind.is_no();
     votes.insert(
         id,
@@ -67,7 +70,7 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 pub const LATER_DAYS: i64 = 30;
 
 impl Vote {
-    /// A vote cast on `date`, without a time, a bet or `genre_ok`.
+    /// A vote cast on `date`, without a time, a bet, `genre_ok` or a search.
     pub fn new(kind: VoteKind, date: &str) -> Vote {
         Vote {
             kind,
@@ -75,6 +78,7 @@ impl Vote {
             at: None,
             bet: false,
             genre_ok: false,
+            searched: false,
         }
     }
 
@@ -229,6 +233,45 @@ mod tests {
         );
 
         assert!(!votes[&AppId(620)].genre_ok);
+    }
+
+    fn searched(kind: VoteKind) -> Vote {
+        Vote {
+            searched: true,
+            ..vote(kind, "2026-11-13", None)
+        }
+    }
+
+    #[test]
+    fn a_vote_from_a_search_is_never_a_bet() {
+        let mut votes = Votes::new();
+        cast_on(&mut votes, VoteKind::Later, true);
+
+        cast(&mut votes, AppId(620), searched(VoteKind::WouldTry));
+
+        assert!(votes[&AppId(620)].searched);
+        assert!(!votes[&AppId(620)].bet);
+
+        cast(
+            &mut votes,
+            AppId(620),
+            Vote {
+                bet: true,
+                ..searched(VoteKind::NotForMe)
+            },
+        );
+
+        assert!(!votes[&AppId(620)].bet);
+    }
+
+    #[test]
+    fn a_vote_from_discover_after_a_search_is_not_searched() {
+        let mut votes = Votes::new();
+        cast(&mut votes, AppId(620), searched(VoteKind::Later));
+
+        cast_on(&mut votes, VoteKind::WouldTry, false);
+
+        assert!(!votes[&AppId(620)].searched);
     }
 
     fn cast_at(votes: &mut Votes, id: u32, at: Option<i64>) {

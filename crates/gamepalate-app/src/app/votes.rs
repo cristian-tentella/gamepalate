@@ -14,7 +14,7 @@ use gamepalate_core::{
     timestamp::Timestamp,
     votes::{Vote, VoteKind, Votes, cast, cast_in_last_day},
 };
-use gamepalate_store::votes::{VotesError, save_votes};
+use gamepalate_store::votes::{VotesError, remove_vote, save_votes};
 
 use super::Gamepalate;
 use crate::log::failed;
@@ -78,21 +78,19 @@ fn voted_games(
 }
 
 impl Gamepalate {
+    /// `searched` marks a vote given to a game looked up by name rather than recommended.
     pub fn vote(
         &self,
         id: AppId,
         kind: VoteKind,
         genre_ok: bool,
         bet: bool,
+        searched: bool,
     ) -> Result<(), VoteError> {
         let mut votes = self.lock_votes();
         let now = jiff::Zoned::now();
         let date = now.date().to_string();
         let at = Timestamp(now.timestamp().as_millisecond());
-        let name = |id| {
-            let name = game_name(id, &self.files.catalog, &self.files.off_catalog);
-            (name != format!("#{}", id.0)).then_some(name)
-        };
         *votes = saved_vote(
             &self.data_dir.join("votes.toml"),
             &votes,
@@ -103,11 +101,27 @@ impl Gamepalate {
                 at: Some(at),
                 bet,
                 genre_ok,
+                searched,
             },
-            name,
+            |id| self.saved_name(id),
         )
         .inspect_err(failed("could not save the vote"))?;
         Ok(())
+    }
+
+    /// Takes the vote off the game, which goes back to having none. Without a vote, nothing changes.
+    pub fn remove_vote(&self, id: AppId) -> Result<(), VoteError> {
+        let mut votes = self.lock_votes();
+        let path = self.data_dir.join("votes.toml");
+        *votes = remove_vote(&path, &votes, id, |id| self.saved_name(id))
+            .map_err(|source| VoteError { path, source })
+            .inspect_err(failed("could not remove the vote"))?;
+        Ok(())
+    }
+
+    fn saved_name(&self, id: AppId) -> Option<String> {
+        let name = game_name(id, &self.files.catalog, &self.files.off_catalog);
+        (name != format!("#{}", id.0)).then_some(name)
     }
 
     pub fn votes_in_last_day(&self) -> usize {
