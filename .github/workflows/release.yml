@@ -14,7 +14,8 @@ jobs:
       TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install the toolchain of rust-toolchain.toml
+        run: rustup toolchain install
       - uses: ilammy/setup-nasm@v1
       - name: Check the tag matches the version
         run: |
@@ -43,13 +44,16 @@ jobs:
       TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install system libraries
+      - name: Install the toolchain of rust-toolchain.toml
+        run: rustup toolchain install
+      - name: Skip the Azure apt mirror
         run: |
           printf '%s\n' http://archive.ubuntu.com/ubuntu http://security.ubuntu.com/ubuntu \
             | sudo tee /etc/apt/apt-mirrors.txt
-          sudo apt-get -o Acquire::Retries=5 update
-          sudo apt-get -o Acquire::Retries=5 install -y nasm pkg-config libdbus-1-dev libxkbcommon-dev libwayland-dev libx11-dev
+      - uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: nasm pkg-config libdbus-1-dev libxkbcommon-dev libwayland-dev libx11-dev
+          version: 1
       - name: Check the tag matches the version
         run: |
           version=$(cargo pkgid -p gamepalate-gui | sed 's/.*[#@]//')
