@@ -53,8 +53,12 @@ pub(crate) fn failed<E: Error + 'static>(what: &'static str) -> impl FnOnce(&E) 
 }
 
 pub(crate) fn known_converted(converted: Option<KnownConverted>) {
-    if let Some(KnownConverted { votes, hidden }) = converted {
-        tracing::info!("converted {votes} Known votes, {hidden} games hidden");
+    if let Some(KnownConverted {
+        votes,
+        played_elsewhere,
+    }) = converted
+    {
+        tracing::info!("converted {votes} Known votes, {played_elsewhere} games played elsewhere");
     }
 }
 

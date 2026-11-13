@@ -11,11 +11,12 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KnownConverted {
     pub votes: usize,
-    pub hidden: usize,
+    pub played_elsewhere: usize,
 }
 
-// Known is gone: an owned game only loses the vote, any other is hidden as Known did.
-// The corrections are saved before the votes, so a stop in between hides the same games again.
+// Known is gone. It was used as "I played it", so a game not in the library becomes
+// played elsewhere, and an owned one only loses the vote.
+// The corrections are saved before the votes, so a stop in between finds the same games owned.
 pub(crate) fn convert_known(
     dir: &Path,
     known: &BTreeSet<AppId>,
@@ -30,17 +31,17 @@ pub(crate) fn convert_known(
         (name != format!("#{}", id.0)).then_some(name)
     };
     let owned = owned_games(&files.signals, &files.corrections);
-    let hidden: Vec<AppId> = known
+    let played_elsewhere: Vec<AppId> = known
         .iter()
         .copied()
-        .filter(|id| !owned.contains(id) && !files.corrections.hidden_games.contains(id))
+        .filter(|id| !owned.contains(id))
         .collect();
 
-    if !hidden.is_empty() {
+    if !played_elsewhere.is_empty() {
         let mut editor = CorrectionsEditor::open(&dir.join("corrections.toml"))?;
-        for &id in &hidden {
+        for &id in &played_elsewhere {
             editor.set(
-                Section::HiddenGames,
+                Section::PlayedElsewhere,
                 id.0,
                 EntryValue::Bool(true),
                 name(id).as_deref(),
@@ -52,7 +53,7 @@ pub(crate) fn convert_known(
 
     Ok(Some(KnownConverted {
         votes: known.len(),
-        hidden: hidden.len(),
+        played_elsewhere: played_elsewhere.len(),
     }))
 }
 
@@ -80,6 +81,12 @@ mod tests {
 [hidden_games]
 # hidden by hand
 40 = true
+";
+
+    const CONVERTED: &str = "
+[played_elsewhere]
+40 = true
+50 = true # Firewatch
 ";
 
     const VOTES: &str = r#"
@@ -149,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn an_owned_game_loses_the_vote_and_any_other_is_hidden() {
+    fn an_owned_game_loses_the_vote_and_any_other_is_played_elsewhere() {
         let (dir, known, mut files) = written(VOTES, CORRECTIONS);
 
         let converted = convert_known(dir.path(), &known, &mut files).unwrap();
@@ -158,13 +165,14 @@ mod tests {
             converted,
             Some(KnownConverted {
                 votes: 5,
-                hidden: 1
+                played_elsewhere: 2
             })
         );
         assert_eq!(
-            files.corrections.hidden_games,
+            files.corrections.played_elsewhere,
             BTreeSet::from([AppId(40), AppId(50)])
         );
+        assert_eq!(files.corrections.hidden_games, BTreeSet::from([AppId(40)]));
         let read = load_votes(&dir.path().join("votes.toml")).unwrap();
         assert!(read.known.is_empty());
         assert_eq!(read.votes.keys().copied().collect::<Vec<_>>(), [AppId(60)]);
@@ -179,7 +187,7 @@ mod tests {
 
         assert_eq!(
             text(&dir, "corrections.toml"),
-            format!("{CORRECTIONS}50 = true # Firewatch\n")
+            format!("{CORRECTIONS}{CONVERTED}")
         );
     }
 
@@ -201,8 +209,8 @@ mod tests {
 
     #[test]
     fn a_stop_between_the_two_saves_is_picked_up_at_the_next_start() {
-        let hidden = format!("{CORRECTIONS}50 = true # Firewatch\n");
-        let (dir, known, mut files) = written(VOTES, &hidden);
+        let saved = format!("{CORRECTIONS}{CONVERTED}");
+        let (dir, known, mut files) = written(VOTES, &saved);
 
         let converted = convert_known(dir.path(), &known, &mut files).unwrap();
 
@@ -210,10 +218,10 @@ mod tests {
             converted,
             Some(KnownConverted {
                 votes: 5,
-                hidden: 0
+                played_elsewhere: 0
             })
         );
-        assert_eq!(text(&dir, "corrections.toml"), hidden);
+        assert_eq!(text(&dir, "corrections.toml"), saved);
         assert!(!text(&dir, "votes.toml").contains("known"));
     }
 
@@ -229,14 +237,14 @@ mod tests {
         convert_known(dir.path(), &known, &mut files).unwrap();
 
         assert_eq!(
-            files.corrections.hidden_games,
+            files.corrections.played_elsewhere,
             BTreeSet::from([AppId(40), AppId(50)])
         );
         assert_eq!(
             load_corrections(&dir.path().join("corrections.toml"))
                 .unwrap()
-                .hidden_games,
-            files.corrections.hidden_games
+                .played_elsewhere,
+            files.corrections.played_elsewhere
         );
     }
 }
