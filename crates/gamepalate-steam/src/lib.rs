@@ -7,6 +7,7 @@ pub mod details;
 pub mod images;
 pub mod items;
 pub mod off_catalog;
+pub mod reviews;
 pub mod signals;
 pub mod tags;
 pub mod transport;

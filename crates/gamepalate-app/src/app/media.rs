@@ -1,5 +1,10 @@
 use gamepalate_core::ids::AppId;
-use gamepalate_steam::{description::Block, images::header_url, transport::SteamError};
+use gamepalate_steam::{
+    description::Block,
+    images::header_url,
+    reviews::{ReviewPage, ReviewQuery},
+    transport::SteamError,
+};
 
 use super::Gamepalate;
 use crate::{
@@ -38,6 +43,18 @@ impl Gamepalate {
             .description(id)
             .await
             .inspect_err(failed("could not read the store description"))
+    }
+
+    pub async fn reviews(
+        &self,
+        id: AppId,
+        query: &ReviewQuery,
+        cursor: Option<&str>,
+    ) -> Result<ReviewPage, SteamError> {
+        self.store
+            .reviews(id, query, cursor)
+            .await
+            .inspect_err(failed("could not read the reviews"))
     }
 
     pub fn header_url(&self, id: AppId) -> String {
