@@ -484,17 +484,6 @@ pub fn list_row(current: bool) -> impl Fn(&Theme, button::Status) -> button::Sty
     }
 }
 
-/// A layer that hides the page under it.
-pub fn page(theme: &Theme) -> container::Style {
-    let background = theme.extended_palette().background.base;
-
-    container::Style {
-        background: Some(background.color.into()),
-        text_color: Some(background.text),
-        ..container::Style::default()
-    }
-}
-
 pub fn veil(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(
@@ -676,8 +665,9 @@ pub fn bare_field(theme: &Theme, status: text_input::Status) -> text_input::Styl
     }
 }
 
-/// The veil over the page while the game search is open: the blurred page shows through it.
-pub fn search_veil(theme: &Theme) -> container::Style {
+/// The veil over the page under the game search and a game's sheet: the blurred page shows
+/// through it.
+pub fn frosted_veil(theme: &Theme) -> container::Style {
     let palette = theme.extended_palette();
     let alpha = if palette.is_dark { 0.55 } else { 0.45 };
 

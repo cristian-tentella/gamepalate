@@ -323,9 +323,9 @@ impl App {
                     .update(message, gamepalate, self.window, SEARCH_TOP)
                 {
                     search::Action::Run(task) => task.map(Message::Search),
-                    search::Action::Open(id) => {
+                    search::Action::Open(id, backdrop) => {
                         let saving = self.save_settings();
-                        Task::batch([self.open_game(id), saving])
+                        Task::batch([self.open_game(id, backdrop), saving])
                     }
                 }
             }
@@ -549,11 +549,10 @@ impl App {
             Screen::Starting => column![].into(),
         };
         let content = stack![content]
-            .push(
-                self.game_page
-                    .as_ref()
-                    .map(|page| page.view(self.scale).map(Message::GamePage)),
-            )
+            .push(self.game_page.as_ref().map(|page| {
+                page.view(self.scale, page_name(self.page()))
+                    .map(Message::GamePage)
+            }))
             .push(
                 self.search
                     .view(Size::new(
@@ -680,11 +679,11 @@ impl App {
 
     /// A game found by name opens over the page, which keeps its state. A game out of the catalog
     /// has no page of its own: it opens where it is.
-    fn open_game(&mut self, id: AppId) -> Task<Message> {
+    fn open_game(&mut self, id: AppId, backdrop: Option<image::Handle>) -> Task<Message> {
         let Some(gamepalate) = &self.gamepalate else {
             return Task::none();
         };
-        let Some((page, task)) = GamePage::new(gamepalate, id) else {
+        let Some((page, task)) = GamePage::new(gamepalate, id, backdrop) else {
             return self.show_game(id);
         };
         let changed = self.game_page.take().is_some_and(|page| page.changed());
@@ -752,6 +751,17 @@ impl App {
         .style(style::tab(current))
         .on_press_maybe((!current || self.game_page.is_some()).then_some(Message::Navigate(page)))
         .into()
+    }
+}
+
+/// The page under a game's sheet, for its way back.
+fn page_name(page: Option<Page>) -> &'static str {
+    match page {
+        Some(Page::Discover) | None => "Discover",
+        Some(Page::Votes) => "Votes",
+        Some(Page::Library) => "Library",
+        Some(Page::Profile) => "Profile",
+        Some(Page::Settings) => "Settings",
     }
 }
 
@@ -938,6 +948,13 @@ mod tests {
         assert_eq!(page("4", keyboard::Modifiers::CTRL), Some(Page::Profile));
         assert_eq!(page("3", keyboard::Modifiers::empty()), None);
         assert_eq!(page("5", keyboard::Modifiers::CTRL), None);
+    }
+
+    #[test]
+    fn the_sheet_of_a_game_names_the_page_it_goes_back_to() {
+        assert_eq!(page_name(Some(Page::Library)), "Library");
+        assert_eq!(page_name(Some(Page::Votes)), "Votes");
+        assert_eq!(page_name(None), "Discover");
     }
 
     #[test]

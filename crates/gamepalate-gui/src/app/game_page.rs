@@ -4,12 +4,12 @@ use gamepalate_app::{
     AppId, DiscoverPlace, FamilyChange, GameStanding, GameView, Gamepalate, VoteKind,
 };
 use iced::{
-    Center, Element, Fill, Size, Subscription, Task,
+    Center, ContentFit, Element, Fill, Padding, Size, Subscription, Task,
     keyboard::{self, Key, key::Named},
     never, padding,
     widget::{
-        button, column, container, opaque, pick_list, responsive, rich_text, row, scrollable,
-        space, span, stack, text,
+        button, column, container, image, mouse_area, opaque, pick_list, responsive, rich_text,
+        row, scrollable, space, span, stack, text,
     },
 };
 use jiff::civil::Date;
@@ -26,21 +26,37 @@ use crate::{
     style,
 };
 
-const HEADER_WIDTH: f32 = 230.0;
-const HEADER_HEIGHT: f32 = HEADER_WIDTH * 215.0 / 460.0;
-const TOP_HEIGHT: f32 = 160.0;
+/// The sheet leaves the blurred page in sight around it.
+const SHEET_MARGIN: Padding = Padding {
+    top: 16.0,
+    right: 24.0,
+    bottom: 24.0,
+    left: 24.0,
+};
+const SHEET_MAX_WIDTH: f32 = 1200.0;
+const BACK: char = '\u{E5CB}';
+const HEAD_HEIGHT: f32 = 44.0;
+const SIDE_WIDTH: f32 = 340.0;
+/// Below this width the side column goes under the screenshots.
+const BESIDE_MIN_WIDTH: f32 = 900.0;
+/// The title, the status and the place above the columns.
+const TITLE_HEIGHT: f32 = 84.0;
 const MIN_SHOT_WIDTH: f32 = 480.0;
 const CONTENT_SPACING: f32 = 18.0;
+const COLUMN_GAP: f32 = 24.0;
+const SIDE_SPACING: f32 = 14.0;
 const SCROLLBAR_GAP: f32 = 12.0;
 const BESIDE_VOTES: f32 = 520.0;
 
-/// A game found by name, open over the page you were on until you go back.
+/// A game found by name, on a sheet over the page you were on until you go back.
 pub struct GamePage {
     gamepalate: Arc<Gamepalate>,
     game: GameView,
     place: Place,
     showcase: Showcase,
     toasts: Toasts,
+    /// The page under the sheet, blurred by the search that opened the game.
+    backdrop: Option<image::Handle>,
     played: bool,
     changed: bool,
 }
@@ -77,7 +93,11 @@ enum Status {
 }
 
 impl GamePage {
-    pub fn new(gamepalate: &Arc<Gamepalate>, id: AppId) -> Option<(GamePage, Task<Message>)> {
+    pub fn new(
+        gamepalate: &Arc<Gamepalate>,
+        id: AppId,
+        backdrop: Option<image::Handle>,
+    ) -> Option<(GamePage, Task<Message>)> {
         let game = gamepalate.game_view(id)?;
         let mut page = GamePage {
             gamepalate: Arc::clone(gamepalate),
@@ -85,6 +105,7 @@ impl GamePage {
             place: Place::default(),
             showcase: Showcase::new(gamepalate),
             toasts: Toasts::default(),
+            backdrop,
             played: false,
             changed: false,
         };
@@ -95,6 +116,11 @@ impl GamePage {
 
     pub fn changed(&self) -> bool {
         self.changed
+    }
+
+    /// The blurred page no longer fits the window: the veil stays alone.
+    pub fn resized(&mut self) {
+        self.backdrop = None;
     }
 
     pub fn use_gamepalate(&mut self, gamepalate: &Arc<Gamepalate>) -> Task<Message> {
@@ -230,10 +256,11 @@ impl GamePage {
         keyboard::listen().filter_map(key_message)
     }
 
-    pub fn view(&self, scale: f32) -> Element<'_, Message> {
+    /// The sheet over the blurred page. `under` names the page it goes back to.
+    pub fn view(&self, scale: f32, under: &'static str) -> Element<'_, Message> {
         let toast = self.toasts.view(Message::Undo);
-        let card = container(responsive(move |size| self.details(size, scale)))
-            .padding(16)
+        let body = container(responsive(move |size| self.details(size, scale)))
+            .padding(padding::top(16).bottom(16).left(20).right(8))
             .width(Fill)
             .height(Fill)
             .clip(true);
@@ -242,16 +269,43 @@ impl GamePage {
         )
         .padding([10, 20])
         .width(Fill);
-        let page = container(column![
-            stack![card].push(toast),
+        let sheet = container(column![
+            self.head(under),
+            style::separator(),
+            stack![body].push(toast),
             style::separator(),
             actions
         ])
         .width(Fill)
+        .max_width(SHEET_MAX_WIDTH)
         .height(Fill)
-        .style(style::page);
+        .style(style::popup);
 
-        stack![opaque(page)]
+        let backdrop = self.backdrop.as_ref().map(|handle| {
+            image(handle.clone())
+                .width(Fill)
+                .height(Fill)
+                .content_fit(ContentFit::Fill)
+        });
+        let veil = opaque(
+            mouse_area(
+                container(space())
+                    .width(Fill)
+                    .height(Fill)
+                    .style(style::frosted_veil),
+            )
+            .on_press(Message::Back),
+        );
+
+        stack![]
+            .push(backdrop)
+            .push(veil)
+            .push(
+                container(opaque(sheet))
+                    .padding(SHEET_MARGIN)
+                    .center_x(Fill)
+                    .height(Fill),
+            )
             .push(self.showcase.zoom().map(|zoom| zoom.map(Message::Showcase)))
             .push(
                 self.showcase
@@ -261,14 +315,86 @@ impl GamePage {
             .into()
     }
 
+    /// The way back to the page under the sheet, and the links of the game.
+    fn head(&self, under: &'static str) -> Element<'_, Message> {
+        let back = button(
+            row![
+                text(BACK).font(font::ICONS).size(font::icon(11.0)),
+                text(format!("Back to {under}")).size(font::BAR_SIZE),
+                container(text("Esc").size(font::NOTE_SIZE - 1.0))
+                    .padding([1, 6])
+                    .style(style::muted_keycap),
+            ]
+            .spacing(8)
+            .align_y(Center),
+        )
+        .padding([4, 8])
+        .style(style::text_button)
+        .on_press(Message::Back);
+        let link = |key, label, link| {
+            game::key_button(key, label, font::NOTE_SIZE, Some(Message::Open(link)))
+        };
+
+        row![
+            back,
+            space().width(Fill),
+            link("Q", "Steam ↗", Link::Steam),
+            link("W", "Eneba ↗", Link::Eneba),
+            link("E", "HLTB ↗", Link::Hltb),
+        ]
+        .spacing(game::ACTION_SPACING)
+        .padding(padding::left(12).right(20))
+        .height(HEAD_HEIGHT)
+        .align_y(Center)
+        .into()
+    }
+
     fn details(&self, size: Size, scale: f32) -> Element<'_, Message> {
         let game = &self.game;
-        let shot_width = showcase::screenshot_width(
-            size.width - SCROLLBAR_GAP,
-            size.height - TOP_HEIGHT - CONTENT_SPACING,
-            MIN_SHOT_WIDTH,
-            showcase::max_screenshot_width(scale),
-        );
+        let beside = size.width >= BESIDE_MIN_WIDTH;
+        let room = size.width - SCROLLBAR_GAP;
+        let shot_width = if beside {
+            showcase::screenshot_width(
+                room - SIDE_WIDTH - COLUMN_GAP,
+                size.height - TITLE_HEIGHT - CONTENT_SPACING,
+                MIN_SHOT_WIDTH,
+                showcase::max_screenshot_width(scale),
+            )
+        } else {
+            room.min(showcase::max_screenshot_width(scale))
+        };
+        let gallery = self
+            .showcase
+            .gallery(game.id, shot_width, shot_width * 9.0 / 16.0)
+            .map(Message::Showcase);
+
+        let content: Element<'_, Message> = if beside {
+            column![
+                self.title_block(),
+                row![gallery, self.side(SIDE_WIDTH)].spacing(COLUMN_GAP),
+            ]
+            .spacing(CONTENT_SPACING)
+            .width(shot_width + COLUMN_GAP + SIDE_WIDTH)
+            .into()
+        } else {
+            column![self.title_block(), gallery, self.side(shot_width)]
+                .spacing(CONTENT_SPACING)
+                .width(shot_width)
+                .into()
+        };
+
+        scrollable(
+            container(content)
+                .center_x(Fill)
+                .padding(padding::right(SCROLLBAR_GAP)),
+        )
+        .height(Fill)
+        .into()
+    }
+
+    /// The name, where the game stands, and its price on the right.
+    fn title_block(&self) -> Element<'_, Message> {
+        let game = &self.game;
         let status = status(game, jiff::Zoned::now().date()).map(|status| {
             let spans = match status {
                 Status::Voted(pick, day) => vec![
@@ -283,7 +409,7 @@ impl GamePage {
                 .style(style::muted)
                 .on_link_click(never)
         });
-        // An empty line while the place is found, so the price below doesn't move
+        // An empty line while the place is found, so the columns below don't move
         let place = match &self.place.found {
             None => Some(" ".to_string()),
             Some(Some(place)) => Some(format::discover_place(
@@ -293,47 +419,43 @@ impl GamePage {
             Some(None) => None,
         }
         .map(|line| text(line).size(font::BAR_SIZE).style(style::muted));
-        let info = column![game::title(&game.name)]
-            .push(status)
-            .push(place)
-            .push(game::reviews(&game.reviews))
-            .push(game::price_row(
-                &game.price,
-                self.gamepalate.currency(),
-                game::PRICE_GAP,
-            ))
-            .spacing(10)
-            .width(Fill);
-        let top = row![
-            self.showcase
-                .header(game.id, HEADER_WIDTH, HEADER_HEIGHT)
-                .map(Message::Showcase),
-            info,
-            game::header_links(HEADER_HEIGHT, |link| Some(Message::Open(link))),
+
+        row![
+            column![game::title(&game.name)]
+                .push(status)
+                .push(place)
+                .spacing(4)
+                .width(Fill),
+            game::price_row(&game.price, self.gamepalate.currency(), game::PRICE_GAP),
         ]
         .spacing(20)
-        .align_y(Center);
+        .into()
+    }
 
-        let content = column![
-            top,
+    /// The column beside the screenshots: the header image, the short description, the reviews
+    /// and the facts.
+    fn side(&self, width: f32) -> Element<'_, Message> {
+        let game = &self.game;
+        let header_width = width.min(SIDE_WIDTH);
+
+        column![
             self.showcase
-                .media(game.id, shot_width, shot_width * 9.0 / 16.0)
+                .header(game.id, header_width, header_width * 215.0 / 460.0)
                 .map(Message::Showcase),
         ]
+        .push(
+            self.showcase
+                .description(game.id)
+                .map(|description| description.map(Message::Showcase)),
+        )
+        .push(game::reviews(&game.reviews))
         .push(
             self.showcase
                 .facts(game.id, &self.showcase.used_tags())
                 .map(|facts| facts.map(Message::Showcase)),
         )
-        .spacing(CONTENT_SPACING)
-        .max_width(shot_width);
-
-        scrollable(
-            container(content)
-                .center_x(Fill)
-                .padding(padding::right(SCROLLBAR_GAP)),
-        )
-        .height(Fill)
+        .spacing(SIDE_SPACING)
+        .width(width)
         .into()
     }
 

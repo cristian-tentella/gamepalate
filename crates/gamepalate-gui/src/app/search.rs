@@ -89,7 +89,8 @@ pub enum Message {
 
 pub enum Action {
     Run(Task<Message>),
-    Open(AppId),
+    /// A game to open, with the blurred page when it has come: the game's sheet lies on it.
+    Open(AppId, Option<image::Handle>),
 }
 
 impl std::fmt::Debug for Blurred {
@@ -254,7 +255,7 @@ impl Search {
                 container(space())
                     .width(Fill)
                     .height(Fill)
-                    .style(style::search_veil),
+                    .style(style::frosted_veil),
             )
             .on_press(Message::Close),
         );
@@ -402,10 +403,11 @@ impl Search {
     }
 
     fn pick(&mut self, id: AppId) -> Action {
+        let backdrop = self.backdrop.take().map(|backdrop| backdrop.handle);
         self.close();
         self.text.clear();
         self.found.clear();
-        Action::Open(id)
+        Action::Open(id, backdrop)
     }
 
     fn load_capsules(&mut self, gamepalate: &Arc<Gamepalate>) -> Task<Message> {
@@ -570,7 +572,7 @@ mod tests {
         let mut search = open_with(3);
         search.selected = Some(1);
 
-        let Action::Open(id) = search.pick(AppId(2)) else {
+        let Action::Open(id, _) = search.pick(AppId(2)) else {
             panic!("picking a game should open it");
         };
 
