@@ -1,9 +1,9 @@
 use gamepalate_app::{Currency, LATER_DAYS, Price, Reviews, Vote, VoteKind};
 use iced::{
-    Center, Element, Fill, Length, Size, never, padding,
+    Center, Element, Fill, Length, Size, mouse, never, padding,
     widget::{
-        Container, Row, button, column, container, rich_text, row, rule, scrollable, span, stack,
-        text, tooltip,
+        Container, Row, button, column, container, mouse_area, rich_text, row, rule, scrollable,
+        span, stack, text, tooltip,
     },
 };
 
@@ -198,16 +198,19 @@ pub fn bet_label<'a, Message: 'a>() -> Element<'a, Message> {
         .into()
 }
 
-pub fn reviews<'a, Message: 'a>(reviews: &Reviews) -> Element<'a, Message> {
+/// The reviews opposite the price: with some, a click on them is `open`.
+pub fn reviews<'a, Message: Clone + 'a>(reviews: &Reviews, open: Message) -> Element<'a, Message> {
     match format::reviews(reviews) {
-        (percent, label) if !percent.is_empty() => column![
+        (percent, label) if !percent.is_empty() => mouse_area(column![
             text(percent)
                 .size(font::STAT_SIZE)
                 .font(font::BOLD)
                 .line_height(font::STAT_LINE_HEIGHT)
                 .style(style::accent),
             text(label).size(font::NOTE_SIZE).style(style::muted),
-        ]
+        ])
+        .on_press(open)
+        .interaction(mouse::Interaction::Pointer)
         .into(),
         (_, label) => text(label).size(font::INFO_SIZE).style(style::muted).into(),
     }

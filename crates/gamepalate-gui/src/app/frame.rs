@@ -173,6 +173,7 @@ impl App {
                 if let Some(page) = &mut self.game_page {
                     page.resized();
                 }
+                self.screen.resized();
                 match self.window {
                     Some(id) => window::is_maximized(id).map(Message::Maximized),
                     None => Task::none(),

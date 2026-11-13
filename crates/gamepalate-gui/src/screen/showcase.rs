@@ -3,26 +3,44 @@ mod descriptions;
 pub(crate) mod images;
 mod media;
 mod pages;
+mod review_sheet;
+mod reviews;
 mod tags;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
-use gamepalate_app::{AppId, Block, GameDetails, GameTagsView, Gamepalate};
+use gamepalate_app::{
+    AppId, Block, GameDetails, GameTagsView, Gamepalate,
+    reviews::{ReviewPage, ReviewQuery},
+};
 use iced::{
-    Center, Element, Fill, Task, mouse, padding,
+    Center, ContentFit, Element, Fill, Shrink, Task, mouse, padding,
     widget::{
         Id, button, column, container, image, mouse_area, opaque, operation, row, scrollable,
-        scrollable::AbsoluteOffset, space, stack, text,
+        scrollable::{AbsoluteOffset, RelativeOffset},
+        space, stack, text, tooltip,
     },
+    window,
 };
 
 use self::{
     descriptions::Descriptions,
     images::{Images, Picture},
     pages::Pages,
+    reviews::{Request, ReviewLists},
 };
 use super::game;
-use crate::{font, format, style};
+use crate::{
+    app::{
+        PAGE_TOP,
+        backdrop::{self, Blurred},
+    },
+    font, format, style,
+};
 use media::next_index;
 pub use media::{SCREENSHOT_WIDTH, max_screenshot_width, screenshot_width};
 pub(super) use tags::tags_body;
@@ -37,15 +55,24 @@ const MEASURE: f32 = 680.0;
 const BODY_SIZE: f32 = 16.0;
 const SHEET_INSET: f32 = 40.0;
 const SHEET_MARGIN: f32 = 32.0;
+const CLOSE_SIZE: f32 = 32.0;
+const TITLE_SIZE: f32 = 16.0;
 const CLOSE: char = '\u{E5CD}';
 const CLOSED: char = '\u{E5CC}';
 const OPENED: char = '\u{E5CF}';
+/// The pause in typing the hours before the reviews are asked again.
+const HOURS_PAUSE: Duration = Duration::from_millis(500);
 
 pub struct Showcase {
     gamepalate: Arc<Gamepalate>,
     images: Images,
     pages: Pages,
     descriptions: Descriptions,
+    reviews: ReviewLists,
+    spoilers: HashSet<(String, usize)>,
+    expanded: HashSet<String>,
+    hours_typed: String,
+    has_reviews: bool,
     extras: Images,
     screenshot: usize,
     last_screenshot: Option<String>,
@@ -70,6 +97,7 @@ pub enum Version {
 enum Popup {
     About,
     Tags,
+    Reviews,
 }
 
 impl Popup {
@@ -77,6 +105,7 @@ impl Popup {
         match self {
             Popup::About => "About this game",
             Popup::Tags => "Tags",
+            Popup::Reviews => "Reviews",
         }
     }
 }
@@ -84,18 +113,52 @@ impl Popup {
 #[derive(Debug, Default)]
 struct Popups {
     open: Option<Popup>,
+    /// Waiting for the blurred picture of the page, taken before the sheet covers it.
+    opening: Option<Popup>,
+    backdrop: Option<image::Handle>,
     all_tags: bool,
 }
 
 impl Popups {
-    fn toggle(&mut self, popup: Popup, allowed: bool) {
-        if allowed {
-            self.open = (self.open != Some(popup)).then_some(popup);
+    /// True when the sheet needs a picture of the page first. Going from one sheet to another
+    /// keeps the picture of the first.
+    fn toggle(&mut self, popup: Popup, allowed: bool) -> bool {
+        if !allowed {
+            return false;
+        }
+        if self.open.is_some() {
+            if self.open == Some(popup) {
+                self.close();
+            } else {
+                self.open = Some(popup);
+            }
+            return false;
+        }
+        if self.opening == Some(popup) {
+            self.opening = None;
+            return false;
+        }
+        let asked = self.opening.is_some();
+        self.opening = Some(popup);
+        !asked
+    }
+
+    /// The picture has come, or there is none: the sheet waiting for it shows up.
+    fn pictured(&mut self, backdrop: Option<image::Handle>) {
+        if let Some(popup) = self.opening.take() {
+            self.open = Some(popup);
+            self.backdrop = backdrop;
         }
     }
 
     fn close(&mut self) {
         self.open = None;
+        self.opening = None;
+        self.backdrop = None;
+    }
+
+    fn is_shown_or_coming(&self) -> bool {
+        self.open.is_some() || self.opening.is_some()
     }
 
     fn is(&self, popup: Popup) -> bool {
@@ -117,6 +180,10 @@ pub enum Message {
     VersionAllocated(Version, String, Option<image::Allocation>),
     DetailsLoaded(AppId, Result<Option<Arc<GameDetails>>, String>),
     DescriptionLoaded(AppId, Result<Option<Arc<Vec<Block>>>, String>),
+    ReviewsLoaded(Request, Result<Arc<ReviewPage>, String>),
+    WindowFound(Option<window::Id>),
+    Screenshot(window::Screenshot),
+    Blurred(Option<Arc<Blurred>>),
     ExtraLoaded(String, Option<image::Handle>),
     ExtraAllocated(String, Option<image::Allocation>),
     OpenLink(String),
@@ -129,6 +196,14 @@ pub enum Message {
     ToggleAbout,
     ToggleTags,
     ToggleAllTags,
+    ToggleReviews,
+    MoreReviews,
+    FilterReviews(ReviewQuery),
+    TypeHours(String),
+    ApplyHours(String),
+    RetryReviews,
+    ShowSpoiler(String, usize),
+    ExpandReview(String),
     ClosePopup,
     ScrollUp,
     ScrollDown,
@@ -144,6 +219,11 @@ impl Showcase {
             images: Images::default(),
             pages: Pages::default(),
             descriptions: Descriptions::default(),
+            reviews: ReviewLists::default(),
+            spoilers: HashSet::new(),
+            expanded: HashSet::new(),
+            hours_typed: String::new(),
+            has_reviews: false,
             extras: Images::default(),
             screenshot: 0,
             last_screenshot: None,
@@ -181,6 +261,29 @@ impl Showcase {
             }
             Message::DetailsLoaded(id, result) => self.pages.loaded(id, result),
             Message::DescriptionLoaded(id, result) => self.descriptions.loaded(id, result),
+            Message::ReviewsLoaded(request, result) => self.reviews.loaded(request, result),
+            Message::WindowFound(window) => {
+                match window.filter(|_| self.popups.opening.is_some()) {
+                    Some(window) => return window::screenshot(window).map(Message::Screenshot),
+                    None => self.popups.pictured(None),
+                }
+            }
+            Message::Screenshot(screenshot) => {
+                if self.popups.opening.is_some() {
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                backdrop::blur(&screenshot, PAGE_TOP)
+                            })
+                            .await
+                        },
+                        |blurred| Message::Blurred(blurred.ok().map(Arc::new)),
+                    );
+                }
+            }
+            Message::Blurred(blurred) => self
+                .popups
+                .pictured(blurred.map(|blurred| blurred.handle.clone())),
             Message::ExtraLoaded(url, None) => self.extras.loaded(url, None),
             Message::ExtraLoaded(url, Some(handle)) => {
                 return image::allocate(handle)
@@ -202,9 +305,36 @@ impl Showcase {
             }
             Message::Zoom => self.zoomed = self.current_screenshot().is_some(),
             Message::CloseZoom => self.zoomed = false,
-            Message::ToggleAbout => self.popups.toggle(Popup::About, self.can_open_popup()),
-            Message::ToggleTags => self.popups.toggle(Popup::Tags, self.can_open_popup()),
+            Message::ToggleAbout => return self.toggle(Popup::About, self.can_open_popup()),
+            Message::ToggleTags => return self.toggle(Popup::Tags, self.can_open_popup()),
             Message::ToggleAllTags => self.popups.all_tags = !self.popups.all_tags,
+            Message::ToggleReviews => {
+                return self.toggle(Popup::Reviews, self.can_open_popup() && self.has_reviews);
+            }
+            Message::MoreReviews => return self.more_reviews(),
+            Message::RetryReviews => return self.retry_reviews(),
+            Message::FilterReviews(query) => return self.filter_reviews(query),
+            Message::TypeHours(typed) => {
+                self.hours_typed = review_sheet::hours_typed(&typed);
+                let typed = self.hours_typed.clone();
+                return Task::perform(tokio::time::sleep(HOURS_PAUSE), move |()| {
+                    Message::ApplyHours(typed.clone())
+                });
+            }
+            Message::ApplyHours(typed) if typed == self.hours_typed => {
+                let query = ReviewQuery {
+                    min_hours: review_sheet::min_hours(&typed),
+                    ..self.reviews.query()
+                };
+                return self.filter_reviews(query);
+            }
+            Message::ApplyHours(_) => {}
+            Message::ShowSpoiler(id, index) => {
+                self.spoilers.insert((id, index));
+            }
+            Message::ExpandReview(id) => {
+                self.expanded.insert(id);
+            }
             Message::ClosePopup => self.popups.close(),
             Message::Close => {
                 self.zoomed = false;
@@ -214,18 +344,51 @@ impl Showcase {
             Message::Hover(hovered) => self.hovered = hovered,
         }
 
+        self.load_shown()
+    }
+
+    fn load_shown(&mut self) -> Task<Message> {
         Task::batch([
             self.load_versions(),
             self.load_description(),
             self.load_extras(),
+            self.load_reviews(),
         ])
+    }
+
+    /// The sheet shows up once the page behind it is blurred.
+    fn toggle(&mut self, popup: Popup, allowed: bool) -> Task<Message> {
+        let picture = if self.popups.toggle(popup, allowed) {
+            window::latest().map(Message::WindowFound)
+        } else {
+            Task::none()
+        };
+
+        Task::batch([picture, self.load_shown()])
+    }
+
+    fn filter_reviews(&mut self, query: ReviewQuery) -> Task<Message> {
+        if !self.reviews.choose(query) {
+            return Task::none();
+        }
+
+        Task::batch([
+            operation::snap_to(SHEET, RelativeOffset::START),
+            self.load_reviews(),
+        ])
+    }
+
+    /// The blurred page no longer fits the window: the veil stays alone.
+    pub fn resized(&mut self) {
+        self.popups.backdrop = None;
     }
 
     fn can_open_popup(&self) -> bool {
         !self.zoomed && self.shown.is_some()
     }
 
-    pub fn follow(&mut self, current: Option<AppId>) {
+    pub fn follow(&mut self, current: Option<AppId>, has_reviews: bool) {
+        self.has_reviews = has_reviews;
         if current != self.shown {
             self.shown = current;
             self.screenshot = 0;
@@ -233,6 +396,8 @@ impl Showcase {
             self.browsing = false;
             self.zoomed = false;
             self.popups.close();
+            self.spoilers.clear();
+            self.expanded.clear();
             self.tags = current.and_then(|id| self.gamepalate.game_tags(id));
             self.originals.clear();
             self.thumbnails.clear();
@@ -251,6 +416,7 @@ impl Showcase {
         let details = self.load_details(upcoming, nearby);
         let images = self.load_images(upcoming, nearby, similar);
         self.descriptions.keep_only(nearby);
+        self.reviews.keep_only(nearby);
 
         Task::batch([details, images, self.load_versions()])
     }
@@ -265,20 +431,32 @@ impl Showcase {
 
     pub fn popup<'a>(&'a self, name: &'a str) -> Option<Element<'a, Message>> {
         let popup = self.popups.open?;
-        let body = match popup {
-            Popup::About => self.about(self.shown?),
-            Popup::Tags => self.tags_body(),
+        let (bar, body) = match popup {
+            Popup::About => (None, self.about(self.shown?)),
+            Popup::Tags => (None, self.tags_body()),
+            Popup::Reviews => (
+                Some(self.review_filters(self.shown?)),
+                self.reviews_body(self.shown?),
+            ),
         };
 
-        Some(sheet(popup.label(), name, body, Message::ClosePopup))
+        Some(sheet(
+            popup.label(),
+            name,
+            self.popups.backdrop.as_ref(),
+            bar,
+            body,
+            Message::ClosePopup,
+        ))
     }
 
     pub fn facts<'a>(&'a self, id: AppId, tags: &[String]) -> Option<Element<'a, Message>> {
         let open = self.features_open;
+        let reviews = self.has_reviews && self.shown == Some(id);
 
         self.pages
             .details(id)
-            .map(|details| facts(details, tags, open))
+            .map(|details| facts(details, tags, open, reviews))
     }
 
     fn load_details(&mut self, upcoming: &[AppId], nearby: &[AppId]) -> Task<Message> {
@@ -308,15 +486,20 @@ impl Showcase {
     }
 
     pub fn is_open(&self) -> bool {
-        self.zoomed || self.popups.open.is_some()
+        self.zoomed || self.popups.is_shown_or_coming()
     }
 
     pub fn is_popup_open(&self) -> bool {
-        self.popups.open.is_some()
+        self.popups.is_shown_or_coming()
     }
 }
 
-fn facts<'a>(details: &'a GameDetails, tags: &[String], open: bool) -> Element<'a, Message> {
+fn facts<'a>(
+    details: &'a GameDetails,
+    tags: &[String],
+    open: bool,
+    reviews: bool,
+) -> Element<'a, Message> {
     let store = &details.store;
     let byline = format::byline(
         format::year(store.release_date),
@@ -328,12 +511,22 @@ fn facts<'a>(details: &'a GameDetails, tags: &[String], open: bool) -> Element<'
             .size(font::NOTE_SIZE)
             .style(style::accent)
     });
-    let about = game::key_button(
+    let about = row![game::key_button(
         "D",
         "About this game",
         font::NOTE_SIZE,
         Some(Message::ToggleAbout),
-    );
+    )]
+    .push(reviews.then(|| {
+        game::key_button(
+            "R",
+            "Reviews",
+            font::NOTE_SIZE,
+            Some(Message::ToggleReviews),
+        )
+    }))
+    .spacing(game::ACTION_SPACING)
+    .align_y(Center);
     let used = (!tags.is_empty()).then(|| {
         mouse_area(
             text(tags.join(" · "))
@@ -396,58 +589,98 @@ pub(super) fn scroll_sheet<M: 'static>(y: f32) -> Task<M> {
     operation::scroll_by(SHEET, AbsoluteOffset { x: 0.0, y })
 }
 
+/// `backdrop` is the blurred page under the sheet, when there is one. A sheet with a `bar` takes
+/// all the height there is: the list under the bar changes with it, and the sheet keeps its size.
 pub(super) fn sheet<'a, M: Clone + 'a>(
     label: &'a str,
     name: &'a str,
+    backdrop: Option<&'a image::Handle>,
+    bar: Option<Element<'a, M>>,
     body: Element<'a, M>,
     close: M,
 ) -> Element<'a, M> {
-    let close_button = button(text(CLOSE).font(font::ICONS).size(font::icon(12.0)))
-        .padding([8, 12])
-        .style(style::secondary)
-        .on_press(close.clone());
+    let close_button = tooltip(
+        button(
+            text(CLOSE)
+                .font(font::ICONS)
+                .size(font::icon(11.0))
+                .width(Fill)
+                .height(Fill)
+                .center(),
+        )
+        .width(CLOSE_SIZE)
+        .height(CLOSE_SIZE)
+        .padding(0)
+        .style(style::sheet_close)
+        .on_press(close.clone()),
+        container(text("Close (Esc)").size(font::NOTE_SIZE))
+            .padding([6, 10])
+            .style(style::popup),
+        tooltip::Position::Left,
+    );
     let header = row![
-        column![
-            text(label).size(font::NOTE_SIZE).style(style::muted),
-            text(name).size(font::PRICE_SIZE).font(font::SEMIBOLD),
-        ]
-        .spacing(4)
-        .width(Fill),
+        text(label).size(TITLE_SIZE).font(font::SEMIBOLD),
+        text(name)
+            .size(font::BAR_SIZE)
+            .style(style::muted)
+            .width(Fill),
         close_button,
-    ];
+    ]
+    .spacing(10)
+    .align_y(Center);
+    let height = if bar.is_some() { Fill } else { Shrink };
     let sheet = column![
-        container(header).padding(padding::top(24).bottom(20).left(SHEET_INSET).right(20)),
+        container(header).padding(padding::top(10).bottom(10).left(SHEET_INSET).right(12)),
         style::separator(),
+    ]
+    .push(bar.map(|bar| {
+        column![
+            container(bar).padding(padding::top(10).bottom(10).left(SHEET_INSET).right(20)),
+            style::separator(),
+        ]
+    }))
+    .push(
         scrollable(
             container(body).padding(
-                padding::top(24)
+                padding::top(20)
                     .bottom(SHEET_INSET)
                     .left(SHEET_INSET)
-                    .right(SHEET_INSET)
-            )
+                    .right(SHEET_INSET),
+            ),
         )
+        .height(height)
         .id(SHEET),
-    ];
+    )
+    .height(height);
 
-    stack![
-        opaque(
-            mouse_area(
-                container(space())
-                    .width(Fill)
-                    .height(Fill)
-                    .style(style::veil)
-            )
-            .on_press(close)
-        ),
-        container(opaque(
-            container(sheet)
-                .max_width(MEASURE + 2.0 * SHEET_INSET)
-                .style(style::popup)
+    let picture = backdrop.map(|handle| {
+        image(handle.clone())
+            .width(Fill)
+            .height(Fill)
+            .content_fit(ContentFit::Fill)
+    });
+    let veil = if backdrop.is_some() {
+        style::frosted_veil
+    } else {
+        style::veil
+    };
+
+    stack![]
+        .push(picture)
+        .push(opaque(
+            mouse_area(container(space()).width(Fill).height(Fill).style(veil)).on_press(close),
         ))
-        .center(Fill)
-        .padding(SHEET_MARGIN),
-    ]
-    .into()
+        .push(
+            container(opaque(
+                container(sheet)
+                    .max_width(MEASURE + 2.0 * SHEET_INSET)
+                    .height(height)
+                    .style(style::popup),
+            ))
+            .center(Fill)
+            .padding(SHEET_MARGIN),
+        )
+        .into()
 }
 
 fn note<'a>(label: &'static str) -> Element<'a, Message> {
@@ -467,17 +700,41 @@ mod tests {
 
     use super::*;
 
+    fn picture() -> image::Handle {
+        image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255])
+    }
+
+    /// Opens `popup` the way the app does: the picture of the page comes, then the sheet.
+    fn open(popups: &mut Popups, popup: Popup) {
+        popups.toggle(popup, true);
+        popups.pictured(Some(picture()));
+    }
+
     #[test]
     fn about_keeps_its_header_in_the_shared_sheet() {
         assert_eq!(Popup::About.label(), "About this game");
         assert_eq!(Popup::Tags.label(), "Tags");
+        assert_eq!(Popup::Reviews.label(), "Reviews");
+    }
+
+    #[test]
+    fn r_opens_and_closes_the_reviews_only_when_there_are_some() {
+        let mut popups = Popups::default();
+
+        assert!(!popups.toggle(Popup::Reviews, false));
+        assert!(!popups.is_shown_or_coming());
+
+        open(&mut popups, Popup::Reviews);
+        assert_eq!(popups.open, Some(Popup::Reviews));
+        assert!(!popups.toggle(Popup::Reviews, true));
+        assert_eq!(popups.open, None);
     }
 
     #[test]
     fn t_opens_and_closes_the_tags() {
         let mut popups = Popups::default();
 
-        popups.toggle(Popup::Tags, true);
+        open(&mut popups, Popup::Tags);
         assert_eq!(popups.open, Some(Popup::Tags));
 
         popups.toggle(Popup::Tags, true);
@@ -485,13 +742,60 @@ mod tests {
     }
 
     #[test]
-    fn opening_one_popup_closes_the_other() {
+    fn a_sheet_waits_for_the_blurred_page_behind_it() {
+        let mut popups = Popups::default();
+
+        assert!(popups.toggle(Popup::About, true));
+        assert_eq!(popups.open, None);
+        assert!(popups.is_shown_or_coming());
+
+        popups.pictured(Some(picture()));
+        assert_eq!(popups.open, Some(Popup::About));
+        assert!(popups.backdrop.is_some());
+    }
+
+    #[test]
+    fn without_a_picture_the_sheet_opens_over_the_veil_alone() {
         let mut popups = Popups::default();
 
         popups.toggle(Popup::Tags, true);
-        popups.toggle(Popup::About, true);
+        popups.pictured(None);
+
+        assert_eq!(popups.open, Some(Popup::Tags));
+        assert!(popups.backdrop.is_none());
+    }
+
+    #[test]
+    fn a_second_key_while_waiting_asks_no_other_picture() {
+        let mut popups = Popups::default();
+        popups.toggle(Popup::Tags, true);
+
+        assert!(!popups.toggle(Popup::About, true));
+        popups.pictured(None);
+        assert_eq!(popups.open, Some(Popup::About));
+    }
+
+    #[test]
+    fn the_same_key_while_waiting_gives_up_the_sheet() {
+        let mut popups = Popups::default();
+        popups.toggle(Popup::Reviews, true);
+
+        popups.toggle(Popup::Reviews, true);
+        popups.pictured(Some(picture()));
+
+        assert!(!popups.is_shown_or_coming());
+        assert!(popups.backdrop.is_none());
+    }
+
+    #[test]
+    fn opening_one_popup_closes_the_other_and_keeps_the_picture() {
+        let mut popups = Popups::default();
+        open(&mut popups, Popup::Tags);
+
+        assert!(!popups.toggle(Popup::About, true));
         assert_eq!(popups.open, Some(Popup::About));
         assert!(!popups.is(Popup::Tags));
+        assert!(popups.backdrop.is_some());
 
         popups.toggle(Popup::Tags, true);
         assert_eq!(popups.open, Some(Popup::Tags));
@@ -504,19 +808,32 @@ mod tests {
         popups.toggle(Popup::Tags, false);
         popups.toggle(Popup::About, false);
 
+        assert!(!popups.is_shown_or_coming());
+    }
+
+    #[test]
+    fn a_late_picture_after_closing_opens_nothing() {
+        let mut popups = Popups::default();
+        popups.toggle(Popup::About, true);
+
+        popups.close();
+        popups.pictured(Some(picture()));
+
         assert_eq!(popups.open, None);
     }
 
     #[test]
     fn changing_game_closes_the_popup_and_keeps_all_the_tags_shown() {
         let mut popups = Popups {
-            open: Some(Popup::Tags),
             all_tags: true,
+            ..Popups::default()
         };
+        open(&mut popups, Popup::Tags);
 
         popups.close();
 
         assert_eq!(popups.open, None);
+        assert!(popups.backdrop.is_none());
         assert!(popups.all_tags);
     }
 }

@@ -10,11 +10,13 @@ use gamepalate_core::{ids::AppId, region::Region};
 use gamepalate_steam::{
     description::{Block, get_description},
     details::{ItemDetails, get_item_details, get_store_categories},
+    reviews::{ReviewPage, ReviewQuery, get_reviews},
     transport::{Get, SteamError, Transport},
 };
 
 const LANGUAGE: &str = "english";
 const DESCRIPTION: &str = "the store description";
+const REVIEWS: &str = "the reviews";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameDetails {
@@ -63,6 +65,23 @@ impl<S: Get + Sync> StoreDetails<S> {
             .unwrap_or_else(|_| {
                 Err(SteamError::Shape {
                     endpoint: DESCRIPTION.to_string(),
+                    reason: "the reader stopped".to_string(),
+                })
+            })
+    }
+
+    pub async fn reviews(
+        &self,
+        id: AppId,
+        query: &ReviewQuery,
+        cursor: Option<&str>,
+    ) -> Result<ReviewPage, SteamError> {
+        AssertUnwindSafe(get_reviews(&self.transport, id, query, cursor))
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| {
+                Err(SteamError::Shape {
+                    endpoint: REVIEWS.to_string(),
                     reason: "the reader stopped".to_string(),
                 })
             })
@@ -203,6 +222,47 @@ mod tests {
 
         assert!(matches!(
             store.description(AppId(620)).await,
+            Err(SteamError::Shape { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn reads_the_reviews_with_the_same_transport() {
+        let store = store(vec![Ok(json!({ "response": {
+            "reviews": [{
+                "recommendationid": "1",
+                "author": { "playtime_forever": 120, "playtime_at_review": 60 },
+                "language": "italian",
+                "review": "Bello",
+                "timestamp_created": 1_700_000_000,
+                "voted_up": true,
+                "votes_up": 3,
+            }],
+            "cursor": "next",
+            "total_matching": 1,
+        } }))]);
+
+        let page = store
+            .reviews(AppId(620), &ReviewQuery::default(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(page.reviews.len(), 1);
+        assert_eq!(page.next.as_deref(), Some("next"));
+        assert_eq!(
+            *store.transport.asked.lock().unwrap(),
+            ["IUserReviewsService/GetAppReviews/v1"]
+        );
+    }
+
+    #[tokio::test]
+    async fn reviews_that_break_the_reader_are_an_error() {
+        let store = store(Vec::new());
+
+        assert!(matches!(
+            store
+                .reviews(AppId(620), &ReviewQuery::default(), None)
+                .await,
             Err(SteamError::Shape { .. })
         ));
     }

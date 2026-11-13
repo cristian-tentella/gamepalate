@@ -170,6 +170,30 @@ pub fn open_bar_icon(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+/// The round close button of a sheet: only the cross until the pointer is on it.
+pub fn sheet_close(theme: &Theme, status: button::Status) -> button::Style {
+    let background = theme.extended_palette().background;
+
+    button::Style {
+        background: match status {
+            button::Status::Hovered => Some(background.weak.color.into()),
+            button::Status::Pressed => Some(background.strong.color.into()),
+            button::Status::Active | button::Status::Disabled => None,
+        },
+        text_color: match status {
+            button::Status::Hovered | button::Status::Pressed => background.base.text,
+            button::Status::Active | button::Status::Disabled => {
+                muted(theme).color.unwrap_or(background.base.text)
+            }
+        },
+        border: Border {
+            radius: f32::MAX.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
+    }
+}
+
 pub fn close_button(theme: &Theme, status: button::Status) -> button::Style {
     let red = Color::from_rgb8(0xc4, 0x2b, 0x1c);
 
@@ -521,6 +545,62 @@ pub fn popup(theme: &Theme) -> container::Style {
             blur_radius: 16.0,
         },
         ..container::Style::default()
+    }
+}
+
+/// One review in the reviews sheet: a little apart from the sheet, with a soft edge.
+pub fn review_card(theme: &Theme) -> container::Style {
+    let background = theme.extended_palette().background;
+
+    container::Style {
+        background: Some(palette::deviate(background.base.color, 0.03).into()),
+        border: Border {
+            color: background.weak.color,
+            width: 1.0,
+            radius: 10.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// A quote inside a review.
+pub fn review_quote(theme: &Theme) -> container::Style {
+    let background = theme.extended_palette().background;
+
+    container::Style {
+        background: Some(palette::deviate(background.base.color, 0.07).into()),
+        border: Border {
+            radius: 6.0.into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
+    }
+}
+
+/// The verdict of a review: in the accent when recommended, grey when not. The theme's danger
+/// is too close to the accent to tell them apart.
+pub fn review_verdict(recommended: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let palette = theme.extended_palette();
+        let (background, text_color) = if recommended {
+            let accent = palette.success.base.color;
+            (accent.scale_alpha(0.16), accent)
+        } else {
+            (
+                palette.background.strong.color,
+                palette.background.base.text,
+            )
+        };
+
+        container::Style {
+            background: Some(background.into()),
+            text_color: Some(text_color),
+            border: Border {
+                radius: 999.0.into(),
+                ..Border::default()
+            },
+            ..container::Style::default()
+        }
     }
 }
 

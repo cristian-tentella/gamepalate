@@ -1,6 +1,6 @@
 use gamepalate_app::{
     Blame, Controller, Currency, DiscoverPlace, LeftOut, Price, Reviews, SearchOptions, SteamDeck,
-    Timestamp, VoteKind,
+    Timestamp, VoteKind, reviews::Review,
 };
 use jiff::{civil::Date, tz::TimeZone};
 
@@ -236,6 +236,43 @@ pub fn reviews(reviews: &Reviews) -> (String, String) {
         format!("{percent}%"),
         format!("positive of {} {noun}", short_count(reviews.total)),
     )
+}
+
+pub fn verdict(recommended: bool) -> &'static str {
+    if recommended {
+        "Recommended"
+    } else {
+        "Not recommended"
+    }
+}
+
+pub fn review_facts(review: &Review, now: Timestamp) -> String {
+    review_facts_in(review, now, &TimeZone::system())
+}
+
+fn review_facts_in(review: &Review, now: Timestamp, zone: &TimeZone) -> String {
+    let mut parts = vec![
+        format!(
+            "{} at review, {} now",
+            hours(review.hours_at_review),
+            hours(review.hours_now)
+        ),
+        day_in(review.written, now, zone),
+    ];
+    parts.extend(found_helpful(review.helpful));
+    parts.join(" · ")
+}
+
+fn hours(hours: f64) -> String {
+    if hours >= 99.95 {
+        return format!("{} h", count(hours.round() as u32));
+    }
+    let short = format!("{hours:.1}");
+    format!("{} h", short.trim_end_matches(".0"))
+}
+
+fn found_helpful(people: u32) -> Option<String> {
+    (people > 0).then(|| format!("{} found it helpful", count(people)))
 }
 
 pub fn affinity(affinity: f64) -> String {
@@ -623,6 +660,50 @@ mod tests {
     #[test]
     fn shows_day_and_month_for_an_earlier_day_this_year() {
         assert_eq!(when_utc(Timestamp(NOW.0 - 48 * HOUR)), "31 Oct");
+    }
+
+    #[test]
+    fn review_hours_keep_a_decimal_under_a_hundred() {
+        assert_eq!(hours(34.5), "34.5 h");
+        assert_eq!(hours(2.0), "2 h");
+        assert_eq!(hours(0.0), "0 h");
+        assert_eq!(hours(0.04), "0 h");
+        assert_eq!(hours(99.94), "99.9 h");
+        assert_eq!(hours(99.96), "100 h");
+        assert_eq!(hours(120.4), "120 h");
+        assert_eq!(hours(1234.6), "1,235 h");
+    }
+
+    #[test]
+    fn a_review_says_the_hours_the_day_and_who_found_it_helpful() {
+        let mut review = Review {
+            id: "1".to_string(),
+            recommended: true,
+            text: Vec::new(),
+            hours_at_review: 34.5,
+            hours_now: 120.0,
+            written: Timestamp(NOW.0 - 48 * HOUR),
+            helpful: 1234,
+            language: "english".to_string(),
+        };
+
+        assert_eq!(
+            review_facts_in(&review, NOW, &TimeZone::UTC),
+            "34.5 h at review, 120 h now · 31 Oct · 1,234 found it helpful"
+        );
+        review.helpful = 1;
+        assert!(review_facts_in(&review, NOW, &TimeZone::UTC).ends_with("· 1 found it helpful"));
+        review.helpful = 0;
+        assert_eq!(
+            review_facts_in(&review, NOW, &TimeZone::UTC),
+            "34.5 h at review, 120 h now · 31 Oct"
+        );
+    }
+
+    #[test]
+    fn a_review_is_recommended_or_not() {
+        assert_eq!(verdict(true), "Recommended");
+        assert_eq!(verdict(false), "Not recommended");
     }
 
     #[test]
