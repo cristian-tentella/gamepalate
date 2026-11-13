@@ -426,7 +426,8 @@ impl App {
             Screen::Library(_) => Library::subscription(keys).map(Message::Library),
             Screen::Profile(_) => Profile::subscription(keys).map(Message::Profile),
             Screen::Settings(screen) => screen.subscription(keys).map(Message::Settings),
-            Screen::Setup(_) | Screen::Starting => Subscription::none(),
+            Screen::Setup(_) => setup::Setup::subscription().map(Message::Setup),
+            Screen::Starting => Subscription::none(),
         };
         let search = self.search.subscription().map(Message::Search);
         let game_page = if self.game_page.is_some() {

@@ -14,7 +14,7 @@ use gamepalate_app::{
     update::download_catalog,
 };
 use iced::{
-    Center, ContentFit, Element, Fill, Task,
+    Center, ContentFit, Element, Event, Fill, Subscription, Task, event,
     futures::{SinkExt, channel::mpsc},
     mouse, never, padding, stream,
     widget::{
@@ -56,6 +56,7 @@ pub(crate) const PROFILE_PLACEHOLDER: &str = "Steam profile address or Steam ID"
 const FIND_STEAM_ID: &str = "Open your profile on steamcommunity.com and copy the address";
 const DROP_CATALOG: &str = "Have a catalog file? Drop it on this window.";
 const IMPORTING: &str = "Importing the catalog…";
+const DROP_TO_IMPORT: &str = "Drop to import";
 
 pub struct Setup {
     first_run: FirstRun,
@@ -126,6 +127,7 @@ struct Download {
 #[derive(Debug, Default)]
 struct Import {
     running: bool,
+    hovering: bool,
     result: Option<Result<ImportedCatalog, String>>,
 }
 
@@ -158,13 +160,7 @@ pub enum Message {
     Download,
     Progress(gamepalate_app::update::Progress),
     Downloaded(Result<(), String>),
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "sent by a file dropped on the window, still to come"
-        )
-    )]
+    Hovering(bool),
     Import(PathBuf),
     Imported(Result<ImportedCatalog, String>),
     Prepare(bool),
@@ -319,7 +315,14 @@ impl Setup {
                 self.download = Download::default();
                 self.prepare(false)
             }
-            Message::Import(file) => self.import(file),
+            Message::Hovering(hovering) => {
+                self.import.hovering = hovering;
+                Action::None
+            }
+            Message::Import(file) => {
+                self.import.hovering = false;
+                self.import(file)
+            }
             Message::Imported(result) => self.imported(result),
             Message::Prepare(read_signals_again) => self.prepare(read_signals_again),
             Message::Prepared(Ok(check)) if !check.empty_profile => self.check_again(),
@@ -455,7 +458,7 @@ impl Setup {
         }
         self.import = Import {
             running: true,
-            result: None,
+            ..Import::default()
         };
 
         Action::Run(Task::perform(
@@ -467,8 +470,8 @@ impl Setup {
     fn imported(&mut self, result: Result<ImportedCatalog, String>) -> Action {
         let succeeded = result.is_ok();
         self.import = Import {
-            running: false,
             result: Some(result),
+            ..Import::default()
         };
         if !succeeded {
             return Action::None;
@@ -504,6 +507,10 @@ impl Setup {
             },
             Message::Connected,
         ))
+    }
+
+    pub fn subscription() -> Subscription<Message> {
+        event::listen_with(drop_message)
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -778,11 +785,15 @@ impl Setup {
     }
 
     fn import_view(&self) -> Element<'_, Message> {
-        let line = note(if self.import.running {
-            IMPORTING
+        let line = if self.import.running {
+            note(IMPORTING)
+        } else if self.import.hovering {
+            text(DROP_TO_IMPORT)
+                .size(font::NOTE_SIZE)
+                .style(style::accent)
         } else {
-            DROP_CATALOG
-        });
+            note(DROP_CATALOG)
+        };
         let result: Option<Element<'_, Message>> = match &self.import.result {
             Some(Ok(imported)) => {
                 let now = Timestamp(jiff::Timestamp::now().as_millisecond());
@@ -978,6 +989,15 @@ fn import_place(step: Step, first_run: &FirstRun, download: &Download) -> Option
         Step::Account => Some(ImportPlace::Account),
         Step::Catalog if download.error.is_some() => Some(ImportPlace::Catalog),
         Step::Catalog | Step::Profile => None,
+    }
+}
+
+fn drop_message(event: Event, _: event::Status, _: iced::window::Id) -> Option<Message> {
+    match event {
+        Event::Window(iced::window::Event::FileHovered(_)) => Some(Message::Hovering(true)),
+        Event::Window(iced::window::Event::FilesHoveredLeft) => Some(Message::Hovering(false)),
+        Event::Window(iced::window::Event::FileDropped(file)) => Some(Message::Import(file)),
+        _ => None,
     }
 }
 
@@ -1404,7 +1424,7 @@ mod tests {
     fn an_import_waits_for_the_one_running_and_for_connect() {
         let running = Import {
             running: true,
-            result: None,
+            ..Import::default()
         };
         let connecting = Account {
             connecting: true,
@@ -1441,6 +1461,56 @@ mod tests {
             setup.update(Message::Import(PathBuf::from("catalog.zip"))),
             Action::None
         ));
+    }
+
+    #[test]
+    fn only_window_file_events_reach_the_setup() {
+        let id = iced::window::Id::unique();
+        let file = PathBuf::from("catalog.zip");
+        let message = |event| drop_message(Event::Window(event), event::Status::Ignored, id);
+
+        assert!(matches!(
+            message(iced::window::Event::FileHovered(file.clone())),
+            Some(Message::Hovering(true))
+        ));
+        assert!(matches!(
+            message(iced::window::Event::FilesHoveredLeft),
+            Some(Message::Hovering(false))
+        ));
+        assert!(matches!(
+            message(iced::window::Event::FileDropped(file.clone())),
+            Some(Message::Import(dropped)) if dropped == file
+        ));
+        assert!(message(iced::window::Event::Focused).is_none());
+    }
+
+    #[test]
+    fn a_dropped_file_imports_only_where_the_line_shows() {
+        let mut setup = Setup::new(
+            FirstRun {
+                steam_id: Part::Missing,
+                catalog: Part::Missing,
+                ..first_run()
+            },
+            None,
+        );
+        setup.update(Message::Hovering(true));
+        assert!(setup.import.hovering);
+
+        assert!(matches!(
+            setup.update(Message::Import(PathBuf::from("catalog.zip"))),
+            Action::Run(_)
+        ));
+        assert!(setup.import.running);
+        assert!(!setup.import.hovering);
+
+        let mut setup = Setup::new(first_run(), None);
+        assert!(setup.import_place().is_none());
+        assert!(matches!(
+            setup.update(Message::Import(PathBuf::from("catalog.zip"))),
+            Action::None
+        ));
+        assert!(!setup.import.running);
     }
 
     #[test]
