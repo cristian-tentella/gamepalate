@@ -1,11 +1,12 @@
-use gamepalate_core::{ids::AppId, search::SearchInputs, taste::game_name};
+use gamepalate_core::{ids::AppId, search::SearchInputs, taste::game_name, timestamp::Timestamp};
 
 use super::Gamepalate;
 use crate::{
     catalog_search::CatalogMatch,
     library::{
-        GameCorrection, GameCorrectionError, LibraryView, PlayedElsewhereError,
-        changed_played_elsewhere, corrected_game, game_correction, library_ids, library_view,
+        FoundGame, GameCorrection, GameCorrectionError, LibraryView, PlayedElsewhereError,
+        changed_played_elsewhere, corrected_game, found_games, game_correction, library_ids,
+        library_view,
     },
     log::failed,
     profile::{ProfileView, profile_view},
@@ -66,6 +67,14 @@ impl Gamepalate {
         )
         .inspect_err(failed("could not save the game played elsewhere"))?;
         Ok(before)
+    }
+
+    /// The games of the whole catalog for a name, an appid or a store link, Library included,
+    /// each with where it stands for you.
+    pub fn find_games(&self, text: &str) -> Vec<FoundGame> {
+        let ids = self.names.find(text, &self.files.catalog);
+        let now = Timestamp(jiff::Timestamp::now().as_millisecond());
+        self.with_inputs(|inputs| found_games(&ids, inputs, now))
     }
 
     pub fn search_catalog(&self, text: &str) -> Vec<CatalogMatch> {

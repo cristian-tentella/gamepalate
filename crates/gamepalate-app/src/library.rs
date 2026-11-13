@@ -10,6 +10,8 @@ use gamepalate_core::{
     profile::{heaviest_tags, profile_games},
     search::SearchInputs,
     taste::{game_name, signals_taste},
+    timestamp::Timestamp,
+    votes::{VoteKind, standing},
 };
 use gamepalate_store::{
     corrections::CorrectionsError,
@@ -203,6 +205,72 @@ fn in_steam_signals(id: AppId, inputs: &SearchInputs) -> bool {
         || signals.recent.iter().any(|game| game.id == id)
         || signals.wishlist.contains(&id)
         || signals.followed.contains(&id)
+}
+
+/// Where a game stands for you, the first that holds: in the Library, played elsewhere, or the
+/// vote that still counts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GameStanding {
+    InLibrary { hours: f64 },
+    PlayedElsewhere,
+    WouldTry,
+    NotThisOne,
+    NotForMe,
+    Later { days_left: i64 },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FoundGame {
+    pub id: AppId,
+    pub name: String,
+    pub standing: Option<GameStanding>,
+}
+
+/// A game is in the Library when you own it, borrow it or played it lately: the wishlist and the
+/// followed games are in the Library page, but they are not games you have.
+pub(crate) fn game_standing(
+    id: AppId,
+    inputs: &SearchInputs,
+    now: Timestamp,
+) -> Option<GameStanding> {
+    let signals = inputs.signals;
+    if signals.played().any(|played| played == id)
+        || signals.recent.iter().any(|game| game.id == id)
+    {
+        let hours = hours_by_source(
+            signals,
+            inputs.votes,
+            &inputs.corrections.played_elsewhere,
+            &inputs.config.signals,
+        )
+        .get(&id)
+        .map_or(0.0, |&(hours, _)| hours);
+        return Some(GameStanding::InLibrary { hours });
+    }
+    if inputs.corrections.played_elsewhere.contains(&id) {
+        return Some(GameStanding::PlayedElsewhere);
+    }
+    let vote = standing(inputs.votes, id, now)?;
+    Some(match vote.kind {
+        VoteKind::WouldTry => GameStanding::WouldTry,
+        VoteKind::NotForMe if vote.genre_ok => GameStanding::NotThisOne,
+        VoteKind::NotForMe => GameStanding::NotForMe,
+        VoteKind::Later => GameStanding::Later {
+            days_left: vote.days_left(now)?,
+        },
+    })
+}
+
+pub(crate) fn found_games(ids: &[AppId], inputs: &SearchInputs, now: Timestamp) -> Vec<FoundGame> {
+    ids.iter()
+        .filter_map(|&id| {
+            inputs.catalog.game(id).map(|game| FoundGame {
+                id,
+                name: game.name.clone(),
+                standing: game_standing(id, inputs, now),
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn library_ids(inputs: &SearchInputs) -> BTreeSet<AppId> {
@@ -502,6 +570,170 @@ mod tests {
         assert_eq!(view.wishlist_hours, 5.0);
         assert_eq!(view.followed_hours, 3.0);
         assert_eq!(view.dampen, 0.5);
+    }
+
+    const NOW: Timestamp = Timestamp(1_794_404_475_152);
+    const DAY: i64 = 24 * 60 * 60 * 1000;
+
+    fn standing_of(fixture: &Fixture, id: u32) -> Option<GameStanding> {
+        game_standing(AppId(id), &fixture.inputs(), NOW)
+    }
+
+    fn voted(fixture: &mut Fixture, vote: Vote) {
+        fixture.votes = Votes::from([(AppId(6), vote)]);
+    }
+
+    fn later_since(days_ago: i64, hours_ago: i64) -> Vote {
+        Vote {
+            at: Some(Timestamp(
+                NOW.0 - days_ago * DAY - hours_ago * 60 * 60 * 1000,
+            )),
+            ..Vote::new(VoteKind::Later, "2026-10-01")
+        }
+    }
+
+    #[test]
+    fn a_game_of_the_library_says_its_hours() {
+        let fixture = Fixture::new();
+
+        assert_eq!(
+            standing_of(&fixture, 1),
+            Some(GameStanding::InLibrary { hours: 50.0 })
+        );
+        assert_eq!(
+            standing_of(&fixture, 90),
+            Some(GameStanding::InLibrary { hours: 6.0 })
+        );
+    }
+
+    #[test]
+    fn the_wishlist_and_the_followed_games_are_not_in_the_library() {
+        let fixture = Fixture::new();
+
+        assert_eq!(standing_of(&fixture, 3), None);
+        assert_eq!(standing_of(&fixture, 4), None);
+    }
+
+    #[test]
+    fn a_game_played_elsewhere_says_so() {
+        let mut fixture = Fixture::new();
+        fixture.corrections.played_elsewhere.insert(AppId(6));
+
+        assert_eq!(
+            standing_of(&fixture, 6),
+            Some(GameStanding::PlayedElsewhere)
+        );
+    }
+
+    #[test]
+    fn a_game_owned_and_played_elsewhere_is_in_the_library() {
+        let mut fixture = Fixture::new();
+        fixture.corrections.played_elsewhere.insert(AppId(1));
+
+        assert!(matches!(
+            standing_of(&fixture, 1),
+            Some(GameStanding::InLibrary { .. })
+        ));
+    }
+
+    #[test]
+    fn a_vote_comes_after_the_library_and_the_games_played_elsewhere() {
+        let mut fixture = Fixture::new();
+        fixture
+            .votes
+            .insert(AppId(1), Vote::new(VoteKind::NotForMe, "2026-10-01"));
+        fixture
+            .votes
+            .insert(AppId(6), Vote::new(VoteKind::WouldTry, "2026-10-01"));
+        fixture.corrections.played_elsewhere.insert(AppId(6));
+
+        assert!(matches!(
+            standing_of(&fixture, 1),
+            Some(GameStanding::InLibrary { .. })
+        ));
+        assert_eq!(
+            standing_of(&fixture, 6),
+            Some(GameStanding::PlayedElsewhere)
+        );
+    }
+
+    #[test]
+    fn each_vote_has_its_own_standing() {
+        let mut fixture = Fixture::new();
+        let not_for_me = Vote::new(VoteKind::NotForMe, "2026-10-01");
+
+        voted(&mut fixture, Vote::new(VoteKind::WouldTry, "2026-10-01"));
+        assert_eq!(standing_of(&fixture, 6), Some(GameStanding::WouldTry));
+        voted(&mut fixture, not_for_me.clone());
+        assert_eq!(standing_of(&fixture, 6), Some(GameStanding::NotForMe));
+        voted(
+            &mut fixture,
+            Vote {
+                genre_ok: true,
+                ..not_for_me
+            },
+        );
+        assert_eq!(standing_of(&fixture, 6), Some(GameStanding::NotThisOne));
+        assert_eq!(
+            standing_of(&fixture, 5),
+            Some(GameStanding::InLibrary { hours: 0.5 })
+        );
+    }
+
+    #[test]
+    fn a_later_says_how_many_days_are_left() {
+        let mut fixture = Fixture::new();
+
+        voted(&mut fixture, later_since(0, 0));
+        assert_eq!(
+            standing_of(&fixture, 6),
+            Some(GameStanding::Later { days_left: 30 })
+        );
+        voted(&mut fixture, later_since(29, 12));
+        assert_eq!(
+            standing_of(&fixture, 6),
+            Some(GameStanding::Later { days_left: 1 })
+        );
+    }
+
+    #[test]
+    fn a_later_that_is_over_is_no_vote() {
+        let mut fixture = Fixture::new();
+
+        voted(&mut fixture, later_since(30, 0));
+
+        assert_eq!(standing_of(&fixture, 6), None);
+    }
+
+    #[test]
+    fn a_game_without_anything_has_no_standing() {
+        let mut fixture = Fixture::new();
+        fixture.votes.clear();
+
+        assert_eq!(standing_of(&fixture, 6), None);
+    }
+
+    #[test]
+    fn the_found_games_come_in_order_with_their_names_and_without_the_ones_out_of_the_catalog() {
+        let fixture = Fixture::new();
+
+        let found = found_games(&[AppId(2), AppId(80), AppId(6)], &fixture.inputs(), NOW);
+
+        assert_eq!(
+            found,
+            [
+                FoundGame {
+                    id: AppId(2),
+                    name: "Aseprite".to_string(),
+                    standing: Some(GameStanding::InLibrary { hours: 30.0 }),
+                },
+                FoundGame {
+                    id: AppId(6),
+                    name: "Balatro".to_string(),
+                    standing: Some(GameStanding::WouldTry),
+                },
+            ]
+        );
     }
 
     #[test]

@@ -86,6 +86,20 @@ impl Vote {
         let since = self.at.or_else(|| day_start(&self.date));
         since.is_some_and(|since| now.ms_since(since) >= LATER_DAYS * DAY_MS)
     }
+
+    /// The days before a Later is over, rounded up: a Later with a few hours left says 1 day.
+    /// A vote without a day to count from has all `LATER_DAYS`. `None` for the other votes and
+    /// for a Later already over.
+    pub fn days_left(&self, now: Timestamp) -> Option<i64> {
+        if !self.kind.lapses() || self.has_lapsed(now) {
+            return None;
+        }
+        let Some(since) = self.at.or_else(|| day_start(&self.date)) else {
+            return Some(LATER_DAYS);
+        };
+        let left_ms = LATER_DAYS * DAY_MS - now.ms_since(since);
+        Some(((left_ms + DAY_MS - 1) / DAY_MS).clamp(1, LATER_DAYS))
+    }
 }
 
 /// The vote that still keeps the game out, if any.
@@ -279,6 +293,29 @@ mod tests {
         assert_eq!(day, Timestamp(1_794_355_200_000));
         assert!(!later.has_lapsed(Timestamp(day.0 + LATER_DAYS * DAY_MS - 1)));
         assert!(later.has_lapsed(Timestamp(day.0 + LATER_DAYS * DAY_MS)));
+    }
+
+    #[test]
+    fn the_days_left_of_a_later_are_rounded_up() {
+        let at = 1_794_404_475_152;
+        let later = vote(VoteKind::Later, "2026-11-11", Some(at));
+        let at_ms = |ms| Timestamp(at + ms);
+
+        assert_eq!(later.days_left(at_ms(0)), Some(30));
+        assert_eq!(later.days_left(at_ms(DAY_MS)), Some(29));
+        assert_eq!(later.days_left(at_ms(29 * DAY_MS + DAY_MS / 2)), Some(1));
+        assert_eq!(later.days_left(at_ms(LATER_DAYS * DAY_MS - 1)), Some(1));
+        assert_eq!(later.days_left(at_ms(LATER_DAYS * DAY_MS)), None);
+    }
+
+    #[test]
+    fn only_a_later_that_is_not_over_has_days_left() {
+        let now = Timestamp(i64::MAX / 2);
+        for kind in [VoteKind::WouldTry, VoteKind::NotForMe] {
+            assert_eq!(vote(kind, "2026-11-11", None).days_left(now), None);
+        }
+        let odd = vote(VoteKind::Later, "not a date", None);
+        assert_eq!(odd.days_left(now), Some(LATER_DAYS));
     }
 
     #[test]

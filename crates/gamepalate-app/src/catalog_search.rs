@@ -40,6 +40,15 @@ impl NameIndex {
         }
     }
 
+    /// The games of the whole catalog for `text`: the game of an appid or of a store link when
+    /// there is one in the catalog, else the ones with that name.
+    pub(crate) fn find(&self, text: &str, catalog: &Catalog) -> Vec<AppId> {
+        match appid_in(text) {
+            Some(id) => catalog.game(id).map(|game| game.id).into_iter().collect(),
+            None => self.search(text, &BTreeSet::new()),
+        }
+    }
+
     pub(crate) fn search(&self, text: &str, excluded: &BTreeSet<AppId>) -> Vec<AppId> {
         let text = folded(text.trim());
         if text.chars().count() < MIN_SEARCH_CHARS {
@@ -75,6 +84,22 @@ impl NameIndex {
             .take(MAX_MATCHES)
             .collect()
     }
+}
+
+/// The appid in a text that is only digits (`10`) or has `/app/<digits>` in it, like the
+/// link of a game in the store or in the community.
+fn appid_in(text: &str) -> Option<AppId> {
+    let text = text.trim();
+    let digits = if text.bytes().all(|byte| byte.is_ascii_digit()) {
+        text
+    } else {
+        let (_, after) = text.split_once("/app/")?;
+        let end = after
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(after.len());
+        &after[..end]
+    };
+    digits.parse().ok().filter(|&id| id != 0).map(AppId)
 }
 
 #[cfg(test)]
@@ -214,6 +239,61 @@ mod tests {
 
         assert_eq!(found.len(), MAX_MATCHES);
         assert!(found.iter().all(|&id| id != 100));
+    }
+
+    fn find(games: Vec<Game>, text: &str) -> Vec<u32> {
+        let catalog = catalog(games);
+        NameIndex::new(&catalog)
+            .find(text, &catalog)
+            .into_iter()
+            .map(|id| id.0)
+            .collect()
+    }
+
+    #[test]
+    fn find_does_not_leave_out_any_game() {
+        let games = vec![game(1, "Portal", 10), game(2, "Portal 2", 20)];
+
+        assert_eq!(find(games, "portal"), [1, 2]);
+    }
+
+    #[test]
+    fn an_appid_gives_that_game_even_when_it_is_short() {
+        let games = vec![game(10, "Counter-Strike", 10), game(1145360, "Hades", 10)];
+
+        assert_eq!(find(games.clone(), "10"), [10]);
+        assert_eq!(find(games.clone(), " 1145360 "), [1145360]);
+        assert!(find(games, "999").is_empty());
+    }
+
+    #[test]
+    fn a_store_link_gives_its_game() {
+        let games = vec![game(1145360, "Hades", 10), game(10, "Counter-Strike", 10)];
+
+        for link in [
+            "https://store.steampowered.com/app/1145360/Hades/",
+            "store.steampowered.com/app/1145360",
+            "https://steamcommunity.com/app/1145360/discussions/",
+            "http://store.steampowered.com/app/1145360?l=italian",
+        ] {
+            assert_eq!(find(games.clone(), link), [1145360], "{link}");
+        }
+    }
+
+    #[test]
+    fn an_appid_out_of_the_catalog_gives_nothing() {
+        let games = vec![game(1145360, "Hades", 10)];
+
+        assert!(find(games.clone(), "store.steampowered.com/app/620/Portal_2/").is_empty());
+        assert!(find(games, "620").is_empty());
+    }
+
+    #[test]
+    fn a_link_without_an_appid_is_a_name() {
+        let games = vec![game(1, "Steam Cleaner", 10)];
+
+        assert!(find(games.clone(), "store.steampowered.com/app/").is_empty());
+        assert_eq!(find(games, "steam clean"), [1]);
     }
 
     #[test]

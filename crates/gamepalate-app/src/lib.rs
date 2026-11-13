@@ -57,7 +57,8 @@ pub use gamepalate_store::families_edit::NEW_FILE as NEW_FAMILIES_FILE;
 pub use gamepalate_store::gui::{GuiSettings, SavedWindow, ThemeChoice};
 pub use images::{DecodedImage, ImageKind, LoadImageError};
 pub use library::{
-    GameCorrection, GameCorrectionError, LibraryGameView, LibraryView, PlayedElsewhereError,
+    FoundGame, GameCorrection, GameCorrectionError, GameStanding, LibraryGameView, LibraryView,
+    PlayedElsewhereError,
 };
 pub use profile::{
     CorrectedGameView, CorrectionsView, FamilyView, HoursGame, ProfileView, SourceView, TagView,
