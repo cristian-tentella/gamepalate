@@ -43,7 +43,7 @@ use frame::{
     window_button,
 };
 use game_page::GamePage;
-use refresh::{Refresh, data_times, refresh_button, refresh_dot, refresh_tooltip};
+use refresh::{Refresh, data_times, refresh_button, refresh_dot, refresh_tooltip, second_line};
 use search::Search;
 use theme::{choice, light, theme, theme_button, toggled};
 
@@ -72,6 +72,7 @@ pub struct App {
     refresh: Refresh,
     pending: Option<PendingUpdate>,
     renewal_due: bool,
+    never_updated: bool,
     startup_error: Option<String>,
     new_versions: NewVersions,
     downloaded: Option<Downloaded>,
@@ -147,6 +148,7 @@ impl App {
             refresh: Refresh::Idle,
             pending: None,
             renewal_due: false,
+            never_updated: false,
             startup_error: None,
             new_versions: NewVersions::new(target, check_for_new_versions),
             downloaded: None,
@@ -503,8 +505,12 @@ impl App {
                                 self.renewal_due,
                                 self.startup_error.as_deref(),
                             ),
-                            data_times(gamepalate),
-                            refresh_dot(self.pending, self.startup_error.as_deref()),
+                            second_line(self.never_updated, data_times(gamepalate)),
+                            refresh_dot(
+                                self.pending,
+                                self.startup_error.as_deref(),
+                                self.never_updated,
+                            ),
                         )
                     }))
                     .push(self.gamepalate.is_some().then(|| {
@@ -544,7 +550,11 @@ impl App {
             Screen::Setup(screen) => screen.view().map(Message::Setup),
             Screen::Profile(screen) => screen.view().map(Message::Profile),
             Screen::Settings(screen) => screen
-                .view(choice(&self.theme), &self.new_versions)
+                .view(
+                    choice(&self.theme),
+                    &self.new_versions,
+                    matches!(self.refresh, Refresh::Running(..)),
+                )
                 .map(Message::Settings),
             Screen::Starting => column![].into(),
         };

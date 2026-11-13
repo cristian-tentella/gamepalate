@@ -62,6 +62,10 @@ pub enum CatalogFileError {
     },
 }
 
+pub fn export_folder(data_dir: &Path) -> PathBuf {
+    dirs::download_dir().unwrap_or_else(|| data_dir.to_path_buf())
+}
+
 pub fn export_catalog(data_dir: &Path, into_dir: &Path) -> Result<PathBuf, CatalogFileError> {
     let _lock = lock(data_dir)?;
     let catalog = data_dir.join(CATALOG);

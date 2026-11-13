@@ -2,12 +2,14 @@ mod account;
 mod config;
 
 use std::{
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use gamepalate_app::{
     ConfigValue, Gamepalate, Region, ThemeChoice, Timestamp,
+    catalog_file::{export_catalog, export_folder},
     settings::{self, ConfigKey, change_config},
     setup::error_chain,
     steam_client::answer_steam_client,
@@ -16,15 +18,14 @@ use iced::{
     Center, Element, Fill, Subscription, Task,
     keyboard::{self, Key, key::Named},
     padding, time,
-    widget::{button, column, container, radio, row, scrollable, text, tooltip},
+    widget::{button, column, container, radio, row, scrollable, stack, text, tooltip},
 };
 
 use crate::{
     app::Page,
     font, format,
     new_version::{NewVersions, Offer},
-    screen::open,
-    screen::setup::PRIVACY_PAGE,
+    screen::{Toasts, open, setup::PRIVACY_PAGE},
     style,
 };
 use account::{Account, saved_text};
@@ -44,7 +45,17 @@ pub struct Settings {
     fields: Fields,
     confirming: Option<Region>,
     steam_client: Answer,
+    export: Export,
+    toasts: Toasts,
     error: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+enum Export {
+    #[default]
+    Idle,
+    Running,
+    Failed(String),
 }
 
 #[derive(Debug, Default)]
@@ -95,6 +106,9 @@ pub enum Message {
     CheckNow,
     CheckAtStartup(bool),
     OpenRelease(String),
+    ExportCatalog,
+    CatalogExported(Result<PathBuf, String>),
+    HideToast(u64),
     Back,
     Escape,
 }
@@ -135,6 +149,8 @@ impl Settings {
             cache_bytes: None,
             confirming: None,
             steam_client: Answer::default(),
+            export: Export::default(),
+            toasts: Toasts::default(),
             error: None,
         };
         let task = settings.measure_cache();
@@ -261,6 +277,39 @@ impl Settings {
                 open(page);
                 Action::None
             }
+            Message::ExportCatalog => {
+                if self.export == Export::Running {
+                    return Action::None;
+                }
+                self.export = Export::Running;
+                let dir = self.settings.data_dir.clone();
+                Action::Run(Task::perform(
+                    async move {
+                        export_catalog(&dir, &export_folder(&dir))
+                            .map_err(|error| error_chain(&error))
+                    },
+                    Message::CatalogExported,
+                ))
+            }
+            Message::CatalogExported(Ok(file)) => {
+                self.export = Export::Idle;
+                if let Some(folder) = file.parent() {
+                    open(folder);
+                }
+                Action::Run(self.toasts.show(
+                    "Catalog exported".to_string(),
+                    false,
+                    Message::HideToast,
+                ))
+            }
+            Message::CatalogExported(Err(error)) => {
+                self.export = Export::Failed(error);
+                Action::None
+            }
+            Message::HideToast(id) => {
+                self.toasts.hide(id);
+                Action::None
+            }
             Message::Back => self.close(),
             Message::Escape => {
                 if self.confirming.is_some() {
@@ -287,6 +336,7 @@ impl Settings {
         &'a self,
         theme: ThemeChoice,
         new_versions: &'a NewVersions,
+        updating: bool,
     ) -> Element<'a, Message> {
         let account = group(
             "Account",
@@ -345,7 +395,7 @@ impl Settings {
                             Timestamp(jiff::Timestamp::now().as_millisecond()),
                         ),
                     )),
-                    None,
+                    export_link(&self.export, updating),
                 ),
                 setting(
                     "Advanced",
@@ -389,7 +439,9 @@ impl Settings {
         )
         .height(Fill);
 
-        column![title_bar(), style::separator(), page].into()
+        let toast = self.toasts.view(Message::Back);
+
+        column![title_bar(), style::separator(), stack![page].push(toast)].into()
     }
 
     fn steam_client_line(&self) -> Element<'_, Message> {
@@ -629,6 +681,28 @@ fn catalog_text(games: usize, tags_updated: &str) -> String {
     )
 }
 
+fn export_link(export: &Export, updating: bool) -> Option<Element<'_, Message>> {
+    if updating {
+        return None;
+    }
+    Some(match export {
+        Export::Idle => link("Export", Message::ExportCatalog),
+        Export::Running => text("Exporting…")
+            .size(font::BAR_SIZE)
+            .style(style::muted)
+            .into(),
+        Export::Failed(error) => button(
+            text(error.as_str())
+                .size(font::BAR_SIZE)
+                .style(text::danger),
+        )
+        .padding(0)
+        .style(style::link)
+        .on_press(Message::ExportCatalog)
+        .into(),
+    })
+}
+
 fn value<'a>(shown: String) -> Element<'a, Message> {
     text(shown).size(font::BAR_SIZE).into()
 }
@@ -658,6 +732,15 @@ mod tests {
             catalog_text(115_668, "28 Oct"),
             "115,668 games · tags 28 Oct"
         );
+    }
+
+    #[test]
+    fn export_is_offered_at_rest_and_not_during_an_update() {
+        assert!(export_link(&Export::Idle, false).is_some());
+        assert!(export_link(&Export::Running, false).is_some());
+        assert!(export_link(&Export::Failed("Disk full".to_string()), false).is_some());
+        assert!(export_link(&Export::Idle, true).is_none());
+        assert!(export_link(&Export::Running, true).is_none());
     }
 
     #[test]

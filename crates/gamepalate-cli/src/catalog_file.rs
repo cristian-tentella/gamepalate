@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use anyhow::bail;
 use clap::Args;
 use gamepalate_app::{
-    catalog_file::{ImportedCatalog, export_catalog, export_catalog_to, import_catalog},
+    catalog_file::{
+        ImportedCatalog, export_catalog, export_catalog_to, export_folder, import_catalog,
+    },
     update::{archive_state, wall_clock},
 };
 
@@ -31,10 +33,7 @@ pub fn export(args: &ExportArgs, data_dir: &Path) -> anyhow::Result<()> {
             export_catalog_to(data_dir, file)?;
             file.clone()
         }
-        None => {
-            let into = dirs::download_dir().unwrap_or_else(|| data_dir.to_path_buf());
-            export_catalog(data_dir, &into)?
-        }
+        None => export_catalog(data_dir, &export_folder(data_dir))?,
     };
     println!("Catalog exported to {}.", file.display());
     Ok(())
