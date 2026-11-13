@@ -541,7 +541,7 @@ impl App {
                     .into()
             }
             Screen::Votes(screen) => screen.view(self.scale).map(Message::Votes),
-            Screen::Library(screen) => screen.view().map(from_library),
+            Screen::Library(screen) => screen.view().map(Message::Library),
             Screen::Setup(screen) => screen.view().map(Message::Setup),
             Screen::Profile(screen) => screen.view().map(Message::Profile),
             Screen::Settings(screen) => screen
@@ -835,14 +835,6 @@ fn with_dot<'a>(button: button::Button<'a, Message>, dot: bool) -> Element<'a, M
     .into()
 }
 
-/// The messages of the Library, with "+ Add a game" turned into the search of the top bar.
-fn from_library(message: library::Message) -> Message {
-    match message {
-        library::Message::AddGame => Message::Search(search::Message::Focus),
-        message => Message::Library(message),
-    }
-}
-
 fn settings_tip(open: bool, new_version: bool) -> &'static str {
     match (open, new_version) {
         (true, _) => "Close Settings",
@@ -928,18 +920,6 @@ mod tests {
         assert_eq!(page("4", keyboard::Modifiers::CTRL), Some(Page::Profile));
         assert_eq!(page("3", keyboard::Modifiers::empty()), None);
         assert_eq!(page("5", keyboard::Modifiers::CTRL), None);
-    }
-
-    #[test]
-    fn add_a_game_in_the_library_goes_to_the_game_search() {
-        assert!(matches!(
-            from_library(library::Message::AddGame),
-            Message::Search(search::Message::Focus)
-        ));
-        assert!(matches!(
-            from_library(library::Message::FocusSearch),
-            Message::Library(library::Message::FocusSearch)
-        ));
     }
 
     #[test]

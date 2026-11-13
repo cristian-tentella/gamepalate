@@ -12,8 +12,7 @@ use iced::{
     Center, Element, Fill, Size, Subscription, Task,
     keyboard::{self, Key, key::Named},
     widget::{
-        Id, button, column, container, image, mouse_area, opaque, operation, pick_list, responsive,
-        row,
+        Id, column, container, image, mouse_area, opaque, operation, pick_list, responsive, row,
         scrollable::{AbsoluteOffset, Viewport},
         space, stack, text, text_input, tooltip,
     },
@@ -26,8 +25,8 @@ use super::{
     steam_client::{ElsewhereHint, SteamClientQuestion},
 };
 use crate::{font, format, style};
-use filter::{FILTERS, SORTS, count, empty_text, filter_label, shown, shows_filter};
 pub use filter::{Filter, Sort};
+use filter::{SORTS, choice, choices, empty_text, shown};
 use grid::{GRID_PADDING, Row, columns, moved, reveal_offset, rows, visible_rows, wanted_rows};
 use popup::{changed_game, corrected_text, families_text};
 
@@ -39,7 +38,6 @@ const SEARCH_PLACEHOLDER: &str = "Search by name (Ctrl+F)";
 const SCREENS_KEPT: f32 = 2.0;
 const CHROME_HEIGHT: f32 = 110.0;
 const DEFAULT_AREA: Size = Size::new(1280.0, 700.0);
-const ADD_TIP: &str = "Search for a game you played elsewhere";
 const NOT_OWNED_TIP: &str =
     "Played but not in your library: Family Sharing, free weekends, removed games";
 
@@ -124,7 +122,6 @@ pub enum Message {
     Filter(Filter),
     Sort(Sort),
     Search(String),
-    AddGame,
     PlayElsewhere(AppId, String, bool),
     PlayedElsewhere(AppId, String, bool, Result<bool, String>),
     Scrolled(Viewport),
@@ -263,7 +260,6 @@ impl Library {
                 self.search = search;
                 return self.refresh();
             }
-            Message::AddGame => {}
             Message::PlayElsewhere(id, name, played) => {
                 let gamepalate = Arc::clone(&self.gamepalate);
                 return Task::perform(
@@ -601,61 +597,51 @@ impl Library {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        // A search looks through every game, so the menu shows "All" while it lasts.
         let searching = !self.search.trim().is_empty();
-        let filters = row(FILTERS
-            .into_iter()
-            .filter(|&filter| shows_filter(filter, &self.view.games))
-            .map(|filter| {
-                let chip = button(
-                    text!(
-                        "{} {}",
-                        filter_label(filter),
-                        count(&self.view.games, filter)
-                    )
-                    .size(font::NOTE_SIZE),
-                )
-                .padding([3, 10])
-                .style(style::choice(!searching && filter == self.filter))
-                .on_press(Message::Filter(filter));
-                if filter != Filter::NotOwned {
-                    return chip.into();
-                }
-                tooltip(
-                    chip,
-                    container(text(NOT_OWNED_TIP).size(font::NOTE_SIZE))
-                        .padding([6, 10])
-                        .style(style::popup),
-                    tooltip::Position::Bottom,
-                )
-                .into()
-            }))
-        .spacing(6);
+        let games = &self.view.games;
+        let show = pick_list(
+            choices(games),
+            (!searching).then(|| choice(games, self.filter)),
+            |choice| Message::Filter(choice.filter),
+        )
+        .placeholder(choice(games, Filter::All).to_string())
+        .text_size(font::NOTE_SIZE)
+        .padding([4, 8])
+        .style(style::dropdown)
+        .menu_style(style::menu);
+        let show: Element<'_, Message> = if !searching && self.filter == Filter::NotOwned {
+            tooltip(
+                show,
+                container(text(NOT_OWNED_TIP).size(font::NOTE_SIZE))
+                    .padding([6, 10])
+                    .style(style::popup),
+                tooltip::Position::Bottom,
+            )
+            .into()
+        } else {
+            show.into()
+        };
         let tools = row![
-            filters,
-            space().width(Fill),
+            text("Show").size(font::NOTE_SIZE).style(style::muted),
+            show,
             text("Sort").size(font::NOTE_SIZE).style(style::muted),
             pick_list(SORTS, Some(self.sort), Message::Sort)
                 .text_size(font::NOTE_SIZE)
                 .padding([4, 8])
                 .style(style::dropdown)
                 .menu_style(style::menu),
-            text_input(SEARCH_PLACEHOLDER, &self.search)
-                .style(style::field)
-                .id(SEARCH)
-                .on_input(Message::Search)
-                .size(font::NOTE_SIZE)
-                .padding([5, 8])
-                .width(SEARCH_WIDTH),
-            tooltip(
-                button(text("+ Add a game").size(font::NOTE_SIZE))
-                    .padding([4, 12])
-                    .style(style::chip)
-                    .on_press(Message::AddGame),
-                container(text(ADD_TIP).size(font::NOTE_SIZE))
-                    .padding([6, 10])
-                    .style(style::popup),
-                tooltip::Position::Bottom,
-            ),
+            space().width(Fill),
+            container(
+                text_input(SEARCH_PLACEHOLDER, &self.search)
+                    .style(style::field)
+                    .id(SEARCH)
+                    .on_input(Message::Search)
+                    .size(font::NOTE_SIZE)
+                    .padding([5, 8]),
+            )
+            .width(Fill)
+            .max_width(SEARCH_WIDTH),
         ]
         .spacing(8)
         .align_y(Center);
