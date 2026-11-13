@@ -5,7 +5,7 @@ use gamepalate_core::{catalog::Catalog, ids::AppId};
 use crate::names::folded;
 
 pub const MIN_SEARCH_CHARS: usize = 3;
-pub const MAX_MATCHES: usize = 20;
+pub const MAX_MATCHES: usize = 8;
 
 #[derive(Debug)]
 pub(crate) struct NameIndex {

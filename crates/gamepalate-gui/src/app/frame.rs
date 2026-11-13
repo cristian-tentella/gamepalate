@@ -169,6 +169,7 @@ impl App {
             Message::BarPressed => self.bar_pressed(),
             Message::Resized(size) => {
                 self.resized = size;
+                self.search.resized();
                 match self.window {
                     Some(id) => window::is_maximized(id).map(Message::Maximized),
                     None => Task::none(),

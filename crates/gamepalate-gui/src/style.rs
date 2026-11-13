@@ -667,6 +667,26 @@ pub fn field(theme: &Theme, status: text_input::Status) -> text_input::Style {
     }
 }
 
+/// A field with no box of its own, inside a panel that draws one.
+pub fn bare_field(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    text_input::Style {
+        background: Color::TRANSPARENT.into(),
+        border: Border::default(),
+        ..text_input::default(theme, status)
+    }
+}
+
+/// The veil over the page while the game search is open: the blurred page shows through it.
+pub fn search_veil(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    let alpha = if palette.is_dark { 0.55 } else { 0.45 };
+
+    container::Style {
+        background: Some(palette.background.base.color.scale_alpha(alpha).into()),
+        ..container::Style::default()
+    }
+}
+
 pub fn wrong_field(theme: &Theme, status: text_input::Status) -> text_input::Style {
     let style = field(theme, status);
 

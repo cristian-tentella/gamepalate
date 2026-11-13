@@ -1,18 +1,22 @@
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use gamepalate_app::{AppId, FoundGame, GameStanding, Gamepalate, MIN_SEARCH_CHARS};
 use iced::{
-    Center, ContentFit, Element, Event, Fill, Task, event,
+    Center, ContentFit, Element, Event, Fill, Size, Subscription, Task, event,
     keyboard::{self, Key, key::Named},
+    padding,
     widget::{
-        Id, button, column, container, image, operation, operation::RelativeOffset, row,
-        scrollable, space, text, text_input,
+        Id, button, column, container, image, mouse_area, opaque, operation,
+        operation::RelativeOffset, responsive, row, scrollable, space, stack, text, text_input,
     },
     window,
 };
 
+use super::backdrop::{self, Blurred, faded_in};
 use crate::{
-    dropdown::dropdown,
     font,
     screen::{
         library::{handle, hours},
@@ -22,36 +26,71 @@ use crate::{
 };
 
 const FIELD: Id = Id::new("game-search");
-const MENU: Id = Id::new("game-search-menu");
-const PLACEHOLDER: &str = "Search games (Ctrl+K)";
+const LIST: Id = Id::new("game-search-list");
+const PLACEHOLDER: &str = "Search games";
+const HINT: &str = "Type at least 3 letters, an appid or a store link";
 const NO_GAMES: &str = "No games found";
-const WIDE_WIDTH: f32 = 280.0;
-const NARROW_WIDTH: f32 = 200.0;
-const ROOM_FOR_THE_REST: f32 = 1000.0;
-const MENU_WIDTH: f32 = 440.0;
-const ROW_HEIGHT: f32 = 42.0;
-const CAPSULE_WIDTH: f32 = 64.0;
+pub const TIP: &str = "Search games (Ctrl+K)";
+pub const LENS: char = '\u{E8B6}';
+/// The panel's top edge, as a share of the height below the top bar.
+const TOP_SHARE: f32 = 0.12;
+const MAX_WIDTH: f32 = 640.0;
+const WIDTH_SHARE: f32 = 0.9;
+const BOTTOM_MARGIN: f32 = 24.0;
+const FIELD_SIZE: f32 = 18.0;
+const NAME_SIZE: f32 = 15.0;
+const ROW_HEIGHT: f32 = 58.0;
+const CAPSULE_WIDTH: f32 = 120.0;
 const CAPSULE_HEIGHT: f32 = CAPSULE_WIDTH * 87.0 / 231.0;
-const CAPSULE_RADIUS: f32 = 3.0;
+const CAPSULE_RADIUS: f32 = 4.0;
 
+/// The search of the whole catalog: a panel over the page, which keeps its state, with the page
+/// blurred behind it.
 #[derive(Default)]
 pub struct Search {
     text: String,
     found: Vec<FoundGame>,
     selected: Option<usize>,
-    open: bool,
+    state: State,
+    backdrop: Option<Backdrop>,
+    now: Option<Instant>,
     capsules: Images<image::Allocation, AppId>,
+}
+
+#[derive(Clone, Copy, Default)]
+enum State {
+    #[default]
+    Closed,
+    /// Waiting for the screenshot of the page, taken before the panel covers it.
+    Opening(Instant),
+    Open(Timing),
+}
+
+/// When each step of the opening happened, for the log.
+#[derive(Clone, Copy)]
+struct Timing {
+    asked: Instant,
+    screenshot: Duration,
+}
+
+struct Backdrop {
+    handle: image::Handle,
+    /// The first frame that shows the picture: its fade starts there.
+    shown: Option<Instant>,
 }
 
 #[derive(Clone, Debug)]
 pub enum Message {
+    Toggle,
     Input(String),
-    Focus,
     Down,
     Up,
     Submit,
     Close,
     Pick(AppId),
+    Screenshot(window::Screenshot),
+    Blurred(Arc<Blurred>),
+    Frame(Instant),
     CapsuleLoaded(AppId, Option<image::Handle>),
     CapsuleAllocated(AppId, Option<image::Allocation>),
 }
@@ -61,23 +100,83 @@ pub enum Action {
     Open(AppId),
 }
 
+impl std::fmt::Debug for Blurred {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Blurred({:?})", self.took)
+    }
+}
+
 impl Search {
-    pub fn update(&mut self, message: Message, gamepalate: &Arc<Gamepalate>) -> Action {
+    /// `window` takes the screenshot of the page; `top` is the height of the top bar, which stays
+    /// sharp.
+    pub fn update(
+        &mut self,
+        message: Message,
+        gamepalate: &Arc<Gamepalate>,
+        window: Option<window::Id>,
+        top: f32,
+    ) -> Action {
         match message {
+            Message::Toggle if self.is_open() => self.close(),
+            Message::Toggle => {
+                let asked = Instant::now();
+                return Action::Run(match window {
+                    Some(window) => {
+                        self.state = State::Opening(asked);
+                        window::screenshot(window).map(Message::Screenshot)
+                    }
+                    None => self.show(gamepalate, asked, Duration::ZERO),
+                });
+            }
+            Message::Screenshot(screenshot) => {
+                let State::Opening(asked) = self.state else {
+                    return Action::Run(Task::none());
+                };
+                let shown = self.show(gamepalate, asked, asked.elapsed());
+                let blurred = Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || backdrop::blur(&screenshot, top)).await
+                    },
+                    |blurred| {
+                        blurred
+                            .ok()
+                            .map(|blurred| Message::Blurred(Arc::new(blurred)))
+                    },
+                )
+                .and_then(Task::done);
+                return Action::Run(Task::batch([shown, blurred]));
+            }
+            Message::Blurred(blurred) => {
+                if let State::Open(timing) = self.state {
+                    tracing::info!(
+                        "game search: screenshot {} ms, blur {} ms",
+                        timing.screenshot.as_millis(),
+                        blurred.took.as_millis()
+                    );
+                    self.backdrop = Some(Backdrop {
+                        handle: blurred.handle.clone(),
+                        shown: None,
+                    });
+                }
+            }
+            Message::Frame(now) => {
+                self.now = Some(now);
+                if let (State::Open(timing), Some(backdrop)) = (self.state, &mut self.backdrop)
+                    && backdrop.shown.is_none()
+                {
+                    backdrop.shown = Some(now);
+                    tracing::info!(
+                        "game search: blurred page shown {} ms after opening",
+                        now.saturating_duration_since(timing.asked).as_millis()
+                    );
+                }
+            }
             Message::Input(text) => {
                 self.found = gamepalate.find_games(&text);
                 self.text = text;
                 self.selected = None;
-                self.open = true;
-                return Action::Run(self.load_capsules(gamepalate));
-            }
-            Message::Focus => {
-                self.found = gamepalate.find_games(&self.text);
-                self.selected = None;
-                self.open = true;
                 return Action::Run(Task::batch([
-                    operation::focus(FIELD),
-                    operation::select_all(FIELD),
+                    operation::snap_to(LIST, RelativeOffset::START),
                     self.load_capsules(gamepalate),
                 ]));
             }
@@ -86,7 +185,7 @@ impl Search {
             }
             Message::Up => return Action::Run(self.select(above(self.selected))),
             Message::Submit => {
-                if let Some(id) = self.is_open().then(|| self.chosen()).flatten() {
+                if let Some(id) = self.chosen() {
                     return self.pick(id);
                 }
             }
@@ -110,33 +209,119 @@ impl Search {
         Action::Run(Task::none())
     }
 
-    /// While the menu is open, its keys are not the page's.
+    /// While the panel is open, the keys are its own and not the page's.
     pub fn is_open(&self) -> bool {
-        self.open && shows_menu(&self.text, &self.found)
+        !matches!(self.state, State::Closed)
     }
 
     pub fn close(&mut self) {
-        self.open = false;
+        self.state = State::Closed;
         self.selected = None;
+        self.backdrop = None;
     }
 
-    pub fn view(&self, window_width: f32) -> Element<'_, Message> {
-        let field = text_input(PLACEHOLDER, &self.text)
-            .id(FIELD)
-            .on_input(Message::Input)
-            .on_submit(Message::Submit)
-            .style(style::field)
-            .size(font::NOTE_SIZE)
-            .padding([5, 8])
-            .width(field_width(window_width));
-
-        dropdown(field, self.is_open().then(|| self.menu()), Message::Close).into()
+    /// The picture of the page no longer fits the window: the veil stays alone.
+    pub fn resized(&mut self) {
+        self.backdrop = None;
     }
 
-    fn menu(&self) -> Element<'_, Message> {
+    pub fn subscription(&self) -> Subscription<Message> {
+        if !self.is_open() {
+            return Subscription::none();
+        }
+        let fading = self.backdrop.as_ref().is_some_and(|backdrop| {
+            backdrop
+                .shown
+                .zip(self.now)
+                .is_none_or(|(shown, now)| faded_in(shown, now) < 1.0)
+        });
+
+        Subscription::batch([
+            event::listen_with(panel_key),
+            if fading {
+                window::frames().map(Message::Frame)
+            } else {
+                Subscription::none()
+            },
+        ])
+    }
+
+    /// The panel over the page, or nothing while the screenshot is on its way.
+    pub fn view(&self) -> Option<Element<'_, Message>> {
+        if !matches!(self.state, State::Open(_)) {
+            return None;
+        }
+        let picture = self.backdrop.as_ref().map(|backdrop| {
+            let opacity = backdrop
+                .shown
+                .zip(self.now)
+                .map_or(0.0, |(shown, now)| faded_in(shown, now));
+            image(backdrop.handle.clone())
+                .width(Fill)
+                .height(Fill)
+                .content_fit(ContentFit::Fill)
+                .opacity(opacity)
+        });
+        let veil = opaque(
+            mouse_area(
+                container(space())
+                    .width(Fill)
+                    .height(Fill)
+                    .style(style::search_veil),
+            )
+            .on_press(Message::Close),
+        );
+
+        Some(
+            stack![]
+                .push(picture)
+                .push(veil)
+                .push(responsive(move |size| self.placed(size)))
+                .into(),
+        )
+    }
+
+    fn placed(&self, size: Size) -> Element<'_, Message> {
+        let (top, width) = panel_place(size);
+
+        container(opaque(
+            container(self.panel(size.height - top - BOTTOM_MARGIN))
+                .width(width)
+                .style(style::popup),
+        ))
+        .padding(padding::top(top))
+        .center_x(Fill)
+        .into()
+    }
+
+    fn panel(&self, max_height: f32) -> Element<'_, Message> {
+        let field = row![
+            text(LENS)
+                .font(font::ICONS)
+                .size(font::icon(14.0))
+                .style(style::muted),
+            text_input(PLACEHOLDER, &self.text)
+                .id(FIELD)
+                .on_input(Message::Input)
+                .on_submit(Message::Submit)
+                .style(style::bare_field)
+                .size(FIELD_SIZE)
+                .padding([12, 0])
+                .width(Fill),
+            keycap("Esc"),
+        ]
+        .spacing(10)
+        .padding([0, 16])
+        .align_y(Center);
+
         let body: Element<'_, Message> = if self.found.is_empty() {
-            container(text(NO_GAMES).size(font::NOTE_SIZE).style(style::muted))
-                .padding([10, 12])
+            let note = if self.text.trim().chars().count() < MIN_SEARCH_CHARS {
+                HINT
+            } else {
+                NO_GAMES
+            };
+            container(text(note).size(font::NOTE_SIZE).style(style::muted))
+                .padding([12, 16])
                 .into()
         } else {
             scrollable(
@@ -146,16 +331,19 @@ impl Search {
                         .enumerate()
                         .map(|(index, game)| self.row(index, game)),
                 )
-                .padding(4),
+                .padding(6),
             )
-            .id(MENU)
+            .id(LIST)
             .into()
         };
 
-        container(body).width(MENU_WIDTH).style(style::popup).into()
+        container(column![field, style::separator(), body])
+            .max_height(max_height)
+            .into()
     }
 
     fn row<'a>(&'a self, index: usize, game: &'a FoundGame) -> Element<'a, Message> {
+        let selected = self.selected == Some(index);
         let picture: Element<'a, Message> = match self.capsules.get(&game.id) {
             Some(Picture::Ready(allocation)) => image(allocation.handle().clone())
                 .width(CAPSULE_WIDTH)
@@ -169,28 +357,50 @@ impl Search {
                 .style(style::picture)
                 .into(),
         };
-        let standing = game.standing.map(|standing| {
-            text(standing_text(standing))
-                .size(font::NOTE_SIZE)
-                .style(style::muted)
-        });
+        let words = column![text(&game.name).size(NAME_SIZE)]
+            .push(game.standing.map(|standing| {
+                text(standing_text(standing))
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted)
+            }))
+            .spacing(2)
+            .width(Fill);
 
         button(
-            row![picture, text(&game.name).size(font::BAR_SIZE).width(Fill)]
-                .push(standing)
-                .spacing(10)
+            row![picture, words]
+                .push(selected.then(|| keycap("Enter")))
+                .spacing(12)
                 .align_y(Center),
         )
-        .padding([4, 8])
+        .padding([6, 10])
         .width(Fill)
         .height(ROW_HEIGHT)
-        .style(style::list_row(self.selected == Some(index)))
+        .style(style::list_row(selected))
         .on_press(Message::Pick(game.id))
         .into()
     }
 
+    /// The panel opens with the last text selected, so typing replaces it.
+    fn show(
+        &mut self,
+        gamepalate: &Arc<Gamepalate>,
+        asked: Instant,
+        screenshot: Duration,
+    ) -> Task<Message> {
+        self.state = State::Open(Timing { asked, screenshot });
+        self.found = gamepalate.find_games(&self.text);
+        self.selected = None;
+        self.backdrop = None;
+
+        Task::batch([
+            operation::focus(FIELD),
+            operation::select_all(FIELD),
+            self.load_capsules(gamepalate),
+        ])
+    }
+
     fn select(&mut self, selected: Option<usize>) -> Task<Message> {
-        if !self.is_open() || self.found.is_empty() {
+        if self.found.is_empty() {
             return Task::none();
         }
         self.selected = selected;
@@ -199,7 +409,7 @@ impl Search {
         };
 
         operation::snap_to(
-            MENU,
+            LIST,
             RelativeOffset {
                 x: None,
                 y: Some(scroll_fraction(index, self.found.len())),
@@ -234,7 +444,22 @@ impl Search {
     }
 }
 
-pub fn menu_key(event: Event, _: event::Status, _: window::Id) -> Option<Message> {
+fn keycap<'a>(label: &'a str) -> Element<'a, Message> {
+    container(text(label).size(font::NOTE_SIZE - 1.0))
+        .padding([1, 6])
+        .style(style::muted_keycap)
+        .into()
+}
+
+/// The panel's top edge and width in the area below the top bar.
+fn panel_place(area: Size) -> (f32, f32) {
+    (
+        (area.height * TOP_SHARE).round(),
+        (area.width * WIDTH_SHARE).min(MAX_WIDTH),
+    )
+}
+
+fn panel_key(event: Event, _: event::Status, _: window::Id) -> Option<Message> {
     let Event::Keyboard(keyboard::Event::KeyPressed {
         key: Key::Named(key),
         ..
@@ -251,10 +476,6 @@ pub fn menu_key(event: Event, _: event::Status, _: window::Id) -> Option<Message
     }
 }
 
-fn shows_menu(text: &str, found: &[FoundGame]) -> bool {
-    !found.is_empty() || text.trim().chars().count() >= MIN_SEARCH_CHARS
-}
-
 fn below(selected: Option<usize>, count: usize) -> Option<usize> {
     match selected {
         _ if count == 0 => None,
@@ -267,17 +488,13 @@ fn above(selected: Option<usize>) -> Option<usize> {
     Some(selected?.saturating_sub(1))
 }
 
-// Snapping in proportion to the row always shows the whole row, whatever the menu's height.
+// Snapping in proportion to the row always shows the whole row, whatever the list's height.
 fn scroll_fraction(index: usize, count: usize) -> f32 {
     if count <= 1 {
         0.0
     } else {
         index as f32 / (count - 1) as f32
     }
-}
-
-fn field_width(window_width: f32) -> f32 {
-    (window_width - ROOM_FOR_THE_REST).clamp(NARROW_WIDTH, WIDE_WIDTH)
 }
 
 pub(super) fn standing_text(standing: GameStanding) -> String {
@@ -310,7 +527,10 @@ mod tests {
         Search {
             text: "game".to_string(),
             found: found(count),
-            open: true,
+            state: State::Open(Timing {
+                asked: Instant::now(),
+                screenshot: Duration::ZERO,
+            }),
             ..Search::default()
         }
     }
@@ -343,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn down_moves_the_selection_of_an_open_menu() {
+    fn down_moves_the_selection() {
         let mut search = open_with(2);
 
         let _ = search.select(below(search.selected, 2));
@@ -360,10 +580,11 @@ mod tests {
 
         search.selected = Some(2);
         assert_eq!(search.chosen(), Some(AppId(3)));
+        assert_eq!(open_with(0).chosen(), None);
     }
 
     #[test]
-    fn opening_a_game_closes_the_menu_and_empties_the_field() {
+    fn opening_a_game_closes_the_panel_and_empties_the_field() {
         let mut search = open_with(3);
         search.selected = Some(1);
 
@@ -378,43 +599,62 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_shows_from_three_characters_or_with_results() {
-        assert!(!shows_menu("po", &[]));
-        assert!(shows_menu("por", &[]));
-        assert!(shows_menu("10", &found(1)));
-        assert!(open_with(0).is_open());
+    fn closing_keeps_the_text_and_drops_the_picture() {
+        let mut search = open_with(3);
+        search.backdrop = Some(Backdrop {
+            handle: image::Handle::from_rgba(1, 1, vec![0; 4]),
+            shown: None,
+        });
 
-        let mut search = open_with(2);
-        assert!(search.is_open());
         search.close();
+
         assert!(!search.is_open());
+        assert!(search.backdrop.is_none());
+        assert_eq!(search.text, "game");
     }
 
     #[test]
-    fn the_arrows_and_escape_belong_to_the_menu() {
-        assert!(matches!(menu_key_of(Named::ArrowDown), Some(Message::Down)));
-        assert!(matches!(menu_key_of(Named::ArrowUp), Some(Message::Up)));
-        assert!(matches!(menu_key_of(Named::Escape), Some(Message::Close)));
-        assert!(menu_key_of(Named::Space).is_none());
+    fn the_panel_waits_for_the_screenshot() {
+        let mut search = Search {
+            state: State::Opening(Instant::now()),
+            ..Search::default()
+        };
+
+        assert!(search.is_open());
+        assert!(search.view().is_none());
+
+        search.state = State::Closed;
+        assert!(!search.is_open());
+        assert!(search.view().is_none());
+        assert!(open_with(1).view().is_some());
     }
 
-    fn menu_key_of(key: Named) -> Option<Message> {
-        menu_key(pressed(key), event::Status::Captured, window::Id::unique())
+    #[test]
+    fn the_arrows_and_escape_belong_to_the_panel() {
+        assert!(matches!(
+            panel_key_of(Named::ArrowDown),
+            Some(Message::Down)
+        ));
+        assert!(matches!(panel_key_of(Named::ArrowUp), Some(Message::Up)));
+        assert!(matches!(panel_key_of(Named::Escape), Some(Message::Close)));
+        assert!(panel_key_of(Named::Space).is_none());
+    }
+
+    fn panel_key_of(key: Named) -> Option<Message> {
+        panel_key(pressed(key), event::Status::Captured, window::Id::unique())
     }
 
     #[test]
     fn the_selected_row_scrolls_into_view() {
         assert_eq!(scroll_fraction(0, 1), 0.0);
-        assert_eq!(scroll_fraction(0, 20), 0.0);
-        assert_eq!(scroll_fraction(19, 20), 1.0);
+        assert_eq!(scroll_fraction(0, 8), 0.0);
+        assert_eq!(scroll_fraction(7, 8), 1.0);
     }
 
     #[test]
-    fn the_field_narrows_with_the_window() {
-        assert_eq!(field_width(1600.0), 280.0);
-        assert_eq!(field_width(1240.0), 240.0);
-        assert_eq!(field_width(1177.0), 200.0);
-        assert_eq!(field_width(960.0), 200.0);
+    fn the_panel_sits_in_the_upper_part_and_narrows_with_the_window() {
+        assert_eq!(panel_place(Size::new(1600.0, 900.0)), (108.0, 640.0));
+        assert_eq!(panel_place(Size::new(600.0, 500.0)), (60.0, 540.0));
     }
 
     #[test]

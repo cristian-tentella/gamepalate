@@ -1,3 +1,4 @@
+mod backdrop;
 mod frame;
 mod game_page;
 mod install;
@@ -19,7 +20,7 @@ use gamepalate_app::{
     update::ArchiveState,
 };
 use iced::{
-    Center, Element, Fill, Right, Shrink, Size, Subscription, Task, Theme, Top, event,
+    Center, Element, Fill, Right, Shrink, Size, Subscription, Task, Theme, Top,
     keyboard::{self, Key},
     padding,
     widget::{button, column, container, image, mouse_area, row, space, stack, text, tooltip},
@@ -47,6 +48,9 @@ use search::Search;
 use theme::{choice, light, theme, theme_button, toggled};
 
 const UNDERLINE_HEIGHT: f32 = 2.0;
+const BAR_HEIGHT: f32 = 44.0;
+/// The top bar and the line under it: the game search leaves them sharp.
+const SEARCH_TOP: f32 = BAR_HEIGHT + 1.0;
 const LOGO_BYTES: &[u8] = include_bytes!("../gamepalate-24.png");
 const LOGO_SIZE: f32 = 24.0;
 const LOGO_SPACING: f32 = 8.0;
@@ -314,7 +318,10 @@ impl App {
                 let Some(gamepalate) = &self.gamepalate else {
                     return Task::none();
                 };
-                match self.search.update(message, gamepalate) {
+                match self
+                    .search
+                    .update(message, gamepalate, self.window, SEARCH_TOP)
+                {
                     search::Action::Run(task) => task.map(Message::Search),
                     search::Action::Open(id) => {
                         let saving = self.save_settings();
@@ -409,8 +416,8 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let menu_open = self.search.is_open();
-        let keys = !menu_open && self.game_page.is_none();
+        let search_open = self.search.is_open();
+        let keys = !search_open && self.game_page.is_none();
         let screen = match &self.screen {
             Screen::Discover(_) => Discover::subscription(keys).map(Message::Discover),
             Screen::Votes(_) => Votes::subscription(keys).map(Message::Votes),
@@ -419,13 +426,9 @@ impl App {
             Screen::Settings(screen) => screen.subscription(keys).map(Message::Settings),
             Screen::Setup(_) | Screen::Starting => Subscription::none(),
         };
-        let menu = if menu_open {
-            event::listen_with(search::menu_key).map(Message::Search)
-        } else {
-            Subscription::none()
-        };
+        let search = self.search.subscription().map(Message::Search);
         let game_page = if self.game_page.is_some() {
-            GamePage::subscription(!menu_open).map(Message::GamePage)
+            GamePage::subscription(!search_open).map(Message::GamePage)
         } else {
             Subscription::none()
         };
@@ -436,7 +439,7 @@ impl App {
             window::close_requests().map(|_| Message::Window(WindowAction::Close)),
             keyboard::listen().filter_map(page_key),
             screen,
-            menu,
+            search,
             game_page,
         ])
     }
@@ -472,15 +475,6 @@ impl App {
                 .spacing(24)
                 .height(Fill)
             }))
-            .push(self.gamepalate.is_some().then(|| {
-                column![
-                    container(self.search.view(self.resized.width).map(Message::Search))
-                        .height(Fill)
-                        .align_y(Center),
-                    space().height(UNDERLINE_HEIGHT),
-                ]
-                .height(Fill)
-            }))
             .push(
                 container(self.gamepalate.as_deref().map(|_| {
                     column![
@@ -496,6 +490,11 @@ impl App {
             )
             .push(
                 row![]
+                    .push(
+                        self.gamepalate
+                            .is_some()
+                            .then(|| search_button(self.search.is_open())),
+                    )
                     .push(self.gamepalate.as_deref().map(|gamepalate| {
                         refresh_button(
                             &self.refresh,
@@ -529,7 +528,7 @@ impl App {
         )
         .padding(padding::left(20))
         .width(Fill)
-        .height(44)
+        .height(BAR_HEIGHT)
         .style(style::top_bar);
         let bar = mouse_area(bar).on_press(Message::BarPressed);
 
@@ -549,11 +548,13 @@ impl App {
                 .map(Message::Settings),
             Screen::Starting => column![].into(),
         };
-        let content = stack![content].push(
-            self.game_page
-                .as_ref()
-                .map(|page| page.view(self.scale).map(Message::GamePage)),
-        );
+        let content = stack![content]
+            .push(
+                self.game_page
+                    .as_ref()
+                    .map(|page| page.view(self.scale).map(Message::GamePage)),
+            )
+            .push(self.search.view().map(|search| search.map(Message::Search)));
 
         let app = column![
             bar,
@@ -756,7 +757,7 @@ fn page_key(event: keyboard::Event) -> Option<Message> {
     }
 
     match key.as_ref() {
-        Key::Character("k" | "K") => Some(Message::Search(search::Message::Focus)),
+        Key::Character("k" | "K") => Some(Message::Search(search::Message::Toggle)),
         Key::Character("1") => Some(Message::Navigate(Page::Discover)),
         Key::Character("2") => Some(Message::Navigate(Page::Votes)),
         Key::Character("3") => Some(Message::Navigate(Page::Library)),
@@ -799,6 +800,16 @@ fn families_notice<'a>(count: usize) -> Element<'a, Message> {
     .align_bottom(Fill)
     .padding(16)
     .into()
+}
+
+fn search_button<'a>(open: bool) -> Element<'a, Message> {
+    let button = bar_icon(search::LENS, Some(Message::Search(search::Message::Toggle)));
+    let button = if open {
+        button.style(style::open_bar_icon)
+    } else {
+        button
+    };
+    with_tooltip(button.into(), search::TIP.to_string())
 }
 
 fn settings_button<'a>(open: bool, new_version: bool) -> Element<'a, Message> {
@@ -926,14 +937,14 @@ mod tests {
     fn ctrl_k_goes_to_the_game_search() {
         assert!(matches!(
             page_key(pressed("k", keyboard::Modifiers::CTRL)),
-            Some(Message::Search(search::Message::Focus))
+            Some(Message::Search(search::Message::Toggle))
         ));
         assert!(matches!(
             page_key(pressed(
                 "K",
                 keyboard::Modifiers::CTRL | keyboard::Modifiers::SHIFT
             )),
-            Some(Message::Search(search::Message::Focus))
+            Some(Message::Search(search::Message::Toggle))
         ));
         assert!(page_key(pressed("k", keyboard::Modifiers::empty())).is_none());
     }
