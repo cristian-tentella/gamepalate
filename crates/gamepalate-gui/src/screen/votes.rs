@@ -274,7 +274,10 @@ impl Votes {
         Task::none()
     }
 
-    pub fn subscription() -> Subscription<Message> {
+    pub fn subscription(keys: bool) -> Subscription<Message> {
+        if !keys {
+            return Subscription::none();
+        }
         keyboard::listen().filter_map(key_message)
     }
 

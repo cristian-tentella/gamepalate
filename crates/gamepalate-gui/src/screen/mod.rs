@@ -20,7 +20,7 @@ pub mod library;
 pub mod profile;
 pub mod settings;
 pub mod setup;
-mod showcase;
+pub(crate) mod showcase;
 mod steam_client;
 pub mod votes;
 

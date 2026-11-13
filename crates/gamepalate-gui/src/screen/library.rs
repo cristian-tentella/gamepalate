@@ -522,11 +522,12 @@ impl Library {
         Task::none()
     }
 
-    pub fn subscription() -> Subscription<Message> {
-        Subscription::batch([
-            window::resize_events().map(|(_, size)| Message::WindowResized(size)),
-            keyboard::listen().filter_map(key_message),
-        ])
+    pub fn subscription(keys: bool) -> Subscription<Message> {
+        let resized = window::resize_events().map(|(_, size)| Message::WindowResized(size));
+        if !keys {
+            return resized;
+        }
+        Subscription::batch([resized, keyboard::listen().filter_map(key_message)])
     }
 
     pub fn contains(&self, id: AppId) -> bool {
@@ -816,7 +817,7 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
     }
 }
 
-fn handle(capsule: Capsule) -> image::Handle {
+pub(crate) fn handle(capsule: Capsule) -> image::Handle {
     image::Handle::from_rgba(capsule.width, capsule.height, capsule.rgba)
 }
 

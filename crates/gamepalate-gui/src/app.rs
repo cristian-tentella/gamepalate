@@ -1,6 +1,7 @@
 mod frame;
 mod install;
 mod refresh;
+mod search;
 mod theme;
 
 use std::{
@@ -17,7 +18,7 @@ use gamepalate_app::{
     update::ArchiveState,
 };
 use iced::{
-    Center, Element, Fill, Right, Shrink, Size, Subscription, Task, Theme, Top,
+    Center, Element, Fill, Right, Shrink, Size, Subscription, Task, Theme, Top, event,
     keyboard::{self, Key},
     padding,
     widget::{button, column, container, image, mouse_area, row, space, stack, text, tooltip},
@@ -40,6 +41,7 @@ use frame::{
     window_button,
 };
 use refresh::{Refresh, refresh_button, refresh_tooltip};
+use search::Search;
 use theme::{choice, light, theme, theme_button, toggled};
 
 const UNDERLINE_HEIGHT: f32 = 2.0;
@@ -70,6 +72,7 @@ pub struct App {
     installed: Option<Installed>,
     logo: image::Handle,
     families_notice: Option<usize>,
+    search: Search,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -87,6 +90,7 @@ pub enum Message {
     Profile(profile::Message),
     Settings(settings::Message),
     Setup(setup::Message),
+    Search(search::Message),
     WindowFound(Option<window::Id>),
     Window(WindowAction),
     BarPressed,
@@ -141,6 +145,7 @@ impl App {
             installed: None,
             logo: image::Handle::from_bytes(LOGO_BYTES),
             families_notice: None,
+            search: Search::default(),
         };
         let task = match setup::start(FirstRun::check(None)) {
             Ok(gamepalate) => {
@@ -295,6 +300,18 @@ impl App {
                 }
                 Task::none()
             }
+            Message::Search(message) => {
+                let Some(gamepalate) = &self.gamepalate else {
+                    return Task::none();
+                };
+                match self.search.update(message, gamepalate) {
+                    search::Action::Run(task) => task.map(Message::Search),
+                    search::Action::Open(id) => {
+                        let saving = self.save_settings();
+                        Task::batch([self.show_game(id), saving])
+                    }
+                }
+            }
             Message::Setup(message) => {
                 let Screen::Setup(screen) = &mut self.screen else {
                     return Task::none();
@@ -373,13 +390,19 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
+        let keys = !self.search.is_open();
         let screen = match &self.screen {
-            Screen::Discover(_) => Discover::subscription().map(Message::Discover),
-            Screen::Votes(_) => Votes::subscription().map(Message::Votes),
-            Screen::Library(_) => Library::subscription().map(Message::Library),
-            Screen::Profile(_) => Profile::subscription().map(Message::Profile),
-            Screen::Settings(screen) => screen.subscription().map(Message::Settings),
+            Screen::Discover(_) => Discover::subscription(keys).map(Message::Discover),
+            Screen::Votes(_) => Votes::subscription(keys).map(Message::Votes),
+            Screen::Library(_) => Library::subscription(keys).map(Message::Library),
+            Screen::Profile(_) => Profile::subscription(keys).map(Message::Profile),
+            Screen::Settings(screen) => screen.subscription(keys).map(Message::Settings),
             Screen::Setup(_) | Screen::Starting => Subscription::none(),
+        };
+        let menu = if keys {
+            Subscription::none()
+        } else {
+            event::listen_with(search::menu_key).map(Message::Search)
         };
 
         Subscription::batch([
@@ -388,6 +411,7 @@ impl App {
             window::close_requests().map(|_| Message::Window(WindowAction::Close)),
             keyboard::listen().filter_map(page_key),
             screen,
+            menu,
         ])
     }
 
@@ -422,16 +446,30 @@ impl App {
                 .spacing(24)
                 .height(Fill)
             }))
-            .push(space().width(Fill))
-            .push(self.gamepalate.as_deref().map(|gamepalate| {
+            .push(self.gamepalate.is_some().then(|| {
                 column![
-                    container(self.status(gamepalate))
+                    container(self.search.view(self.resized.width).map(Message::Search))
                         .height(Fill)
                         .align_y(Center),
                     space().height(UNDERLINE_HEIGHT),
                 ]
                 .height(Fill)
             }))
+            .push(
+                container(self.gamepalate.as_deref().map(|gamepalate| {
+                    column![
+                        container(self.status(gamepalate))
+                            .height(Fill)
+                            .align_y(Center),
+                        space().height(UNDERLINE_HEIGHT),
+                    ]
+                    .height(Fill)
+                }))
+                .width(Fill)
+                .height(Fill)
+                .align_x(Right)
+                .clip(true),
+            )
             .push(
                 row![]
                     .push(self.gamepalate.is_some().then(|| {
@@ -553,12 +591,17 @@ impl App {
     }
 
     fn leave(&mut self, page: Page) -> Task<Message> {
-        let saving = match &mut self.screen {
-            Screen::Settings(screen) => screen.leave().map(Message::Settings),
-            _ => Task::none(),
-        };
+        self.search.close();
+        let saving = self.save_settings();
 
         Task::batch([self.open(page), saving])
+    }
+
+    fn save_settings(&mut self) -> Task<Message> {
+        match &mut self.screen {
+            Screen::Settings(screen) => screen.leave().map(Message::Settings),
+            _ => Task::none(),
+        }
     }
 
     fn open(&mut self, page: Page) -> Task<Message> {
@@ -645,6 +688,7 @@ fn page_key(event: keyboard::Event) -> Option<Message> {
     }
 
     match key.as_ref() {
+        Key::Character("k" | "K") => Some(Message::Search(search::Message::Focus)),
         Key::Character("1") => Some(Message::Navigate(Page::Discover)),
         Key::Character("2") => Some(Message::Navigate(Page::Votes)),
         Key::Character("3") => Some(Message::Navigate(Page::Library)),
@@ -804,5 +848,21 @@ mod tests {
         assert_eq!(page("4", keyboard::Modifiers::CTRL), Some(Page::Profile));
         assert_eq!(page("3", keyboard::Modifiers::empty()), None);
         assert_eq!(page("5", keyboard::Modifiers::CTRL), None);
+    }
+
+    #[test]
+    fn ctrl_k_goes_to_the_game_search() {
+        assert!(matches!(
+            page_key(pressed("k", keyboard::Modifiers::CTRL)),
+            Some(Message::Search(search::Message::Focus))
+        ));
+        assert!(matches!(
+            page_key(pressed(
+                "K",
+                keyboard::Modifiers::CTRL | keyboard::Modifiers::SHIFT
+            )),
+            Some(Message::Search(search::Message::Focus))
+        ));
+        assert!(page_key(pressed("k", keyboard::Modifiers::empty())).is_none());
     }
 }

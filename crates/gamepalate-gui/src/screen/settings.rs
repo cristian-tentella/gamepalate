@@ -158,13 +158,14 @@ impl Settings {
         self.error = None;
     }
 
-    pub fn subscription(&self) -> Subscription<Message> {
-        let keys = keyboard::listen().filter_map(key_message);
-        if !self.fields.waiting() {
-            return keys;
-        }
+    pub fn subscription(&self, keys: bool) -> Subscription<Message> {
+        let keys = keys.then(|| keyboard::listen().filter_map(key_message));
+        let tick = self
+            .fields
+            .waiting()
+            .then(|| time::every(TICK).map(Message::Tick));
 
-        Subscription::batch([keys, time::every(TICK).map(Message::Tick)])
+        Subscription::batch(keys.into_iter().chain(tick))
     }
 
     pub fn leave(&mut self) -> Task<Message> {
