@@ -26,6 +26,9 @@ const BULLET: &str = "•";
 const QUOTE_INSET: f32 = 18.0;
 const LOAD_AHEAD: f32 = 600.0;
 const FILTER_SPACING: f32 = 16.0;
+const THUMB_UP: char = '\u{E8DC}';
+const THUMB_DOWN: char = '\u{E8DB}';
+const THUMB_SIZE: f32 = 11.0;
 const ORDERS: [Sorting; 3] = [
     Sorting(Order::Helpful),
     Sorting(Order::Recent),
@@ -135,18 +138,25 @@ fn spoiler<'a>(review: &'a Review, index: usize) -> Element<'a, Message> {
         .into()
 }
 
+fn thumb(recommended: bool) -> char {
+    if recommended { THUMB_UP } else { THUMB_DOWN }
+}
+
 fn heading(review: &Review, now: Timestamp) -> Element<'_, Message> {
+    let thumb = text(thumb(review.recommended))
+        .font(font::ICONS)
+        .size(font::icon(THUMB_SIZE));
     let verdict = text(format::verdict(review.recommended))
         .size(font::NOTE_SIZE)
         .font(font::SEMIBOLD);
     let verdict = if review.recommended {
-        verdict.style(style::accent)
+        row![thumb.style(style::accent), verdict.style(style::accent)]
     } else {
-        verdict
+        row![thumb, verdict]
     };
 
     row![
-        verdict,
+        verdict.spacing(6).align_y(Center),
         text("·").size(font::NOTE_SIZE).style(style::muted),
         text(format::review_facts(review, now))
             .size(font::NOTE_SIZE)
@@ -365,6 +375,12 @@ mod tests {
         assert_eq!(min_hours("250"), Some(250));
         assert_eq!(min_hours(""), None);
         assert_eq!(min_hours("0"), None);
+    }
+
+    #[test]
+    fn the_thumb_follows_the_verdict() {
+        assert_eq!(thumb(true), THUMB_UP);
+        assert_eq!(thumb(false), THUMB_DOWN);
     }
 
     #[test]
