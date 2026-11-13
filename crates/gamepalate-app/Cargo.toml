@@ -32,3 +32,6 @@ dbus-secret-service-keyring-store = { version = "1.0.1", features = ["crypto-rus
 http = "1.5.0"
 tempfile = "3.27.0"
 tokio = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true

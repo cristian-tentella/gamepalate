@@ -1,6 +1,7 @@
 use iced::window::Window;
 
 #[cfg(windows)]
+#[allow(unsafe_code, reason = "the Win32 calls that set the window icon")]
 pub fn use_exe_icon(window: &dyn Window) {
     use iced::window::raw_window_handle::RawWindowHandle;
     use windows_sys::Win32::{
