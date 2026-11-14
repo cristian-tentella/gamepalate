@@ -201,7 +201,6 @@ mod tests {
         RankedGame {
             id: AppId(id),
             relevance: 0.0,
-            references: Vec::new(),
             affinity: 0.0,
         }
     }

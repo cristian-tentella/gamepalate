@@ -218,6 +218,7 @@ mod tests {
             similar_to: None,
             similar_to_id: None,
             similar_to_multiplier: None,
+            similar_to_source: None,
             quality: 1.0,
             reviews: Reviews {
                 total: 100,

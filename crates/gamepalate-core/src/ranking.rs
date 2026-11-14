@@ -1,7 +1,7 @@
 use std::{cmp::Ordering, collections::HashMap};
 
 use crate::{
-    affinity::{ReferenceMatch, affinities},
+    affinity::affinities,
     config::RelevanceConfig,
     game_vector::GameVector,
     ids::AppId,
@@ -14,7 +14,6 @@ use crate::{
 pub struct RankedGame {
     pub id: AppId,
     pub relevance: f64,
-    pub references: Vec<ReferenceMatch>,
     pub affinity: f64,
 }
 
@@ -47,7 +46,6 @@ pub fn ranking(
                 game.quality,
                 relevance_config.quality_weight,
             ),
-            references: affinity.references,
         })
         .collect();
     sort_ranking(&mut ranked_games);
@@ -106,7 +104,6 @@ mod tests {
         RankedGame {
             id: AppId(id),
             relevance: 1.0,
-            references: Vec::new(),
             affinity: 1.0,
         }
     }

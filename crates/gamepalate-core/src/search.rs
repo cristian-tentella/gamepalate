@@ -8,8 +8,8 @@ use crate::{
     config::Config,
     corrections::Corrections,
     creators::{LikedCreators, liked_creators},
-    effective_hours::hours_by_source,
-    explanation::{similar_to, top_tags},
+    effective_hours::{HoursSource, hours_by_source},
+    explanation::{KnownGame, known_games, similar_to, top_tags},
     families::{Families, Family},
     filters::{Blame, FilterContext, FilterOptions, TagNameError, active_filters, apply_filters},
     game::{Price, Reviews},
@@ -20,6 +20,7 @@ use crate::{
     quality::quality,
     ranking::{RankedGame, bets, ranking, with_votes},
     signals::Signals,
+    tag_vector::tf_idf_vector,
     taste::{Taste, family_taste, game_name, signals_taste},
     timestamp::Timestamp,
     turns::{ListKind, Pick, Turns, turn_shares, with_bets},
@@ -110,6 +111,8 @@ pub struct RecommendedGame {
     pub similar_to: Option<String>,
     pub similar_to_id: Option<AppId>,
     pub similar_to_multiplier: Option<f64>,
+    // Where the similar game comes from: played, or only wanted
+    pub similar_to_source: Option<HoursSource>,
     pub quality: f64,
     pub reviews: Reviews,
     pub in_wishlist: bool,
@@ -212,6 +215,39 @@ pub fn search_tastes(
     }
 }
 
+// Every game of the user's, whatever list a recommended game comes from:
+// a game of a family can be most similar to a game outside it.
+pub fn user_known_games(inputs: &SearchInputs) -> Vec<KnownGame> {
+    let hours = hours_by_source(
+        inputs.signals,
+        inputs.votes,
+        &inputs.corrections.played_elsewhere,
+        &inputs.config.signals,
+    );
+    let signals = signals_taste(
+        &hours,
+        inputs.catalog,
+        inputs.off_catalog,
+        inputs.corrections,
+        &inputs.config.signals,
+    );
+    let families: Vec<Taste> = inputs
+        .families
+        .families
+        .iter()
+        .map(|family| {
+            family_taste(
+                family,
+                inputs.catalog,
+                inputs.off_catalog,
+                &inputs.corrections.tag_multipliers,
+            )
+        })
+        .collect();
+
+    known_games(std::iter::once(&signals).chain(&families), &hours)
+}
+
 pub fn needs_opinion(config: &Config, options: &SearchOptions) -> bool {
     options.only_bets || config.results.bet_every > 0 || config.relevance.votes_weight > 0.0
 }
@@ -238,6 +274,7 @@ pub fn recommended_game(
     pick: &Pick,
     position: usize,
     tastes: &[SearchTaste],
+    known: &[KnownGame],
     inputs: &SearchInputs,
     now: Timestamp,
 ) -> RecommendedGame {
@@ -247,7 +284,7 @@ pub fn recommended_game(
         .game(id)
         .expect("ranked games are in the catalog");
     let taste = &tastes[pick.from];
-    let similar = similar_to(&pick.game.references);
+    let similar = similar_to(id, &tf_idf_vector(&game.tags, &inputs.catalog.idf), known);
 
     RecommendedGame {
         position,
@@ -261,11 +298,10 @@ pub fn recommended_game(
         similar_to: similar
             .map(|reference| game_name(reference.id, inputs.catalog, inputs.off_catalog)),
         similar_to_id: similar.map(|reference| reference.id),
-        // Only signals use game multipliers
         similar_to_multiplier: similar
-            .filter(|_| taste.family.is_none())
             .and_then(|reference| inputs.corrections.game_multipliers.get(&reference.id))
             .copied(),
+        similar_to_source: similar.and_then(|reference| reference.source),
         quality: quality(&game.reviews),
         reviews: game.reviews,
         in_wishlist: inputs.signals.wishlist.contains(&id),
@@ -445,11 +481,17 @@ pub fn recommend_from(
     };
     next.shown.extend(picks.iter().map(|pick| pick.game.id));
 
+    let known = if picks.is_empty() {
+        Vec::new()
+    } else {
+        user_known_games(inputs)
+    };
     let games: Vec<RecommendedGame> = picks
         .iter()
         .enumerate()
         .map(|(i, pick)| {
-            recommended_game(pick, continuation.shown.len() + i + 1, &tastes, inputs, now)
+            let position = continuation.shown.len() + i + 1;
+            recommended_game(pick, position, &tastes, &known, inputs, now)
         })
         .collect();
 
@@ -632,9 +674,71 @@ mod tests {
         RankedGame {
             id: AppId(id),
             relevance: 0.0,
-            references: Vec::new(),
             affinity: 0.0,
         }
+    }
+
+    #[test]
+    fn a_family_game_can_be_similar_to_a_wanted_game_outside_the_family() {
+        let two_tags = |id: u32| {
+            let mut game = game(id, 2);
+            game.tags.push(GameTag {
+                id: TagId(3),
+                weight: 1.0,
+            });
+            game
+        };
+        let catalog = Catalog::new(
+            vec![game(1, 1), game(3, 2), two_tags(4), two_tags(6)],
+            BTreeMap::new(),
+            BTreeMap::from([(TagId(1), 1.0), (TagId(2), 1.0), (TagId(3), 1.0)]),
+            Freshness {
+                prices_updated_at: NOW,
+                tags_updated_at: NOW,
+                region: Region::ITALY,
+            },
+            Currency::italian(),
+        );
+        let vectors = game_vectors(&catalog);
+        let signals = Signals {
+            read_at: NOW,
+            library: vec![LibraryGame {
+                id: AppId(1),
+                total_hours: 20.0,
+                last_played: None,
+            }],
+            borrowed: vec![],
+            recent: Vec::new(),
+            wishlist: vec![AppId(6)],
+            followed: Vec::new(),
+        };
+        let inputs = SearchInputs {
+            catalog: &catalog,
+            game_vectors: &vectors,
+            signals: &signals,
+            votes: &Votes::new(),
+            corrections: &Corrections::default(),
+            families: &Families {
+                families: vec![Family {
+                    name: "Puzzle".to_string(),
+                    games: vec![AppId(3)],
+                    automatic: None,
+                }],
+                held_out: Vec::new(),
+            },
+            off_catalog: &OffCatalogGames::new(),
+            config: &Config::default(),
+        };
+        let options = SearchOptions {
+            family: Some("Puzzle".to_string()),
+            ..SearchOptions::default()
+        };
+
+        let games = recommend(&inputs, &options, NOW).unwrap().games;
+
+        let four = games.iter().find(|game| game.id == AppId(4)).unwrap();
+        assert_eq!(four.similar_to_id, Some(AppId(6)));
+        assert_eq!(four.similar_to_source, Some(HoursSource::Wishlist));
     }
 
     #[test]

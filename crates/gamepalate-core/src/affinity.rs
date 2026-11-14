@@ -28,7 +28,6 @@ pub struct ReferenceMatch {
 pub struct GameAffinity {
     pub id: AppId,
     pub affinity: f64,
-    pub references: Vec<ReferenceMatch>,
 }
 
 pub fn references(taste: &Taste) -> Vec<Reference> {
@@ -170,7 +169,6 @@ pub fn scale(values: &[f64]) -> f64 {
 pub struct Halves {
     pub profile: Vec<f64>,
     pub references: Vec<f64>,
-    pub matches: Vec<Vec<ReferenceMatch>>,
 }
 
 pub fn halves(game_vectors: &[GameVector], taste: &Taste) -> Option<Halves> {
@@ -182,7 +180,7 @@ pub fn halves(game_vectors: &[GameVector], taste: &Taste) -> Option<Halves> {
     let references = references(taste);
     let index = ReferenceIndex::new(&references);
 
-    let halves: Vec<(f64, f64, Vec<ReferenceMatch>)> = game_vectors
+    let (profile_halves, references_halves): (Vec<f64>, Vec<f64>) = game_vectors
         .par_iter()
         .map_init(
             || vec![0.0; index.len()],
@@ -191,25 +189,14 @@ pub fn halves(game_vectors: &[GameVector], taste: &Taste) -> Option<Halves> {
                 (
                     profile_similarity(game_vector, &profile, profile_norm),
                     references_similarity(&reference_matches),
-                    reference_matches,
                 )
             },
         )
-        .collect();
-
-    let mut profile_halves = Vec::with_capacity(halves.len());
-    let mut references_halves = Vec::with_capacity(halves.len());
-    let mut matches = Vec::with_capacity(halves.len());
-    for (profile_half, references_half, reference_matches) in halves {
-        profile_halves.push(profile_half);
-        references_halves.push(references_half);
-        matches.push(reference_matches);
-    }
+        .unzip();
 
     Some(Halves {
         profile: profile_halves,
         references: references_halves,
-        matches,
     })
 }
 
@@ -219,12 +206,10 @@ pub fn affinities(game_vectors: &[GameVector], taste: &Taste) -> Option<Vec<Game
 
     let affinities = game_vectors
         .iter()
-        .zip(halves.matches)
         .zip(affinity_values)
-        .map(|((game_vector, references), affinity)| GameAffinity {
+        .map(|(game_vector, affinity)| GameAffinity {
             id: game_vector.id,
             affinity,
-            references,
         })
         .collect();
 
