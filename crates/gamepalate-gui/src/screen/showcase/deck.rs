@@ -44,7 +44,8 @@ fn icon<'a>(symbol: char, tone: Tone) -> Element<'a, Message> {
 pub(super) fn chip_of(id: AppId, details: &GameDetails) -> Element<'_, Message> {
     let deck = details.store.steam_deck;
     let runs = format::deck_rating(deck, details.protondb).map(format::DeckRating::runs);
-    let label = mouse_area(chip("Steam Deck", style::deck_chip(runs)))
+    // The arrow, as on the other links of the app, says the click leaves for ProtonDB.
+    let label = mouse_area(chip("Steam Deck ↗", style::deck_chip(runs)))
         .on_press(Message::OpenLink(format::protondb_url(id)))
         .interaction(mouse::Interaction::Pointer);
 
