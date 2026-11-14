@@ -848,7 +848,7 @@ impl Discover {
             )
             .push(
                 self.showcase
-                    .more(game.id)
+                    .more(game.id, false)
                     .map(|more| more.map(Message::Showcase)),
             )
             .push(waiting)

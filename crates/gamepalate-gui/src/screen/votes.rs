@@ -654,7 +654,7 @@ impl Votes {
                 side: [
                     showcase.facts(game.id, &showcase.specific_tags()),
                     showcase.description(game.id),
-                    showcase.more(game.id),
+                    showcase.more(game.id, true),
                 ]
                 .into_iter()
                 .flatten()

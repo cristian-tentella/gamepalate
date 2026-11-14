@@ -461,14 +461,14 @@ impl Showcase {
         self.pages.details(id).map(|details| facts(details, tags))
     }
 
-    /// The keys of the sheets as one button, then the features.
-    pub fn more(&self, id: AppId) -> Option<Element<'_, Message>> {
+    /// The keys of the sheets as one button, then the features; `compact` for a narrow column.
+    pub fn more(&self, id: AppId, compact: bool) -> Option<Element<'_, Message>> {
         let open = self.features_open;
         let reviews = self.has_reviews && self.shown == Some(id);
 
         self.pages
             .details(id)
-            .map(|details| more(details, open, reviews))
+            .map(|details| more(details, open, reviews, compact))
     }
 
     fn load_details(&mut self, upcoming: &[AppId], nearby: &[AppId]) -> Task<Message> {
@@ -546,17 +546,14 @@ fn facts<'a>(details: &'a GameDetails, tags: &[String]) -> Element<'a, Message> 
         .into()
 }
 
-fn more(details: &GameDetails, open: bool, reviews: bool) -> Element<'_, Message> {
+fn more(details: &GameDetails, open: bool, reviews: bool, compact: bool) -> Element<'_, Message> {
     let store = &details.store;
     let sheets = game::key_group(
-        [
-            Some(("D", "About this game", Some(Message::ToggleAbout))),
-            reviews.then_some(("R", "Reviews", Some(Message::ToggleReviews))),
-            Some(("T", "All tags", Some(Message::ToggleTags))),
-        ]
-        .into_iter()
-        .flatten()
-        .collect(),
+        sheet_keys(reviews, compact)
+            .into_iter()
+            .map(|(key, label, message)| (key, label, Some(message)))
+            .collect(),
+        compact,
     );
     let features = format::features(store.steam_deck, &details.modes, store.controller);
     let menu = (!features.is_empty()).then(|| {
@@ -589,6 +586,24 @@ fn more(details: &GameDetails, open: bool, reviews: bool) -> Element<'_, Message
     });
 
     column![sheets].push(menu).spacing(MORE_SPACING).into()
+}
+
+// The keys of the sheets with their labels, short in a narrow column.
+fn sheet_keys(reviews: bool, compact: bool) -> Vec<(&'static str, &'static str, Message)> {
+    let (about, tags) = if compact {
+        ("About", "Tags")
+    } else {
+        ("About this game", "All tags")
+    };
+
+    [
+        Some(("D", about, Message::ToggleAbout)),
+        reviews.then_some(("R", "Reviews", Message::ToggleReviews)),
+        Some(("T", tags, Message::ToggleTags)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 pub(super) fn scroll_sheet<M: 'static>(y: f32) -> Task<M> {
@@ -714,6 +729,23 @@ mod tests {
     fn open(popups: &mut Popups, popup: Popup) {
         popups.toggle(popup, true);
         popups.pictured(Some(picture()));
+    }
+
+    #[test]
+    fn the_sheet_keys_are_short_in_a_narrow_column_and_skip_reviews_without_any() {
+        let labels = |reviews, compact| {
+            sheet_keys(reviews, compact)
+                .into_iter()
+                .map(|(key, label, _)| format!("{key} {label}"))
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            labels(true, false),
+            ["D About this game", "R Reviews", "T All tags"]
+        );
+        assert_eq!(labels(true, true), ["D About", "R Reviews", "T Tags"]);
+        assert_eq!(labels(false, true), ["D About", "T Tags"]);
     }
 
     #[test]

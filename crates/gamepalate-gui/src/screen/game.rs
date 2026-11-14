@@ -54,6 +54,9 @@ const KEY_SPACING: f32 = 6.0;
 const KEY_GROUP_HEIGHT: f32 = 30.0;
 const KEY_GROUP_INSET: f32 = 12.0;
 const KEY_GROUP_SPACING: f32 = 8.0;
+// Tighter, for the narrow column of Votes and of a game's page.
+const COMPACT_KEY_GROUP_INSET: f32 = 10.0;
+const COMPACT_KEY_GROUP_SPACING: f32 = 6.0;
 const TITLE_LINE_HEIGHT: f32 = 1.1;
 const BET_INSET: f32 = 8.0;
 const BADGE_PADDING: f32 = 2.0;
@@ -317,10 +320,17 @@ pub fn key_button<'a, Message: Clone + 'a>(
     .into()
 }
 
-/// Two or more keyed buttons as one segmented group, like the verdicts but smaller.
+/// Two or more keyed buttons as one segmented group, like the verdicts but smaller; `compact`
+/// for a narrow column.
 pub fn key_group<'a, Message: Clone + 'a>(
     keys: Vec<(&'a str, &'a str, Option<Message>)>,
+    compact: bool,
 ) -> Element<'a, Message> {
+    let (inset, spacing) = if compact {
+        (COMPACT_KEY_GROUP_INSET, COMPACT_KEY_GROUP_SPACING)
+    } else {
+        (KEY_GROUP_INSET, KEY_GROUP_SPACING)
+    };
     let count = keys.len();
     let mut group = row![].height(Fill);
     for (index, (key, label, on_press)) in keys.into_iter().enumerate() {
@@ -333,12 +343,12 @@ pub fn key_group<'a, Message: Clone + 'a>(
                 .size(font::NOTE_SIZE)
                 .wrapping(text::Wrapping::None)
         ]
-        .spacing(KEY_GROUP_SPACING)
+        .spacing(spacing)
         .align_y(Center);
         group = group.push(
             button(container(content).center_y(Fill))
                 .height(Fill)
-                .padding(padding::left(KEY_GROUP_INSET).right(KEY_GROUP_INSET))
+                .padding(padding::left(inset).right(inset))
                 .style(style::vote(false, segment_at(index, count)))
                 .on_press_maybe(on_press),
         );
