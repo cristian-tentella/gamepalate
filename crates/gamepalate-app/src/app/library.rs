@@ -37,7 +37,7 @@ impl Gamepalate {
         correction: GameCorrection,
     ) -> Result<GameCorrection, GameCorrectionError> {
         let votes = self.lock_votes();
-        let mut corrections = self.lock_corrections();
+        let mut corrections = self.write_corrections();
         let families = self.lock_families();
         let before = game_correction(id, &corrections);
         *corrections = corrected_game(
@@ -60,7 +60,7 @@ impl Gamepalate {
         id: AppId,
         played: bool,
     ) -> Result<bool, PlayedElsewhereError> {
-        let mut corrections = self.lock_corrections();
+        let mut corrections = self.write_corrections();
         let before = corrections.played_elsewhere.contains(&id);
         let name = game_name(id, &self.files.catalog, &self.files.off_catalog);
         *corrections = changed_played_elsewhere(

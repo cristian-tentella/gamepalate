@@ -173,6 +173,23 @@ impl Discover {
         self.gamepalate = Arc::clone(gamepalate);
     }
 
+    /// Votes, corrections or families changed on another page: the games start again from the
+    /// first, and the game shown stays until they are ready. A family that is gone gives way to
+    /// the saved choice, which follows renames.
+    pub fn renew(&mut self) -> Task<Message> {
+        let families = self.gamepalate.family_names();
+        if let Some(family) = &self.options.family
+            && !families.contains(family)
+        {
+            self.options.family = saved_options(&self.gamepalate)
+                .family
+                .filter(|saved| families.contains(saved));
+        }
+        self.sources = filters::sources(families);
+        self.votes_last_day = self.gamepalate.votes_in_last_day();
+        self.recommend()
+    }
+
     pub fn resized(&mut self) {
         self.showcase.resized();
     }

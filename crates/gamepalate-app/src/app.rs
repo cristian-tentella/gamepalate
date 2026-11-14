@@ -7,7 +7,10 @@ mod votes;
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -54,6 +57,7 @@ pub struct Gamepalate {
     votes: Mutex<Votes>,
     corrections: Mutex<Corrections>,
     families: Mutex<Families>,
+    revision: AtomicU64,
     created_families: Option<CreatedFamilies>,
     gui_saving: Mutex<()>,
     vectors: Vec<GameVector>,
@@ -102,6 +106,7 @@ impl Gamepalate {
             votes: Mutex::new(files.votes.clone()),
             corrections: Mutex::new(files.corrections.clone()),
             families: Mutex::new(files.families.clone()),
+            revision: AtomicU64::new(0),
             created_families,
             gui_saving: Mutex::new(()),
             files,
@@ -140,6 +145,28 @@ impl Gamepalate {
         })
         .map_err(RecommendError)
         .inspect_err(failed("could not recommend"))
+    }
+
+    /// Goes up at every change of the votes, corrections or families: what a page made of them
+    /// before is out of date.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::SeqCst)
+    }
+
+    // The revision goes up before the change, so whoever reads it during the change sees it too
+    fn write_votes(&self) -> MutexGuard<'_, Votes> {
+        self.revision.fetch_add(1, Ordering::SeqCst);
+        self.lock_votes()
+    }
+
+    fn write_corrections(&self) -> MutexGuard<'_, Corrections> {
+        self.revision.fetch_add(1, Ordering::SeqCst);
+        self.lock_corrections()
+    }
+
+    fn write_families(&self) -> MutexGuard<'_, Families> {
+        self.revision.fetch_add(1, Ordering::SeqCst);
+        self.lock_families()
     }
 
     fn lock_votes(&self) -> MutexGuard<'_, Votes> {

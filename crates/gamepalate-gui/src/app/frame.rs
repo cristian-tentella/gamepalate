@@ -174,6 +174,9 @@ impl App {
                     page.resized();
                 }
                 self.screen.resized();
+                if let Some(parked) = &mut self.parked {
+                    parked.discover.resized();
+                }
                 match self.window {
                     Some(id) => window::is_maximized(id).map(Message::Maximized),
                     None => Task::none(),
