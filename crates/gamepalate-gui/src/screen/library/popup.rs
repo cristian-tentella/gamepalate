@@ -671,6 +671,7 @@ mod tests {
             tags: Vec::new(),
             weighted: false,
             used: Vec::new(),
+            specific: Vec::new(),
         }
     }
 

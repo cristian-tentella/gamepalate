@@ -264,7 +264,7 @@ fn row(game: &RecommendedGame, one_family: bool, files: &DataFiles) -> Vec<Strin
                 }),
         );
     }
-    cells.extend([game.top_tags.join(", "), similar_cell(game)]);
+    cells.extend([game.tags.join(", "), similar_cell(game)]);
     cells
 }
 

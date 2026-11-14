@@ -839,7 +839,7 @@ impl Discover {
             )
             .push(
                 self.showcase
-                    .facts(game.id, &game.top_tags)
+                    .facts(game.id, &game.tags)
                     .map(|facts| facts.map(Message::Showcase)),
             )
             .push(waiting)

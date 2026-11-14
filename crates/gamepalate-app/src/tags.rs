@@ -1,6 +1,6 @@
 use gamepalate_core::{
     effective_hours::hours_by_source,
-    explanation::top_tag_ids,
+    explanation::{specific_tags, top_tag_ids},
     filters::hits_ban,
     ids::{AppId, TagId},
     search::SearchInputs,
@@ -14,6 +14,7 @@ pub struct GameTagsView {
     pub tags: Vec<TagOfGame>,
     pub weighted: bool,
     pub used: Vec<UsedTag>,
+    pub specific: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,6 +97,7 @@ pub(crate) fn game_tags_view(id: AppId, inputs: &SearchInputs) -> Option<GameTag
         tags,
         weighted,
         used,
+        specific: specific_tags(game, catalog),
     })
 }
 
@@ -315,6 +317,18 @@ mod tests {
         assert_eq!(used.id, TagId(1));
         assert_eq!(used.profile_games, 1);
         assert!((used.catalog_share - 3.0 / 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_specific_tags_are_the_ones_of_the_core_whatever_the_profile() {
+        let catalog = catalog(catalog_games());
+        let expected = specific_tags(catalog.game(AppId(1)).unwrap(), &catalog);
+
+        for played in [&[][..], &[2], &[3]] {
+            let view = view_of(catalog_games(), played, BTreeMap::new(), 1).unwrap();
+            assert_eq!(view.specific, expected);
+        }
+        assert_eq!(expected.len(), 4);
     }
 
     #[test]

@@ -11,13 +11,50 @@ use crate::{
     votes::Votes,
 };
 
-pub fn top_tags(game: &Game, profile: &TagVector, catalog: &Catalog) -> Vec<String> {
-    top_tag_ids(game, profile, catalog)
+// Tags that judge or package a game rather than say what it is.
+const NOISE_TAGS: [TagId; 17] = [
+    TagId(12095), // Sexual Content
+    TagId(1756),  // Great Soundtrack
+    TagId(6650),  // Nudity
+    TagId(1693),  // Classic
+    TagId(1669),  // Moddable
+    TagId(7948),  // Soundtrack
+    TagId(4711),  // Replay Value
+    TagId(5708),  // Remake
+    TagId(5411),  // Beautiful
+    TagId(3934),  // Immersive
+    TagId(4190),  // Addictive
+    TagId(25085), // Touch-Friendly
+    TagId(11123), // Mouse Only
+    TagId(493),   // Early Access
+    TagId(5230),  // Sequel
+    TagId(3965),  // Epic
+    TagId(7481),  // Controller
+];
+
+const SPECIFIC_TAGS: usize = 4;
+
+pub fn specific_tags(game: &Game, catalog: &Catalog) -> Vec<String> {
+    specific_tag_ids(game, catalog)
         .into_iter()
         .map(|id| match catalog.tags.get(&id) {
             Some(name) => name.english.clone(),
             None => format!("#{}", id.0),
         })
+        .collect()
+}
+
+// The tags that say what the game is, whatever the profile.
+pub fn specific_tag_ids(game: &Game, catalog: &Catalog) -> Vec<TagId> {
+    let mut tags: Vec<_> = tf_idf_vector(&game.tags, &catalog.idf)
+        .into_iter()
+        .filter(|(id, _)| !NOISE_TAGS.contains(id))
+        .collect();
+    tags.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+
+    tags.into_iter()
+        .take(SPECIFIC_TAGS)
+        .map(|(id, _)| id)
         .collect()
 }
 
@@ -132,9 +169,15 @@ pub fn similar_to<'a>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::{
+        catalog::{Freshness, TagName},
+        currency::Currency,
         families::Family,
+        game::{GameTag, Price, Reviews},
+        region::Region,
         signals::{LibraryGame, RecentGame},
         taste::TasteGame,
         timestamp::Timestamp,
@@ -331,5 +374,105 @@ mod tests {
     #[test]
     fn a_game_the_user_does_not_know_has_no_place() {
         assert_eq!(place(12), None);
+    }
+
+    fn tagged_game(tags: &[(u32, f64)]) -> Game {
+        Game {
+            id: AppId(1),
+            name: "game".to_string(),
+            price: Price {
+                original_cents: 999,
+                discount: None,
+            },
+            reviews: Reviews {
+                total: 100,
+                positive: 90,
+            },
+            is_early_access: false,
+            tags: tags
+                .iter()
+                .map(|&(id, weight)| GameTag {
+                    id: TagId(id),
+                    weight,
+                })
+                .collect(),
+            developers: Vec::new(),
+            franchises: Vec::new(),
+        }
+    }
+
+    // Each tag has its id over 10 as IDF, so a higher id is a rarer tag.
+    fn tag_catalog(game: &Game, tags: BTreeMap<TagId, TagName>) -> Catalog {
+        Catalog::new(
+            vec![game.clone()],
+            tags,
+            game.tags
+                .iter()
+                .map(|tag| (tag.id, f64::from(tag.id.0) / 10.0))
+                .collect(),
+            Freshness {
+                prices_updated_at: Timestamp(0),
+                tags_updated_at: Timestamp(0),
+                region: Region::ITALY,
+            },
+            Currency::italian(),
+        )
+    }
+
+    fn specific(tags: &[(u32, f64)]) -> Vec<u32> {
+        let game = tagged_game(tags);
+
+        specific_tag_ids(&game, &tag_catalog(&game, BTreeMap::new()))
+            .into_iter()
+            .map(|id| id.0)
+            .collect()
+    }
+
+    #[test]
+    fn the_specific_tags_go_by_tf_idf_not_by_weight() {
+        assert_eq!(
+            specific(&[(1, 1.0), (2, 0.9), (3, 0.8), (4, 0.7), (5, 0.6)]),
+            vec![5, 4, 3, 2]
+        );
+    }
+
+    #[test]
+    fn a_tie_on_tf_idf_goes_to_the_lowest_tag_id() {
+        assert_eq!(specific(&[(4, 0.5), (2, 1.0), (1, 1.0)]), vec![2, 4, 1]);
+    }
+
+    #[test]
+    fn the_noise_tags_never_come_out_even_when_they_are_the_most_specific() {
+        let mut tags: Vec<_> = NOISE_TAGS.iter().map(|id| (id.0, 1.0)).collect();
+        tags.extend([(1, 1.0), (2, 1.0), (3, 1.0), (4, 1.0), (5, 1.0)]);
+
+        assert_eq!(specific(&tags), vec![5, 4, 3, 2]);
+    }
+
+    #[test]
+    fn a_game_with_few_useful_tags_gets_as_many_as_it_has() {
+        assert_eq!(specific(&[(1, 1.0), (1756, 1.0), (2, 1.0)]), vec![2, 1]);
+    }
+
+    #[test]
+    fn a_game_without_tags_gets_none() {
+        assert!(specific(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_names_of_the_specific_tags_fall_back_to_the_id() {
+        let game = tagged_game(&[(1, 1.0), (2, 1.0)]);
+        let catalog = tag_catalog(
+            &game,
+            BTreeMap::from([(
+                TagId(2),
+                TagName {
+                    english: "Puzzle".to_string(),
+                    italian: "Rompicapo".to_string(),
+                },
+            )]),
+        );
+
+        assert_eq!(specific_tags(&game, &catalog), ["Puzzle", "#1"]);
     }
 }

@@ -259,6 +259,7 @@ mod tests {
                     catalog_share: 0.1,
                 })
                 .collect(),
+            specific: Vec::new(),
         };
 
         assert_eq!(used_names(Some(&view)), ["Roguelite", "Deckbuilder"]);
