@@ -135,6 +135,7 @@ pub enum Action {
 }
 
 pub struct Panel {
+    with_bets: bool,
     without_early_access: bool,
     placeholders: [String; 6],
     currency: String,
@@ -154,6 +155,7 @@ impl Panel {
         options: &SearchOptions,
     ) -> Panel {
         let mut panel = Panel {
+            with_bets: true,
             without_early_access: defaults.without_early_access.unwrap_or(false),
             placeholders: placeholders(defaults),
             currency,
@@ -168,10 +170,19 @@ impl Panel {
         panel
     }
 
+    /// The panel without Bets only, for a page that has its own way to show the Bets.
+    pub fn without_bets(self) -> Panel {
+        Panel {
+            with_bets: false,
+            only_bets: false,
+            ..self
+        }
+    }
+
     pub fn show(&mut self, options: &SearchOptions) {
         self.filters = options.filters.clone();
         self.filters.only_discounted |= self.filters.min_discount_percent.is_some();
-        self.only_bets = options.only_bets;
+        self.only_bets = self.with_bets && options.only_bets;
         self.texts = texts(&options.filters);
         self.error = None;
     }
@@ -186,7 +197,7 @@ impl Panel {
                     self.forget_error(Field::MinDiscount);
                 }
             }
-            Message::OnlyBets(on) => self.only_bets = on,
+            Message::OnlyBets(on) => self.only_bets = self.with_bets && on,
             Message::EarlyAccess(included) => {
                 filters.without_early_access =
                     Some(!included).filter(|without| *without != self.without_early_access);
@@ -299,6 +310,8 @@ impl Panel {
                 .label("Include early access")
                 .text_size(font::BAR_SIZE)
                 .on_toggle(Message::EarlyAccess),
+        ]
+        .push(self.with_bets.then(|| {
             row![
                 checkbox(self.only_bets)
                     .label("Bets only")
@@ -307,8 +320,8 @@ impl Panel {
                 bets,
             ]
             .spacing(6)
-            .align_y(Center),
-        ]
+            .align_y(Center)
+        }))
         .spacing(SPACING)
         .align_y(Center);
 
@@ -784,6 +797,24 @@ mod tests {
         };
         expected.filters.without_voted = true;
         assert_eq!(reset, expected);
+    }
+
+    #[test]
+    fn without_bets_the_panel_never_asks_for_bets_only() {
+        let options = SearchOptions {
+            only_bets: true,
+            ..SearchOptions::default()
+        };
+        let mut panel = panel(&options).without_bets();
+        panel.show(&options);
+        panel.update(&options, Message::OnlyBets(true));
+        panel.update(&options, Message::OnSale(true));
+
+        assert!(!done(&mut panel, &SearchOptions::default()).only_bets);
+
+        panel.update(&options, Message::Reset);
+        assert!(!panel.only_bets);
+        assert!(!panel.with_bets);
     }
 
     #[test]

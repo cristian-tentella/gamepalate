@@ -1,20 +1,22 @@
 use std::{
     cmp::Reverse,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
     sync::Arc,
 };
 
-use gamepalate_app::{AppId, Gamepalate, Vote, VoteKind, VotedGame};
+use gamepalate_app::{
+    AppId, Currency, FilterOptions, Gamepalate, SearchOptions, Vote, VoteKind, VotedGame,
+};
 use iced::{
-    Center, Element, Fill, Size, Subscription, Task,
+    Center, Element, Event, Fill, Size, Subscription, Task, event,
     keyboard::{self, Key, key::Named},
     never, padding,
     widget::{
-        Id, button, checkbox, column, container, operation, pick_list, responsive, rich_text, row,
-        rule, scrollable,
+        Id, button, checkbox, column, container, mouse_area, opaque, operation, pick_list,
+        responsive, rich_text, row, rule, scrollable,
         scrollable::{AbsoluteOffset, Viewport},
-        span, stack, text,
+        sensor, space, span, stack, text,
         text::Wrapping,
         text_input, tooltip,
     },
@@ -22,6 +24,7 @@ use iced::{
 
 use super::{
     Toasts,
+    discover::filters::{self, Action, Panel},
     game::{self, Link, Pick, VOTE_HEIGHT},
     sentence,
     showcase::{self, Showcase},
@@ -43,6 +46,9 @@ const ORDERS: [Order; 4] = [
 const LIST: Id = Id::new("votes-list");
 const SEARCH: Id = Id::new("votes-search");
 const LIST_WIDTH: f32 = 340.0;
+const LIST_PADDING: f32 = 12.0;
+// The summary of the filters fits the list on one line.
+const SUMMARY_CHARS: usize = 46;
 const ROW_HEIGHT: f32 = 32.0;
 const SCROLLBAR_GAP: f32 = 12.0;
 const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–4.";
@@ -52,8 +58,12 @@ pub struct Votes {
     games: BTreeMap<AppId, VotedGame>,
     filter: Filter,
     order: Order,
-    on_sale: bool,
     hide_owned: bool,
+    filters: FilterOptions,
+    passing: Option<BTreeSet<AppId>>,
+    panel: Panel,
+    panel_open: bool,
+    tools_height: f32,
     search: String,
     matches: Option<HashMap<AppId, f64>>,
     matching: u64,
@@ -84,8 +94,12 @@ pub enum Order {
 pub enum Message {
     Filter(Filter),
     Order(Order),
-    OnSale(bool),
     HideOwned(bool),
+    Filters(filters::Message),
+    ToggleFilters,
+    CloseFilters,
+    ResetFilters,
+    ToolsMeasured(Size),
     Search(String),
     FocusSearch,
     Select(usize),
@@ -115,8 +129,18 @@ impl Votes {
             games: by_id(gamepalate.voted_games()),
             filter,
             order: Order::Newest,
-            on_sale: false,
             hide_owned: true,
+            filters: FilterOptions::default(),
+            passing: None,
+            panel: Panel::new(
+                gamepalate.tag_names(),
+                &FilterOptions::default(),
+                format::currency_symbol(gamepalate.currency()),
+                &SearchOptions::default(),
+            )
+            .without_bets(),
+            panel_open: false,
+            tools_height: 0.0,
             search: String::new(),
             matches: None,
             matching: 0,
@@ -162,6 +186,9 @@ impl Votes {
         if self.showcase.is_open() && stopped_by_popup(&message) {
             return Task::none();
         }
+        if self.panel_open && acts_on_the_page(&message) {
+            return Task::none();
+        }
         let task = self.handle(message);
 
         Task::batch([task, self.load()])
@@ -178,14 +205,23 @@ impl Votes {
                 self.order = order;
                 return self.restart();
             }
-            Message::OnSale(on_sale) => {
-                self.on_sale = on_sale;
-                return self.refresh();
-            }
             Message::HideOwned(hide_owned) => {
                 self.hide_owned = hide_owned;
                 return self.refresh();
             }
+            Message::Filters(message) => return self.change_filters(message),
+            Message::ToggleFilters if self.panel_open => self.panel_open = false,
+            Message::ToggleFilters => {
+                self.panel_open = true;
+                self.panel.show(&search_options(&self.filters));
+            }
+            Message::CloseFilters => self.panel_open = false,
+            Message::ResetFilters => {
+                self.filters = FilterOptions::default();
+                self.passing = None;
+                return self.refresh();
+            }
+            Message::ToolsMeasured(size) => self.tools_height = size.height,
             Message::Search(search) => {
                 self.search = search;
                 return self.refresh();
@@ -290,7 +326,10 @@ impl Votes {
         if !keys {
             return Subscription::none();
         }
-        keyboard::listen().filter_map(key_message)
+        Subscription::batch([
+            keyboard::listen().filter_map(key_message),
+            event::listen_with(escape_message),
+        ])
     }
 
     pub fn view(&self, scale: f32) -> Element<'_, Message> {
@@ -305,11 +344,26 @@ impl Votes {
                 .padding([10, 20])
                 .width(Fill);
 
+        let popup = self.panel_open.then(|| {
+            let panel = container(scrollable(self.panel.view().map(Message::Filters)).spacing(8))
+                .padding(20)
+                .style(style::popup);
+            stack![
+                opaque(
+                    mouse_area(space().width(Fill).height(Fill)).on_press(Message::CloseFilters)
+                ),
+                container(opaque(panel)).padding(
+                    padding::top(LIST_PADDING + self.tools_height + 8.0).left(LIST_PADDING)
+                ),
+            ]
+        });
+
         stack![row![
             container(self.list()).width(LIST_WIDTH).height(Fill),
             rule::vertical(1).style(rule::weak),
             column![stack![card].push(toast), style::separator(), votes],
         ]]
+        .push(popup)
         .push(self.showcase.zoom().map(|zoom| zoom.map(Message::Showcase)))
         .push(
             self.current()
@@ -357,20 +411,42 @@ impl Votes {
             .style(style::popup),
             tooltip::Position::Bottom,
         );
+        let arrow = if self.panel_open { '▴' } else { '▾' };
         let tools = row![
             pick_list(ORDERS, Some(self.order), Message::Order)
                 .text_size(font::NOTE_SIZE)
                 .padding([4, 8])
                 .style(style::dropdown)
                 .menu_style(style::menu),
-            checkbox(self.on_sale)
-                .label("On sale")
-                .text_size(font::NOTE_SIZE)
-                .on_toggle(Message::OnSale),
+            button(text!("Filters {arrow}").size(font::NOTE_SIZE))
+                .padding([4, 8])
+                .style(style::text_button)
+                .on_press(Message::ToggleFilters),
             hide_owned,
         ]
         .spacing(8)
         .align_y(Center);
+        let active = self.filters_summary().map(|summary| {
+            let line = |line: String| {
+                text(line)
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted)
+                    .wrapping(Wrapping::None)
+            };
+            let line: Element<'_, Message> = match format::short_filters(&summary, SUMMARY_CHARS) {
+                Some(short) => tooltip(
+                    line(short),
+                    container(text(summary).size(font::NOTE_SIZE))
+                        .padding([6, 10])
+                        .max_width(LIST_WIDTH)
+                        .style(style::popup),
+                    tooltip::Position::Bottom,
+                )
+                .into(),
+                None => line(summary).into(),
+            };
+            container(line).width(Fill).clip(true)
+        });
         let summary = (!searching && self.filter == Filter::Bets)
             .then(|| bets_summary(&self.games))
             .flatten()
@@ -388,14 +464,24 @@ impl Votes {
                 empty_text(
                     self.games.is_empty(),
                     self.filter,
-                    self.on_sale,
+                    self.passing.is_some(),
                     self.owned_hidden(),
                     &self.search,
                 )
             };
-            container(text(note).size(font::NOTE_SIZE).style(style::muted))
-                .padding(16)
-                .into()
+            let reset = (!sorting && !searching && self.passing.is_some()).then(|| {
+                button(text("Reset filters").size(font::NOTE_SIZE))
+                    .padding(0)
+                    .style(style::link)
+                    .on_press(Message::ResetFilters)
+            });
+            container(
+                column![text(note).size(font::NOTE_SIZE).style(style::muted)]
+                    .push(reset)
+                    .spacing(8),
+            )
+            .padding(16)
+            .into()
         } else {
             scrollable(
                 container(column(self.rows.iter().enumerate().filter_map(
@@ -409,11 +495,16 @@ impl Votes {
             .into()
         };
 
+        let measured = sensor(column![filters, search, tools].spacing(10))
+            .on_show(Message::ToolsMeasured)
+            .on_resize(Message::ToolsMeasured);
+
         column![
-            column![filters, search, tools]
+            column![measured]
+                .push(active)
                 .push(summary)
                 .spacing(10)
-                .padding(12),
+                .padding(LIST_PADDING),
             style::separator(),
             body,
         ]
@@ -592,10 +683,35 @@ impl Votes {
         )
     }
 
-    fn shown(&self) -> Shown {
+    fn shown(&self) -> Shown<'_> {
         Shown {
-            on_sale: self.on_sale,
             hide_owned: self.hide_owned,
+            passing: self.passing.as_ref(),
+        }
+    }
+
+    fn filters_summary(&self) -> Option<String> {
+        filters_summary(&self.filters, self.gamepalate.currency())
+    }
+
+    fn change_filters(&mut self, message: filters::Message) -> Task<Message> {
+        match self.panel.update(&search_options(&self.filters), message) {
+            Action::Stay => Task::none(),
+            Action::Close => {
+                self.panel_open = false;
+                Task::none()
+            }
+            Action::Search(options) => {
+                self.panel_open = false;
+                match passing(&self.gamepalate, &options.filters) {
+                    Ok(passing) => {
+                        self.filters = options.filters;
+                        self.passing = passing;
+                        self.refresh()
+                    }
+                    Err(error) => self.show_toast(error),
+                }
+            }
         }
     }
 
@@ -697,20 +813,46 @@ fn filter_label(filter: Filter) -> &'static str {
     }
 }
 
-fn on_sale(game: &VotedGame) -> bool {
-    game.price.is_some_and(|price| price.discount.is_some())
+/// The options the panel works on: only the filters, without Bets only.
+fn search_options(filters: &FilterOptions) -> SearchOptions {
+    SearchOptions {
+        filters: filters.clone(),
+        ..SearchOptions::default()
+    }
+}
+
+fn filters_summary(filters: &FilterOptions, currency: &Currency) -> Option<String> {
+    format::filters(&search_options(filters), currency)
+}
+
+/// The voted games that pass the filters, or `None` when no filter is chosen.
+fn passing(
+    gamepalate: &Gamepalate,
+    filters: &FilterOptions,
+) -> Result<Option<BTreeSet<AppId>>, String> {
+    if *filters == FilterOptions::default() {
+        return Ok(None);
+    }
+    gamepalate
+        .votes_passing(filters)
+        .map(Some)
+        .map_err(|error| sentence(&error.to_string()))
 }
 
 /// Which games of a chip the list shows, besides the chip itself.
 #[derive(Clone, Copy, Default)]
-struct Shown {
-    on_sale: bool,
+struct Shown<'a> {
     hide_owned: bool,
+    /// The games that pass the filters of the panel, when some are chosen.
+    passing: Option<&'a BTreeSet<AppId>>,
 }
 
-impl Shown {
+impl Shown<'_> {
     fn keeps(self, game: &VotedGame) -> bool {
-        (!self.on_sale || on_sale(game)) && !(self.hide_owned && game.owned)
+        !(self.hide_owned && game.owned)
+            && self
+                .passing
+                .is_none_or(|passing| passing.contains(&game.id))
     }
 }
 
@@ -806,7 +948,7 @@ pub(super) fn bets_summary(
 fn empty_text(
     no_votes: bool,
     filter: Filter,
-    only_on_sale: bool,
+    filtered: bool,
     owned_hidden: bool,
     search: &str,
 ) -> String {
@@ -815,11 +957,11 @@ fn empty_text(
         NO_VOTES.to_string()
     } else if !search.is_empty() {
         format!("No votes match \"{search}\"")
-    } else if only_on_sale {
+    } else if filtered {
         match filter {
-            Filter::Bets => "No Bets on sale".to_string(),
-            Filter::All => "No votes on sale".to_string(),
-            Filter::Kind(_) => format!("No {} votes on sale", filter_label(filter)),
+            Filter::Bets => "No Bets match the filters".to_string(),
+            Filter::All => "No votes match the filters".to_string(),
+            Filter::Kind(_) => format!("No {} votes match the filters", filter_label(filter)),
         }
     } else if owned_hidden {
         match filter {
@@ -864,7 +1006,41 @@ fn stopped_by_popup(message: &Message) -> bool {
             | Message::Played
             | Message::Open(_)
             | Message::FocusSearch
+            | Message::ToggleFilters
     )
+}
+
+fn acts_on_the_page(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::Previous
+            | Message::Next
+            | Message::Vote(_)
+            | Message::Played
+            | Message::Open(_)
+            | Message::FocusSearch
+            | Message::Showcase(
+                showcase::Message::NextScreenshot
+                    | showcase::Message::PreviousScreenshot
+                    | showcase::Message::ToggleAbout
+                    | showcase::Message::ToggleTags
+                    | showcase::Message::ToggleReviews
+                    | showcase::Message::ScrollUp
+                    | showcase::Message::ScrollDown
+            )
+    )
+}
+
+// A field of the filters keeps Esc for itself, so Esc is heard here whatever took it.
+fn escape_message(event: Event, _: event::Status, _: iced::window::Id) -> Option<Message> {
+    matches!(
+        event,
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: Key::Named(Named::Escape),
+            ..
+        })
+    )
+    .then_some(Message::CloseFilters)
 }
 
 fn key_message(event: keyboard::Event) -> Option<Message> {
@@ -887,6 +1063,9 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         Key::Named(Named::ArrowRight) => Some(Message::Showcase(showcase::Message::NextScreenshot)),
         Key::Named(Named::ArrowLeft) => {
             Some(Message::Showcase(showcase::Message::PreviousScreenshot))
+        }
+        Key::Character(character) if character.eq_ignore_ascii_case("f") => {
+            Some(Message::ToggleFilters)
         }
         Key::Character(character) if character.eq_ignore_ascii_case("d") => {
             Some(Message::Showcase(showcase::Message::ToggleAbout))
@@ -920,14 +1099,31 @@ mod tests {
 
     use super::*;
 
-    const ON_SALE: Shown = Shown {
-        on_sale: true,
-        hide_owned: false,
-    };
     const HIDE_OWNED: Shown = Shown {
-        on_sale: false,
         hide_owned: true,
+        passing: None,
     };
+
+    fn passing_only(passing: &BTreeSet<AppId>) -> Shown<'_> {
+        Shown {
+            hide_owned: false,
+            passing: Some(passing),
+        }
+    }
+
+    fn set(numbers: &[u32]) -> BTreeSet<AppId> {
+        numbers.iter().copied().map(AppId).collect()
+    }
+
+    fn votes_panel(filters: &FilterOptions) -> Panel {
+        Panel::new(
+            vec!["Roguelike".to_string()],
+            &FilterOptions::default(),
+            "€".to_string(),
+            &search_options(filters),
+        )
+        .without_bets()
+    }
 
     fn voted(id: u32, name: &str, kind: VoteKind, date: &str, bet: bool) -> VotedGame {
         VotedGame {
@@ -1215,36 +1411,154 @@ mod tests {
     }
 
     #[test]
-    fn on_sale_keeps_only_the_discounted_games() {
+    fn the_filters_keep_only_the_passing_games_of_the_chip() {
         let games = games();
+        let passing = set(&[1, 3, 5]);
+        let shown = passing_only(&passing);
 
-        let rows = rows(
-            &games,
-            Filter::Kind(VoteKind::WouldTry),
-            Order::Newest,
-            ON_SALE,
-            "",
-            None,
+        assert_eq!(
+            rows(
+                &games,
+                Filter::Kind(VoteKind::WouldTry),
+                Order::Newest,
+                shown,
+                "",
+                None
+            ),
+            ids(&[1])
         );
-
-        assert_eq!(rows, ids(&[1]));
-        assert_eq!(count(&games, Filter::Kind(VoteKind::WouldTry), ON_SALE), 1);
-        assert_eq!(count(&games, Filter::All, ON_SALE), 2);
+        assert_eq!(
+            rows(&games, Filter::Bets, Order::Newest, shown, "", None),
+            ids(&[5])
+        );
+        assert_eq!(count(&games, Filter::Kind(VoteKind::WouldTry), shown), 1);
+        assert_eq!(count(&games, Filter::All, shown), 3);
     }
 
     #[test]
-    fn says_when_nothing_is_on_sale() {
+    fn the_filters_keep_the_order() {
+        let passing = set(&[1, 2, 3]);
+
+        assert_eq!(
+            rows(
+                &games(),
+                Filter::All,
+                Order::Price,
+                passing_only(&passing),
+                "",
+                None
+            ),
+            ids(&[1, 3, 2])
+        );
+    }
+
+    #[test]
+    fn the_search_ignores_the_filters() {
+        let passing = set(&[1]);
+
+        let rows = rows(
+            &games(),
+            Filter::Kind(VoteKind::WouldTry),
+            Order::Newest,
+            passing_only(&passing),
+            "north",
+            None,
+        );
+
+        assert_eq!(rows, ids(&[5]));
+    }
+
+    #[test]
+    fn no_chosen_filter_lets_every_game_through() {
+        let shown = Shown::default();
+
+        assert_eq!(count(&games(), Filter::All, shown), 5);
+    }
+
+    #[test]
+    fn says_when_no_vote_matches_the_filters() {
         assert_eq!(
             empty_text(false, Filter::Kind(VoteKind::WouldTry), true, false, ""),
-            "No Would try votes on sale"
+            "No Would try votes match the filters"
+        );
+        assert_eq!(
+            empty_text(false, Filter::Kind(VoteKind::NotForMe), true, false, ""),
+            "No Not for me votes match the filters"
         );
         assert_eq!(
             empty_text(false, Filter::Bets, true, false, ""),
-            "No Bets on sale"
+            "No Bets match the filters"
         );
         assert_eq!(
             empty_text(false, Filter::All, true, false, ""),
-            "No votes on sale"
+            "No votes match the filters"
+        );
+        assert_eq!(
+            empty_text(false, Filter::All, true, false, "hades"),
+            "No votes match \"hades\""
+        );
+    }
+
+    #[test]
+    fn the_panel_of_votes_has_no_bets_only_and_starts_from_no_limit() {
+        let mut panel = votes_panel(&FilterOptions::default());
+        let none = search_options(&FilterOptions::default());
+
+        panel.update(&none, filters::Message::OnlyBets(true));
+        panel.update(&none, filters::Message::OnSale(true));
+        let Action::Search(changed) = panel.update(&none, filters::Message::Done) else {
+            panic!("expected new filters");
+        };
+
+        assert!(!changed.only_bets);
+        assert_eq!(
+            changed.filters,
+            FilterOptions {
+                only_discounted: true,
+                ..FilterOptions::default()
+            }
+        );
+        assert_eq!(changed.filters.without_early_access, None);
+    }
+
+    #[test]
+    fn cancel_leaves_the_filters_as_they_were() {
+        let filters = FilterOptions {
+            max_price_cents: Some(2000),
+            ..FilterOptions::default()
+        };
+        let options = search_options(&filters);
+        let mut panel = votes_panel(&filters);
+
+        panel.update(&options, filters::Message::OnSale(true));
+        panel.update(&options, filters::Message::Reset);
+        assert_eq!(
+            panel.update(&options, filters::Message::Cancel),
+            Action::Close
+        );
+
+        panel.show(&options);
+        assert_eq!(
+            panel.update(&options, filters::Message::Done),
+            Action::Close
+        );
+    }
+
+    #[test]
+    fn the_summary_of_the_filters_shows_only_with_a_filter() {
+        let currency = Currency::italian();
+        let filters = FilterOptions {
+            only_discounted: true,
+            max_price_cents: Some(2000),
+            min_positive_percent: Some(85),
+            tags: vec!["Roguelike".to_string()],
+            ..FilterOptions::default()
+        };
+
+        assert_eq!(filters_summary(&FilterOptions::default(), &currency), None);
+        assert_eq!(
+            filters_summary(&filters, &currency).as_deref(),
+            Some("On sale · ≤ 20,00€ · ≥ 85% positive · Tags: Roguelike")
         );
     }
 
@@ -1315,14 +1629,15 @@ mod tests {
     }
 
     #[test]
-    fn hide_owned_and_on_sale_work_together() {
+    fn hide_owned_and_the_filters_work_together() {
         let games = with_owned();
+        let passing = set(&[1, 3]);
         let both = Shown {
-            on_sale: true,
             hide_owned: true,
+            passing: Some(&passing),
         };
 
-        // Subnautica is on sale but owned, GRIME is on sale and not owned.
+        // Subnautica passes the filters but is owned, GRIME passes and is not owned.
         assert_eq!(
             rows(&games, Filter::All, Order::Newest, both, "", None),
             ids(&[3])
@@ -1352,7 +1667,7 @@ mod tests {
         );
         assert_eq!(
             empty_text(false, would_try, true, true, ""),
-            "No Would try votes on sale"
+            "No Would try votes match the filters"
         );
     }
 
@@ -1490,8 +1805,56 @@ mod tests {
         ))));
         assert!(stopped_by_popup(&Message::Open(Link::Hltb)));
         assert!(stopped_by_popup(&Message::FocusSearch));
+        assert!(stopped_by_popup(&Message::ToggleFilters));
         assert!(!stopped_by_popup(&Message::Showcase(
             showcase::Message::ToggleTags
+        )));
+    }
+
+    #[test]
+    fn opens_and_closes_the_filters_with_f() {
+        for key in ["f", "F"] {
+            assert!(matches!(
+                key_message(pressed(Key::Character(key.into()))),
+                Some(Message::ToggleFilters)
+            ));
+        }
+    }
+
+    #[test]
+    fn esc_closes_the_filters_even_from_inside_a_field() {
+        let escape = Event::Keyboard(pressed(Key::Named(Named::Escape)));
+        let other = Event::Keyboard(pressed(Key::Character("1".into())));
+
+        assert!(matches!(
+            escape_message(escape, event::Status::Captured, iced::window::Id::unique()),
+            Some(Message::CloseFilters)
+        ));
+        assert!(
+            escape_message(other, event::Status::Ignored, iced::window::Id::unique()).is_none()
+        );
+    }
+
+    #[test]
+    fn the_open_filters_stop_the_keys_of_the_page() {
+        let number = key_message(pressed(Key::Character("1".into()))).unwrap();
+
+        assert!(acts_on_the_page(&number));
+        for message in [
+            Message::Next,
+            Message::Previous,
+            Message::Played,
+            Message::Open(Link::Steam),
+            Message::FocusSearch,
+            Message::Showcase(showcase::Message::ToggleReviews),
+            Message::Showcase(showcase::Message::NextScreenshot),
+        ] {
+            assert!(acts_on_the_page(&message), "{message:?}");
+        }
+        assert!(!acts_on_the_page(&Message::CloseFilters));
+        assert!(!acts_on_the_page(&Message::ToggleFilters));
+        assert!(!acts_on_the_page(&Message::Showcase(
+            showcase::Message::Close
         )));
     }
 
@@ -1501,7 +1864,6 @@ mod tests {
             key_message(pressed_with(Key::Character("f".into()), Modifiers::CTRL)),
             Some(Message::FocusSearch)
         ));
-        assert!(key_message(pressed(Key::Character("f".into()))).is_none());
     }
 
     fn pressed(key: Key) -> keyboard::Event {
