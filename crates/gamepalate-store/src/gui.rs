@@ -24,14 +24,15 @@ pub struct SavedWindow {
     pub maximized: bool,
 }
 
-/// The chip Votes opens on.
+/// The chip Votes opens on; `all` is no chip chosen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VotesShow {
     #[default]
     WouldTry,
-    NotForMe,
     Bets,
+    NotThisGame,
+    NotMyGenre,
     All,
 }
 
@@ -137,7 +138,7 @@ mod tests {
             }),
             families_played: Some(vec![AppId(220), AppId(730)]),
             votes: VotesSettings {
-                show: VotesShow::NotForMe,
+                show: VotesShow::NotThisGame,
                 order: VotesOrder::BestMatch,
                 hide_owned: false,
                 filters: FilterOptions {
@@ -159,7 +160,7 @@ mod tests {
         assert!(text.contains("theme = \"dark\"\n"));
         assert!(text.contains("[window]\nwidth = 1440\nheight = 900\nmaximized = true\n"));
         assert!(text.contains("families_played = [220, 730]\n"));
-        assert!(text.contains("[votes]\nshow = \"not_for_me\"\norder = \"best_match\"\n"));
+        assert!(text.contains("[votes]\nshow = \"not_this_game\"\norder = \"best_match\"\n"));
     }
 
     #[test]
