@@ -87,6 +87,7 @@ impl Gamepalate {
 
         let store = StoreDetails::new(
             Transport::new(None)?.with_interval(Duration::ZERO),
+            Transport::new(None)?,
             files.config.region,
         );
         let capsules = CapsuleFinder::new(

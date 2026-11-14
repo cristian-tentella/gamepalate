@@ -94,6 +94,8 @@ mod tests {
                 is_early_access: false,
             },
             modes: Vec::new(),
+            deck: Vec::new(),
+            protondb: None,
         })))
     }
 

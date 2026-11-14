@@ -2,6 +2,7 @@ pub mod apps;
 pub mod archive;
 pub mod chain;
 pub mod client;
+pub mod deck;
 pub mod description;
 pub mod details;
 pub mod images;

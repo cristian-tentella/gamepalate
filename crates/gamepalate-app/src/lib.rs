@@ -54,6 +54,7 @@ pub use gamepalate_steam::details::{
 };
 pub use gamepalate_steam::{
     archive::PendingUpdate,
+    deck::{CheckResult, DeckCheck, ProtonDb, ProtonTier},
     description::{Block, Span},
     transport::SteamError,
 };
