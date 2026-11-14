@@ -867,6 +867,7 @@ mod tests {
             price: None,
             reviews: None,
             store_url: String::new(),
+            owned: false,
         }
     }
 
