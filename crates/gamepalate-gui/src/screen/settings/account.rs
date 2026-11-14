@@ -12,6 +12,7 @@ use iced::{
 use super::{Action, Field, Fields, Message, Settings, link, setting};
 use crate::{
     font,
+    format::key_text,
     screen::setup::{
         KEY_DOMAIN_NOTE, PROFILE_PLACEHOLDER, connect_error_text, needs_privacy, note_link,
         steam_id_note,
@@ -134,15 +135,6 @@ fn account_change(
                 .flatten()
                 .map(|steam_id| (Profile::Id(steam_id), Some(key.to_string())))
         }
-    }
-}
-
-fn key_text(key: KeySource) -> &'static str {
-    match key {
-        KeySource::Saved if cfg!(windows) => "Saved in Credential Manager",
-        KeySource::Saved => "Saved in the system keyring",
-        KeySource::Environment => "From STEAM_API_KEY",
-        KeySource::Missing => "Missing",
     }
 }
 
@@ -344,24 +336,6 @@ impl Fields {
 mod tests {
     use super::super::fixtures::*;
     use super::*;
-
-    #[cfg(windows)]
-    #[test]
-    fn the_saved_key_is_in_credential_manager() {
-        assert_eq!(key_text(KeySource::Saved), "Saved in Credential Manager");
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn the_saved_key_is_in_the_system_keyring() {
-        assert_eq!(key_text(KeySource::Saved), "Saved in the system keyring");
-    }
-
-    #[test]
-    fn each_key_source_has_its_text() {
-        assert_eq!(key_text(KeySource::Environment), "From STEAM_API_KEY");
-        assert_eq!(key_text(KeySource::Missing), "Missing");
-    }
 
     #[test]
     fn save_shows_only_when_the_text_is_not_the_saved_one() {
