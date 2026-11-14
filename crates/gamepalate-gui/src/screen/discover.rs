@@ -46,8 +46,11 @@ const CARD_SPACING: f32 = 32.0;
 const INFO_SPACING: f32 = 14.0;
 const TITLE_SPACING: f32 = 12.0;
 const HEADER_SPACING: f32 = 16.0;
+// Between the figures and the small lines about the game.
+const FACTS_SPACING: f32 = 16.0;
 const SIMILAR_SIZE: f32 = 17.0;
-const GROUP_SPACING: f32 = 32.0;
+// Between the parts of the column: what the game is, why it's here, what you can open.
+const GROUP_SPACING: f32 = 24.0;
 const THUMBNAIL_WIDTH: f32 = 144.0;
 const SIMILAR_LINE_HEIGHT: f32 = 1.1;
 const SIMILAR_GAP: f32 = 12.0;
@@ -811,7 +814,13 @@ impl Discover {
                     .map(Message::Showcase),
                 game.bet.then_some(self.bet_every),
             ),
-            column![game::title(&game.name), figures].spacing(TITLE_SPACING),
+            column![column![game::title(&game.name), figures].spacing(TITLE_SPACING),]
+                .push(
+                    self.showcase
+                        .facts(game.id, &game.tags)
+                        .map(|facts| facts.map(Message::Showcase)),
+                )
+                .spacing(FACTS_SPACING),
         ]
         .spacing(HEADER_SPACING)
     }
@@ -839,8 +848,8 @@ impl Discover {
             )
             .push(
                 self.showcase
-                    .facts(game.id, &game.tags)
-                    .map(|facts| facts.map(Message::Showcase)),
+                    .more(game.id)
+                    .map(|more| more.map(Message::Showcase)),
             )
             .push(waiting)
             .spacing(GROUP_SPACING)
@@ -907,7 +916,7 @@ impl Discover {
                     .and_then(format::known_from)
                     .map(|line| text(line).size(font::NOTE_SIZE).style(style::muted)),
             )
-            .spacing(2);
+            .spacing(showcase::LINE_SPACING);
 
             let similar = row![]
                 .push(game.similar_to_id.map(|id| {

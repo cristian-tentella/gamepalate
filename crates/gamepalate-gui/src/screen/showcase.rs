@@ -57,6 +57,10 @@ const SHEET_INSET: f32 = 40.0;
 const SHEET_MARGIN: f32 = 32.0;
 // About a space at the size of the notes, between two tags.
 const TAG_SPACING: f32 = 4.0;
+// Between two lines of small text that go together, and the lines of the tags when they wrap.
+pub const LINE_SPACING: f32 = 4.0;
+// Between the keys of the sheets and the features.
+const MORE_SPACING: f32 = 12.0;
 const CLOSE_SIZE: f32 = 32.0;
 const TITLE_SIZE: f32 = 16.0;
 const CLOSE: char = '\u{E5CD}';
@@ -452,13 +456,19 @@ impl Showcase {
         ))
     }
 
+    /// The year, the developers and the tags, small, as a few lines under the name.
     pub fn facts<'a>(&'a self, id: AppId, tags: &[String]) -> Option<Element<'a, Message>> {
+        self.pages.details(id).map(|details| facts(details, tags))
+    }
+
+    /// The keys of the sheets as one button, then the features.
+    pub fn more(&self, id: AppId) -> Option<Element<'_, Message>> {
         let open = self.features_open;
         let reviews = self.has_reviews && self.shown == Some(id);
 
         self.pages
             .details(id)
-            .map(|details| facts(details, tags, open, reviews))
+            .map(|details| more(details, open, reviews))
     }
 
     fn load_details(&mut self, upcoming: &[AppId], nearby: &[AppId]) -> Task<Message> {
@@ -496,12 +506,7 @@ impl Showcase {
     }
 }
 
-fn facts<'a>(
-    details: &'a GameDetails,
-    tags: &[String],
-    open: bool,
-    reviews: bool,
-) -> Element<'a, Message> {
+fn facts<'a>(details: &'a GameDetails, tags: &[String]) -> Element<'a, Message> {
     let store = &details.store;
     let byline = format::byline(
         format::year(store.release_date),
@@ -513,16 +518,6 @@ fn facts<'a>(
             .size(font::NOTE_SIZE)
             .style(style::accent)
     });
-    let sheets = game::key_group(
-        [
-            Some(("D", "About this game", Some(Message::ToggleAbout))),
-            reviews.then_some(("R", "Reviews", Some(Message::ToggleReviews))),
-            Some(("T", "All tags", Some(Message::ToggleTags))),
-        ]
-        .into_iter()
-        .flatten()
-        .collect(),
-    );
     // One piece per tag, so a long line breaks between two tags and never inside one.
     let tags = (!tags.is_empty()).then(|| {
         let last = tags.len() - 1;
@@ -537,11 +532,32 @@ fn facts<'a>(
             }))
             .spacing(TAG_SPACING)
             .wrap()
-            .vertical_spacing(2),
+            .vertical_spacing(LINE_SPACING),
         )
         .on_press(Message::ToggleTags)
         .interaction(mouse::Interaction::Pointer)
     });
+
+    column![]
+        .push(byline)
+        .push(early_access)
+        .push(tags)
+        .spacing(LINE_SPACING)
+        .into()
+}
+
+fn more(details: &GameDetails, open: bool, reviews: bool) -> Element<'_, Message> {
+    let store = &details.store;
+    let sheets = game::key_group(
+        [
+            Some(("D", "About this game", Some(Message::ToggleAbout))),
+            reviews.then_some(("R", "Reviews", Some(Message::ToggleReviews))),
+            Some(("T", "All tags", Some(Message::ToggleTags))),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+    );
     let features = format::features(store.steam_deck, &details.modes, store.controller);
     let menu = (!features.is_empty()).then(|| {
         let header = button(
@@ -572,13 +588,7 @@ fn facts<'a>(
         column![header].push(chips).spacing(8)
     });
 
-    column![sheets]
-        .push(byline)
-        .push(early_access)
-        .push(tags)
-        .push(menu)
-        .spacing(8)
-        .into()
+    column![sheets].push(menu).spacing(MORE_SPACING).into()
 }
 
 pub(super) fn scroll_sheet<M: 'static>(y: f32) -> Task<M> {

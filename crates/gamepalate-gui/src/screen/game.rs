@@ -52,7 +52,8 @@ const KEYCAP_SIZE: f32 = 18.0;
 const KEYCAP_PADDING: f32 = 5.0;
 const KEY_SPACING: f32 = 6.0;
 const KEY_GROUP_HEIGHT: f32 = 30.0;
-const KEY_GROUP_INSET: f32 = 10.0;
+const KEY_GROUP_INSET: f32 = 12.0;
+const KEY_GROUP_SPACING: f32 = 8.0;
 const TITLE_LINE_HEIGHT: f32 = 1.1;
 const BET_INSET: f32 = 8.0;
 const BADGE_PADDING: f32 = 2.0;
@@ -332,7 +333,7 @@ pub fn key_group<'a, Message: Clone + 'a>(
                 .size(font::NOTE_SIZE)
                 .wrapping(text::Wrapping::None)
         ]
-        .spacing(KEY_SPACING)
+        .spacing(KEY_GROUP_SPACING)
         .align_y(Center);
         group = group.push(
             button(container(content).center_y(Fill))
