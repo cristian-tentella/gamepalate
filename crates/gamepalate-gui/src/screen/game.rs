@@ -51,6 +51,8 @@ pub const ACTION_SPACING: f32 = 16.0;
 const KEYCAP_SIZE: f32 = 18.0;
 const KEYCAP_PADDING: f32 = 5.0;
 const KEY_SPACING: f32 = 6.0;
+const KEY_GROUP_HEIGHT: f32 = 30.0;
+const KEY_GROUP_INSET: f32 = 10.0;
 const TITLE_LINE_HEIGHT: f32 = 1.1;
 const BET_INSET: f32 = 8.0;
 const BADGE_PADDING: f32 = 2.0;
@@ -314,6 +316,49 @@ pub fn key_button<'a, Message: Clone + 'a>(
     .into()
 }
 
+/// Two or more keyed buttons as one segmented group, like the verdicts but smaller.
+pub fn key_group<'a, Message: Clone + 'a>(
+    keys: Vec<(&'a str, &'a str, Option<Message>)>,
+) -> Element<'a, Message> {
+    let count = keys.len();
+    let mut group = row![].height(Fill);
+    for (index, (key, label, on_press)) in keys.into_iter().enumerate() {
+        if index > 0 {
+            group = group.push(rule::vertical(1).style(style::vote_seam));
+        }
+        let content = row![
+            keycap(key),
+            text(label)
+                .size(font::NOTE_SIZE)
+                .wrapping(text::Wrapping::None)
+        ]
+        .spacing(KEY_SPACING)
+        .align_y(Center);
+        group = group.push(
+            button(container(content).center_y(Fill))
+                .height(Fill)
+                .padding(padding::left(KEY_GROUP_INSET).right(KEY_GROUP_INSET))
+                .style(style::vote(false, segment_at(index, count)))
+                .on_press_maybe(on_press),
+        );
+    }
+
+    container(group)
+        .height(KEY_GROUP_HEIGHT)
+        .padding(1)
+        .style(style::vote_group)
+        .into()
+}
+
+// Where the segment `index` of `count` sits, for a group of two or more.
+fn segment_at(index: usize, count: usize) -> style::Segment {
+    match index {
+        0 => style::Segment::First,
+        _ if index + 1 == count => style::Segment::Last,
+        _ => style::Segment::Middle,
+    }
+}
+
 pub fn moves<'a, Message: Clone + 'a>(
     later: Option<Message>,
     back: Option<Message>,
@@ -471,6 +516,25 @@ fn body_layout(size: Size, max_shot_width: f32) -> (bool, f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_key_group_rounds_only_its_outer_ends() {
+        let segments = |count| {
+            (0..count)
+                .map(|index| segment_at(index, count))
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(segments(2), [style::Segment::First, style::Segment::Last]);
+        assert_eq!(
+            segments(3),
+            [
+                style::Segment::First,
+                style::Segment::Middle,
+                style::Segment::Last
+            ]
+        );
+    }
 
     #[test]
     fn a_wide_room_puts_the_whole_column_beside_the_screenshots() {

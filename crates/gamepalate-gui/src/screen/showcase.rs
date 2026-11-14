@@ -55,6 +55,8 @@ const MEASURE: f32 = 680.0;
 const BODY_SIZE: f32 = 16.0;
 const SHEET_INSET: f32 = 40.0;
 const SHEET_MARGIN: f32 = 32.0;
+// About a space at the size of the notes, between two tags.
+const TAG_SPACING: f32 = 4.0;
 const CLOSE_SIZE: f32 = 32.0;
 const TITLE_SIZE: f32 = 16.0;
 const CLOSE: char = '\u{E5CD}';
@@ -511,41 +513,35 @@ fn facts<'a>(
             .size(font::NOTE_SIZE)
             .style(style::accent)
     });
-    let about = row![game::key_button(
-        "D",
-        "About this game",
-        font::NOTE_SIZE,
-        Some(Message::ToggleAbout),
-    )]
-    .push(reviews.then(|| {
-        game::key_button(
-            "R",
-            "Reviews",
-            font::NOTE_SIZE,
-            Some(Message::ToggleReviews),
-        )
-    }))
-    .spacing(game::ACTION_SPACING)
-    .align_y(Center);
-    let used = (!tags.is_empty()).then(|| {
+    let sheets = game::key_group(
+        [
+            Some(("D", "About this game", Some(Message::ToggleAbout))),
+            reviews.then_some(("R", "Reviews", Some(Message::ToggleReviews))),
+            Some(("T", "All tags", Some(Message::ToggleTags))),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+    );
+    // One piece per tag, so a long line breaks between two tags and never inside one.
+    let tags = (!tags.is_empty()).then(|| {
+        let last = tags.len() - 1;
         mouse_area(
-            text(tags.join(" · "))
-                .size(font::NOTE_SIZE)
-                .style(style::muted),
+            row(tags.iter().enumerate().map(|(index, tag)| {
+                let piece = if index == last {
+                    tag.clone()
+                } else {
+                    format!("{tag} ·")
+                };
+                text(piece).size(font::NOTE_SIZE).style(style::muted).into()
+            }))
+            .spacing(TAG_SPACING)
+            .wrap()
+            .vertical_spacing(2),
         )
         .on_press(Message::ToggleTags)
         .interaction(mouse::Interaction::Pointer)
     });
-    let tags = row![]
-        .push(used)
-        .push(game::key_button(
-            "T",
-            "All tags",
-            font::NOTE_SIZE,
-            Some(Message::ToggleTags),
-        ))
-        .spacing(game::ACTION_SPACING)
-        .align_y(Center);
     let features = format::features(store.steam_deck, &details.modes, store.controller);
     let menu = (!features.is_empty()).then(|| {
         let header = button(
@@ -576,7 +572,7 @@ fn facts<'a>(
         column![header].push(chips).spacing(8)
     });
 
-    column![about]
+    column![sheets]
         .push(byline)
         .push(early_access)
         .push(tags)
