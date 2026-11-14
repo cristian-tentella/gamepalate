@@ -32,6 +32,19 @@ const NOISE_TAGS: [TagId; 17] = [
     TagId(7481),  // Controller
 ];
 
+// Pairs where the short name is inside the long one but says something else.
+const NOT_REPEATED: [(TagId, TagId); 9] = [
+    (TagId(4202), TagId(9271)),   // Trading, Trading Card Game
+    (TagId(1621), TagId(8253)),   // Music, Music-Based Procedural Generation
+    (TagId(1621), TagId(337964)), // Music, Rock Music
+    (TagId(1621), TagId(61357)),  // Music, Electronic Music
+    (TagId(1621), TagId(189941)), // Music, Instrumental Music
+    (TagId(12472), TagId(6276)),  // Management, Inventory Management
+    (TagId(12472), TagId(16689)), // Management, Time Management
+    (TagId(12472), TagId(8945)),  // Management, Resource Management
+    (TagId(1643), TagId(7332)),   // Building, Base Building
+];
+
 const SPECIFIC_TAGS: usize = 4;
 
 pub fn specific_tags(game: &Game, catalog: &Catalog) -> Vec<String> {
@@ -44,7 +57,9 @@ pub fn specific_tags(game: &Game, catalog: &Catalog) -> Vec<String> {
         .collect()
 }
 
-// The tags that say what the game is, whatever the profile.
+// The tags that say what the game is, whatever the profile. A longer tag
+// takes the place of the shorter ones it repeats, like Turn-Based Combat
+// and Turn-Based.
 pub fn specific_tag_ids(game: &Game, catalog: &Catalog) -> Vec<TagId> {
     let mut tags: Vec<_> = tf_idf_vector(&game.tags, &catalog.idf)
         .into_iter()
@@ -52,10 +67,54 @@ pub fn specific_tag_ids(game: &Game, catalog: &Catalog) -> Vec<TagId> {
         .collect();
     tags.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
 
-    tags.into_iter()
-        .take(SPECIFIC_TAGS)
-        .map(|(id, _)| id)
-        .collect()
+    let mut specific: Vec<TagId> = Vec::new();
+    for (id, _) in tags {
+        if specific.len() == SPECIFIC_TAGS {
+            break;
+        }
+        if specific.iter().any(|&chosen| repeats(chosen, id, catalog)) {
+            continue;
+        }
+        match specific
+            .iter()
+            .position(|&chosen| repeats(id, chosen, catalog))
+        {
+            Some(first) => {
+                let rest = specific.split_off(first);
+                specific.push(id);
+                specific.extend(
+                    rest.into_iter()
+                        .filter(|&chosen| !repeats(id, chosen, catalog)),
+                );
+            }
+            None => specific.push(id),
+        }
+    }
+
+    specific
+}
+
+// Whether the name of the short tag is all inside the long one, in whole words.
+fn repeats(long: TagId, short: TagId, catalog: &Catalog) -> bool {
+    let (Some(long_name), Some(short_name)) = (catalog.tags.get(&long), catalog.tags.get(&short))
+    else {
+        return false;
+    };
+    let words = |name: &str| -> Vec<String> {
+        name.to_lowercase()
+            .replace('-', " ")
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
+    };
+    let (long_words, short_words) = (words(&long_name.english), words(&short_name.english));
+
+    !NOT_REPEATED.contains(&(short, long))
+        && !short_words.is_empty()
+        && short_words.len() < long_words.len()
+        && long_words
+            .windows(short_words.len())
+            .any(|window| window == short_words.as_slice())
 }
 
 pub fn top_tag_ids(game: &Game, profile: &TagVector, catalog: &Catalog) -> Vec<TagId> {
@@ -457,6 +516,104 @@ mod tests {
     #[test]
     fn a_game_without_tags_gets_none() {
         assert!(specific(&[]).is_empty());
+    }
+
+    fn specific_named(tags: &[(u32, &str)]) -> Vec<u32> {
+        let game = tagged_game(&tags.iter().map(|&(id, _)| (id, 1.0)).collect::<Vec<_>>());
+        let names = tags
+            .iter()
+            .map(|&(id, name)| {
+                (
+                    TagId(id),
+                    TagName {
+                        english: name.to_string(),
+                        italian: name.to_string(),
+                    },
+                )
+            })
+            .collect();
+
+        specific_tag_ids(&game, &tag_catalog(&game, names))
+            .into_iter()
+            .map(|id| id.0)
+            .collect()
+    }
+
+    #[test]
+    fn a_longer_tag_takes_the_place_of_the_shorter_one_it_repeats() {
+        assert_eq!(
+            specific_named(&[
+                (5, "Turn-Based"),
+                (4, "Story Rich"),
+                (3, "Turn-Based Combat"),
+                (2, "JRPG"),
+                (1, "Fantasy"),
+            ]),
+            vec![3, 4, 2, 1]
+        );
+    }
+
+    #[test]
+    fn a_shorter_tag_after_the_longer_one_is_left_out_whatever_case_and_hyphens() {
+        assert_eq!(
+            specific_named(&[
+                (5, "Online Co-Op"),
+                (4, "co op"),
+                (3, "Zombies"),
+                (2, "FPS"),
+                (1, "Multiplayer"),
+            ]),
+            vec![5, 3, 2, 1]
+        );
+    }
+
+    #[test]
+    fn a_longer_tag_can_take_the_place_of_two_shorter_ones() {
+        assert_eq!(
+            specific_named(&[
+                (6, "Open World"),
+                (5, "Survival"),
+                (4, "Open World Survival Craft"),
+                (3, "Crafting"),
+                (2, "Sandbox"),
+                (1, "Base Building"),
+            ]),
+            vec![4, 3, 2, 1]
+        );
+    }
+
+    #[test]
+    fn a_shorter_tag_stays_when_the_longer_one_is_not_among_the_four() {
+        assert_eq!(
+            specific_named(&[
+                (5, "Horror"),
+                (4, "Zombies"),
+                (3, "Atmospheric"),
+                (2, "First-Person"),
+                (1, "Survival Horror"),
+            ]),
+            vec![5, 4, 3, 2]
+        );
+    }
+
+    #[test]
+    fn only_whole_words_repeat_a_tag() {
+        assert_eq!(
+            specific_named(&[(2, "War"), (1, "Warhammer 40K")]),
+            vec![2, 1]
+        );
+    }
+
+    #[test]
+    fn the_pairs_that_say_something_else_both_stay() {
+        for &(short, long) in &NOT_REPEATED {
+            let shown = specific_named(&[(short.0, "Music"), (long.0, "Rock Music")]);
+            assert_eq!(shown.len(), 2);
+        }
+        assert_eq!(
+            specific_named(&[(7332, "Base Building"), (1643, "Building")]),
+            vec![7332, 1643]
+        );
     }
 
     #[test]
