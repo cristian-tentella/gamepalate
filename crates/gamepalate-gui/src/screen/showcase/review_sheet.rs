@@ -27,8 +27,6 @@ const BULLET: &str = "•";
 const QUOTE_PADDING: [u16; 2] = [10, 14];
 const LOAD_AHEAD: f32 = 600.0;
 const FILTER_SPACING: f32 = 16.0;
-const THUMB_UP: char = '\u{E8DC}';
-const THUMB_DOWN: char = '\u{E8DB}';
 const THUMB_SIZE: f32 = 11.0;
 /// About seven lines of the sheet: longer reviews are cut there until Read more.
 const SHORT_CHARS: usize = 600;
@@ -213,7 +211,11 @@ fn spoiler<'a>(review: &Review, index: usize) -> Element<'a, Message> {
 }
 
 fn thumb(recommended: bool) -> char {
-    if recommended { THUMB_UP } else { THUMB_DOWN }
+    if recommended {
+        font::THUMB_UP
+    } else {
+        font::THUMB_DOWN
+    }
 }
 
 fn heading(review: &Review, now: Timestamp) -> Element<'_, Message> {
@@ -538,8 +540,8 @@ mod tests {
 
     #[test]
     fn the_thumb_follows_the_verdict() {
-        assert_eq!(thumb(true), THUMB_UP);
-        assert_eq!(thumb(false), THUMB_DOWN);
+        assert_eq!(thumb(true), font::THUMB_UP);
+        assert_eq!(thumb(false), font::THUMB_DOWN);
     }
 
     #[test]

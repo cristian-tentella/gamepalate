@@ -6,7 +6,8 @@ use std::{
 };
 
 use gamepalate_app::{
-    AppId, Currency, FilterOptions, Gamepalate, SearchOptions, Vote, VoteKind, VotedGame,
+    AppId, Currency, FilterOptions, Gamepalate, Price, SearchOptions, Vote, VoteKind, VotedGame,
+    VotesOrder, VotesSettings, VotesShow,
 };
 use iced::{
     Center, Element, Event, Fill, Size, Subscription, Task, event,
@@ -51,12 +52,16 @@ const LIST_PADDING: f32 = 12.0;
 const SUMMARY_CHARS: usize = 46;
 const ROW_HEIGHT: f32 = 32.0;
 const SCROLLBAR_GAP: f32 = 12.0;
+const SIGN_SIZE: f32 = 11.0;
+const SIGN_WIDTH: f32 = 18.0;
 const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–4.";
 
 pub struct Votes {
     gamepalate: Arc<Gamepalate>,
     games: BTreeMap<AppId, VotedGame>,
     filter: Filter,
+    // The chip saved in gui.toml: it changes only when a chip is chosen here.
+    chip: VotesShow,
     order: Order,
     hide_owned: bool,
     filters: FilterOptions,
@@ -112,6 +117,7 @@ pub enum Message {
     PlayedSaved(AppId, String, Result<bool, String>),
     Undo,
     Undone(Result<(), String>),
+    SettingsSaved(Result<(), String>),
     Matched(u64, HashMap<AppId, f64>),
     Open(Link),
     HideToast(u64),
@@ -120,18 +126,30 @@ pub enum Message {
 
 impl Votes {
     pub fn new(gamepalate: &Arc<Gamepalate>) -> (Votes, Task<Message>) {
-        Votes::filtered(gamepalate, Filter::Kind(VoteKind::WouldTry))
+        Votes::opened(gamepalate, None)
     }
 
+    /// Votes on a chip of its own, without saving it.
     pub fn filtered(gamepalate: &Arc<Gamepalate>, filter: Filter) -> (Votes, Task<Message>) {
+        Votes::opened(gamepalate, Some(filter))
+    }
+
+    fn opened(gamepalate: &Arc<Gamepalate>, chosen: Option<Filter>) -> (Votes, Task<Message>) {
+        let saved = gamepalate.gui_settings().votes;
+        let (filter, chip) = opening_chip(&saved, chosen);
+        let (filters, passing, error) = match passing(gamepalate, &saved.filters) {
+            Ok(passing) => (saved.filters, passing, None),
+            Err(error) => (FilterOptions::default(), None, Some(error)),
+        };
         let mut votes = Votes {
             gamepalate: Arc::clone(gamepalate),
             games: by_id(gamepalate.voted_games()),
             filter,
-            order: Order::Newest,
-            hide_owned: true,
-            filters: FilterOptions::default(),
-            passing: None,
+            chip,
+            order: saved.order.into(),
+            hide_owned: saved.hide_owned,
+            filters,
+            passing,
             panel: Panel::new(
                 gamepalate.tag_names(),
                 &FilterOptions::default(),
@@ -152,7 +170,8 @@ impl Votes {
             showcase: Showcase::new(gamepalate),
         };
         votes.rows = votes.shown_rows();
-        let task = Task::batch([votes.load(), votes.find_matches()]);
+        let toast = error.map_or_else(Task::none, |error| votes.show_toast(error));
+        let task = Task::batch([votes.load(), votes.find_matches(), toast]);
 
         (votes, task)
     }
@@ -198,16 +217,17 @@ impl Votes {
         match message {
             Message::Filter(filter) => {
                 self.filter = filter;
+                self.chip = filter.into();
                 self.search.clear();
-                return self.refresh();
+                return Task::batch([self.refresh(), self.save_settings()]);
             }
             Message::Order(order) => {
                 self.order = order;
-                return self.restart();
+                return Task::batch([self.restart(), self.save_settings()]);
             }
             Message::HideOwned(hide_owned) => {
                 self.hide_owned = hide_owned;
-                return self.refresh();
+                return Task::batch([self.refresh(), self.save_settings()]);
             }
             Message::Filters(message) => return self.change_filters(message),
             Message::ToggleFilters if self.panel_open => self.panel_open = false,
@@ -219,7 +239,7 @@ impl Votes {
             Message::ResetFilters => {
                 self.filters = FilterOptions::default();
                 self.passing = None;
-                return self.refresh();
+                return Task::batch([self.refresh(), self.save_settings()]);
             }
             Message::ToolsMeasured(size) => self.tools_height = size.height,
             Message::Search(search) => {
@@ -300,6 +320,8 @@ impl Votes {
                 return Task::batch([toast, self.refresh()]);
             }
             Message::Undone(Err(error)) => return self.show_toast(error),
+            Message::SettingsSaved(Ok(())) => {}
+            Message::SettingsSaved(Err(error)) => return self.show_toast(error),
             Message::Matched(matching, matches) => {
                 if matching == self.matching {
                     let first = self.matches.replace(matches).is_none();
@@ -512,31 +534,56 @@ impl Votes {
     }
 
     fn list_row<'a>(&self, index: usize, game: &'a VotedGame) -> Element<'a, Message> {
-        let currency = self.gamepalate.currency();
-        let price = game.price.map(|price| {
-            row![text(format::price(&price, currency)).size(font::NOTE_SIZE)]
-                .push(price.discount.map(|discount| {
-                    text(format::discount(discount.percent))
-                        .size(font::NOTE_SIZE)
-                        .style(style::accent)
-                }))
-                .spacing(6)
+        let note = |line: String| text(line).size(font::NOTE_SIZE).wrapping(Wrapping::None);
+        let sign = vote_sign(self.filter, &game.vote);
+        // A Later keeps the column empty, so its name lines up with the others.
+        let thumb = sign.map(|sign| {
+            let thumb: Element<'a, Message> = match sign.thumb() {
+                Some(thumb) => text(thumb)
+                    .font(font::ICONS)
+                    .size(font::icon(SIGN_SIZE))
+                    .style(style::muted)
+                    .into(),
+                None => space().into(),
+            };
+            container(thumb).width(SIGN_WIDTH)
         });
-
-        button(
-            row![
-                container(
+        let later =
+            (sign == Some(Sign::Later)).then(|| note("Later ·".to_string()).style(style::muted));
+        let name = container(
+            row![]
+                .push(later)
+                .push(
                     text(&game.name)
                         .size(font::BAR_SIZE)
-                        .wrapping(Wrapping::None)
+                        .wrapping(Wrapping::None),
                 )
-                .width(Fill)
-                .clip(true),
-            ]
-            .push(price)
-            .spacing(8)
-            .height(Fill)
-            .align_y(Center),
+                .spacing(4)
+                .align_y(Center),
+        )
+        .width(Fill)
+        .clip(true);
+        let positive = game
+            .reviews
+            .as_ref()
+            .map(|reviews| format::reviews(reviews).0)
+            .filter(|percent| !percent.is_empty())
+            .map(|percent| note(percent).style(style::muted));
+        let price = note(price_text(game.price, self.gamepalate.currency()));
+        let discount = game
+            .price
+            .and_then(|price| price.discount)
+            .map(|discount| note(format::discount(discount.percent)).style(style::accent));
+
+        button(
+            row![]
+                .push(thumb)
+                .push(name)
+                .push(positive)
+                .push(row![price].push(discount).spacing(6))
+                .spacing(8)
+                .height(Fill)
+                .align_y(Center),
         )
         .width(Fill)
         .height(ROW_HEIGHT)
@@ -707,12 +754,31 @@ impl Votes {
                     Ok(passing) => {
                         self.filters = options.filters;
                         self.passing = passing;
-                        self.refresh()
+                        Task::batch([self.refresh(), self.save_settings()])
                     }
                     Err(error) => self.show_toast(error),
                 }
             }
         }
+    }
+
+    fn save_settings(&self) -> Task<Message> {
+        let gamepalate = Arc::clone(&self.gamepalate);
+        let settings = VotesSettings {
+            show: self.chip,
+            order: self.order.into(),
+            hide_owned: self.hide_owned,
+            filters: self.filters.clone(),
+        };
+
+        Task::perform(
+            async move {
+                gamepalate
+                    .change_gui_settings(|gui| gui.votes = settings)
+                    .map_err(|error| sentence(&error.to_string()))
+            },
+            Message::SettingsSaved,
+        )
     }
 
     /// True when Hide owned is the only reason the chip has no games left.
@@ -810,6 +876,90 @@ fn filter_label(filter: Filter) -> &'static str {
         Filter::Kind(kind) => format::vote(kind),
         Filter::Bets => "Bets",
         Filter::All => "All",
+    }
+}
+
+/// The vote beside the name of a row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Sign {
+    Up,
+    Down,
+    Later,
+}
+
+impl Sign {
+    fn thumb(self) -> Option<char> {
+        match self {
+            Sign::Up => Some(font::THUMB_UP),
+            Sign::Down => Some(font::THUMB_DOWN),
+            Sign::Later => None,
+        }
+    }
+}
+
+/// Only the chips that mix the votes show them; in the others the chip says the vote.
+fn vote_sign(filter: Filter, vote: &Vote) -> Option<Sign> {
+    if !matches!(filter, Filter::Bets | Filter::All) {
+        return None;
+    }
+    Some(match vote.kind {
+        VoteKind::WouldTry => Sign::Up,
+        VoteKind::NotForMe => Sign::Down,
+        VoteKind::Later => Sign::Later,
+    })
+}
+
+fn price_text(price: Option<Price>, currency: &Currency) -> String {
+    price.map_or_else(|| "—".to_string(), |price| format::price(&price, currency))
+}
+
+/// The chip shown and the chip saved: a chip chosen from outside is not saved.
+fn opening_chip(saved: &VotesSettings, chosen: Option<Filter>) -> (Filter, VotesShow) {
+    (chosen.unwrap_or(saved.show.into()), saved.show)
+}
+
+impl From<VotesShow> for Filter {
+    fn from(show: VotesShow) -> Filter {
+        match show {
+            VotesShow::WouldTry => Filter::Kind(VoteKind::WouldTry),
+            VotesShow::NotForMe => Filter::Kind(VoteKind::NotForMe),
+            VotesShow::Bets => Filter::Bets,
+            VotesShow::All => Filter::All,
+        }
+    }
+}
+
+impl From<Filter> for VotesShow {
+    fn from(filter: Filter) -> VotesShow {
+        match filter {
+            Filter::Kind(VoteKind::WouldTry) => VotesShow::WouldTry,
+            Filter::Kind(VoteKind::NotForMe) => VotesShow::NotForMe,
+            Filter::Bets => VotesShow::Bets,
+            // The Laters have no chip of their own: they show in All.
+            Filter::Kind(VoteKind::Later) | Filter::All => VotesShow::All,
+        }
+    }
+}
+
+impl From<VotesOrder> for Order {
+    fn from(order: VotesOrder) -> Order {
+        match order {
+            VotesOrder::Newest => Order::Newest,
+            VotesOrder::Price => Order::Price,
+            VotesOrder::Discount => Order::Discount,
+            VotesOrder::BestMatch => Order::BestMatch,
+        }
+    }
+}
+
+impl From<Order> for VotesOrder {
+    fn from(order: Order) -> VotesOrder {
+        match order {
+            Order::Newest => VotesOrder::Newest,
+            Order::Price => VotesOrder::Price,
+            Order::Discount => VotesOrder::Discount,
+            Order::BestMatch => VotesOrder::BestMatch,
+        }
     }
 }
 
@@ -1864,6 +2014,84 @@ mod tests {
             key_message(pressed_with(Key::Character("f".into()), Modifiers::CTRL)),
             Some(Message::FocusSearch)
         ));
+    }
+
+    #[test]
+    fn the_vote_shows_beside_the_name_only_in_all_and_bets() {
+        let would_try = Vote::new(VoteKind::WouldTry, "2026-10-01");
+        let not_this_one = Vote {
+            genre_ok: true,
+            ..Vote::new(VoteKind::NotForMe, "2026-10-01")
+        };
+        let later = Vote::new(VoteKind::Later, "2026-10-01");
+
+        for filter in [Filter::All, Filter::Bets] {
+            assert_eq!(vote_sign(filter, &would_try), Some(Sign::Up));
+            assert_eq!(vote_sign(filter, &not_this_one), Some(Sign::Down));
+            assert_eq!(vote_sign(filter, &later), Some(Sign::Later));
+        }
+        for kind in [VoteKind::WouldTry, VoteKind::NotForMe] {
+            assert_eq!(vote_sign(Filter::Kind(kind), &would_try), None);
+            assert_eq!(vote_sign(Filter::Kind(kind), &later), None);
+        }
+        assert_eq!(Sign::Later.thumb(), None);
+    }
+
+    #[test]
+    fn a_game_without_a_price_shows_a_dash() {
+        let currency = Currency::italian();
+        let game = priced(
+            voted(1, "Subnautica", VoteKind::WouldTry, "2026-10-01", false),
+            2999,
+            None,
+        );
+
+        assert_eq!(price_text(None, &currency), "—");
+        assert_eq!(
+            price_text(game.price, &currency),
+            format::price(&game.price.unwrap(), &currency)
+        );
+    }
+
+    #[test]
+    fn the_chips_and_the_orders_go_to_the_file_and_back() {
+        for filter in FILTERS {
+            assert_eq!(Filter::from(VotesShow::from(filter)), filter);
+        }
+        for order in ORDERS {
+            assert_eq!(Order::from(VotesOrder::from(order)), order);
+        }
+        assert_eq!(
+            VotesShow::from(Filter::Kind(VoteKind::Later)),
+            VotesShow::All
+        );
+    }
+
+    #[test]
+    fn votes_open_on_the_saved_chip() {
+        let saved = VotesSettings {
+            show: VotesShow::Bets,
+            ..VotesSettings::default()
+        };
+
+        assert_eq!(opening_chip(&saved, None), (Filter::Bets, VotesShow::Bets));
+        assert_eq!(
+            opening_chip(&VotesSettings::default(), None),
+            (Filter::Kind(VoteKind::WouldTry), VotesShow::WouldTry)
+        );
+    }
+
+    #[test]
+    fn a_chip_chosen_from_outside_leaves_the_saved_one() {
+        let saved = VotesSettings {
+            show: VotesShow::NotForMe,
+            ..VotesSettings::default()
+        };
+
+        assert_eq!(
+            opening_chip(&saved, Some(Filter::Kind(VoteKind::WouldTry))),
+            (Filter::Kind(VoteKind::WouldTry), VotesShow::NotForMe)
+        );
     }
 
     fn pressed(key: Key) -> keyboard::Event {

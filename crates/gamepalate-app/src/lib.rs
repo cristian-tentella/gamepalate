@@ -62,7 +62,9 @@ pub mod reviews {
 }
 pub use gamepalate_store::config::{ConfigError, ConfigValue};
 pub use gamepalate_store::families_edit::NEW_FILE as NEW_FAMILIES_FILE;
-pub use gamepalate_store::gui::{GuiSettings, SavedWindow, ThemeChoice};
+pub use gamepalate_store::gui::{
+    GuiSettings, SavedWindow, ThemeChoice, VotesOrder, VotesSettings, VotesShow,
+};
 pub use images::{DecodedImage, ImageKind, LoadImageError};
 pub use library::{
     FoundGame, GameCorrection, GameCorrectionError, GameStanding, GameView, LibraryGameView,
