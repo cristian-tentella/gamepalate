@@ -1,8 +1,8 @@
-use std::{fmt, fs, path::PathBuf};
+use std::{fmt, path::Path};
 
 use gamepalate_core::ids::SteamId;
 use gamepalate_steam::{
-    client::{read_persona_name, steam_avatar_file, steam_client_file},
+    client::{read_persona_name, steam_client_file},
     signals::get_player_summary,
     transport::{Fetch, Get, Transport},
 };
@@ -34,36 +34,21 @@ impl fmt::Debug for SteamAccount {
     }
 }
 
-#[derive(Debug, Default)]
-struct ClientFiles {
-    local_config: Option<PathBuf>,
-    avatar: Option<PathBuf>,
-}
-
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Persona {
     name: Option<String>,
     avatar: Option<Vec<u8>>,
 }
 
-impl Persona {
-    fn is_complete(&self) -> bool {
-        self.name.is_some() && self.avatar.is_some()
-    }
-}
-
 pub(crate) async fn steam_account<F: Fetch>(
     steam_id: SteamId,
     images: &ImageCache<F>,
 ) -> SteamAccount {
-    let client = ClientFiles {
-        local_config: steam_client_file(steam_id),
-        avatar: steam_avatar_file(steam_id),
+    let mut persona = Persona {
+        name: client_name(steam_client_file(steam_id).as_deref()),
+        avatar: None,
     };
-    let mut persona = client_persona(&client);
-    if !persona.is_complete()
-        && let Some(key) = steam_api_key()
-    {
+    if let Some(key) = steam_api_key() {
         match Transport::new(Some(key)) {
             Ok(steam) => persona = with_api(persona, steam_id, &steam, images).await,
             Err(error) => failed("could not reach Steam for the account")(&error),
@@ -79,19 +64,11 @@ pub(crate) async fn steam_account<F: Fetch>(
     }
 }
 
-fn client_persona(client: &ClientFiles) -> Persona {
-    let name = client.local_config.as_deref().and_then(|path| {
-        read_persona_name(path)
-            .inspect_err(failed("could not read the Steam account name"))
-            .ok()
-            .flatten()
-    });
-    let avatar = client.avatar.as_deref().and_then(|path| {
-        fs::read(path)
-            .inspect_err(failed("could not read the Steam account picture"))
-            .ok()
-    });
-    Persona { name, avatar }
+fn client_name(local_config: Option<&Path>) -> Option<String> {
+    read_persona_name(local_config?)
+        .inspect_err(failed("could not read the Steam account name"))
+        .ok()
+        .flatten()
 }
 
 async fn with_api<S: Get, F: Fetch>(
@@ -100,9 +77,6 @@ async fn with_api<S: Get, F: Fetch>(
     steam: &S,
     images: &ImageCache<F>,
 ) -> Persona {
-    if persona.is_complete() {
-        return persona;
-    }
     let Some(profile) = get_player_summary(steam, steam_id)
         .await
         .inspect_err(failed("could not read the Steam account"))
@@ -115,9 +89,7 @@ async fn with_api<S: Get, F: Fetch>(
     if persona.name.is_none() {
         persona.name = profile.name;
     }
-    if persona.avatar.is_none()
-        && let Some(url) = profile.avatar_url
-    {
+    if let Some(url) = profile.avatar_url {
         persona.avatar = images
             .image(&url, ImageKind::Extra)
             .await
@@ -130,7 +102,8 @@ async fn with_api<S: Get, F: Fetch>(
 #[cfg(test)]
 mod tests {
     use std::{
-        path::Path,
+        fs,
+        path::{Path, PathBuf},
         sync::{
             Arc,
             atomic::{AtomicU32, Ordering},
@@ -145,7 +118,6 @@ mod tests {
 
     const ID: SteamId = SteamId(76_561_198_000_000_000);
     const AVATAR_URL: &str = "https://avatars.example.com/abc_full.jpg";
-    const CLIENT_PICTURE: [u8; 3] = [1, 1, 1];
     const API_PICTURE: [u8; 3] = [2, 2, 2];
     const LOCAL_CONFIG: &str =
         r#""UserLocalConfigStore" { "friends" { "PersonaName" "From the client" } }"#;
@@ -231,40 +203,20 @@ mod tests {
         (cache, calls)
     }
 
-    fn client(dir: &Path, name: bool, picture: bool) -> ClientFiles {
+    fn client_name_file(dir: &Path) -> PathBuf {
         let local_config = dir.join("localconfig.vdf");
-        let avatar = dir.join("76561198000000000.png");
         fs::write(&local_config, LOCAL_CONFIG).unwrap();
-        fs::write(&avatar, CLIENT_PICTURE).unwrap();
-        ClientFiles {
-            local_config: name.then_some(local_config),
-            avatar: picture.then_some(avatar),
-        }
+        local_config
     }
 
-    async fn persona(client: &ClientFiles, steam: &FakeSteam, dir: &Path) -> (Persona, u32) {
+    async fn persona(name: Option<&str>, steam: &FakeSteam, dir: &Path) -> (Persona, u32) {
         let (images, downloads) = images(dir);
-        let persona = with_api(client_persona(client), ID, steam, &images).await;
+        let from_client = Persona {
+            name: name.map(str::to_string),
+            avatar: None,
+        };
+        let persona = with_api(from_client, ID, steam, &images).await;
         (persona, downloads.load(Ordering::Relaxed))
-    }
-
-    #[tokio::test]
-    async fn everything_from_the_steam_client_asks_nothing_to_the_api() {
-        let dir = tempfile::tempdir().unwrap();
-        let steam = FakeSteam::new(Answer::Player);
-
-        let (persona, downloads) =
-            persona(&client(dir.path(), true, true), &steam, dir.path()).await;
-
-        assert_eq!(
-            persona,
-            Persona {
-                name: Some("From the client".to_string()),
-                avatar: Some(CLIENT_PICTURE.to_vec()),
-            }
-        );
-        assert_eq!(steam.calls(), 0);
-        assert_eq!(downloads, 0);
     }
 
     #[tokio::test]
@@ -272,8 +224,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let steam = FakeSteam::new(Answer::Player);
 
-        let (persona, downloads) =
-            persona(&client(dir.path(), true, false), &steam, dir.path()).await;
+        let (persona, downloads) = persona(Some("From the client"), &steam, dir.path()).await;
 
         assert_eq!(
             persona,
@@ -287,22 +238,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_picture_from_the_client_and_the_name_from_the_api() {
+    async fn without_a_name_from_the_client_the_api_gives_name_and_picture() {
         let dir = tempfile::tempdir().unwrap();
         let steam = FakeSteam::new(Answer::Player);
 
-        let (persona, downloads) =
-            persona(&client(dir.path(), false, true), &steam, dir.path()).await;
+        let (persona, downloads) = persona(None, &steam, dir.path()).await;
 
         assert_eq!(
             persona,
             Persona {
                 name: Some("From the API".to_string()),
-                avatar: Some(CLIENT_PICTURE.to_vec()),
+                avatar: Some(API_PICTURE.to_vec()),
             }
         );
         assert_eq!(steam.calls(), 1);
-        assert_eq!(downloads, 0);
+        assert_eq!(downloads, 1);
     }
 
     #[tokio::test]
@@ -320,32 +270,35 @@ mod tests {
     }
 
     #[test]
-    fn without_the_steam_client_there_is_nothing() {
-        assert_eq!(client_persona(&ClientFiles::default()), Persona::default());
+    fn the_name_is_read_from_the_client_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = client_name_file(dir.path());
+
+        assert_eq!(client_name(Some(&file)).as_deref(), Some("From the client"));
     }
 
     #[test]
-    fn unreadable_client_files_are_nothing() {
+    fn without_the_steam_client_there_is_no_name() {
+        assert_eq!(client_name(None), None);
+    }
+
+    #[test]
+    fn an_unreadable_client_file_gives_no_name() {
         let dir = tempfile::tempdir().unwrap();
         let broken = dir.path().join("localconfig.vdf");
         fs::write(&broken, "\"UserLocalConfigStore\" {").unwrap();
 
-        let persona = client_persona(&ClientFiles {
-            local_config: Some(broken),
-            avatar: Some(dir.path().join("missing.png")),
-        });
-
-        assert_eq!(persona, Persona::default());
+        assert_eq!(client_name(Some(&broken)), None);
+        assert_eq!(client_name(Some(&dir.path().join("missing.vdf"))), None);
     }
 
     #[tokio::test]
-    async fn an_api_error_or_no_player_leaves_the_missing_pieces_empty() {
+    async fn an_api_error_or_no_player_leaves_no_picture_and_keeps_the_name() {
         for answer in [Answer::Down, Answer::Nobody] {
             let dir = tempfile::tempdir().unwrap();
             let steam = FakeSteam::new(answer);
 
-            let (persona, downloads) =
-                persona(&client(dir.path(), true, false), &steam, dir.path()).await;
+            let (persona, downloads) = persona(Some("From the client"), &steam, dir.path()).await;
 
             assert_eq!(persona.name.as_deref(), Some("From the client"));
             assert_eq!(persona.avatar, None);

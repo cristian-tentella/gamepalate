@@ -35,22 +35,6 @@ pub fn steam_client_file(steam_id: SteamId) -> Option<PathBuf> {
     )
 }
 
-pub fn steam_avatar_file(steam_id: SteamId) -> Option<PathBuf> {
-    let installs = steamlocate::locate_all().ok()?;
-    newest_file(
-        installs
-            .iter()
-            .map(|steam| avatar_path(steam.path(), steam_id)),
-    )
-}
-
-fn avatar_path(steam: &Path, steam_id: SteamId) -> PathBuf {
-    steam
-        .join("config")
-        .join("avatarcache")
-        .join(format!("{}.png", steam_id.0))
-}
-
 fn newest_file(paths: impl Iterator<Item = PathBuf>) -> Option<PathBuf> {
     paths
         .filter_map(|path| {
@@ -304,24 +288,6 @@ mod tests {
             read_persona_name(&dir.path().join("missing.vdf")).unwrap_err(),
             SteamClientError::Io { .. }
         ));
-    }
-
-    #[test]
-    fn the_avatar_is_in_the_config_folder_of_steam() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = avatar_path(dir.path(), SteamId(76_561_198_000_000_000));
-
-        assert_eq!(
-            path,
-            dir.path()
-                .join("config")
-                .join("avatarcache")
-                .join("76561198000000000.png")
-        );
-        assert_eq!(newest_file([path.clone()].into_iter()), None);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"png").unwrap();
-        assert_eq!(newest_file([path.clone()].into_iter()), Some(path));
     }
 
     #[test]
