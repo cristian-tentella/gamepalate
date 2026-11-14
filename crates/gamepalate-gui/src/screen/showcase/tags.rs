@@ -169,15 +169,13 @@ pub(in crate::screen) fn tags_body<'a, M: Clone + 'a>(
         .into()
 }
 
-fn used_names(view: Option<&GameTagsView>) -> Vec<String> {
-    view.map_or_else(Vec::new, |view| {
-        view.used.iter().map(|tag| tag.name.clone()).collect()
-    })
+fn specific_names(view: Option<&GameTagsView>) -> Vec<String> {
+    view.map_or_else(Vec::new, |view| view.specific.clone())
 }
 
 impl Showcase {
-    pub fn used_tags(&self) -> Vec<String> {
-        used_names(self.tags.as_ref())
+    pub fn specific_tags(&self) -> Vec<String> {
+        specific_names(self.tags.as_ref())
     }
 
     pub(super) fn tags_body(&self) -> Element<'_, Message> {
@@ -245,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn the_facts_get_the_names_of_the_used_tags() {
+    fn the_facts_get_the_most_specific_tags_not_the_used_ones() {
         let view = GameTagsView {
             tags: Vec::new(),
             weighted: false,
@@ -259,10 +257,10 @@ mod tests {
                     catalog_share: 0.1,
                 })
                 .collect(),
-            specific: Vec::new(),
+            specific: vec!["Deckbuilder".to_string(), "Card Battler".to_string()],
         };
 
-        assert_eq!(used_names(Some(&view)), ["Roguelite", "Deckbuilder"]);
-        assert!(used_names(None).is_empty());
+        assert_eq!(specific_names(Some(&view)), ["Deckbuilder", "Card Battler"]);
+        assert!(specific_names(None).is_empty());
     }
 }

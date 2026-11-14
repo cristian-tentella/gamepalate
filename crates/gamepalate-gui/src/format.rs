@@ -1,6 +1,6 @@
 use gamepalate_app::{
-    Blame, Controller, Currency, DiscoverPlace, LeftOut, Price, Reviews, SearchOptions, SteamDeck,
-    Timestamp, VoteKind, reviews::Review,
+    Blame, Controller, Currency, DiscoverPlace, KnownFrom, LeftOut, Price, Reviews, SearchOptions,
+    SteamDeck, Timestamp, VoteKind, reviews::Review,
 };
 use jiff::{civil::Date, tz::TimeZone};
 
@@ -349,6 +349,18 @@ pub fn year(release: Option<Timestamp>) -> Option<String> {
     Some(release.to_zoned(TimeZone::UTC).year().to_string())
 }
 
+pub fn known_from(known: &KnownFrom) -> Option<String> {
+    match known {
+        KnownFrom::Steam => None,
+        KnownFrom::PlayedElsewhere => Some("Played elsewhere".to_string()),
+        KnownFrom::Library => Some("It's in your library".to_string()),
+        KnownFrom::WouldTry => Some("You voted Would try".to_string()),
+        KnownFrom::Wishlist => Some("It's on your wishlist".to_string()),
+        KnownFrom::Followed => Some("You follow it".to_string()),
+        KnownFrom::Family(name) => Some(format!("It's in your family {name}")),
+    }
+}
+
 pub fn vote(kind: VoteKind) -> &'static str {
     match kind {
         VoteKind::WouldTry => "Would try",
@@ -512,6 +524,21 @@ mod tests {
     use gamepalate_app::{Discount, SortBy};
 
     use super::*;
+
+    #[test]
+    fn the_line_under_similar_to_says_how_you_know_the_game() {
+        assert_eq!(known_from(&KnownFrom::Steam), None);
+        let line = |known| known_from(&known).unwrap();
+        assert_eq!(line(KnownFrom::PlayedElsewhere), "Played elsewhere");
+        assert_eq!(line(KnownFrom::Library), "It's in your library");
+        assert_eq!(line(KnownFrom::WouldTry), "You voted Would try");
+        assert_eq!(line(KnownFrom::Wishlist), "It's on your wishlist");
+        assert_eq!(line(KnownFrom::Followed), "You follow it");
+        assert_eq!(
+            line(KnownFrom::Family("Puzzle · Mystery".to_string())),
+            "It's in your family Puzzle · Mystery"
+        );
+    }
 
     #[test]
     fn the_place_in_discover_says_the_position_or_what_leaves_the_game_out() {

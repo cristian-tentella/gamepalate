@@ -382,7 +382,7 @@ impl GamePage {
                 }),
                 side: [
                     showcase.description(game.id),
-                    showcase.facts(game.id, &showcase.used_tags()),
+                    showcase.facts(game.id, &showcase.specific_tags()),
                 ]
                 .into_iter()
                 .flatten()
