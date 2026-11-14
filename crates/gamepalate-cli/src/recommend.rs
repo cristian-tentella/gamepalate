@@ -6,6 +6,7 @@ use comfy_table::{CellAlignment, ContentArrangement, Table, presets::UTF8_FULL_C
 use gamepalate_core::{
     catalog::Freshness,
     currency::parse_price,
+    explanation::KnownFrom,
     filters::FilterOptions,
     game::Reviews,
     game_vector::game_vectors,
@@ -186,15 +187,7 @@ pub fn run(args: &RecommendArgs, files: &DataFiles, data_dir: &Path) -> anyhow::
     }
 
     let one_family = recommendation.family.is_some();
-    let mut header = vec!["#", "Game", "Price", "Discount", "Discount ends", "Reviews"];
-    let mut right_aligned = vec![0, 2, 3, 5];
-    if one_family {
-        header.extend(["Affinity", "Relevance"]);
-        right_aligned.extend([6, 7]);
-    } else {
-        header.push("From");
-    }
-    header.extend(["Shared tags", "Similar to"]);
+    let (header, right_aligned) = header(one_family);
 
     let mut table = Table::new();
     table
@@ -223,6 +216,20 @@ pub fn run(args: &RecommendArgs, files: &DataFiles, data_dir: &Path) -> anyhow::
     }
 
     Ok(())
+}
+
+// The column names, and which columns hold numbers.
+fn header(one_family: bool) -> (Vec<&'static str>, Vec<usize>) {
+    let mut header = vec!["#", "Game", "Price", "Discount", "Discount ends", "Reviews"];
+    let mut right_aligned = vec![0, 2, 3, 5];
+    if one_family {
+        header.extend(["Affinity", "Relevance"]);
+        right_aligned.extend([6, 7]);
+    } else {
+        header.push("From");
+    }
+    header.extend(["Tags", "Similar to"]);
+    (header, right_aligned)
 }
 
 fn stale_prices_text(freshness: &Freshness, region: Region) -> String {
@@ -264,7 +271,14 @@ fn row(game: &RecommendedGame, one_family: bool, files: &DataFiles) -> Vec<Strin
                 }),
         );
     }
-    cells.extend([game.top_tags.join(", "), similar_cell(game)]);
+    cells.extend([
+        game.tags.join(", "),
+        similar_cell(
+            game.similar_to.as_deref(),
+            game.similar_to_known_from.as_ref(),
+            game.similar_to_multiplier,
+        ),
+    ]);
     cells
 }
 
@@ -292,11 +306,30 @@ fn reviews_cell(reviews: Reviews) -> String {
     format!("{percent}% ({})", integer(u64::from(reviews.total)))
 }
 
-fn similar_cell(game: &RecommendedGame) -> String {
-    match (&game.similar_to, game.similar_to_multiplier) {
-        (Some(name), Some(value)) => format!("{name} {}", multiplier(value)),
-        (Some(name), None) => name.clone(),
-        (None, _) => "-".to_string(),
+fn similar_cell(name: Option<&str>, known: Option<&KnownFrom>, value: Option<f64>) -> String {
+    let Some(name) = name else {
+        return "-".to_string();
+    };
+    let mut cell = name.to_string();
+    if let Some(place) = known.and_then(known_from) {
+        cell.push_str(&format!(" ({place})"));
+    }
+    if let Some(value) = value {
+        cell.push_str(&format!(" {}", multiplier(value)));
+    }
+    cell
+}
+
+// Where the similar game comes from, short; nothing for a game played on Steam.
+fn known_from(known: &KnownFrom) -> Option<String> {
+    match known {
+        KnownFrom::Steam => None,
+        KnownFrom::PlayedElsewhere => Some("played elsewhere".to_string()),
+        KnownFrom::Library => Some("in library".to_string()),
+        KnownFrom::WouldTry => Some("would try".to_string()),
+        KnownFrom::Wishlist => Some("wishlist".to_string()),
+        KnownFrom::Followed => Some("followed".to_string()),
+        KnownFrom::Family(name) => Some(format!("family {name}")),
     }
 }
 
@@ -336,6 +369,49 @@ mod tests {
             stale_prices_text(&italian_freshness(), Region::new("US").unwrap()),
             "The catalog has prices for IT, the config says US: run update."
         );
+    }
+
+    #[test]
+    fn the_tags_column_is_called_tags() {
+        for one_family in [true, false] {
+            let (header, _) = header(one_family);
+            assert_eq!(header[header.len() - 2..], ["Tags", "Similar to"]);
+        }
+    }
+
+    #[test]
+    fn similar_to_says_where_the_game_comes_from() {
+        let cases = [
+            (KnownFrom::Steam, "Hollow Knight"),
+            (
+                KnownFrom::PlayedElsewhere,
+                "Hollow Knight (played elsewhere)",
+            ),
+            (KnownFrom::Library, "Hollow Knight (in library)"),
+            (KnownFrom::WouldTry, "Hollow Knight (would try)"),
+            (KnownFrom::Wishlist, "Hollow Knight (wishlist)"),
+            (KnownFrom::Followed, "Hollow Knight (followed)"),
+            (
+                KnownFrom::Family("Mario".to_string()),
+                "Hollow Knight (family Mario)",
+            ),
+        ];
+        for (known, without) in cases {
+            assert_eq!(
+                similar_cell(Some("Hollow Knight"), Some(&known), None),
+                without
+            );
+            assert_eq!(
+                similar_cell(Some("Hollow Knight"), Some(&known), Some(0.5)),
+                format!("{without} ×0.5")
+            );
+        }
+    }
+
+    #[test]
+    fn similar_to_without_a_place_or_a_game() {
+        assert_eq!(similar_cell(Some("Celeste"), None, Some(2.0)), "Celeste ×2");
+        assert_eq!(similar_cell(None, None, None), "-");
     }
 
     #[test]

@@ -38,6 +38,7 @@ pub use gamepalate_core::{
     corrections::Ban,
     currency::{Currency, parse_price},
     effective_hours::HoursSource,
+    explanation::KnownFrom,
     filters::{Blame, FilterOptions},
     game::{Discount, Price, Reviews},
     ids::{AppId, SteamId, TagId},

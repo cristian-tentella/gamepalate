@@ -122,6 +122,8 @@ pub enum Message {
     Setup(setup::Message),
     Search(search::Message),
     GamePage(game_page::Message),
+    SimilarShot(AppId, window::Screenshot),
+    SimilarBlurred(AppId, Option<image::Handle>),
     WindowFound(Option<window::Id>),
     Window(WindowAction),
     BarPressed,
@@ -226,7 +228,23 @@ impl App {
                 self.close_game_page(changed)
             }
             Message::Navigate(page) => self.leave(page),
-            Message::Discover(discover::Message::OpenSimilar(id)) => self.show_game(id),
+            // The similar game opens like a game found by name, over the page blurred
+            Message::Discover(discover::Message::OpenSimilar(id)) => match self.window {
+                Some(window) => {
+                    window::screenshot(window).map(move |shot| Message::SimilarShot(id, shot))
+                }
+                None => self.open_game(id, None),
+            },
+            Message::SimilarShot(id, screenshot) => Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || backdrop::blur(&screenshot, PAGE_TOP))
+                        .await
+                        .ok()
+                        .map(|blurred| blurred.handle)
+                },
+                move |handle| Message::SimilarBlurred(id, handle),
+            ),
+            Message::SimilarBlurred(id, handle) => self.open_game(id, handle),
             // A Discover set aside still gets the answers of what it started
             Message::Discover(message) => {
                 let discover = match &mut self.screen {

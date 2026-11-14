@@ -214,9 +214,10 @@ mod tests {
             store_url: String::new(),
             from_family: None,
             affinity: 1.0,
-            top_tags: Vec::new(),
+            tags: Vec::new(),
             similar_to: None,
             similar_to_id: None,
+            similar_to_known_from: None,
             similar_to_multiplier: None,
             quality: 1.0,
             reviews: Reviews {

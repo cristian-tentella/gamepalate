@@ -190,12 +190,11 @@ pub fn competitors(catalog: &Catalog, context: &FilterContext, min_reviews: u32)
         .collect()
 }
 
-// Positions need only the relevance, so references and affinity stay empty.
+// Positions need only the relevance, so the affinity stays empty.
 fn ranked_game(game_vectors: &[GameVector], relevances: &[f64], i: usize) -> RankedGame {
     RankedGame {
         id: game_vectors[i].id,
         relevance: relevances[i],
-        references: Vec::new(),
         affinity: 0.0,
     }
 }
