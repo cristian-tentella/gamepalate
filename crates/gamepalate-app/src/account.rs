@@ -19,6 +19,7 @@ use crate::{
 pub(crate) const KEY_ENV_VAR: &str = "STEAM_API_KEY";
 const KEY_SERVICE: &str = "gamepalate";
 const KEY_USER: &str = "steam-api-key";
+const KEY_ENDING_CHARS: usize = 4;
 
 #[cfg(windows)]
 const KEY_STORE_NAME: &str = "the Windows Credential Manager";
@@ -194,6 +195,10 @@ pub fn steam_api_key() -> Option<String> {
     api_key(std::env::var(KEY_ENV_VAR).ok(), &SystemKeyring)
 }
 
+pub(crate) fn steam_api_key_ending() -> Option<String> {
+    key_ending(std::env::var(KEY_ENV_VAR).ok(), &SystemKeyring)
+}
+
 pub async fn connect(
     data_dir: &Path,
     profile: Profile,
@@ -215,6 +220,17 @@ pub async fn connect(
 fn api_key(env: Option<String>, store: &dyn KeyStore) -> Option<String> {
     env.filter(|key| !key.trim().is_empty())
         .or_else(|| store.load().ok().flatten())
+}
+
+fn key_ending(env: Option<String>, store: &dyn KeyStore) -> Option<String> {
+    let key = api_key(env, store)?;
+    let key = key.trim();
+    let start = key
+        .char_indices()
+        .rev()
+        .nth(KEY_ENDING_CHARS - 1)
+        .map_or(0, |(index, _)| index);
+    Some(key[start..].to_string())
 }
 
 async fn connect_with<S: Get>(
@@ -470,6 +486,23 @@ mod tests {
         );
         assert_eq!(api_key(None, &keys).as_deref(), Some("SAVED"));
         assert_eq!(api_key(None, &FakeKeys::default()), None);
+    }
+
+    #[test]
+    fn only_the_last_four_characters_of_the_key_come_out() {
+        let keys = FakeKeys::default();
+        keys.save("0123456789ABCDEF0123456789AB3F9A").unwrap();
+
+        assert_eq!(key_ending(None, &keys).as_deref(), Some("3F9A"));
+        assert_eq!(
+            key_ending(Some(" ENVKEY12 ".to_string()), &keys).as_deref(),
+            Some("EY12")
+        );
+        assert_eq!(
+            key_ending(Some("ABC".to_string()), &FakeKeys::default()).as_deref(),
+            Some("ABC")
+        );
+        assert_eq!(key_ending(None, &FakeKeys::default()), None);
     }
 
     #[tokio::test]
