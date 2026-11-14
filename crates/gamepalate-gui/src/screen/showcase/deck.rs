@@ -17,6 +17,7 @@ const ICON_GAP: f32 = 6.0;
 const TIP_WIDTH: f32 = 260.0;
 const TIP_SPACING: f32 = 4.0;
 const TIP_GROUP_SPACING: f32 = 8.0;
+const TIP_GAP: f32 = 6.0;
 
 type Tone = fn(&Theme) -> TextStyle;
 
@@ -50,8 +51,11 @@ pub(super) fn chip_of(id: AppId, details: &GameDetails) -> Element<'_, Message> 
     tooltip(
         label,
         tip(deck, &details.deck, details.protondb),
-        tooltip::Position::Bottom,
+        // Features closes the column, so below there is often no room and the tooltip,
+        // pushed back into the window, would cover the chip.
+        tooltip::Position::Top,
     )
+    .gap(TIP_GAP)
     .into()
 }
 
