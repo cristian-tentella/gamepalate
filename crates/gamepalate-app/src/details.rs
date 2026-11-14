@@ -3,34 +3,42 @@ use std::{
     fmt,
     panic::AssertUnwindSafe,
     sync::{Arc, Mutex, MutexGuard},
+    time::Duration,
 };
 
-use futures::{FutureExt, future::join};
+use futures::{FutureExt, future::join3};
 use gamepalate_core::{ids::AppId, region::Region};
 use gamepalate_steam::{
+    deck::{DeckCheck, ProtonDb, get_deck_report, get_protondb},
     description::{Block, get_description},
     details::{ItemDetails, get_item_details, get_store_categories},
     reviews::{ReviewPage, ReviewQuery, get_reviews},
     transport::{Get, SteamError, Transport},
 };
 
+use crate::log::failed;
+
 const LANGUAGE: &str = "english";
 const DESCRIPTION: &str = "the store description";
 const REVIEWS: &str = "the reviews";
+const EXTRAS_DEADLINE: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameDetails {
     pub store: ItemDetails,
     pub modes: Vec<String>,
+    pub deck: Vec<DeckCheck>,
+    pub protondb: Option<ProtonDb>,
 }
 
-pub struct StoreDetails<S = Transport> {
+pub struct StoreDetails<S = Transport, P = S> {
     transport: S,
+    protondb: P,
     region: Region,
     categories: Mutex<Option<Arc<HashMap<u32, String>>>>,
 }
 
-impl<S> fmt::Debug for StoreDetails<S> {
+impl<S, P> fmt::Debug for StoreDetails<S, P> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("StoreDetails")
@@ -38,24 +46,39 @@ impl<S> fmt::Debug for StoreDetails<S> {
     }
 }
 
-impl<S: Get + Sync> StoreDetails<S> {
-    pub fn new(transport: S, region: Region) -> StoreDetails<S> {
+impl<S: Get + Sync, P: Get + Sync> StoreDetails<S, P> {
+    pub fn new(transport: S, protondb: P, region: Region) -> StoreDetails<S, P> {
         StoreDetails {
             transport,
+            protondb,
             region,
             categories: Mutex::new(None),
         }
     }
 
     pub async fn details(&self, id: AppId) -> Result<Option<GameDetails>, SteamError> {
-        let (names, store) = join(
+        let (names, store, protondb) = join3(
             self.categories(),
             get_item_details(&self.transport, id, LANGUAGE, self.region.as_str()),
+            extra(get_protondb(&self.protondb, id), "could not read ProtonDB"),
         )
         .await;
-        let store = store?;
+        let Some(store) = store? else {
+            return Ok(None);
+        };
 
-        Ok(store.map(|store| game_details(store, &names)))
+        let deck = if store.steam_deck.is_some() {
+            extra(
+                get_deck_report(&self.transport, id),
+                "could not read the Steam Deck report",
+            )
+            .await
+            .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        Ok(Some(game_details(store, &names, deck, protondb.flatten())))
     }
 
     pub async fn description(&self, id: AppId) -> Result<Option<Vec<Block>>, SteamError> {
@@ -110,31 +133,89 @@ impl<S: Get + Sync> StoreDetails<S> {
     }
 }
 
-fn game_details(store: ItemDetails, names: &HashMap<u32, String>) -> GameDetails {
+async fn extra<T>(
+    read: impl Future<Output = Result<T, SteamError>>,
+    what: &'static str,
+) -> Option<T> {
+    match tokio::time::timeout(EXTRAS_DEADLINE, read).await {
+        Ok(Ok(value)) => Some(value),
+        Ok(Err(error)) => {
+            failed(what)(&error);
+            None
+        }
+        Err(_) => {
+            tracing::warn!("{what}: no answer in {EXTRAS_DEADLINE:?}");
+            None
+        }
+    }
+}
+
+fn game_details(
+    store: ItemDetails,
+    names: &HashMap<u32, String>,
+    deck: Vec<DeckCheck>,
+    protondb: Option<ProtonDb>,
+) -> GameDetails {
     let modes = store
         .player_categories
         .iter()
         .filter_map(|id| names.get(id).cloned())
         .collect();
 
-    GameDetails { store, modes }
+    GameDetails {
+        store,
+        modes,
+        deck,
+        protondb,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
 
+    use gamepalate_steam::{
+        deck::{CheckResult, ProtonTier},
+        details::SteamDeck,
+    };
+    use reqwest::StatusCode;
     use serde_json::{Value, json};
 
     use super::*;
 
     const CATEGORIES: &str = "IStoreBrowseService/GetStoreCategories/v1";
     const ITEMS: &str = "IStoreBrowseService/GetItems/v1";
+    const REVIEWS: &str = "IUserReviewsService/GetAppReviews/v1";
+    const REPORT: &str =
+        "https://store.steampowered.com/saleaction/ajaxgetdeckappcompatibilityreport";
+    const PROTONDB: &str = "https://www.protondb.com/api/v1/reports/summaries/620.json";
 
+    type Reply = Result<Value, SteamError>;
+
+    #[derive(Default)]
     struct FakeSteam {
-        replies: Mutex<VecDeque<Result<Value, SteamError>>>,
+        replies: Mutex<HashMap<String, VecDeque<Reply>>>,
         asked: Mutex<Vec<String>>,
         params: Mutex<Vec<String>>,
+    }
+
+    impl FakeSteam {
+        fn new(replies: Vec<(&str, Reply)>) -> FakeSteam {
+            let fake = FakeSteam::default();
+            for (endpoint, reply) in replies {
+                fake.replies
+                    .lock()
+                    .unwrap()
+                    .entry(endpoint.to_string())
+                    .or_default()
+                    .push_back(reply);
+            }
+            fake
+        }
+
+        fn asked(&self) -> Vec<String> {
+            self.asked.lock().unwrap().clone()
+        }
     }
 
     impl Get for FakeSteam {
@@ -153,7 +234,8 @@ mod tests {
                 .replies
                 .lock()
                 .unwrap()
-                .pop_front()
+                .get_mut(endpoint)
+                .and_then(VecDeque::pop_front)
                 .expect("one reply for every request");
 
             std::future::ready(reply)
@@ -177,39 +259,58 @@ mod tests {
         }
     }
 
-    fn store(replies: Vec<Result<Value, SteamError>>) -> StoreDetails<FakeSteam> {
-        store_in(replies, Region::ITALY)
+    fn store(steam: Vec<(&str, Reply)>, protondb: Vec<(&str, Reply)>) -> StoreDetails<FakeSteam> {
+        store_in(steam, protondb, Region::ITALY)
     }
 
     fn store_in(
-        replies: Vec<Result<Value, SteamError>>,
+        steam: Vec<(&str, Reply)>,
+        protondb: Vec<(&str, Reply)>,
         region: Region,
     ) -> StoreDetails<FakeSteam> {
-        StoreDetails::new(
-            FakeSteam {
-                replies: Mutex::new(replies.into()),
-                asked: Mutex::new(Vec::new()),
-                params: Mutex::new(Vec::new()),
-            },
-            region,
-        )
+        StoreDetails::new(FakeSteam::new(steam), FakeSteam::new(protondb), region)
     }
 
-    fn categories() -> Result<Value, SteamError> {
+    fn categories() -> Reply {
         Ok(json!({ "response": { "categories": [
             { "categoryid": 2, "display_name": "Single-player" },
             { "categoryid": 9, "display_name": "Co-op" },
         ] } }))
     }
 
-    fn item() -> Result<Value, SteamError> {
+    fn item() -> Reply {
         Ok(json!({ "response": { "store_items": [{
             "success": 1,
             "categories": { "supported_player_categoryids": [2, 9, 99] },
         }] } }))
     }
 
-    fn failure() -> Result<Value, SteamError> {
+    fn verified_item() -> Reply {
+        Ok(json!({ "response": { "store_items": [{
+            "success": 1,
+            "platforms": { "steam_deck_compat_category": 3 },
+        }] } }))
+    }
+
+    fn report() -> Reply {
+        Ok(json!({ "success": 1, "results": { "resolved_items": [{
+            "display_type": 4,
+            "loc_token": "#SteamDeckVerified_TestResult_DefaultConfigurationIsPerformant",
+        }] } }))
+    }
+
+    fn gold() -> Reply {
+        Ok(json!({ "tier": "gold", "total": 2797 }))
+    }
+
+    fn not_found() -> Reply {
+        Err(SteamError::Status {
+            endpoint: PROTONDB.to_string(),
+            status: StatusCode::NOT_FOUND,
+        })
+    }
+
+    fn failure() -> Reply {
         Err(SteamError::Shape {
             endpoint: CATEGORIES.to_string(),
             reason: "down".to_string(),
@@ -218,7 +319,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_description_that_breaks_the_reader_is_an_error() {
-        let store = store(Vec::new());
+        let store = store(Vec::new(), Vec::new());
 
         assert!(matches!(
             store.description(AppId(620)).await,
@@ -228,19 +329,25 @@ mod tests {
 
     #[tokio::test]
     async fn reads_the_reviews_with_the_same_transport() {
-        let store = store(vec![Ok(json!({ "response": {
-            "reviews": [{
-                "recommendationid": "1",
-                "author": { "playtime_forever": 120, "playtime_at_review": 60 },
-                "language": "italian",
-                "review": "Bello",
-                "timestamp_created": 1_700_000_000,
-                "voted_up": true,
-                "votes_up": 3,
-            }],
-            "cursor": "next",
-            "total_matching": 1,
-        } }))]);
+        let store = store(
+            vec![(
+                REVIEWS,
+                Ok(json!({ "response": {
+                    "reviews": [{
+                        "recommendationid": "1",
+                        "author": { "playtime_forever": 120, "playtime_at_review": 60 },
+                        "language": "italian",
+                        "review": "Bello",
+                        "timestamp_created": 1_700_000_000,
+                        "voted_up": true,
+                        "votes_up": 3,
+                    }],
+                    "cursor": "next",
+                    "total_matching": 1,
+                } })),
+            )],
+            Vec::new(),
+        );
 
         let page = store
             .reviews(AppId(620), &ReviewQuery::default(), None)
@@ -249,15 +356,12 @@ mod tests {
 
         assert_eq!(page.reviews.len(), 1);
         assert_eq!(page.next.as_deref(), Some("next"));
-        assert_eq!(
-            *store.transport.asked.lock().unwrap(),
-            ["IUserReviewsService/GetAppReviews/v1"]
-        );
+        assert_eq!(store.transport.asked(), [REVIEWS]);
     }
 
     #[tokio::test]
     async fn reviews_that_break_the_reader_are_an_error() {
-        let store = store(Vec::new());
+        let store = store(Vec::new(), Vec::new());
 
         assert!(matches!(
             store
@@ -269,21 +373,29 @@ mod tests {
 
     #[tokio::test]
     async fn asks_for_the_categories_once() {
-        let store = store(vec![categories(), item(), item()]);
+        let store = store(
+            vec![(CATEGORIES, categories()), (ITEMS, item()), (ITEMS, item())],
+            vec![(PROTONDB, gold()), (PROTONDB, gold())],
+        );
 
         let first = store.details(AppId(620)).await.unwrap().unwrap();
         store.details(AppId(620)).await.unwrap();
 
         assert_eq!(first.modes, ["Single-player", "Co-op"]);
-        assert_eq!(
-            *store.transport.asked.lock().unwrap(),
-            [CATEGORIES, ITEMS, ITEMS]
-        );
+        assert_eq!(store.transport.asked(), [CATEGORIES, ITEMS, ITEMS]);
     }
 
     #[tokio::test]
     async fn without_categories_the_modes_are_empty_and_asked_again() {
-        let store = store(vec![failure(), item(), categories(), item()]);
+        let store = store(
+            vec![
+                (CATEGORIES, failure()),
+                (CATEGORIES, categories()),
+                (ITEMS, item()),
+                (ITEMS, item()),
+            ],
+            vec![(PROTONDB, gold()), (PROTONDB, gold())],
+        );
 
         let first = store.details(AppId(620)).await.unwrap().unwrap();
         let second = store.details(AppId(620)).await.unwrap().unwrap();
@@ -294,30 +406,145 @@ mod tests {
 
     #[tokio::test]
     async fn a_game_without_a_store_page_has_no_details() {
-        let store = store(vec![
-            categories(),
-            Ok(json!({ "response": { "store_items": [{ "success": 15 }] } })),
-        ]);
+        let store = store(
+            vec![
+                (CATEGORIES, categories()),
+                (
+                    ITEMS,
+                    Ok(json!({ "response": { "store_items": [{ "success": 15 }] } })),
+                ),
+            ],
+            vec![(PROTONDB, gold())],
+        );
 
-        assert_eq!(store.details(AppId(3)).await.unwrap(), None);
+        assert_eq!(store.details(AppId(620)).await.unwrap(), None);
+        assert_eq!(store.transport.asked(), [CATEGORIES, ITEMS]);
     }
 
-    #[test]
-    fn asks_the_categories_and_the_details_together() {
-        let store = StoreDetails::new(SlowSteam::default(), Region::ITALY);
+    #[tokio::test]
+    async fn a_verified_game_has_the_report_and_protondb() {
+        let store = store(
+            vec![
+                (CATEGORIES, categories()),
+                (ITEMS, verified_item()),
+                (REPORT, report()),
+            ],
+            vec![(PROTONDB, gold())],
+        );
+
+        let details = store.details(AppId(620)).await.unwrap().unwrap();
+
+        assert_eq!(
+            details.deck,
+            [DeckCheck {
+                result: CheckResult::Passed,
+                text: "Runs well with default settings",
+            }]
+        );
+        assert_eq!(
+            details.protondb,
+            Some(ProtonDb {
+                tier: ProtonTier::Gold,
+                reports: 2797,
+            })
+        );
+        assert_eq!(store.transport.asked(), [CATEGORIES, ITEMS, REPORT]);
+    }
+
+    #[tokio::test]
+    async fn without_a_category_the_report_is_not_asked() {
+        let store = store(
+            vec![(CATEGORIES, categories()), (ITEMS, item())],
+            vec![(PROTONDB, gold())],
+        );
+
+        let details = store.details(AppId(620)).await.unwrap().unwrap();
+
+        assert!(details.deck.is_empty());
+        assert!(details.protondb.is_some());
+        assert_eq!(store.transport.asked(), [CATEGORIES, ITEMS]);
+        assert_eq!(store.protondb.asked(), [PROTONDB]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_report_keeps_the_details() {
+        let store = store(
+            vec![
+                (CATEGORIES, categories()),
+                (ITEMS, verified_item()),
+                (REPORT, failure()),
+            ],
+            vec![(PROTONDB, gold())],
+        );
+
+        let details = store.details(AppId(620)).await.unwrap().unwrap();
+
+        assert!(details.deck.is_empty());
+        assert!(details.protondb.is_some());
+        assert_eq!(details.store.steam_deck, Some(SteamDeck::Verified));
+    }
+
+    #[tokio::test]
+    async fn a_game_without_protondb_reports_has_none() {
+        let store = store(
+            vec![
+                (CATEGORIES, categories()),
+                (ITEMS, verified_item()),
+                (REPORT, report()),
+            ],
+            vec![(PROTONDB, not_found())],
+        );
+
+        let details = store.details(AppId(620)).await.unwrap().unwrap();
+
+        assert_eq!(details.protondb, None);
+        assert_eq!(details.deck.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_protondb_keeps_the_details() {
+        let store = store(
+            vec![(CATEGORIES, categories()), (ITEMS, item())],
+            vec![(PROTONDB, failure())],
+        );
+
+        let details = store.details(AppId(620)).await.unwrap().unwrap();
+
+        assert_eq!(details.protondb, None);
+        assert_eq!(details.modes, ["Single-player", "Co-op"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_protondb_does_not_hold_the_details() {
+        let store = StoreDetails::new(
+            FakeSteam::new(vec![(CATEGORIES, categories()), (ITEMS, item())]),
+            SlowSteam::default(),
+            Region::ITALY,
+        );
+
+        let details = store.details(AppId(620)).await.unwrap().unwrap();
+
+        assert_eq!(details.protondb, None);
+        assert_eq!(details.modes, ["Single-player", "Co-op"]);
+    }
+
+    #[tokio::test]
+    async fn asks_the_categories_the_details_and_protondb_together() {
+        let store = StoreDetails::new(SlowSteam::default(), SlowSteam::default(), Region::ITALY);
         let mut details = std::pin::pin!(store.details(AppId(620)));
 
-        let poll = details
-            .as_mut()
-            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
-
-        assert!(poll.is_pending());
+        assert!(futures::poll!(details.as_mut()).is_pending());
         assert_eq!(*store.transport.asked.lock().unwrap(), [CATEGORIES, ITEMS]);
+        assert_eq!(*store.protondb.asked.lock().unwrap(), [PROTONDB]);
     }
 
     #[tokio::test]
     async fn asks_the_details_in_the_region_it_was_given() {
-        let store = store_in(vec![categories(), item()], Region::new("US").unwrap());
+        let store = store_in(
+            vec![(CATEGORIES, categories()), (ITEMS, item())],
+            vec![(PROTONDB, gold())],
+            Region::new("US").unwrap(),
+        );
 
         store.details(AppId(620)).await.unwrap();
 
@@ -328,7 +555,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_request_is_an_error() {
-        let store = store(vec![categories(), failure()]);
+        let store = store(
+            vec![(CATEGORIES, categories()), (ITEMS, failure())],
+            vec![(PROTONDB, gold())],
+        );
 
         assert!(store.details(AppId(620)).await.is_err());
     }
