@@ -16,7 +16,7 @@ use iced::{
         scrollable::{AbsoluteOffset, Viewport},
         span, stack, text,
         text::Wrapping,
-        text_input,
+        text_input, tooltip,
     },
 };
 
@@ -53,6 +53,7 @@ pub struct Votes {
     filter: Filter,
     order: Order,
     on_sale: bool,
+    hide_owned: bool,
     search: String,
     matches: Option<HashMap<AppId, f64>>,
     matching: u64,
@@ -84,6 +85,7 @@ pub enum Message {
     Filter(Filter),
     Order(Order),
     OnSale(bool),
+    HideOwned(bool),
     Search(String),
     FocusSearch,
     Select(usize),
@@ -114,6 +116,7 @@ impl Votes {
             filter,
             order: Order::Newest,
             on_sale: false,
+            hide_owned: true,
             search: String::new(),
             matches: None,
             matching: 0,
@@ -179,6 +182,10 @@ impl Votes {
                 self.on_sale = on_sale;
                 return self.refresh();
             }
+            Message::HideOwned(hide_owned) => {
+                self.hide_owned = hide_owned;
+                return self.refresh();
+            }
             Message::Search(search) => {
                 self.search = search;
                 return self.refresh();
@@ -231,8 +238,10 @@ impl Votes {
             }
             Message::PlayedSaved(id, name, Ok(before)) => {
                 self.played = (!before).then_some(id);
+                self.games = by_id(self.gamepalate.voted_games());
                 let text = format::elsewhere_text(&name, true);
-                return self.toasts.show(text, !before, Message::HideToast);
+                let toast = self.toasts.show(text, !before, Message::HideToast);
+                return Task::batch([toast, self.refresh()]);
             }
             Message::PlayedSaved(_, _, Err(error)) => return self.show_toast(error),
             Message::Undo => {
@@ -249,7 +258,11 @@ impl Votes {
                     );
                 }
             }
-            Message::Undone(Ok(())) => return self.show_toast("Undone".to_string()),
+            Message::Undone(Ok(())) => {
+                self.games = by_id(self.gamepalate.voted_games());
+                let toast = self.show_toast("Undone".to_string());
+                return Task::batch([toast, self.refresh()]);
+            }
             Message::Undone(Err(error)) => return self.show_toast(error),
             Message::Matched(matching, matches) => {
                 if matching == self.matching {
@@ -313,7 +326,7 @@ impl Votes {
                 text!(
                     "{} {}",
                     filter_label(filter),
-                    count(&self.games, filter, self.on_sale)
+                    count(&self.games, filter, self.shown())
                 )
                 .size(font::NOTE_SIZE),
             )
@@ -325,6 +338,25 @@ impl Votes {
         .spacing(6)
         .wrap()
         .vertical_spacing(6);
+        let search = text_input("Search (Ctrl+F)", &self.search)
+            .style(style::field)
+            .id(SEARCH)
+            .on_input(Message::Search)
+            .size(font::NOTE_SIZE)
+            .padding([5, 8])
+            .width(Fill);
+        let hide_owned = tooltip(
+            checkbox(self.hide_owned)
+                .label("Hide owned")
+                .text_size(font::NOTE_SIZE)
+                .on_toggle(Message::HideOwned),
+            container(
+                text("Also hides borrowed games and games played elsewhere").size(font::NOTE_SIZE),
+            )
+            .padding([6, 10])
+            .style(style::popup),
+            tooltip::Position::Bottom,
+        );
         let tools = row![
             pick_list(ORDERS, Some(self.order), Message::Order)
                 .text_size(font::NOTE_SIZE)
@@ -335,13 +367,7 @@ impl Votes {
                 .label("On sale")
                 .text_size(font::NOTE_SIZE)
                 .on_toggle(Message::OnSale),
-            text_input("Search (Ctrl+F)", &self.search)
-                .style(style::field)
-                .id(SEARCH)
-                .on_input(Message::Search)
-                .size(font::NOTE_SIZE)
-                .padding([5, 8])
-                .width(Fill),
+            hide_owned,
         ]
         .spacing(8)
         .align_y(Center);
@@ -363,6 +389,7 @@ impl Votes {
                     self.games.is_empty(),
                     self.filter,
                     self.on_sale,
+                    self.owned_hidden(),
                     &self.search,
                 )
             };
@@ -383,7 +410,7 @@ impl Votes {
         };
 
         column![
-            column![filters, tools]
+            column![filters, search, tools]
                 .push(summary)
                 .spacing(10)
                 .padding(12),
@@ -565,12 +592,24 @@ impl Votes {
         )
     }
 
+    fn shown(&self) -> Shown {
+        Shown {
+            on_sale: self.on_sale,
+            hide_owned: self.hide_owned,
+        }
+    }
+
+    /// True when Hide owned is the only reason the chip has no games left.
+    fn owned_hidden(&self) -> bool {
+        self.hide_owned && count(&self.games, self.filter, Shown::default()) > 0
+    }
+
     fn shown_rows(&self) -> Vec<AppId> {
         rows(
             &self.games,
             self.filter,
             self.order,
-            self.on_sale,
+            self.shown(),
             &self.search,
             self.matches.as_ref(),
         )
@@ -662,10 +701,23 @@ fn on_sale(game: &VotedGame) -> bool {
     game.price.is_some_and(|price| price.discount.is_some())
 }
 
-fn count(games: &BTreeMap<AppId, VotedGame>, filter: Filter, only_on_sale: bool) -> usize {
+/// Which games of a chip the list shows, besides the chip itself.
+#[derive(Clone, Copy, Default)]
+struct Shown {
+    on_sale: bool,
+    hide_owned: bool,
+}
+
+impl Shown {
+    fn keeps(self, game: &VotedGame) -> bool {
+        (!self.on_sale || on_sale(game)) && !(self.hide_owned && game.owned)
+    }
+}
+
+fn count(games: &BTreeMap<AppId, VotedGame>, filter: Filter, shown: Shown) -> usize {
     games
         .values()
-        .filter(|game| filter.keeps(&game.vote) && (!only_on_sale || on_sale(game)))
+        .filter(|game| filter.keeps(&game.vote) && shown.keeps(game))
         .count()
 }
 
@@ -681,7 +733,7 @@ fn rows(
     games: &BTreeMap<AppId, VotedGame>,
     filter: Filter,
     order: Order,
-    only_on_sale: bool,
+    shown: Shown,
     search: &str,
     matches: Option<&HashMap<AppId, f64>>,
 ) -> Vec<AppId> {
@@ -690,7 +742,7 @@ fn rows(
         .values()
         .filter(|game| {
             if search.is_empty() {
-                filter.keeps(&game.vote) && (!only_on_sale || on_sale(game))
+                filter.keeps(&game.vote) && shown.keeps(game)
             } else {
                 game.name.to_lowercase().contains(&search)
             }
@@ -751,7 +803,13 @@ pub(super) fn bets_summary(
     Some((would_try(&bets), bets.len(), others_share))
 }
 
-fn empty_text(no_votes: bool, filter: Filter, only_on_sale: bool, search: &str) -> String {
+fn empty_text(
+    no_votes: bool,
+    filter: Filter,
+    only_on_sale: bool,
+    owned_hidden: bool,
+    search: &str,
+) -> String {
     let search = search.trim();
     if no_votes {
         NO_VOTES.to_string()
@@ -762,6 +820,12 @@ fn empty_text(no_votes: bool, filter: Filter, only_on_sale: bool, search: &str) 
             Filter::Bets => "No Bets on sale".to_string(),
             Filter::All => "No votes on sale".to_string(),
             Filter::Kind(_) => format!("No {} votes on sale", filter_label(filter)),
+        }
+    } else if owned_hidden {
+        match filter {
+            Filter::Bets => "You own all your Bets".to_string(),
+            Filter::All => "You own all your voted games".to_string(),
+            Filter::Kind(_) => format!("You own all your {} games", filter_label(filter)),
         }
     } else if filter == Filter::Bets {
         "No votes on Bets".to_string()
@@ -856,6 +920,15 @@ mod tests {
 
     use super::*;
 
+    const ON_SALE: Shown = Shown {
+        on_sale: true,
+        hide_owned: false,
+    };
+    const HIDE_OWNED: Shown = Shown {
+        on_sale: false,
+        hide_owned: true,
+    };
+
     fn voted(id: u32, name: &str, kind: VoteKind, date: &str, bet: bool) -> VotedGame {
         VotedGame {
             id: AppId(id),
@@ -915,7 +988,7 @@ mod tests {
             &games(),
             Filter::Kind(VoteKind::WouldTry),
             Order::Newest,
-            false,
+            Shown::default(),
             "",
             None,
         );
@@ -932,7 +1005,7 @@ mod tests {
             &games,
             Filter::Kind(VoteKind::WouldTry),
             Order::Newest,
-            false,
+            Shown::default(),
             "",
             None,
         );
@@ -955,21 +1028,42 @@ mod tests {
 
     #[test]
     fn sorts_by_price_with_the_games_out_of_the_store_last() {
-        let rows = rows(&games(), Filter::All, Order::Price, false, "", None);
+        let rows = rows(
+            &games(),
+            Filter::All,
+            Order::Price,
+            Shown::default(),
+            "",
+            None,
+        );
 
         assert_eq!(rows, ids(&[1, 3, 2, 5, 4]));
     }
 
     #[test]
     fn sorts_by_discount_then_by_price() {
-        let rows = rows(&games(), Filter::All, Order::Discount, false, "", None);
+        let rows = rows(
+            &games(),
+            Filter::All,
+            Order::Discount,
+            Shown::default(),
+            "",
+            None,
+        );
 
         assert_eq!(rows, ids(&[1, 3, 2, 5, 4]));
     }
 
     #[test]
     fn the_bets_filter_keeps_only_the_bets() {
-        let rows = rows(&games(), Filter::Bets, Order::Newest, false, "", None);
+        let rows = rows(
+            &games(),
+            Filter::Bets,
+            Order::Newest,
+            Shown::default(),
+            "",
+            None,
+        );
 
         assert_eq!(rows, ids(&[5, 2]));
     }
@@ -980,7 +1074,7 @@ mod tests {
             &games(),
             Filter::Kind(VoteKind::NotForMe),
             Order::Newest,
-            false,
+            Shown::default(),
             " sat ",
             None,
         );
@@ -996,21 +1090,37 @@ mod tests {
                 .iter()
                 .filter(|filter| **filter != Filter::All)
                 .all(
-                    |filter| !rows(&games(), *filter, Order::Newest, false, "", None)
+                    |filter| !rows(&games(), *filter, Order::Newest, Shown::default(), "", None)
                         .contains(&AppId(3))
                 )
         );
-        assert!(rows(&games(), Filter::All, Order::Newest, false, "", None).contains(&AppId(3)));
+        assert!(
+            rows(
+                &games(),
+                Filter::All,
+                Order::Newest,
+                Shown::default(),
+                "",
+                None
+            )
+            .contains(&AppId(3))
+        );
     }
 
     #[test]
     fn counts_the_votes_of_each_filter() {
         let games = games();
 
-        assert_eq!(count(&games, Filter::Kind(VoteKind::WouldTry), false), 3);
-        assert_eq!(count(&games, Filter::Kind(VoteKind::NotForMe), false), 1);
-        assert_eq!(count(&games, Filter::Bets, false), 2);
-        assert_eq!(count(&games, Filter::All, false), 5);
+        assert_eq!(
+            count(&games, Filter::Kind(VoteKind::WouldTry), Shown::default()),
+            3
+        );
+        assert_eq!(
+            count(&games, Filter::Kind(VoteKind::NotForMe), Shown::default()),
+            1
+        );
+        assert_eq!(count(&games, Filter::Bets, Shown::default()), 2);
+        assert_eq!(count(&games, Filter::All, Shown::default()), 5);
     }
 
     #[test]
@@ -1020,7 +1130,10 @@ mod tests {
         not_this_one.vote.genre_ok = true;
         games.insert(not_this_one.id, not_this_one);
 
-        assert_eq!(count(&games, Filter::Kind(VoteKind::NotForMe), false), 2);
+        assert_eq!(
+            count(&games, Filter::Kind(VoteKind::NotForMe), Shown::default()),
+            2
+        );
     }
 
     #[test]
@@ -1066,21 +1179,21 @@ mod tests {
     fn says_why_the_list_is_empty() {
         let not_for_me = Filter::Kind(VoteKind::NotForMe);
 
-        assert_eq!(empty_text(true, not_for_me, false, ""), NO_VOTES);
+        assert_eq!(empty_text(true, not_for_me, false, false, ""), NO_VOTES);
         assert_eq!(
-            empty_text(false, not_for_me, false, ""),
+            empty_text(false, not_for_me, false, false, ""),
             "No Not for me votes"
         );
         assert_eq!(
-            empty_text(false, Filter::Kind(VoteKind::WouldTry), false, ""),
+            empty_text(false, Filter::Kind(VoteKind::WouldTry), false, false, ""),
             "No Would try votes"
         );
         assert_eq!(
-            empty_text(false, Filter::Bets, false, ""),
+            empty_text(false, Filter::Bets, false, false, ""),
             "No votes on Bets"
         );
         assert_eq!(
-            empty_text(false, not_for_me, false, " hades "),
+            empty_text(false, not_for_me, false, false, " hades "),
             "No votes match \"hades\""
         );
     }
@@ -1093,7 +1206,7 @@ mod tests {
             &games(),
             Filter::All,
             Order::BestMatch,
-            false,
+            Shown::default(),
             "",
             Some(&matches),
         );
@@ -1109,24 +1222,138 @@ mod tests {
             &games,
             Filter::Kind(VoteKind::WouldTry),
             Order::Newest,
-            true,
+            ON_SALE,
             "",
             None,
         );
 
         assert_eq!(rows, ids(&[1]));
-        assert_eq!(count(&games, Filter::Kind(VoteKind::WouldTry), true), 1);
-        assert_eq!(count(&games, Filter::All, true), 2);
+        assert_eq!(count(&games, Filter::Kind(VoteKind::WouldTry), ON_SALE), 1);
+        assert_eq!(count(&games, Filter::All, ON_SALE), 2);
     }
 
     #[test]
     fn says_when_nothing_is_on_sale() {
         assert_eq!(
-            empty_text(false, Filter::Kind(VoteKind::WouldTry), true, ""),
+            empty_text(false, Filter::Kind(VoteKind::WouldTry), true, false, ""),
             "No Would try votes on sale"
         );
-        assert_eq!(empty_text(false, Filter::Bets, true, ""), "No Bets on sale");
-        assert_eq!(empty_text(false, Filter::All, true, ""), "No votes on sale");
+        assert_eq!(
+            empty_text(false, Filter::Bets, true, false, ""),
+            "No Bets on sale"
+        );
+        assert_eq!(
+            empty_text(false, Filter::All, true, false, ""),
+            "No votes on sale"
+        );
+    }
+
+    fn with_owned() -> BTreeMap<AppId, VotedGame> {
+        let mut games = games();
+        for id in [1, 4, 5] {
+            games.get_mut(&AppId(id)).unwrap().owned = true;
+        }
+        games
+    }
+
+    #[test]
+    fn hide_owned_takes_the_owned_games_out_of_every_chip() {
+        let games = with_owned();
+        let would_try = Filter::Kind(VoteKind::WouldTry);
+
+        assert_eq!(
+            rows(&games, would_try, Order::Newest, HIDE_OWNED, "", None),
+            ids(&[2])
+        );
+        assert_eq!(
+            rows(&games, Filter::Bets, Order::Newest, HIDE_OWNED, "", None),
+            ids(&[2])
+        );
+        assert_eq!(
+            rows(&games, Filter::All, Order::Newest, HIDE_OWNED, "", None),
+            ids(&[3, 2])
+        );
+        assert_eq!(count(&games, would_try, HIDE_OWNED), 1);
+        assert_eq!(
+            count(&games, Filter::Kind(VoteKind::NotForMe), HIDE_OWNED),
+            0
+        );
+        assert_eq!(count(&games, Filter::Bets, HIDE_OWNED), 1);
+        assert_eq!(count(&games, Filter::All, HIDE_OWNED), 2);
+    }
+
+    #[test]
+    fn showing_the_owned_games_again_puts_them_back() {
+        let games = with_owned();
+
+        assert_eq!(count(&games, Filter::All, Shown::default()), 5);
+        assert_eq!(
+            rows(
+                &games,
+                Filter::Kind(VoteKind::WouldTry),
+                Order::Newest,
+                Shown::default(),
+                "",
+                None
+            ),
+            ids(&[2, 1, 4])
+        );
+    }
+
+    #[test]
+    fn the_search_finds_an_owned_game_with_hide_owned_on() {
+        let rows = rows(
+            &with_owned(),
+            Filter::Kind(VoteKind::WouldTry),
+            Order::Newest,
+            HIDE_OWNED,
+            "sky",
+            None,
+        );
+
+        assert_eq!(rows, ids(&[4]));
+    }
+
+    #[test]
+    fn hide_owned_and_on_sale_work_together() {
+        let games = with_owned();
+        let both = Shown {
+            on_sale: true,
+            hide_owned: true,
+        };
+
+        // Subnautica is on sale but owned, GRIME is on sale and not owned.
+        assert_eq!(
+            rows(&games, Filter::All, Order::Newest, both, "", None),
+            ids(&[3])
+        );
+        assert_eq!(count(&games, Filter::All, both), 1);
+    }
+
+    #[test]
+    fn says_when_you_own_all_the_games_of_a_chip() {
+        let would_try = Filter::Kind(VoteKind::WouldTry);
+
+        assert_eq!(
+            empty_text(false, would_try, false, true, ""),
+            "You own all your Would try games"
+        );
+        assert_eq!(
+            empty_text(false, Filter::Kind(VoteKind::NotForMe), false, true, ""),
+            "You own all your Not for me games"
+        );
+        assert_eq!(
+            empty_text(false, Filter::Bets, false, true, ""),
+            "You own all your Bets"
+        );
+        assert_eq!(
+            empty_text(false, Filter::All, false, true, ""),
+            "You own all your voted games"
+        );
+        assert_eq!(
+            empty_text(false, would_try, true, true, ""),
+            "No Would try votes on sale"
+        );
     }
 
     #[test]
