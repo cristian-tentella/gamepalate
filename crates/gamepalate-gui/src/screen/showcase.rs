@@ -462,13 +462,6 @@ impl Showcase {
         self.pages.details(id).map(|details| facts(details, tags))
     }
 
-    /// How well the game runs on Steam Deck, in one word, for the line under the price.
-    pub fn deck(&self, id: AppId) -> Option<Element<'_, Message>> {
-        self.pages
-            .details(id)
-            .and_then(|details| deck::badge(id, details))
-    }
-
     /// The keys of the sheets as one button, then the features; `compact` for a narrow column.
     pub fn more(&self, id: AppId, compact: bool) -> Option<Element<'_, Message>> {
         let open = self.features_open;
@@ -476,7 +469,7 @@ impl Showcase {
 
         self.pages
             .details(id)
-            .map(|details| more(details, open, reviews, compact))
+            .map(|details| more(id, details, open, reviews, compact))
     }
 
     fn load_details(&mut self, upcoming: &[AppId], nearby: &[AppId]) -> Task<Message> {
@@ -554,7 +547,13 @@ fn facts<'a>(details: &'a GameDetails, tags: &[String]) -> Element<'a, Message> 
         .into()
 }
 
-fn more(details: &GameDetails, open: bool, reviews: bool, compact: bool) -> Element<'_, Message> {
+fn more(
+    id: AppId,
+    details: &GameDetails,
+    open: bool,
+    reviews: bool,
+    compact: bool,
+) -> Element<'_, Message> {
     let store = &details.store;
     let sheets = game::key_group(
         sheet_keys(reviews, compact)
@@ -563,37 +562,44 @@ fn more(details: &GameDetails, open: bool, reviews: bool, compact: bool) -> Elem
             .collect(),
         compact,
     );
-    let features = format::features(&details.modes, store.controller);
-    let menu = (!features.is_empty()).then(|| {
-        let header = button(
-            row![
-                text("Features").size(font::BAR_SIZE),
-                text(if open { OPENED } else { CLOSED })
-                    .font(font::ICONS)
-                    .size(font::icon(10.0)),
-            ]
-            .spacing(8)
-            .align_y(Center),
-        )
-        .padding(0)
-        .style(style::list_row(false))
-        .on_press(Message::ToggleFeatures);
-        let chips = open.then(|| {
-            row(features.into_iter().map(|feature| {
-                container(text(feature).size(font::NOTE_SIZE))
-                    .padding([2, 8])
-                    .style(style::tag)
-                    .into()
-            }))
+    let header = button(
+        row![
+            text("Features").size(font::BAR_SIZE),
+            text(if open { OPENED } else { CLOSED })
+                .font(font::ICONS)
+                .size(font::icon(10.0)),
+        ]
+        .spacing(8)
+        .align_y(Center),
+    )
+    .padding(0)
+    .style(style::list_row(false))
+    .on_press(Message::ToggleFeatures);
+    // The Steam Deck first, then the modes and the controller.
+    let chips = open.then(|| {
+        let features = format::features(&details.modes, store.controller)
+            .into_iter()
+            .map(|feature| chip(feature, style::tag));
+
+        row(std::iter::once(deck::chip_of(id, details)).chain(features))
             .spacing(6)
             .wrap()
             .vertical_spacing(6)
-        });
-
-        column![header].push(chips).spacing(8)
     });
+    let menu = column![header].push(chips).spacing(8);
 
     column![sheets].push(menu).spacing(MORE_SPACING).into()
+}
+
+/// One chip of Features.
+fn chip<'a>(
+    label: &'a str,
+    style: impl Fn(&iced::Theme) -> container::Style + 'a,
+) -> Element<'a, Message> {
+    container(text(label).size(font::NOTE_SIZE))
+        .padding([2, 8])
+        .style(style)
+        .into()
 }
 
 // The keys of the sheets with their labels, short in a narrow column.

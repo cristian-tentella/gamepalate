@@ -792,13 +792,9 @@ impl Discover {
             Message::Showcase(showcase::Message::ToggleReviews),
         );
         let currency = self.gamepalate.currency();
-        let deck = self
-            .showcase
-            .deck(game.id)
-            .map(|deck| deck.map(Message::Showcase));
         let figures: Element<'a, Message> = if beside {
             let (shift, gap) = game::beside_reviews();
-            let price = game::price_row(&game.price, currency, gap, deck);
+            let price = game::price_row(&game.price, currency, gap);
 
             row![
                 container(reviews).width(THUMBNAIL_WIDTH + SIMILAR_GAP),
@@ -806,7 +802,7 @@ impl Discover {
             ]
             .into()
         } else {
-            let price = game::price_row(&game.price, currency, game::PRICE_GAP, deck);
+            let price = game::price_row(&game.price, currency, game::PRICE_GAP);
 
             column![reviews, price].spacing(INFO_SPACING).into()
         };

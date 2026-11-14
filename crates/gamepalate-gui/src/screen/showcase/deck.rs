@@ -4,14 +4,9 @@ use iced::{
     widget::{column, container, mouse_area, row, text, text::Style as TextStyle, tooltip},
 };
 
-use super::Message;
-use crate::{
-    font,
-    format::{self, DeckRating},
-    style,
-};
+use super::{Message, chip};
+use crate::{font, format, style};
 
-const HANDHELD: char = '\u{F4C6}';
 const CHECK_CIRCLE: char = '\u{E86C}';
 const WARNING: char = '\u{E002}';
 const BLOCK: char = '\u{E14B}';
@@ -24,17 +19,6 @@ const TIP_SPACING: f32 = 4.0;
 const TIP_GROUP_SPACING: f32 = 8.0;
 
 type Tone = fn(&Theme) -> TextStyle;
-
-/// The tone of the icon and of the word. Good keeps the green on the icon alone, so it stays
-/// apart from Great.
-fn rating_look(rating: DeckRating) -> (Tone, Tone) {
-    match rating {
-        DeckRating::Great => (style::verified, style::verified),
-        DeckRating::Good => (style::verified, style::muted),
-        DeckRating::Rough => (style::playable, style::playable),
-        DeckRating::Broken => (style::muted, style::muted),
-    }
-}
 
 fn check_look(result: CheckResult) -> (char, Tone) {
     match result {
@@ -53,35 +37,22 @@ fn icon<'a>(symbol: char, tone: Tone) -> Element<'a, Message> {
         .into()
 }
 
-/// How well the game runs on Steam Deck, in one word. The tooltip says what Valve and ProtonDB
-/// say, then Valve's reasons; a click opens the game on ProtonDB. `None` when neither says
-/// anything useful.
-pub(super) fn badge(id: AppId, details: &GameDetails) -> Option<Element<'_, Message>> {
+/// The Steam Deck chip of Features: green when the game runs well enough, red when it does not,
+/// plain like the other chips when neither Valve nor ProtonDB says anything useful. The tooltip
+/// says what Valve and ProtonDB say, then Valve's reasons; a click opens the game on ProtonDB.
+pub(super) fn chip_of(id: AppId, details: &GameDetails) -> Element<'_, Message> {
     let deck = details.store.steam_deck;
-    let rating = format::deck_rating(deck, details.protondb)?;
-    let (icon_tone, word_tone) = rating_look(rating);
+    let runs = format::deck_rating(deck, details.protondb).map(format::DeckRating::runs);
+    let label = mouse_area(chip("Steam Deck", style::deck_chip(runs)))
+        .on_press(Message::OpenLink(format::protondb_url(id)))
+        .interaction(mouse::Interaction::Pointer);
 
-    let line = mouse_area(
-        row![
-            icon(HANDHELD, icon_tone),
-            text(format::deck_rating_label(rating))
-                .size(font::NOTE_SIZE)
-                .style(word_tone),
-        ]
-        .spacing(ICON_GAP)
-        .align_y(iced::Center),
+    tooltip(
+        label,
+        tip(deck, &details.deck, details.protondb),
+        tooltip::Position::Bottom,
     )
-    .on_press(Message::OpenLink(format::protondb_url(id)))
-    .interaction(mouse::Interaction::Pointer);
-
-    Some(
-        tooltip(
-            line,
-            tip(deck, &details.deck, details.protondb),
-            tooltip::Position::Bottom,
-        )
-        .into(),
-    )
+    .into()
 }
 
 fn tip(

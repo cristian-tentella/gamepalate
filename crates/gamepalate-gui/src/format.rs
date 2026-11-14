@@ -387,12 +387,10 @@ pub fn deck_rating(deck: Option<SteamDeck>, protondb: Option<ProtonDb>) -> Optio
     Some(rating)
 }
 
-pub fn deck_rating_label(rating: DeckRating) -> &'static str {
-    match rating {
-        DeckRating::Great => "Great",
-        DeckRating::Good => "Good",
-        DeckRating::Rough => "Rough",
-        DeckRating::Broken => "Broken",
+impl DeckRating {
+    /// Good or better: the game runs well enough on Steam Deck.
+    pub fn runs(self) -> bool {
+        matches!(self, DeckRating::Great | DeckRating::Good)
     }
 }
 
@@ -1168,6 +1166,14 @@ mod tests {
         assert_eq!(rating(ProtonTier::Borked), Some(DeckRating::Broken));
         assert_eq!(rating(ProtonTier::Pending), None);
         assert_eq!(deck_rating(None, None), None);
+    }
+
+    #[test]
+    fn good_and_better_run() {
+        assert!(DeckRating::Great.runs());
+        assert!(DeckRating::Good.runs());
+        assert!(!DeckRating::Rough.runs());
+        assert!(!DeckRating::Broken.runs());
     }
 
     #[test]

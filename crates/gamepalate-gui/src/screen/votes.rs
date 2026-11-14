@@ -608,22 +608,12 @@ impl Votes {
 
     fn details<'a>(&'a self, game: &'a VotedGame, size: Size, scale: f32) -> Element<'a, Message> {
         let today = jiff::Zoned::now().date();
-        let deck = self
-            .showcase
-            .deck(game.id)
-            .map(|deck| deck.map(Message::Showcase));
         let price = match &game.price {
-            Some(price) => {
-                game::price_row(price, self.gamepalate.currency(), game::PRICE_GAP, deck)
-            }
-            None => column![
-                text("Not on sale on Steam")
-                    .size(font::INFO_SIZE)
-                    .style(style::muted)
-            ]
-            .push(deck)
-            .spacing(game::PRICE_GAP)
-            .into(),
+            Some(price) => game::price_row(price, self.gamepalate.currency(), game::PRICE_GAP),
+            None => text("Not on sale on Steam")
+                .size(font::INFO_SIZE)
+                .style(style::muted)
+                .into(),
         };
         let voted = rich_text![
             span("Voted "),
