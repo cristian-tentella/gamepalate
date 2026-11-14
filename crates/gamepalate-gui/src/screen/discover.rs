@@ -1,4 +1,4 @@
-mod filters;
+pub(super) mod filters;
 mod queue;
 
 use std::{

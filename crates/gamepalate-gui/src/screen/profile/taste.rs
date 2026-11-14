@@ -1,6 +1,4 @@
-use gamepalate_app::{
-    Ban, HoursGame, HoursSource, SignalsConfig, SourceView, TagView, TasteView, VoteKind,
-};
+use gamepalate_app::{Ban, HoursGame, HoursSource, SignalsConfig, SourceView, TagView, TasteView};
 use iced::{
     Center, Color, Element, Fill, Length, Theme, mouse,
     widget::{button, column, container, mouse_area, progress_bar, row, space, text, tooltip},
@@ -292,7 +290,7 @@ fn source_message(source: HoursSource) -> Message {
         HoursSource::Followed => {
             Message::OpenLibrary(library::Filter::Followed, library::Sort::TasteWeight)
         }
-        HoursSource::WouldTry => Message::OpenVotes(Filter::Kind(VoteKind::WouldTry)),
+        HoursSource::WouldTry => Message::OpenVotes(Filter::WouldTry),
         HoursSource::Elsewhere => {
             Message::OpenLibrary(library::Filter::Elsewhere, library::Sort::TasteWeight)
         }
@@ -414,7 +412,7 @@ fn dominant_message(game: &HoursGame) -> Message {
     if in_library(game) {
         Message::OpenInLibrary(game.id)
     } else {
-        Message::OpenVotes(Filter::Kind(VoteKind::WouldTry))
+        Message::OpenVotes(Filter::WouldTry)
     }
 }
 
@@ -662,7 +660,7 @@ mod tests {
         ));
         assert!(matches!(
             source_message(HoursSource::WouldTry),
-            Message::OpenVotes(Filter::Kind(VoteKind::WouldTry))
+            Message::OpenVotes(Filter::WouldTry)
         ));
         assert!(matches!(
             source_message(HoursSource::Elsewhere),
@@ -867,7 +865,7 @@ mod tests {
         ));
         assert!(matches!(
             dominant_message(&game("Hades", 5.0, HoursSource::WouldTry)),
-            Message::OpenVotes(Filter::Kind(VoteKind::WouldTry))
+            Message::OpenVotes(Filter::WouldTry)
         ));
     }
 

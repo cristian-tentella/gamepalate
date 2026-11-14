@@ -262,6 +262,16 @@ pub fn active_filters(
     {
         filters.push(Filter::EarlyAccess);
     }
+    filters.extend(price_and_tag_filters(options, catalog)?);
+
+    Ok(filters)
+}
+
+fn price_and_tag_filters(
+    options: &FilterOptions,
+    catalog: &Catalog,
+) -> Result<Vec<Filter>, TagNameError> {
+    let mut filters = Vec::new();
     if let Some(min) = options.min_price_cents {
         filters.push(Filter::MinPrice(min));
     }
@@ -282,6 +292,29 @@ pub fn active_filters(
             catalog,
         )?));
     }
+    Ok(filters)
+}
+
+/// Only the filters the options ask for: no defaults from the config, and none of the
+/// filters on owned, hidden or voted games. An empty option is no limit.
+pub fn chosen_filters(
+    options: &FilterOptions,
+    catalog: &Catalog,
+) -> Result<Vec<Filter>, TagNameError> {
+    let mut filters = Vec::new();
+    if let Some(min) = options.min_reviews {
+        filters.push(Filter::MinReviews(min));
+    }
+    if let Some(max) = options.max_reviews {
+        filters.push(Filter::MaxReviews(max));
+    }
+    if let Some(min) = options.min_positive_percent.filter(|&min| min != 0) {
+        filters.push(Filter::MinPositivePercent(min));
+    }
+    if options.without_early_access == Some(true) {
+        filters.push(Filter::EarlyAccess);
+    }
+    filters.extend(price_and_tag_filters(options, catalog)?);
 
     Ok(filters)
 }
@@ -398,6 +431,156 @@ mod tests {
         let context = FilterContext::new(&signals, &Families::default(), &votes, &corrections);
 
         assert_eq!(context.owned, BTreeSet::from([AppId(5)]));
+    }
+
+    fn catalog_with_tags() -> Catalog {
+        use crate::{
+            catalog::{Freshness, TagName},
+            currency::Currency,
+            region::Region,
+        };
+        use std::collections::BTreeMap;
+
+        let tag = |name: &str| TagName {
+            english: name.to_string(),
+            italian: name.to_string(),
+        };
+        Catalog::new(
+            Vec::new(),
+            BTreeMap::from([(TagId(1), tag("Roguelike")), (TagId(2), tag("Horror"))]),
+            BTreeMap::new(),
+            Freshness {
+                prices_updated_at: Timestamp(0),
+                tags_updated_at: Timestamp(0),
+                region: Region::ITALY,
+            },
+            Currency::italian(),
+        )
+    }
+
+    #[test]
+    fn no_chosen_option_is_no_filter() {
+        let filters = chosen_filters(&FilterOptions::default(), &catalog_with_tags()).unwrap();
+
+        assert_eq!(filters, Vec::new());
+    }
+
+    #[test]
+    fn each_chosen_option_makes_its_filter() {
+        let options = FilterOptions {
+            min_reviews: Some(100),
+            max_reviews: Some(5000),
+            min_positive_percent: Some(85),
+            without_voted: true,
+            without_early_access: Some(true),
+            min_price_cents: Some(500),
+            max_price_cents: Some(2000),
+            only_discounted: true,
+            min_discount_percent: Some(30),
+            tags: vec!["roguelike".to_string()],
+            without_tags: vec!["Horror".to_string()],
+        };
+
+        let filters = chosen_filters(&options, &catalog_with_tags()).unwrap();
+
+        assert_eq!(
+            filters,
+            vec![
+                Filter::MinReviews(100),
+                Filter::MaxReviews(5000),
+                Filter::MinPositivePercent(85),
+                Filter::EarlyAccess,
+                Filter::MinPrice(500),
+                Filter::MaxPrice(2000),
+                Filter::MinDiscount(30),
+                Filter::RequiredTags(vec![TagId(1)]),
+                Filter::ExcludedTags(vec![TagId(2)]),
+            ]
+        );
+    }
+
+    #[test]
+    fn only_discounted_alone_and_early_access_left_in_or_unset() {
+        let only_discounted = FilterOptions {
+            only_discounted: true,
+            ..FilterOptions::default()
+        };
+        let catalog = catalog_with_tags();
+
+        assert_eq!(
+            chosen_filters(&only_discounted, &catalog).unwrap(),
+            vec![Filter::OnlyDiscounted]
+        );
+        for early_access in [None, Some(false)] {
+            let options = FilterOptions {
+                without_early_access: early_access,
+                ..FilterOptions::default()
+            };
+            assert_eq!(chosen_filters(&options, &catalog).unwrap(), Vec::new());
+        }
+    }
+
+    #[test]
+    fn a_zero_positive_percent_is_no_filter() {
+        let options = FilterOptions {
+            min_positive_percent: Some(0),
+            ..FilterOptions::default()
+        };
+
+        assert_eq!(
+            chosen_filters(&options, &catalog_with_tags()).unwrap(),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn an_unknown_chosen_tag_is_an_error() {
+        let options = FilterOptions {
+            tags: vec!["Nope".to_string()],
+            ..FilterOptions::default()
+        };
+
+        assert_eq!(
+            chosen_filters(&options, &catalog_with_tags()),
+            Err(TagNameError::NotFound("Nope".to_string()))
+        );
+    }
+
+    #[test]
+    fn the_active_filters_keep_their_order() {
+        let options = FilterOptions {
+            max_reviews: Some(5000),
+            without_voted: true,
+            min_price_cents: Some(500),
+            max_price_cents: Some(2000),
+            min_discount_percent: Some(30),
+            tags: vec!["Roguelike".to_string()],
+            without_tags: vec!["Horror".to_string()],
+            ..FilterOptions::default()
+        };
+        let config = Config::default();
+
+        let filters = active_filters(&options, &config, &catalog_with_tags()).unwrap();
+
+        assert_eq!(
+            filters,
+            vec![
+                Filter::Owned,
+                Filter::FamilyGames,
+                Filter::Hidden,
+                Filter::NotForMe,
+                Filter::BannedTags,
+                Filter::MinReviews(config.relevance.min_reviews),
+                Filter::MaxReviews(5000),
+                Filter::MinPositivePercent(config.results.min_positive_percent),
+                Filter::Voted,
+                Filter::MinPrice(500),
+                Filter::MaxPrice(2000),
+                Filter::MinDiscount(30),
+                Filter::RequiredTags(vec![TagId(1)]),
+                Filter::ExcludedTags(vec![TagId(2)]),
+            ]
+        );
     }
 
     #[test]
