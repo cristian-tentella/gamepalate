@@ -319,11 +319,13 @@ pub fn screenshot_position(index: usize, count: usize) -> String {
     format!("{} of {count}", index + 1)
 }
 
-pub fn steam_deck(deck: SteamDeck) -> &'static str {
+/// Valve's verdict, as the first line of the Steam Deck tooltip.
+pub fn steam_deck_line(deck: Option<SteamDeck>) -> &'static str {
     match deck {
-        SteamDeck::Verified => "Deck Verified",
-        SteamDeck::Playable => "Deck Playable",
-        SteamDeck::Unsupported => "Deck Unsupported",
+        Some(SteamDeck::Verified) => "Steam Deck: Verified",
+        Some(SteamDeck::Playable) => "Steam Deck: Playable",
+        Some(SteamDeck::Unsupported) => "Steam Deck: Unsupported",
+        None => "Steam Deck: Unknown",
     }
 }
 
@@ -348,24 +350,50 @@ pub fn proton_tier(tier: ProtonTier) -> &'static str {
     }
 }
 
-/// The two parts of the Steam Deck badge: Valve's verdict and ProtonDB's tier.
-#[derive(Debug, PartialEq, Eq)]
-pub struct DeckBadge {
-    pub deck: Option<&'static str>,
-    pub protondb: Option<String>,
+/// With fewer reports than this, ProtonDB says too little to change the rating.
+const MIN_PROTONDB_REPORTS: u32 = 5;
+
+/// How well a game runs on Steam Deck, from Valve's verdict and ProtonDB's tier together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeckRating {
+    Great,
+    Good,
+    Rough,
+    Broken,
 }
 
-/// `None` when there is nothing to show. A tier that is still pending says nothing, so it stays out.
-pub fn deck_badge(deck: Option<SteamDeck>, protondb: Option<ProtonDb>) -> Option<DeckBadge> {
-    let protondb = protondb
-        .filter(|protondb| protondb.tier != ProtonTier::Pending)
-        .map(|protondb| format!("ProtonDB {}", proton_tier(protondb.tier)));
-    let badge = DeckBadge {
-        deck: deck.map(steam_deck),
-        protondb,
+/// Valve sets the band and ProtonDB picks within it: ProtonDB moves Valve's verdict by one step at
+/// most, and only with enough reports. Without Valve, ProtonDB alone decides. `None` when neither
+/// says anything useful.
+pub fn deck_rating(deck: Option<SteamDeck>, protondb: Option<ProtonDb>) -> Option<DeckRating> {
+    use ProtonTier::{Borked, Bronze, Gold, Native, Pending, Platinum, Silver};
+
+    let tier = protondb
+        .filter(|protondb| protondb.reports >= MIN_PROTONDB_REPORTS && protondb.tier != Pending)
+        .map(|protondb| protondb.tier);
+    let rating = match (deck, tier) {
+        (Some(SteamDeck::Verified), _) => DeckRating::Great,
+        (Some(SteamDeck::Playable), Some(Silver | Bronze | Borked)) => DeckRating::Rough,
+        (Some(SteamDeck::Playable), _) => DeckRating::Good,
+        (Some(SteamDeck::Unsupported), Some(Platinum | Native | Gold)) => DeckRating::Rough,
+        (Some(SteamDeck::Unsupported), _) => DeckRating::Broken,
+        (None, Some(Platinum | Native)) => DeckRating::Great,
+        (None, Some(Gold)) => DeckRating::Good,
+        (None, Some(Silver | Bronze)) => DeckRating::Rough,
+        (None, Some(Borked)) => DeckRating::Broken,
+        (None, Some(Pending) | None) => return None,
     };
 
-    (badge.deck.is_some() || badge.protondb.is_some()).then_some(badge)
+    Some(rating)
+}
+
+pub fn deck_rating_label(rating: DeckRating) -> &'static str {
+    match rating {
+        DeckRating::Great => "Great",
+        DeckRating::Good => "Good",
+        DeckRating::Rough => "Rough",
+        DeckRating::Broken => "Broken",
+    }
 }
 
 /// The checks of the report in the order of the tooltip: what fails, what to watch, the notes,
@@ -1078,8 +1106,11 @@ mod tests {
 
     #[test]
     fn names_the_steam_deck_support() {
-        assert_eq!(steam_deck(SteamDeck::Verified), "Deck Verified");
-        assert_eq!(steam_deck(SteamDeck::Unsupported), "Deck Unsupported");
+        assert_eq!(
+            steam_deck_line(Some(SteamDeck::Verified)),
+            "Steam Deck: Verified"
+        );
+        assert_eq!(steam_deck_line(None), "Steam Deck: Unknown");
     }
 
     #[test]
@@ -1101,47 +1132,54 @@ mod tests {
         Some(ProtonDb { tier, reports })
     }
 
-    fn badge(deck: Option<&'static str>, protondb: Option<&str>) -> Option<DeckBadge> {
-        Some(DeckBadge {
-            deck,
-            protondb: protondb.map(str::to_string),
-        })
+    #[test]
+    fn valve_sets_the_band_and_protondb_picks_within_it() {
+        let rating = |deck, tier| deck_rating(Some(deck), proton(tier, 100));
+
+        assert_eq!(
+            rating(SteamDeck::Verified, ProtonTier::Borked),
+            Some(DeckRating::Great)
+        );
+        assert_eq!(
+            rating(SteamDeck::Playable, ProtonTier::Platinum),
+            Some(DeckRating::Good)
+        );
+        assert_eq!(
+            rating(SteamDeck::Playable, ProtonTier::Silver),
+            Some(DeckRating::Rough)
+        );
+        assert_eq!(
+            rating(SteamDeck::Unsupported, ProtonTier::Platinum),
+            Some(DeckRating::Rough)
+        );
+        assert_eq!(
+            rating(SteamDeck::Unsupported, ProtonTier::Silver),
+            Some(DeckRating::Broken)
+        );
     }
 
     #[test]
-    fn the_badge_has_the_deck_and_protondb_when_it_knows_both() {
-        assert_eq!(
-            deck_badge(Some(SteamDeck::Verified), proton(ProtonTier::Gold, 2797)),
-            badge(Some("Deck Verified"), Some("ProtonDB Gold"))
-        );
-        assert_eq!(
-            deck_badge(
-                Some(SteamDeck::Unsupported),
-                proton(ProtonTier::Borked, 263)
-            ),
-            badge(Some("Deck Unsupported"), Some("ProtonDB Borked"))
-        );
+    fn without_valve_protondb_decides() {
+        let rating = |tier| deck_rating(None, proton(tier, 100));
+
+        assert_eq!(rating(ProtonTier::Native), Some(DeckRating::Great));
+        assert_eq!(rating(ProtonTier::Gold), Some(DeckRating::Good));
+        assert_eq!(rating(ProtonTier::Bronze), Some(DeckRating::Rough));
+        assert_eq!(rating(ProtonTier::Borked), Some(DeckRating::Broken));
+        assert_eq!(rating(ProtonTier::Pending), None);
+        assert_eq!(deck_rating(None, None), None);
     }
 
     #[test]
-    fn the_badge_keeps_what_one_source_says() {
+    fn a_few_protondb_reports_do_not_count() {
+        assert_eq!(deck_rating(None, proton(ProtonTier::Platinum, 4)), None);
         assert_eq!(
-            deck_badge(Some(SteamDeck::Playable), None),
-            badge(Some("Deck Playable"), None)
+            deck_rating(Some(SteamDeck::Playable), proton(ProtonTier::Borked, 4)),
+            Some(DeckRating::Good)
         );
         assert_eq!(
-            deck_badge(None, proton(ProtonTier::Platinum, 353)),
-            badge(None, Some("ProtonDB Platinum"))
-        );
-        assert_eq!(deck_badge(None, None), None);
-    }
-
-    #[test]
-    fn a_pending_tier_is_left_out_of_the_badge() {
-        assert_eq!(deck_badge(None, proton(ProtonTier::Pending, 3)), None);
-        assert_eq!(
-            deck_badge(Some(SteamDeck::Verified), proton(ProtonTier::Pending, 3)),
-            badge(Some("Deck Verified"), None)
+            deck_rating(None, proton(ProtonTier::Platinum, 5)),
+            Some(DeckRating::Great)
         );
     }
 

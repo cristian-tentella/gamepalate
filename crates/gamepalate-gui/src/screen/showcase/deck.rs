@@ -4,9 +4,14 @@ use iced::{
     widget::{column, container, mouse_area, row, text, text::Style as TextStyle, tooltip},
 };
 
-use super::{LINE_SPACING, Message, TAG_SPACING};
-use crate::{font, format, style};
+use super::Message;
+use crate::{
+    font,
+    format::{self, DeckRating},
+    style,
+};
 
+const HANDHELD: char = '\u{F4C6}';
 const CHECK_CIRCLE: char = '\u{E86C}';
 const WARNING: char = '\u{E002}';
 const BLOCK: char = '\u{E14B}';
@@ -16,14 +21,18 @@ const ICON_GAP: f32 = 6.0;
 // The right column of a game is never narrower than this.
 const TIP_WIDTH: f32 = 260.0;
 const TIP_SPACING: f32 = 4.0;
+const TIP_GROUP_SPACING: f32 = 8.0;
 
 type Tone = fn(&Theme) -> TextStyle;
 
-fn deck_look(deck: SteamDeck) -> (char, Tone) {
-    match deck {
-        SteamDeck::Verified => (CHECK_CIRCLE, style::verified),
-        SteamDeck::Playable => (INFO, style::playable),
-        SteamDeck::Unsupported => (BLOCK, style::muted),
+/// The tone of the icon and of the word. Good keeps the green on the icon alone, so it stays
+/// apart from Great.
+fn rating_look(rating: DeckRating) -> (Tone, Tone) {
+    match rating {
+        DeckRating::Great => (style::verified, style::verified),
+        DeckRating::Good => (style::verified, style::muted),
+        DeckRating::Rough => (style::playable, style::playable),
+        DeckRating::Broken => (style::muted, style::muted),
     }
 }
 
@@ -44,39 +53,23 @@ fn icon<'a>(symbol: char, tone: Tone) -> Element<'a, Message> {
         .into()
 }
 
-/// What Valve and ProtonDB say about the game on Steam Deck, always in sight. The tooltip has
-/// the reasons and a click opens the game on ProtonDB. `None` when neither says anything.
+/// How well the game runs on Steam Deck, in one word. The tooltip says what Valve and ProtonDB
+/// say, then Valve's reasons; a click opens the game on ProtonDB. `None` when neither says
+/// anything useful.
 pub(super) fn badge(id: AppId, details: &GameDetails) -> Option<Element<'_, Message>> {
     let deck = details.store.steam_deck;
-    let parts = format::deck_badge(deck, details.protondb)?;
-
-    let mut pieces: Vec<Element<'_, Message>> = Vec::new();
-    if let (Some(deck), Some(label)) = (deck, parts.deck) {
-        let (symbol, tone) = deck_look(deck);
-        pieces.push(
-            row![
-                icon(symbol, tone),
-                text(label).size(font::NOTE_SIZE).style(tone)
-            ]
-            .spacing(TAG_SPACING)
-            .into(),
-        );
-    }
-    if let Some(label) = parts.protondb {
-        let label = if deck.is_some() {
-            format!("· {label}")
-        } else {
-            label
-        };
-        pieces.push(text(label).size(font::NOTE_SIZE).style(style::muted).into());
-    }
+    let rating = format::deck_rating(deck, details.protondb)?;
+    let (icon_tone, word_tone) = rating_look(rating);
 
     let line = mouse_area(
-        row(pieces)
-            .spacing(TAG_SPACING)
-            .align_y(iced::Center)
-            .wrap()
-            .vertical_spacing(LINE_SPACING),
+        row![
+            icon(HANDHELD, icon_tone),
+            text(format::deck_rating_label(rating))
+                .size(font::NOTE_SIZE)
+                .style(word_tone),
+        ]
+        .spacing(ICON_GAP)
+        .align_y(iced::Center),
     )
     .on_press(Message::OpenLink(format::protondb_url(id)))
     .interaction(mouse::Interaction::Pointer);
@@ -84,14 +77,27 @@ pub(super) fn badge(id: AppId, details: &GameDetails) -> Option<Element<'_, Mess
     Some(
         tooltip(
             line,
-            tip(&details.deck, details.protondb),
+            tip(deck, &details.deck, details.protondb),
             tooltip::Position::Bottom,
         )
         .into(),
     )
 }
 
-fn tip(checks: &[DeckCheck], protondb: Option<ProtonDb>) -> Element<'_, Message> {
+fn tip(
+    deck: Option<SteamDeck>,
+    checks: &[DeckCheck],
+    protondb: Option<ProtonDb>,
+) -> Element<'_, Message> {
+    let sources = column![
+        text(format::steam_deck_line(deck))
+            .size(font::NOTE_SIZE)
+            .font(font::SEMIBOLD),
+        text(format::protondb_line(protondb))
+            .size(font::NOTE_SIZE)
+            .style(style::muted),
+    ]
+    .spacing(TIP_SPACING);
     let reasons = format::deck_order(checks).into_iter().map(|check| {
         let (symbol, tone) = check_look(check.result);
 
@@ -99,11 +105,9 @@ fn tip(checks: &[DeckCheck], protondb: Option<ProtonDb>) -> Element<'_, Message>
             .spacing(ICON_GAP)
             .into()
     });
-    let protondb = text(format::protondb_line(protondb))
-        .size(font::NOTE_SIZE)
-        .style(style::muted);
+    let reasons = (!checks.is_empty()).then(|| column(reasons).spacing(TIP_SPACING));
 
-    container(column(reasons).push(protondb).spacing(TIP_SPACING))
+    container(column![sources].push(reasons).spacing(TIP_GROUP_SPACING))
         .padding([6, 10])
         .max_width(TIP_WIDTH)
         .style(style::popup)
@@ -113,13 +117,6 @@ fn tip(checks: &[DeckCheck], protondb: Option<ProtonDb>) -> Element<'_, Message>
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn each_category_has_its_symbol() {
-        assert_eq!(deck_look(SteamDeck::Verified).0, CHECK_CIRCLE);
-        assert_eq!(deck_look(SteamDeck::Playable).0, INFO);
-        assert_eq!(deck_look(SteamDeck::Unsupported).0, BLOCK);
-    }
 
     #[test]
     fn each_check_has_its_symbol() {

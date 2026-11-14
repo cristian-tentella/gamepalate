@@ -149,10 +149,12 @@ pub fn beside_reviews() -> (f32, f32) {
     (shift, gap)
 }
 
+/// The price, and under it the original price of a discount and then `below`.
 pub fn price_row<'a, Message: 'a>(
     price: &Price,
     currency: &Currency,
     gap: f32,
+    below: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     let discount = price.discount;
     let main = row![
@@ -181,9 +183,12 @@ pub fn price_row<'a, Message: 'a>(
         ]
         .push(ends)
         .spacing(6)
+        .into()
     });
+    let notes: Vec<Element<'a, Message>> = context.into_iter().chain(below).collect();
+    let notes = (!notes.is_empty()).then(|| column(notes).spacing(showcase::LINE_SPACING));
 
-    column![main].push(context).spacing(gap).into()
+    column![main].push(notes).spacing(gap).into()
 }
 
 fn discount_badge<'a, Message: 'a>(percent: u8) -> Element<'a, Message> {

@@ -366,7 +366,14 @@ impl GamePage {
                         &game.reviews,
                         Message::Showcase(showcase::Message::ToggleReviews),
                     ),
-                    game::price_row(&game.price, self.gamepalate.currency(), game::PRICE_GAP),
+                    game::price_row(
+                        &game.price,
+                        self.gamepalate.currency(),
+                        game::PRICE_GAP,
+                        showcase
+                            .deck(game.id)
+                            .map(|deck| deck.map(Message::Showcase)),
+                    ),
                 ]
                 .spacing(28)
                 .into(),

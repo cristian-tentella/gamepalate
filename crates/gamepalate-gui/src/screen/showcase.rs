@@ -457,12 +457,16 @@ impl Showcase {
         ))
     }
 
-    /// The Steam Deck badge, the year, the developers and the tags, small, as a few lines under
-    /// the name.
+    /// The year, the developers and the tags, small, as a few lines under the name.
     pub fn facts<'a>(&'a self, id: AppId, tags: &[String]) -> Option<Element<'a, Message>> {
+        self.pages.details(id).map(|details| facts(details, tags))
+    }
+
+    /// How well the game runs on Steam Deck, in one word, for the line under the price.
+    pub fn deck(&self, id: AppId) -> Option<Element<'_, Message>> {
         self.pages
             .details(id)
-            .map(|details| facts(id, details, tags))
+            .and_then(|details| deck::badge(id, details))
     }
 
     /// The keys of the sheets as one button, then the features; `compact` for a narrow column.
@@ -510,7 +514,7 @@ impl Showcase {
     }
 }
 
-fn facts<'a>(id: AppId, details: &'a GameDetails, tags: &[String]) -> Element<'a, Message> {
+fn facts<'a>(details: &'a GameDetails, tags: &[String]) -> Element<'a, Message> {
     let store = &details.store;
     let byline = format::byline(
         format::year(store.release_date),
@@ -543,7 +547,6 @@ fn facts<'a>(id: AppId, details: &'a GameDetails, tags: &[String]) -> Element<'a
     });
 
     column![]
-        .push(deck::badge(id, details))
         .push(byline)
         .push(early_access)
         .push(tags)
