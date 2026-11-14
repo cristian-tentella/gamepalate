@@ -1,6 +1,7 @@
 use gamepalate_app::{
-    Blame, Controller, Currency, DiscoverPlace, KnownFrom, LeftOut, Price, Reviews, SearchOptions,
-    SteamDeck, Timestamp, VoteKind, reviews::Review, settings::KeySource,
+    AppId, Blame, CheckResult, Controller, Currency, DeckCheck, DiscoverPlace, KnownFrom, LeftOut,
+    Price, ProtonDb, ProtonTier, Reviews, SearchOptions, SteamDeck, Timestamp, VoteKind,
+    reviews::Review, settings::KeySource,
 };
 use jiff::{civil::Date, tz::TimeZone};
 
@@ -326,21 +327,74 @@ pub fn steam_deck(deck: SteamDeck) -> &'static str {
     }
 }
 
-pub fn features(
-    deck: Option<SteamDeck>,
-    modes: &[String],
-    controller: Option<Controller>,
-) -> Vec<&str> {
+pub fn features(modes: &[String], controller: Option<Controller>) -> Vec<&str> {
     let controller = controller.map(|controller| match controller {
         Controller::Full => "Full controller",
         Controller::Partial => "Partial controller",
     });
 
-    deck.map(steam_deck)
-        .into_iter()
-        .chain(modes.iter().map(String::as_str))
-        .chain(controller)
-        .collect()
+    modes.iter().map(String::as_str).chain(controller).collect()
+}
+
+pub fn proton_tier(tier: ProtonTier) -> &'static str {
+    match tier {
+        ProtonTier::Platinum => "Platinum",
+        ProtonTier::Gold => "Gold",
+        ProtonTier::Silver => "Silver",
+        ProtonTier::Bronze => "Bronze",
+        ProtonTier::Borked => "Borked",
+        ProtonTier::Native => "Native",
+        ProtonTier::Pending => "Pending",
+    }
+}
+
+/// The two parts of the Steam Deck badge: Valve's verdict and ProtonDB's tier.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DeckBadge {
+    pub deck: Option<&'static str>,
+    pub protondb: Option<String>,
+}
+
+/// `None` when there is nothing to show. A tier that is still pending says nothing, so it stays out.
+pub fn deck_badge(deck: Option<SteamDeck>, protondb: Option<ProtonDb>) -> Option<DeckBadge> {
+    let protondb = protondb
+        .filter(|protondb| protondb.tier != ProtonTier::Pending)
+        .map(|protondb| format!("ProtonDB {}", proton_tier(protondb.tier)));
+    let badge = DeckBadge {
+        deck: deck.map(steam_deck),
+        protondb,
+    };
+
+    (badge.deck.is_some() || badge.protondb.is_some()).then_some(badge)
+}
+
+/// The checks of the report in the order of the tooltip: what fails, what to watch, the notes,
+/// then what works. Inside each group the order is Valve's.
+pub fn deck_order(checks: &[DeckCheck]) -> Vec<&DeckCheck> {
+    let mut ordered: Vec<&DeckCheck> = checks.iter().collect();
+    ordered.sort_by_key(|check| match check.result {
+        CheckResult::Failed => 0,
+        CheckResult::Warning => 1,
+        CheckResult::Note => 2,
+        CheckResult::Passed => 3,
+    });
+
+    ordered
+}
+
+pub fn protondb_line(protondb: Option<ProtonDb>) -> String {
+    match protondb {
+        Some(ProtonDb { tier, reports }) if reports > 0 => {
+            let noun = if reports == 1 { "report" } else { "reports" };
+
+            format!("ProtonDB: {}, {} {noun}", proton_tier(tier), count(reports))
+        }
+        _ => "ProtonDB: no reports".to_string(),
+    }
+}
+
+pub fn protondb_url(id: AppId) -> String {
+    format!("https://www.protondb.com/app/{}", id.0)
 }
 
 pub fn developers(developers: &[String]) -> Option<String> {
@@ -1029,23 +1083,109 @@ mod tests {
     }
 
     #[test]
-    fn lists_deck_modes_and_controller_in_order() {
+    fn lists_modes_and_controller_in_order() {
         let modes = ["Single-player".to_string(), "Online Co-op".to_string()];
 
         assert_eq!(
-            features(Some(SteamDeck::Verified), &modes, Some(Controller::Full)),
-            [
-                "Deck Verified",
-                "Single-player",
-                "Online Co-op",
-                "Full controller"
-            ]
+            features(&modes, Some(Controller::Full)),
+            ["Single-player", "Online Co-op", "Full controller"]
         );
         assert_eq!(
-            features(None, &[], Some(Controller::Partial)),
+            features(&[], Some(Controller::Partial)),
             ["Partial controller"]
         );
-        assert!(features(None, &[], None).is_empty());
+        assert!(features(&[], None).is_empty());
+    }
+
+    fn proton(tier: ProtonTier, reports: u32) -> Option<ProtonDb> {
+        Some(ProtonDb { tier, reports })
+    }
+
+    fn badge(deck: Option<&'static str>, protondb: Option<&str>) -> Option<DeckBadge> {
+        Some(DeckBadge {
+            deck,
+            protondb: protondb.map(str::to_string),
+        })
+    }
+
+    #[test]
+    fn the_badge_has_the_deck_and_protondb_when_it_knows_both() {
+        assert_eq!(
+            deck_badge(Some(SteamDeck::Verified), proton(ProtonTier::Gold, 2797)),
+            badge(Some("Deck Verified"), Some("ProtonDB Gold"))
+        );
+        assert_eq!(
+            deck_badge(
+                Some(SteamDeck::Unsupported),
+                proton(ProtonTier::Borked, 263)
+            ),
+            badge(Some("Deck Unsupported"), Some("ProtonDB Borked"))
+        );
+    }
+
+    #[test]
+    fn the_badge_keeps_what_one_source_says() {
+        assert_eq!(
+            deck_badge(Some(SteamDeck::Playable), None),
+            badge(Some("Deck Playable"), None)
+        );
+        assert_eq!(
+            deck_badge(None, proton(ProtonTier::Platinum, 353)),
+            badge(None, Some("ProtonDB Platinum"))
+        );
+        assert_eq!(deck_badge(None, None), None);
+    }
+
+    #[test]
+    fn a_pending_tier_is_left_out_of_the_badge() {
+        assert_eq!(deck_badge(None, proton(ProtonTier::Pending, 3)), None);
+        assert_eq!(
+            deck_badge(Some(SteamDeck::Verified), proton(ProtonTier::Pending, 3)),
+            badge(Some("Deck Verified"), None)
+        );
+    }
+
+    #[test]
+    fn the_tooltip_lists_failures_then_warnings_then_notes_then_what_works() {
+        let check = |result, text| DeckCheck { result, text };
+        let checks = [
+            check(CheckResult::Passed, "a"),
+            check(CheckResult::Note, "b"),
+            check(CheckResult::Warning, "c"),
+            check(CheckResult::Passed, "d"),
+            check(CheckResult::Failed, "e"),
+            check(CheckResult::Warning, "f"),
+        ];
+
+        let texts: Vec<&str> = deck_order(&checks).iter().map(|c| c.text).collect();
+
+        assert_eq!(texts, ["e", "c", "f", "b", "a", "d"]);
+        assert!(deck_order(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_protondb_line_counts_the_reports() {
+        assert_eq!(
+            protondb_line(proton(ProtonTier::Gold, 2797)),
+            "ProtonDB: Gold, 2,797 reports"
+        );
+        assert_eq!(
+            protondb_line(proton(ProtonTier::Silver, 1)),
+            "ProtonDB: Silver, 1 report"
+        );
+        assert_eq!(
+            protondb_line(proton(ProtonTier::Pending, 0)),
+            "ProtonDB: no reports"
+        );
+        assert_eq!(protondb_line(None), "ProtonDB: no reports");
+    }
+
+    #[test]
+    fn the_protondb_page_is_the_one_of_the_game() {
+        assert_eq!(
+            protondb_url(AppId(1085660)),
+            "https://www.protondb.com/app/1085660"
+        );
     }
 
     #[test]

@@ -1,4 +1,5 @@
 mod about;
+mod deck;
 mod descriptions;
 pub(crate) mod images;
 mod media;
@@ -456,9 +457,12 @@ impl Showcase {
         ))
     }
 
-    /// The year, the developers and the tags, small, as a few lines under the name.
+    /// The Steam Deck badge, the year, the developers and the tags, small, as a few lines under
+    /// the name.
     pub fn facts<'a>(&'a self, id: AppId, tags: &[String]) -> Option<Element<'a, Message>> {
-        self.pages.details(id).map(|details| facts(details, tags))
+        self.pages
+            .details(id)
+            .map(|details| facts(id, details, tags))
     }
 
     /// The keys of the sheets as one button, then the features; `compact` for a narrow column.
@@ -506,7 +510,7 @@ impl Showcase {
     }
 }
 
-fn facts<'a>(details: &'a GameDetails, tags: &[String]) -> Element<'a, Message> {
+fn facts<'a>(id: AppId, details: &'a GameDetails, tags: &[String]) -> Element<'a, Message> {
     let store = &details.store;
     let byline = format::byline(
         format::year(store.release_date),
@@ -539,6 +543,7 @@ fn facts<'a>(details: &'a GameDetails, tags: &[String]) -> Element<'a, Message> 
     });
 
     column![]
+        .push(deck::badge(id, details))
         .push(byline)
         .push(early_access)
         .push(tags)
@@ -555,7 +560,7 @@ fn more(details: &GameDetails, open: bool, reviews: bool, compact: bool) -> Elem
             .collect(),
         compact,
     );
-    let features = format::features(store.steam_deck, &details.modes, store.controller);
+    let features = format::features(&details.modes, store.controller);
     let menu = (!features.is_empty()).then(|| {
         let header = button(
             row![

@@ -9,6 +9,10 @@ use iced::{
 const BADGE_TINT: f32 = 0.14;
 const KEYCAP_BORDER: f32 = 0.3;
 const MUTED: f32 = 0.55;
+const LIGHT_GREEN: Color = Color::from_rgb8(0x2e, 0x7d, 0x32);
+const LIGHT_YELLOW: Color = Color::from_rgb8(0x94, 0x60, 0x00);
+const DARK_GREEN: Color = Color::from_rgb8(0x7c, 0xc9, 0x8b);
+const DARK_YELLOW: Color = Color::from_rgb8(0xf0, 0xc2, 0x4f);
 const DIVIDER_HEIGHT: f32 = 20.0;
 pub const DIVIDER_INSET: f32 = 8.0;
 
@@ -340,6 +344,27 @@ pub fn accent(theme: &Theme) -> text::Style {
     text::Style {
         color: Some(theme.extended_palette().success.base.color),
     }
+}
+
+/// Green for a game that runs well on Steam Deck: the theme has no green of its own.
+pub fn verified(theme: &Theme) -> text::Style {
+    let color = if theme.extended_palette().is_dark {
+        DARK_GREEN
+    } else {
+        LIGHT_GREEN
+    };
+
+    text::Style { color: Some(color) }
+}
+
+pub fn playable(theme: &Theme) -> text::Style {
+    let color = if theme.extended_palette().is_dark {
+        DARK_YELLOW
+    } else {
+        LIGHT_YELLOW
+    };
+
+    text::Style { color: Some(color) }
 }
 
 pub fn badge(theme: &Theme) -> container::Style {
@@ -964,6 +989,17 @@ mod tests {
 
         assert_eq!(faded(&Theme::Light, 0.7), light.scale_alpha(0.7));
         assert_eq!(faded(&Theme::Dark, 0.7), dark.scale_alpha(0.7 * 0.7));
+    }
+
+    #[test]
+    fn the_deck_colours_read_on_both_backgrounds() {
+        for theme in [Theme::Light, Theme::Dark] {
+            let background = theme.palette().background;
+
+            for style in [verified(&theme), playable(&theme)] {
+                assert!(style.color.unwrap().relative_contrast(background) >= 4.5);
+            }
+        }
     }
 
     #[test]
