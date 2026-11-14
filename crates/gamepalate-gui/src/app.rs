@@ -1,3 +1,4 @@
+mod account;
 pub(crate) mod backdrop;
 mod frame;
 mod game_page;
@@ -11,6 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use account::Account;
 use gamepalate_app::{
     AppId, Gamepalate, GuiSettings, PendingUpdate, SavedWindow,
     install::{Downloaded, Installed, Target},
@@ -20,7 +22,7 @@ use gamepalate_app::{
     update::ArchiveState,
 };
 use iced::{
-    Center, Element, Fill, Right, Shrink, Size, Subscription, Task, Theme, Top,
+    Center, ContentFit, Element, Fill, Right, Shrink, Size, Subscription, Task, Theme, Top,
     keyboard::{self, Key},
     padding,
     widget::{button, column, container, image, mouse_area, row, space, stack, text, tooltip},
@@ -57,6 +59,7 @@ const LOGO_SIZE: f32 = 24.0;
 const LOGO_SPACING: f32 = 8.0;
 const BAR_ICON_SCALE: f32 = 0.85;
 const GEAR: char = '\u{E8B8}';
+const ACCOUNT_SIZE: f32 = 22.0;
 const DOT_SIZE: f32 = 7.0;
 const NOTICE_DURATION: Duration = Duration::from_secs(12);
 
@@ -81,6 +84,7 @@ pub struct App {
     logo: image::Handle,
     families_notice: Option<usize>,
     search: Search,
+    account: Account,
     game_page: Option<Box<GamePage>>,
     parked: Option<Parked>,
 }
@@ -121,6 +125,7 @@ pub enum Message {
     Settings(settings::Message),
     Setup(setup::Message),
     Search(search::Message),
+    Account(account::Message),
     GamePage(game_page::Message),
     SimilarShot(AppId, window::Screenshot),
     SimilarBlurred(AppId, Option<image::Handle>),
@@ -180,6 +185,7 @@ impl App {
             logo: image::Handle::from_bytes(LOGO_BYTES),
             families_notice: None,
             search: Search::default(),
+            account: Account::default(),
             game_page: None,
             parked: None,
         };
@@ -224,6 +230,7 @@ impl App {
             }
             Message::Navigate(page) if self.page() == Some(page) => {
                 self.search.close();
+                self.account.close();
                 let changed = self.game_page.take().is_some_and(|page| page.changed());
                 self.close_game_page(changed)
             }
@@ -345,15 +352,16 @@ impl App {
                     screen.reopened(&gamepalate);
                 }
                 let placed = self.game_page_uses(&gamepalate);
+                let account = self.account.load(&gamepalate).map(Message::Account);
                 self.gamepalate = Some(gamepalate);
                 self.parked = None;
                 self.find_pending();
                 if matches!(self.screen, Screen::Settings(_)) {
-                    return placed;
+                    return Task::batch([placed, account]);
                 }
                 match self.page() {
-                    Some(page) => Task::batch([self.open(page), placed]),
-                    None => placed,
+                    Some(page) => Task::batch([self.open(page), placed, account]),
+                    None => Task::batch([placed, account]),
                 }
             }
             Message::Reopened(Err(error)) => {
@@ -366,6 +374,9 @@ impl App {
                 let Some(gamepalate) = &self.gamepalate else {
                     return Task::none();
                 };
+                if matches!(message, search::Message::Toggle) {
+                    self.account.close();
+                }
                 match self
                     .search
                     .update(message, gamepalate, self.window, PAGE_TOP)
@@ -375,6 +386,18 @@ impl App {
                         let saving = self.save_settings();
                         Task::batch([self.open_game(id, backdrop), saving])
                     }
+                }
+            }
+            Message::Account(message) => {
+                if matches!(message, account::Message::Toggle) {
+                    self.search.close();
+                }
+                match self.account.update(message) {
+                    account::Action::Run(task) => task.map(Message::Account),
+                    account::Action::EditSettings if self.page() == Some(Page::Settings) => {
+                        Task::none()
+                    }
+                    account::Action::EditSettings => self.leave(Page::Settings),
                 }
             }
             Message::GamePage(message) => {
@@ -465,7 +488,8 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let search_open = self.search.is_open();
-        let keys = !search_open && self.game_page.is_none();
+        let account_open = self.account.is_open();
+        let keys = !search_open && !account_open && self.game_page.is_none();
         let screen = match &self.screen {
             Screen::Discover(_) => Discover::subscription(keys).map(Message::Discover),
             Screen::Votes(_) => Votes::subscription(keys).map(Message::Votes),
@@ -476,8 +500,9 @@ impl App {
             Screen::Starting => Subscription::none(),
         };
         let search = self.search.subscription().map(Message::Search);
+        let account = self.account.subscription().map(Message::Account);
         let game_page = if self.game_page.is_some() {
-            GamePage::subscription(!search_open).map(Message::GamePage)
+            GamePage::subscription(!search_open && !account_open).map(Message::GamePage)
         } else {
             Subscription::none()
         };
@@ -489,6 +514,7 @@ impl App {
             keyboard::listen().filter_map(page_key),
             screen,
             search,
+            account,
             game_page,
         ])
     }
@@ -560,6 +586,11 @@ impl App {
                             ),
                         )
                     }))
+                    .push(
+                        self.gamepalate
+                            .is_some()
+                            .then(|| account_button(&self.account)),
+                    )
                     .push(self.gamepalate.is_some().then(|| {
                         settings_button(
                             self.page() == Some(Page::Settings),
@@ -615,6 +646,11 @@ impl App {
                 self.search
                     .view(area)
                     .map(|search| search.map(Message::Search)),
+            )
+            .push(
+                self.account
+                    .view(area)
+                    .map(|account| account.map(Message::Account)),
             );
 
         let app = column![
@@ -639,6 +675,7 @@ impl App {
         let pruner = Arc::clone(&gamepalate);
         let prune_images = Task::future(async move { pruner.prune_images() }).discard();
         self.theme = theme(gamepalate.gui_settings().theme);
+        let account = self.account.load(&gamepalate).map(Message::Account);
         self.gamepalate = Some(gamepalate);
         self.find_pending();
 
@@ -662,7 +699,7 @@ impl App {
             None => Task::none(),
         };
 
-        Task::batch([self.open(Page::Discover), prune_images, notice])
+        Task::batch([self.open(Page::Discover), prune_images, notice, account])
     }
 
     fn page(&self) -> Option<Page> {
@@ -685,6 +722,7 @@ impl App {
 
     fn leave(&mut self, page: Page) -> Task<Message> {
         self.search.close();
+        self.account.close();
         self.game_page = None;
         let saving = self.save_settings();
 
@@ -913,6 +951,28 @@ fn search_button<'a>(open: bool) -> Element<'a, Message> {
     with_tooltip(button.into(), search::TIP.to_string())
 }
 
+/// The picture of the account, or a round person icon while it has none, between ⟳ and Settings.
+/// Its tip says who the account is: it gives way to the popup once that is open.
+fn account_button<'a>(account: &Account) -> Element<'a, Message> {
+    let picture: Element<'a, Message> = match account.avatar() {
+        Some(avatar) => image(avatar.clone())
+            .width(ACCOUNT_SIZE)
+            .height(ACCOUNT_SIZE)
+            .content_fit(ContentFit::Cover)
+            .border_radius(ACCOUNT_SIZE / 2.0)
+            .into(),
+        None => icon_text(account::ICON),
+    };
+    let press = account
+        .is_ready()
+        .then_some(Message::Account(account::Message::Toggle));
+    let button = bar_button(picture, press);
+    if account.is_open() {
+        return button.style(style::open_bar_icon).into();
+    }
+    with_tooltip(button.into(), account.tip())
+}
+
 fn settings_button<'a>(open: bool, new_version: bool) -> Element<'a, Message> {
     let button = bar_icon(GEAR, Some(Message::Navigate(Page::Settings)));
     let button = if open {
@@ -956,16 +1016,24 @@ fn settings_tip(open: bool, new_version: bool) -> &'static str {
 }
 
 fn bar_icon<'a>(icon: char, message: Option<Message>) -> button::Button<'a, Message> {
+    bar_button(icon_text(icon), message)
+}
+
+fn icon_text<'a>(icon: char) -> Element<'a, Message> {
+    text(icon)
+        .font(font::ICONS)
+        .size(font::icon(14.0) * BAR_ICON_SCALE)
+        .into()
+}
+
+fn bar_button<'a>(
+    content: Element<'a, Message>,
+    message: Option<Message>,
+) -> button::Button<'a, Message> {
     button(
-        container(
-            text(icon)
-                .font(font::ICONS)
-                .size(font::icon(14.0) * BAR_ICON_SCALE)
-                .width(Fill)
-                .height(Fill)
-                .center(),
-        )
-        .padding(padding::bottom(UNDERLINE_HEIGHT)),
+        container(content)
+            .center(Fill)
+            .padding(padding::bottom(UNDERLINE_HEIGHT)),
     )
     .width(46)
     .height(Fill)

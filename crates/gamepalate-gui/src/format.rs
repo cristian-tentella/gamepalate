@@ -1,12 +1,22 @@
 use gamepalate_app::{
     Blame, Controller, Currency, DiscoverPlace, KnownFrom, LeftOut, Price, Reviews, SearchOptions,
-    SteamDeck, Timestamp, VoteKind, reviews::Review,
+    SteamDeck, Timestamp, VoteKind, reviews::Review, settings::KeySource,
 };
 use jiff::{civil::Date, tz::TimeZone};
 
 use crate::screen::game::Pick;
 
 const FEW_REVIEWS_GAP: f64 = 5.0;
+
+/// Where the API key comes from, as Settings and the account popup say it.
+pub fn key_text(key: KeySource) -> &'static str {
+    match key {
+        KeySource::Saved if cfg!(windows) => "Saved in Credential Manager",
+        KeySource::Saved => "Saved in the system keyring",
+        KeySource::Environment => "From STEAM_API_KEY",
+        KeySource::Missing => "Missing",
+    }
+}
 
 pub fn when(at: Timestamp, now: Timestamp) -> String {
     when_in(at, now, &TimeZone::system())
@@ -524,6 +534,24 @@ mod tests {
     use gamepalate_app::{Discount, SortBy};
 
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn the_saved_key_is_in_credential_manager() {
+        assert_eq!(key_text(KeySource::Saved), "Saved in Credential Manager");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_saved_key_is_in_the_system_keyring() {
+        assert_eq!(key_text(KeySource::Saved), "Saved in the system keyring");
+    }
+
+    #[test]
+    fn each_key_source_has_its_text() {
+        assert_eq!(key_text(KeySource::Environment), "From STEAM_API_KEY");
+        assert_eq!(key_text(KeySource::Missing), "Missing");
+    }
 
     #[test]
     fn the_line_under_similar_to_says_how_you_know_the_game() {

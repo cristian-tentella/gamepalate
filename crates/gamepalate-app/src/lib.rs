@@ -20,6 +20,7 @@ pub mod refresh;
 pub mod settings;
 pub mod setup;
 pub mod signals;
+mod steam_account;
 pub mod steam_client;
 pub mod tags;
 pub mod update;
@@ -75,4 +76,5 @@ pub use profile::{
     CorrectedGameView, CorrectionsView, FamilyView, HoursGame, ProfileView, SourceView, TagView,
     TasteView, VotesView,
 };
+pub use steam_account::SteamAccount;
 pub use tags::{GameTagsView, TagOfGame, UsedTag};
