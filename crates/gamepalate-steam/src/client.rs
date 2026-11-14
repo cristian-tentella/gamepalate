@@ -35,6 +35,22 @@ pub fn steam_client_file(steam_id: SteamId) -> Option<PathBuf> {
     )
 }
 
+pub fn steam_avatar_file(steam_id: SteamId) -> Option<PathBuf> {
+    let installs = steamlocate::locate_all().ok()?;
+    newest_file(
+        installs
+            .iter()
+            .map(|steam| avatar_path(steam.path(), steam_id)),
+    )
+}
+
+fn avatar_path(steam: &Path, steam_id: SteamId) -> PathBuf {
+    steam
+        .join("config")
+        .join("avatarcache")
+        .join(format!("{}.png", steam_id.0))
+}
+
 fn newest_file(paths: impl Iterator<Item = PathBuf>) -> Option<PathBuf> {
     paths
         .filter_map(|path| {
@@ -56,6 +72,17 @@ pub fn read_played_hours(path: &Path) -> Result<Vec<LibraryGame>, SteamClientErr
     })
 }
 
+pub fn read_persona_name(path: &Path) -> Result<Option<String>, SteamClientError> {
+    let bytes = std::fs::read(path).map_err(|source| SteamClientError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    parse_persona_name(&String::from_utf8_lossy(&bytes)).map_err(|reason| SteamClientError::Shape {
+        path: path.to_path_buf(),
+        reason,
+    })
+}
+
 fn local_config_path(steam: &Path, steam_id: SteamId) -> Option<PathBuf> {
     let account_id = steam_id.0.checked_sub(ACCOUNT_ID_BASE)?;
     Some(
@@ -65,6 +92,16 @@ fn local_config_path(steam: &Path, steam_id: SteamId) -> Option<PathBuf> {
             .join("config")
             .join("localconfig.vdf"),
     )
+}
+
+fn parse_persona_name(text: &str) -> Result<Option<String>, String> {
+    let vdf = keyvalues_parser::parse(text).map_err(|error| error.to_string())?;
+    Ok(child(&vdf.value, "friends")
+        .and_then(|friends| child(friends, "PersonaName"))
+        .and_then(Value::get_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string))
 }
 
 fn parse_played_hours(text: &str) -> Result<Vec<LibraryGame>, String> {
@@ -227,6 +264,64 @@ mod tests {
             Some(new)
         );
         assert_eq!(newest_file([missing].into_iter()), None);
+    }
+
+    #[test]
+    fn reads_the_persona_name() {
+        assert_eq!(
+            parse_persona_name(LOCAL_CONFIG).unwrap().as_deref(),
+            Some("someone \"quoted\"")
+        );
+    }
+
+    #[test]
+    fn no_persona_name_or_an_empty_one_is_none() {
+        let without = r#""UserLocalConfigStore" { "friends" { "Other" "x" } }"#;
+        let empty = r#""UserLocalConfigStore" { "friends" { "PersonaName" "  " } }"#;
+        let no_friends = r#""UserLocalConfigStore" { "Software" { } }"#;
+
+        assert_eq!(parse_persona_name(without).unwrap(), None);
+        assert_eq!(parse_persona_name(empty).unwrap(), None);
+        assert_eq!(parse_persona_name(no_friends).unwrap(), None);
+    }
+
+    #[test]
+    fn the_persona_name_is_read_from_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("localconfig.vdf");
+        std::fs::write(&path, LOCAL_CONFIG).unwrap();
+
+        assert_eq!(
+            read_persona_name(&path).unwrap().as_deref(),
+            Some("someone \"quoted\"")
+        );
+        std::fs::write(&path, r#""UserLocalConfigStore" { "friends" "#).unwrap();
+        assert!(matches!(
+            read_persona_name(&path).unwrap_err(),
+            SteamClientError::Shape { .. }
+        ));
+        assert!(matches!(
+            read_persona_name(&dir.path().join("missing.vdf")).unwrap_err(),
+            SteamClientError::Io { .. }
+        ));
+    }
+
+    #[test]
+    fn the_avatar_is_in_the_config_folder_of_steam() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = avatar_path(dir.path(), SteamId(76_561_198_000_000_000));
+
+        assert_eq!(
+            path,
+            dir.path()
+                .join("config")
+                .join("avatarcache")
+                .join("76561198000000000.png")
+        );
+        assert_eq!(newest_file([path.clone()].into_iter()), None);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"png").unwrap();
+        assert_eq!(newest_file([path.clone()].into_iter()), Some(path));
     }
 
     #[test]

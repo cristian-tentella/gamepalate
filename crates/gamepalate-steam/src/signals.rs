@@ -15,6 +15,7 @@ const RECENTLY_PLAYED: &str = "IPlayerService/GetRecentlyPlayedGames/v1";
 const WISHLIST: &str = "IWishlistService/GetWishlist/v1";
 const FOLLOWED: &str = "IStoreService/GetGamesFollowed/v1";
 const VANITY_URL: &str = "ISteamUser/ResolveVanityURL/v1";
+const PLAYER_SUMMARIES: &str = "ISteamUser/GetPlayerSummaries/v2";
 const VANITY_FOUND: u32 = 1;
 const VANITY_NO_MATCH: u32 = 42;
 
@@ -46,6 +47,25 @@ struct Envelope<T> {
 struct VanityResponse {
     success: u32,
     steamid: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PlayerSummariesResponse {
+    #[serde(default)]
+    players: Vec<PlayerSummary>,
+}
+
+#[derive(Deserialize)]
+struct PlayerSummary {
+    steamid: String,
+    personaname: Option<String>,
+    avatarfull: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerProfile {
+    pub name: Option<String>,
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -261,6 +281,35 @@ pub async fn resolve_vanity_url<S: Get>(
     parse_vanity_url(value)
 }
 
+pub async fn get_player_summary<S: Get>(
+    steam: &S,
+    steam_id: SteamId,
+) -> Result<Option<PlayerProfile>, SteamError> {
+    let id = steam_id.0.to_string();
+    let value = steam
+        .get(PLAYER_SUMMARIES, &[("steamids", &id)], true)
+        .await?;
+    parse_player_summary(steam_id, value)
+}
+
+fn parse_player_summary(
+    steam_id: SteamId,
+    value: Value,
+) -> Result<Option<PlayerProfile>, SteamError> {
+    let id = steam_id.0.to_string();
+    let players = parse::<Envelope<PlayerSummariesResponse>>(PLAYER_SUMMARIES, value)?
+        .response
+        .players;
+    let non_empty = |text: Option<String>| text.filter(|text| !text.trim().is_empty());
+    Ok(players
+        .into_iter()
+        .find(|player| player.steamid == id)
+        .map(|player| PlayerProfile {
+            name: non_empty(player.personaname),
+            avatar_url: non_empty(player.avatarfull),
+        }))
+}
+
 fn parse_vanity_url(value: Value) -> Result<Option<SteamId>, SteamError> {
     let response = parse::<Envelope<VanityResponse>>(VANITY_URL, value)?.response;
     let shape = |reason: String| SteamError::Shape {
@@ -368,6 +417,87 @@ mod tests {
             None
         );
         assert!(parse_vanity_url(json!({ "response": { "success": 2 } })).is_err());
+    }
+
+    #[test]
+    fn a_player_summary_gives_the_name_and_the_avatar() {
+        let value = json!({ "response": { "players": [
+            { "steamid": "76561198000000001", "personaname": "other" },
+            { "steamid": "76561198000000000", "personaname": "me",
+              "avatarfull": "https://avatars.example/me_full.jpg", "avatar": "x" }
+        ] } });
+
+        assert_eq!(
+            parse_player_summary(ME, value).unwrap(),
+            Some(PlayerProfile {
+                name: Some("me".to_string()),
+                avatar_url: Some("https://avatars.example/me_full.jpg".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn a_player_summary_without_fields_has_them_empty() {
+        let value = json!({ "response": { "players": [
+            { "steamid": "76561198000000000", "personaname": "" }
+        ] } });
+
+        assert_eq!(
+            parse_player_summary(ME, value).unwrap(),
+            Some(PlayerProfile {
+                name: None,
+                avatar_url: None
+            })
+        );
+    }
+
+    #[test]
+    fn no_player_in_the_summary_is_none() {
+        assert_eq!(
+            parse_player_summary(ME, json!({ "response": { "players": [] } })).unwrap(),
+            None
+        );
+        assert_eq!(
+            parse_player_summary(ME, json!({ "response": {} })).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_player_summary_of_the_wrong_shape_is_an_error() {
+        assert!(matches!(
+            parse_player_summary(ME, json!({ "players": [] })),
+            Err(SteamError::Shape { .. })
+        ));
+        let no_id = json!({ "response": { "players": [{ "personaname": "x" }] } });
+        assert!(matches!(
+            parse_player_summary(ME, no_id),
+            Err(SteamError::Shape { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_player_summary_asks_for_the_steam_id_with_the_key() {
+        struct Asked;
+        impl Get for Asked {
+            async fn get(
+                &self,
+                endpoint: &str,
+                params: &[(&str, &str)],
+                needs_key: bool,
+            ) -> Result<Value, SteamError> {
+                assert_eq!(endpoint, PLAYER_SUMMARIES);
+                assert_eq!(params, [("steamids", "76561198000000000")]);
+                assert!(needs_key);
+                Ok(json!({ "response": { "players": [
+                    { "steamid": "76561198000000000", "personaname": "me" }
+                ] } }))
+            }
+        }
+
+        let profile = get_player_summary(&Asked, ME).await.unwrap().unwrap();
+
+        assert_eq!(profile.name.as_deref(), Some("me"));
     }
 
     struct FakeSteam {
