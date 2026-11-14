@@ -901,6 +901,10 @@ impl Discover {
                     .font(font::SEMIBOLD)
                     .line_height(SIMILAR_LINE_HEIGHT),
             ]
+            .push(
+                format::not_played(game.similar_to_source)
+                    .map(|why| text(why).size(font::NOTE_SIZE).style(style::muted)),
+            )
             .spacing(2);
 
             let similar = row![]

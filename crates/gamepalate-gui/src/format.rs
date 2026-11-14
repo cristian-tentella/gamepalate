@@ -1,6 +1,6 @@
 use gamepalate_app::{
-    Blame, Controller, Currency, DiscoverPlace, LeftOut, Price, Reviews, SearchOptions, SteamDeck,
-    Timestamp, VoteKind, reviews::Review,
+    Blame, Controller, Currency, DiscoverPlace, HoursSource, LeftOut, Price, Reviews,
+    SearchOptions, SteamDeck, Timestamp, VoteKind, reviews::Review,
 };
 use jiff::{civil::Date, tz::TimeZone};
 
@@ -278,6 +278,16 @@ fn found_helpful(people: u32) -> Option<String> {
 pub fn affinity(affinity: f64) -> String {
     let times = format!("{affinity:.1}");
     format!("{}×", times.trim_end_matches(".0"))
+}
+
+// Why a game that was never played counts as one of the user's games.
+pub fn not_played(source: Option<HoursSource>) -> Option<&'static str> {
+    match source? {
+        HoursSource::WouldTry => Some("Not played yet: you voted Would try"),
+        HoursSource::Wishlist => Some("Not played yet: it's on your wishlist"),
+        HoursSource::Followed => Some("Not played yet: you follow it"),
+        HoursSource::Played | HoursSource::Elsewhere => None,
+    }
 }
 
 pub fn few_reviews(reviews: &Reviews, quality: f64) -> Option<String> {
