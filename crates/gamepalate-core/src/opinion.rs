@@ -140,27 +140,46 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(a, b)| a * b).sum()
 }
 
-fn train(rows: &[Vec<f64>], labels: &[f64]) -> Vec<f64> {
-    let mut w: Vec<f64> = vec![0.0; rows[0].len()];
+// The features of a row without its zeros, as (place, value): a game has few of the tags.
+fn sparse(features: &[f64]) -> Vec<(usize, f64)> {
+    features
+        .iter()
+        .enumerate()
+        .filter(|&(_, &x)| x != 0.0)
+        .map(|(j, &x)| (j, x))
+        .collect()
+}
+
+// Gradient descent on the standardized features, (x - mean) / deviation, without
+// writing them: on sparse rows each step only touches the features a game has.
+fn train(
+    rows: &[Vec<(usize, f64)>],
+    standardization: &Standardization,
+    labels: &[f64],
+) -> Vec<f64> {
+    let Standardization { means, deviations } = standardization;
+    let mut w: Vec<f64> = vec![0.0; means.len()];
     let mut b: f64 = 0.0;
     let n = rows.len() as f64;
 
     for _ in 0..STEPS {
-        let mut grad = vec![0.0; w.len()];
+        let scaled: Vec<f64> = w.iter().zip(deviations).map(|(w, d)| w / d).collect();
+        let offset = b - dot(means, &scaled);
+        let mut sums = vec![0.0; w.len()];
         let mut grad_b = 0.0;
 
         for (row, label) in rows.iter().zip(labels) {
-            let score = b + dot(row, &w);
-            let prediction = sigmoid(score);
-            let error = prediction - label;
+            let score = offset + row.iter().map(|&(j, x)| x * scaled[j]).sum::<f64>();
+            let error = sigmoid(score) - label;
 
-            for (g, z) in grad.iter_mut().zip(row) {
-                *g += error * z;
+            for &(j, x) in row {
+                sums[j] += error * x;
             }
             grad_b += error;
         }
 
-        for (w_j, grad_j) in w.iter_mut().zip(&grad) {
+        for (j, w_j) in w.iter_mut().enumerate() {
+            let grad_j = (sums[j] - means[j] * grad_b) / deviations[j];
             *w_j -= LEARNING_RATE * (grad_j / n + L2 * *w_j);
         }
         b -= LEARNING_RATE * grad_b / n;
@@ -263,16 +282,13 @@ fn model(training_rows: &[TrainingRow], liked: &LikedCreators) -> Option<Opinion
         .map(|row| features(row.game, &tags, liked))
         .collect::<Vec<_>>();
     let standardization = standardization(&features);
-    let standardized_features = features
-        .iter()
-        .map(|feature| standardization.apply(feature))
-        .collect::<Vec<_>>();
+    let rows = features.iter().map(|row| sparse(row)).collect::<Vec<_>>();
     let labels = training_rows
         .iter()
         .map(|row| row.label)
         .collect::<Vec<_>>();
 
-    let weights = train(&standardized_features, &labels);
+    let weights = train(&rows, &standardization, &labels);
 
     Some(OpinionModel {
         tags,
@@ -554,8 +570,9 @@ mod tests {
         let old_weights = train(
             &old_features
                 .iter()
-                .map(|features| old_standardization.apply(features))
+                .map(|features| sparse(features))
                 .collect::<Vec<_>>(),
+            &old_standardization,
             &rows.iter().map(|row| row.label).collect::<Vec<_>>(),
         );
 
@@ -566,6 +583,62 @@ mod tests {
                 &old_weights,
             );
             assert!((model.opinion(game) - old_opinion).abs() < 1e-12);
+        }
+    }
+
+    // The training as it was, on the standardized rows written out
+    fn dense_train(rows: &[Vec<f64>], labels: &[f64]) -> Vec<f64> {
+        let mut w = vec![0.0; rows[0].len()];
+        let mut b = 0.0;
+        let n = rows.len() as f64;
+        for _ in 0..STEPS {
+            let mut grad = vec![0.0; w.len()];
+            let mut grad_b = 0.0;
+            for (row, label) in rows.iter().zip(labels) {
+                let error = sigmoid(b + dot(row, &w)) - label;
+                for (g, z) in grad.iter_mut().zip(row) {
+                    *g += error * z;
+                }
+                grad_b += error;
+            }
+            for (w_j, grad_j) in w.iter_mut().zip(&grad) {
+                *w_j -= LEARNING_RATE * (grad_j / n + L2 * *w_j);
+            }
+            b -= LEARNING_RATE * grad_b / n;
+        }
+        w
+    }
+
+    #[test]
+    fn the_sparse_training_gives_the_weights_of_the_standardized_rows() {
+        let catalog = tagged_catalog(41);
+        let votes = alternate_votes(40);
+        let liked = LikedCreators::default();
+        let rows = training_rows(&votes, &catalog);
+        let tags = used_tags(&rows);
+        let features: Vec<Vec<f64>> = rows
+            .iter()
+            .map(|row| features(row.game, &tags, &liked))
+            .collect();
+        let standardization = standardization(&features);
+        let labels: Vec<f64> = rows.iter().map(|row| row.label).collect();
+
+        let sparse_weights = train(
+            &features.iter().map(|row| sparse(row)).collect::<Vec<_>>(),
+            &standardization,
+            &labels,
+        );
+        let dense_weights = dense_train(
+            &features
+                .iter()
+                .map(|row| standardization.apply(row))
+                .collect::<Vec<_>>(),
+            &labels,
+        );
+
+        assert!(features.iter().flatten().any(|&x| x == 0.0));
+        for (sparse, dense) in sparse_weights.iter().zip(&dense_weights) {
+            assert!((sparse - dense).abs() < 1e-12);
         }
     }
 

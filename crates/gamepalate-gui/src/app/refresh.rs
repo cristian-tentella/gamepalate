@@ -330,6 +330,7 @@ impl App {
                 }
                 let placed = self.game_page_uses(&gamepalate);
                 self.gamepalate = Some(gamepalate);
+                self.parked = None;
                 self.find_pending();
                 let open = match self.page() {
                     Some(page) => self.open(page),
@@ -449,6 +450,9 @@ impl App {
     fn enter(&mut self, gamepalate: Arc<Gamepalate>) -> Task<Message> {
         if let Screen::Discover(discover) = &mut self.screen {
             discover.use_gamepalate(&gamepalate);
+        }
+        if let Some(parked) = &mut self.parked {
+            parked.use_gamepalate(self.gamepalate.as_deref(), &gamepalate);
         }
         let placed = self.game_page_uses(&gamepalate);
         self.gamepalate = Some(gamepalate);

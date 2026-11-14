@@ -17,7 +17,7 @@ impl Gamepalate {
         &self,
         change: &FamilyChange,
     ) -> Result<FamiliesChanged, FamilyChangeError> {
-        let mut families = self.lock_families();
+        let mut families = self.write_families();
         let changed = changed_families(
             &self.data_dir.join(FAMILIES_FILE),
             &families,
@@ -53,7 +53,7 @@ impl Gamepalate {
     pub fn remake_families(&self) -> Result<FamiliesRemade, FamilyChangeError> {
         let votes = self.lock_votes();
         let corrections = self.lock_corrections();
-        let mut families = self.lock_families();
+        let mut families = self.write_families();
         let outcome = remake_automatic_families(
             &self.data_dir.join(FAMILIES_FILE),
             &SearchInputs {
@@ -86,7 +86,7 @@ impl Gamepalate {
     }
 
     pub fn undo_families(&self, undo: &FamiliesUndo) -> Result<(), FamilyChangeError> {
-        let mut families = self.lock_families();
+        let mut families = self.write_families();
         *families = restore_families(&self.data_dir.join(FAMILIES_FILE), &undo.snapshot)
             .map_err(FamilyChangeError::Save)
             .inspect_err(failed("could not undo the families"))?;

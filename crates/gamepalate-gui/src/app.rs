@@ -82,6 +82,27 @@ pub struct App {
     families_notice: Option<usize>,
     search: Search,
     game_page: Option<Box<GamePage>>,
+    parked: Option<Parked>,
+}
+
+/// Discover set aside while another page is open, to come back to it as it was.
+struct Parked {
+    discover: Box<Discover>,
+    // The revision of the facade when Discover left, None when it must renew anyway
+    revision: Option<u64>,
+}
+
+impl Parked {
+    /// A facade with new prices takes the place of the one Discover left with.
+    fn use_gamepalate(&mut self, old: Option<&Gamepalate>, new: &Arc<Gamepalate>) {
+        self.discover.use_gamepalate(new);
+        let unchanged = self.revision.is_some() && self.revision == old.map(Gamepalate::revision);
+        self.revision = unchanged.then(|| new.revision());
+    }
+
+    fn renews(&self, gamepalate: &Gamepalate) -> bool {
+        self.revision != Some(gamepalate.revision())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -158,6 +179,7 @@ impl App {
             families_notice: None,
             search: Search::default(),
             game_page: None,
+            parked: None,
         };
         let task = match setup::start(FirstRun::check(None)) {
             Ok(gamepalate) => {
@@ -205,11 +227,15 @@ impl App {
             }
             Message::Navigate(page) => self.leave(page),
             Message::Discover(discover::Message::OpenSimilar(id)) => self.show_game(id),
+            // A Discover set aside still gets the answers of what it started
             Message::Discover(message) => {
-                if let Screen::Discover(screen) = &mut self.screen {
-                    screen.update(message).map(Message::Discover)
-                } else {
-                    Task::none()
+                let discover = match &mut self.screen {
+                    Screen::Discover(screen) => Some(screen),
+                    _ => self.parked.as_mut().map(|parked| &mut parked.discover),
+                };
+                match discover {
+                    Some(discover) => discover.update(message).map(Message::Discover),
+                    None => Task::none(),
                 }
             }
             Message::Votes(message) => {
@@ -228,35 +254,35 @@ impl App {
                 }
             }
             Message::Profile(profile::Message::DiscoverFamily(family)) => {
-                let Some(gamepalate) = &self.gamepalate else {
+                let Some(gamepalate) = self.gamepalate.clone() else {
                     return Task::none();
                 };
-                let (discover, task) = Discover::from_family(gamepalate, family);
-                self.screen = Screen::Discover(Box::new(discover));
+                let (discover, task) = Discover::from_family(&gamepalate, family);
+                self.show(Screen::Discover(Box::new(discover)));
                 task.map(Message::Discover)
             }
             Message::Profile(profile::Message::OpenInLibrary(id)) => {
-                let Some(gamepalate) = &self.gamepalate else {
+                let Some(gamepalate) = self.gamepalate.clone() else {
                     return Task::none();
                 };
-                let (library, task) = Library::showing(gamepalate, id);
-                self.screen = Screen::Library(Box::new(library));
+                let (library, task) = Library::showing(&gamepalate, id);
+                self.show(Screen::Library(Box::new(library)));
                 task.map(Message::Library)
             }
             Message::Profile(profile::Message::OpenLibrary(filter, sort)) => {
-                let Some(gamepalate) = &self.gamepalate else {
+                let Some(gamepalate) = self.gamepalate.clone() else {
                     return Task::none();
                 };
-                let (library, task) = Library::filtered(gamepalate, filter, sort);
-                self.screen = Screen::Library(Box::new(library));
+                let (library, task) = Library::filtered(&gamepalate, filter, sort);
+                self.show(Screen::Library(Box::new(library)));
                 task.map(Message::Library)
             }
             Message::Profile(profile::Message::OpenVotes(filter)) => {
-                let Some(gamepalate) = &self.gamepalate else {
+                let Some(gamepalate) = self.gamepalate.clone() else {
                     return Task::none();
                 };
-                let (votes, task) = Votes::filtered(gamepalate, filter);
-                self.screen = Screen::Votes(Box::new(votes));
+                let (votes, task) = Votes::filtered(&gamepalate, filter);
+                self.show(Screen::Votes(Box::new(votes)));
                 task.map(Message::Votes)
             }
             Message::Profile(message) => {
@@ -302,6 +328,7 @@ impl App {
                 }
                 let placed = self.game_page_uses(&gamepalate);
                 self.gamepalate = Some(gamepalate);
+                self.parked = None;
                 self.find_pending();
                 if matches!(self.screen, Screen::Settings(_)) {
                     return placed;
@@ -654,36 +681,65 @@ impl App {
     }
 
     fn open(&mut self, page: Page) -> Task<Message> {
-        let Some(gamepalate) = &self.gamepalate else {
+        let Some(gamepalate) = self.gamepalate.clone() else {
             return Task::none();
         };
 
         match page {
             Page::Discover => {
-                let (discover, task) = Discover::new(gamepalate);
-                self.screen = Screen::Discover(Box::new(discover));
+                let (discover, task) = match self.parked.take() {
+                    Some(parked) => {
+                        let renews = parked.renews(&gamepalate);
+                        let mut discover = parked.discover;
+                        let task = if renews {
+                            discover.renew()
+                        } else {
+                            Task::none()
+                        };
+                        (discover, task)
+                    }
+                    None => {
+                        let (discover, task) = Discover::new(&gamepalate);
+                        (Box::new(discover), task)
+                    }
+                };
+                self.show(Screen::Discover(discover));
                 task.map(Message::Discover)
             }
             Page::Votes => {
-                let (votes, task) = Votes::new(gamepalate);
-                self.screen = Screen::Votes(Box::new(votes));
+                let (votes, task) = Votes::new(&gamepalate);
+                self.show(Screen::Votes(Box::new(votes)));
                 task.map(Message::Votes)
             }
             Page::Library => {
-                let (library, task) = Library::new(gamepalate);
-                self.screen = Screen::Library(Box::new(library));
+                let (library, task) = Library::new(&gamepalate);
+                self.show(Screen::Library(Box::new(library)));
                 task.map(Message::Library)
             }
             Page::Profile => {
-                let (profile, task) = Profile::new(gamepalate);
-                self.screen = Screen::Profile(Box::new(profile));
+                let (profile, task) = Profile::new(&gamepalate);
+                self.show(Screen::Profile(Box::new(profile)));
                 task.map(Message::Profile)
             }
             Page::Settings => {
-                let (settings, task) = Settings::new(gamepalate, self.back_page());
-                self.screen = Screen::Settings(Box::new(settings));
+                let (settings, task) = Settings::new(&gamepalate, self.back_page());
+                self.show(Screen::Settings(Box::new(settings)));
                 task.map(Message::Settings)
             }
+        }
+    }
+
+    /// Discover is set aside, not closed, when another page takes its place: coming back to it
+    /// shows the same game at once.
+    fn show(&mut self, screen: Screen) {
+        let left = std::mem::replace(&mut self.screen, screen);
+        if matches!(self.screen, Screen::Discover(_)) {
+            self.parked = None;
+        } else if let (Screen::Discover(discover), Some(gamepalate)) = (left, &self.gamepalate) {
+            self.parked = Some(Parked {
+                discover,
+                revision: Some(gamepalate.revision()),
+            });
         }
     }
 
@@ -724,16 +780,16 @@ impl App {
     }
 
     fn show_game(&mut self, id: AppId) -> Task<Message> {
-        let Some(gamepalate) = &self.gamepalate else {
+        let Some(gamepalate) = self.gamepalate.clone() else {
             return Task::none();
         };
-        let (library, task) = Library::showing(gamepalate, id);
+        let (library, task) = Library::showing(&gamepalate, id);
         if library.contains(id) {
-            self.screen = Screen::Library(Box::new(library));
+            self.show(Screen::Library(Box::new(library)));
             return task.map(Message::Library);
         }
-        let (votes, task) = Votes::showing(gamepalate, id);
-        self.screen = Screen::Votes(Box::new(votes));
+        let (votes, task) = Votes::showing(&gamepalate, id);
+        self.show(Screen::Votes(Box::new(votes)));
         task.map(Message::Votes)
     }
 

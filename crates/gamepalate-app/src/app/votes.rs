@@ -87,7 +87,7 @@ impl Gamepalate {
         bet: bool,
         searched: bool,
     ) -> Result<(), VoteError> {
-        let mut votes = self.lock_votes();
+        let mut votes = self.write_votes();
         let now = jiff::Zoned::now();
         let date = now.date().to_string();
         let at = Timestamp(now.timestamp().as_millisecond());
@@ -111,7 +111,7 @@ impl Gamepalate {
 
     /// Takes the vote off the game, which goes back to having none. Without a vote, nothing changes.
     pub fn remove_vote(&self, id: AppId) -> Result<(), VoteError> {
-        let mut votes = self.lock_votes();
+        let mut votes = self.write_votes();
         let path = self.data_dir.join("votes.toml");
         *votes = remove_vote(&path, &votes, id, |id| self.saved_name(id))
             .map_err(|source| VoteError { path, source })
