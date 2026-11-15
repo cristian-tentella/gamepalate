@@ -283,7 +283,7 @@ impl Discover {
                     Task::perform(
                         async move {
                             gamepalate
-                                .vote(id, VoteKind::Later, false, bet, false)
+                                .vote(id, VoteKind::Later, bet, false)
                                 .map_err(|error| error.to_string())
                         },
                         Message::LaterSaved,
@@ -294,14 +294,14 @@ impl Discover {
             Message::LaterSaved(Ok(())) => {}
             Message::LaterSaved(Err(error)) => return self.show_toast(error),
             Message::Vote(pick) => {
-                if let (Some(game), Some((kind, genre_ok))) = (self.current(), pick.ballot()) {
+                if let (Some(game), Some(kind)) = (self.current(), pick.ballot()) {
                     let text = format::voted(&game.name, pick);
                     let gamepalate = Arc::clone(&self.gamepalate);
                     let (id, bet) = (game.id, game.bet);
                     let save = Task::perform(
                         async move {
                             gamepalate
-                                .vote(id, kind, genre_ok, bet, false)
+                                .vote(id, kind, bet, false)
                                 .map_err(|error| error.to_string())
                         },
                         Message::VoteSaved,
@@ -1145,19 +1145,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn votes_with_one_and_three_and_marks_played_with_four() {
+    fn votes_with_one_and_two_and_marks_played_with_three() {
         assert!(matches!(
             key_message(pressed(Key::Character("1".into()))),
             Some(Message::Vote(Pick::Vote(VoteKind::WouldTry)))
         ));
         assert!(matches!(
             key_message(pressed(Key::Character("2".into()))),
-            Some(Message::Vote(Pick::NotThisOne))
+            Some(Message::Vote(Pick::Vote(VoteKind::NotForMe)))
         ));
         assert!(matches!(
-            key_message(pressed(Key::Character("4".into()))),
+            key_message(pressed(Key::Character("3".into()))),
             Some(Message::Played)
         ));
+        assert!(key_message(pressed(Key::Character("4".into()))).is_none());
     }
 
     #[test]

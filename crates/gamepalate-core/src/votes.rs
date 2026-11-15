@@ -10,7 +10,6 @@ pub struct Vote {
     pub date: String,
     pub at: Option<Timestamp>,
     pub bet: bool,
-    pub genre_ok: bool,
     pub searched: bool,
 }
 
@@ -28,7 +27,7 @@ impl VoteKind {
         self == VoteKind::WouldTry
     }
 
-    /// A Not for me: the Filter of the same name keeps the game out, and only a no can have `genre_ok`.
+    /// A Not for me: the Filter of the same name keeps the game out.
     pub fn is_no(self) -> bool {
         self == VoteKind::NotForMe
     }
@@ -49,20 +48,12 @@ impl VoteKind {
     }
 }
 
-/// Saves `vote` in place of the old one. A bet stays a bet; `genre_ok` holds only on a Not for me.
+/// Saves `vote` in place of the old one. A bet stays a bet.
 /// `searched` is the new vote's own: a vote from Discover after a search is a vote from Discover.
 pub fn cast(votes: &mut Votes, id: AppId, vote: Vote) {
     // A game found with a search was not recommended, so its vote does not answer a bet.
     let bet = !vote.searched && (vote.bet || votes.get(&id).is_some_and(|old| old.bet));
-    let genre_ok = vote.genre_ok && vote.kind.is_no();
-    votes.insert(
-        id,
-        Vote {
-            bet,
-            genre_ok,
-            ..vote
-        },
-    );
+    votes.insert(id, Vote { bet, ..vote });
 }
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
@@ -70,14 +61,13 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 pub const LATER_DAYS: i64 = 30;
 
 impl Vote {
-    /// A vote cast on `date`, without a time, a bet, `genre_ok` or a search.
+    /// A vote cast on `date`, without a time, a bet or a search.
     pub fn new(kind: VoteKind, date: &str) -> Vote {
         Vote {
             kind,
             date: date.to_string(),
             at: None,
             bet: false,
-            genre_ok: false,
             searched: false,
         }
     }
@@ -159,17 +149,6 @@ mod tests {
         );
     }
 
-    fn not_this_one(votes: &mut Votes) {
-        cast(
-            votes,
-            AppId(620),
-            Vote {
-                genre_ok: true,
-                ..vote(VoteKind::NotForMe, "2026-10-30", None)
-            },
-        );
-    }
-
     #[test]
     fn a_new_vote_replaces_the_old_one() {
         let mut votes = Votes::new();
@@ -195,44 +174,6 @@ mod tests {
         cast_on(&mut votes, VoteKind::NotForMe, false);
 
         assert!(votes[&AppId(620)].bet);
-    }
-
-    #[test]
-    fn not_this_one_is_a_not_for_me_with_the_genre_ok() {
-        let mut votes = Votes::new();
-
-        not_this_one(&mut votes);
-
-        assert_eq!(votes[&AppId(620)].kind, VoteKind::NotForMe);
-        assert!(votes[&AppId(620)].genre_ok);
-    }
-
-    #[test]
-    fn the_genre_ok_is_lost_when_the_vote_changes() {
-        for kind in [VoteKind::WouldTry, VoteKind::Later, VoteKind::NotForMe] {
-            let mut votes = Votes::new();
-            not_this_one(&mut votes);
-
-            cast_on(&mut votes, kind, false);
-
-            assert!(!votes[&AppId(620)].genre_ok);
-        }
-    }
-
-    #[test]
-    fn only_a_not_for_me_keeps_the_genre_ok() {
-        let mut votes = Votes::new();
-
-        cast(
-            &mut votes,
-            AppId(620),
-            Vote {
-                genre_ok: true,
-                ..vote(VoteKind::WouldTry, "2026-10-30", None)
-            },
-        );
-
-        assert!(!votes[&AppId(620)].genre_ok);
     }
 
     fn searched(kind: VoteKind) -> Vote {

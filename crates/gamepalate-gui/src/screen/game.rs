@@ -13,34 +13,27 @@ use crate::{font, format, style};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Pick {
     Vote(VoteKind),
-    NotThisOne,
     Played,
 }
 
 impl Pick {
     pub fn of(vote: &Vote) -> Pick {
-        if vote.genre_ok {
-            Pick::NotThisOne
-        } else {
-            Pick::Vote(vote.kind)
-        }
+        Pick::Vote(vote.kind)
     }
 
-    /// The kind of vote the pick saves, and whether the genre is fine.
-    pub fn ballot(self) -> Option<(VoteKind, bool)> {
+    /// The kind of vote the pick saves.
+    pub fn ballot(self) -> Option<VoteKind> {
         match self {
-            Pick::Vote(kind) => Some((kind, false)),
-            Pick::NotThisOne => Some((VoteKind::NotForMe, true)),
+            Pick::Vote(kind) => Some(kind),
             Pick::Played => None,
         }
     }
 }
 
-pub const PICKS: [(&str, Pick); 4] = [
+pub const PICKS: [(&str, Pick); 3] = [
     ("1", Pick::Vote(VoteKind::WouldTry)),
-    ("2", Pick::NotThisOne),
-    ("3", Pick::Vote(VoteKind::NotForMe)),
-    ("4", Pick::Played),
+    ("2", Pick::Vote(VoteKind::NotForMe)),
+    ("3", Pick::Played),
 ];
 pub const VOTE_HEIGHT: f32 = 36.0;
 const VOTE_WIDTH: f32 = 172.0;
@@ -225,7 +218,6 @@ pub fn reviews<'a, Message: Clone + 'a>(reviews: &Reviews, open: Message) -> Ele
 pub fn tip(pick: Pick, would_try_hours: f64, elsewhere_hours: f64) -> String {
     match pick {
         Pick::Vote(VoteKind::WouldTry) => format::would_try_tip(would_try_hours),
-        Pick::NotThisOne => format::NOT_THIS_ONE_TIP.to_string(),
         Pick::Vote(VoteKind::NotForMe) => format::NOT_FOR_ME_TIP.to_string(),
         Pick::Vote(VoteKind::Later) => format::later_tip(LATER_DAYS),
         Pick::Played => format::played_tip(elsewhere_hours),
@@ -390,25 +382,22 @@ pub fn moves<'a, Message: Clone + 'a>(
 fn segment(pick: Pick) -> style::Segment {
     match pick {
         Pick::Vote(VoteKind::WouldTry) => style::Segment::First,
-        Pick::NotThisOne => style::Segment::Middle,
         Pick::Vote(VoteKind::NotForMe | VoteKind::Later) => style::Segment::Last,
         Pick::Played => style::Segment::Alone,
     }
 }
 
-/// The three verdicts as one segmented group, then Played on its own unless `played` is false.
+/// The two verdicts as one segmented group, then Played on its own unless `played` is false.
 pub fn vote_buttons<'a, Message: 'a>(
     button: impl Fn(&'a str, Pick) -> Element<'a, Message>,
     played: bool,
 ) -> Row<'a, Message> {
-    let [would_try, not_this_one, not_for_me, played_button] =
-        PICKS.map(|(key, pick)| button(key, pick));
+    let [would_try, not_for_me, played_button] = PICKS.map(|(key, pick)| button(key, pick));
     let seam = || rule::vertical(1).style(style::vote_seam);
-    let verdicts =
-        container(row![would_try, seam(), not_this_one, seam(), not_for_me].height(Fill))
-            .height(VOTE_HEIGHT)
-            .padding(1)
-            .style(style::vote_group);
+    let verdicts = container(row![would_try, seam(), not_for_me].height(Fill))
+        .height(VOTE_HEIGHT)
+        .padding(1)
+        .style(style::vote_group);
 
     row![verdicts]
         .push(played.then_some(played_button))
@@ -417,7 +406,7 @@ pub fn vote_buttons<'a, Message: 'a>(
 }
 
 pub fn vote_width(available: f32, beside: f32) -> Length {
-    let verdicts = 3.0 * VOTE_WIDTH + 2.0 * 1.0 + 2.0 * 1.0;
+    let verdicts = 2.0 * VOTE_WIDTH + 1.0 + 2.0 * 1.0;
     let needed = verdicts + GROUP_SPACING + VOTE_WIDTH + VOTE_SPACING + beside;
 
     if available >= needed {
@@ -602,19 +591,20 @@ mod tests {
 
     #[test]
     fn the_vote_buttons_stop_growing_once_there_is_room() {
-        assert_eq!(vote_width(712.0, 0.0), Length::Fixed(VOTE_WIDTH));
-        assert_eq!(vote_width(711.0, 0.0), Length::Fill);
-        assert_eq!(vote_width(892.0, 180.0), Length::Fixed(VOTE_WIDTH));
-        assert_eq!(vote_width(891.0, 180.0), Length::Fill);
+        assert_eq!(vote_width(539.0, 0.0), Length::Fixed(VOTE_WIDTH));
+        assert_eq!(vote_width(538.0, 0.0), Length::Fill);
+        assert_eq!(vote_width(719.0, 180.0), Length::Fixed(VOTE_WIDTH));
+        assert_eq!(vote_width(718.0, 180.0), Length::Fill);
     }
 
     #[test]
-    fn the_keys_one_to_four_are_the_votes_and_played() {
+    fn the_keys_one_to_three_are_the_votes_and_played() {
         assert_eq!(pick_key("1"), Some(Pick::Vote(VoteKind::WouldTry)));
-        assert_eq!(pick_key("2"), Some(Pick::NotThisOne));
-        assert_eq!(pick_key("3"), Some(Pick::Vote(VoteKind::NotForMe)));
-        assert_eq!(pick_key("4"), Some(Pick::Played));
-        assert_eq!(pick_key("5"), None);
+        assert_eq!(pick_key("2"), Some(Pick::Vote(VoteKind::NotForMe)));
+        assert_eq!(pick_key("3"), Some(Pick::Played));
+        for key in ["4", "5", "6", "7"] {
+            assert_eq!(pick_key(key), None);
+        }
     }
 
     #[test]
@@ -629,23 +619,16 @@ mod tests {
     }
 
     #[test]
-    fn two_saves_a_not_for_me_with_the_genre_ok() {
-        assert_eq!(Pick::NotThisOne.ballot(), Some((VoteKind::NotForMe, true)));
+    fn a_pick_saves_its_own_kind_of_vote_and_played_saves_none() {
+        assert_eq!(
+            Pick::Vote(VoteKind::WouldTry).ballot(),
+            Some(VoteKind::WouldTry)
+        );
         assert_eq!(
             Pick::Vote(VoteKind::NotForMe).ballot(),
-            Some((VoteKind::NotForMe, false))
+            Some(VoteKind::NotForMe)
         );
         assert_eq!(Pick::Played.ballot(), None);
-    }
-
-    #[test]
-    fn a_not_for_me_with_the_genre_ok_is_shown_as_not_this_one() {
-        let mut vote = Vote::new(VoteKind::NotForMe, "2026-11-13");
-        assert_eq!(Pick::of(&vote), Pick::Vote(VoteKind::NotForMe));
-
-        vote.genre_ok = true;
-
-        assert_eq!(Pick::of(&vote), Pick::NotThisOne);
     }
 
     #[test]
@@ -655,12 +638,8 @@ mod tests {
             "Counts as 5 h of play in your taste. Stays in Votes for when it's on sale."
         );
         assert_eq!(
-            tip(Pick::NotThisOne, 5.0, 20.0),
-            "You like this kind of game, just not this one. It won't come back."
-        );
-        assert_eq!(
             tip(Pick::Vote(VoteKind::NotForMe), 5.0, 20.0),
-            "Not your kind of game, or you played it and didn't like it. It won't come back."
+            "Not your kind of game, or not this one. It won't come back."
         );
         assert_eq!(
             tip(Pick::Played, 5.0, 20.0),

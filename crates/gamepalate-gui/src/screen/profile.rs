@@ -27,7 +27,7 @@ use families::{
 use taste::no_taste_text;
 
 const STACK_WIDTH: f32 = 1100.0;
-const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–4.";
+const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–3.";
 const LABEL_BAR_WIDTH: f32 = 120.0;
 const COLUMN_WIDTH: f32 = 760.0;
 const SIDE_WIDTH: f32 = 380.0;
@@ -402,7 +402,7 @@ fn label_bar<'a>(label: &'a str, count: usize, needed: usize) -> Element<'a, Mes
 
 fn opinion_progress(votes: &VotesView) -> String {
     format!(
-        "Votes count from {n} Would try and {n} Not this game or Not my genre. You have {} and {}.",
+        "Votes count from {n} Would try and {n} Not for me. You have {} and {}.",
         votes.labels.would_try,
         votes.labels.not_for_me,
         n = votes.min_labels
@@ -510,7 +510,7 @@ mod tests {
     fn the_opinion_says_how_many_votes_are_missing() {
         assert_eq!(
             opinion_progress(&labels(4, 7)),
-            "Votes count from 10 Would try and 10 Not this game or Not my genre. You have 4 and 7."
+            "Votes count from 10 Would try and 10 Not for me. You have 4 and 7."
         );
     }
 

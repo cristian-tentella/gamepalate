@@ -487,7 +487,6 @@ pub(super) fn standing_text(standing: GameStanding) -> String {
         GameStanding::InLibrary { hours: played } => format!("In your library · {}", hours(played)),
         GameStanding::PlayedElsewhere => "Played elsewhere".to_string(),
         GameStanding::WouldTry => "Would try".to_string(),
-        GameStanding::NotThisOne => "Not this one".to_string(),
         GameStanding::NotForMe => "Not for me".to_string(),
         GameStanding::Later { days_left: 1 } => "Later · back in 1 day".to_string(),
         GameStanding::Later { days_left } => format!("Later · back in {days_left} days"),
@@ -652,7 +651,6 @@ mod tests {
             "Played elsewhere"
         );
         assert_eq!(standing_text(GameStanding::WouldTry), "Would try");
-        assert_eq!(standing_text(GameStanding::NotThisOne), "Not this one");
         assert_eq!(standing_text(GameStanding::NotForMe), "Not for me");
         assert_eq!(
             standing_text(GameStanding::Later { days_left: 12 }),

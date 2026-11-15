@@ -212,7 +212,6 @@ pub enum GameStanding {
     InLibrary { hours: f64 },
     PlayedElsewhere,
     WouldTry,
-    NotThisOne,
     NotForMe,
     Later { days_left: i64 },
 }
@@ -271,7 +270,6 @@ pub(crate) fn game_standing(
     let vote = standing(inputs.votes, id, now)?;
     Some(match vote.kind {
         VoteKind::WouldTry => GameStanding::WouldTry,
-        VoteKind::NotForMe if vote.genre_ok => GameStanding::NotThisOne,
         VoteKind::NotForMe => GameStanding::NotForMe,
         VoteKind::Later => GameStanding::Later {
             days_left: vote.days_left(now)?,
@@ -702,16 +700,8 @@ mod tests {
 
         voted(&mut fixture, Vote::new(VoteKind::WouldTry, "2026-10-01"));
         assert_eq!(standing_of(&fixture, 6), Some(GameStanding::WouldTry));
-        voted(&mut fixture, not_for_me.clone());
+        voted(&mut fixture, not_for_me);
         assert_eq!(standing_of(&fixture, 6), Some(GameStanding::NotForMe));
-        voted(
-            &mut fixture,
-            Vote {
-                genre_ok: true,
-                ..not_for_me
-            },
-        );
-        assert_eq!(standing_of(&fixture, 6), Some(GameStanding::NotThisOne));
         assert_eq!(
             standing_of(&fixture, 5),
             Some(GameStanding::InLibrary { hours: 0.5 })

@@ -32,11 +32,8 @@ use super::{
 };
 use crate::{font, format, style};
 
-// Two rows of two: the yeses and the Bets on top, the two noes below.
-const FILTERS: [[Filter; 2]; 2] = [
-    [Filter::WouldTry, Filter::Bets],
-    [Filter::NotThisGame, Filter::NotMyGenre],
-];
+// One row of three equal chips: with 4 px at each side, "Not for me 185" fits in the list.
+const FILTERS: [Filter; 3] = [Filter::WouldTry, Filter::Bets, Filter::NotForMe];
 const ORDERS: [Order; 4] = [
     Order::Newest,
     Order::Price,
@@ -53,7 +50,7 @@ const ROW_HEIGHT: f32 = 32.0;
 const SCROLLBAR_GAP: f32 = 12.0;
 const SIGN_SIZE: f32 = 11.0;
 const SIGN_WIDTH: f32 = 18.0;
-const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–4.";
+const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–3.";
 
 pub struct Votes {
     gamepalate: Arc<Gamepalate>,
@@ -83,8 +80,7 @@ pub struct Votes {
 pub enum Filter {
     WouldTry,
     Bets,
-    NotThisGame,
-    NotMyGenre,
+    NotForMe,
     /// No chip chosen: every vote, the Laters too.
     All,
 }
@@ -259,14 +255,14 @@ impl Votes {
                 self.viewport = Some((viewport.absolute_offset().y, viewport.bounds().height));
             }
             Message::Vote(pick) => {
-                if let (Some(game), Some((kind, genre_ok))) = (self.current(), pick.ballot()) {
+                if let (Some(game), Some(kind)) = (self.current(), pick.ballot()) {
                     let text = format::voted(&game.name, pick);
                     let id = game.id;
                     let gamepalate = Arc::clone(&self.gamepalate);
                     let save = Task::perform(
                         async move {
                             gamepalate
-                                .vote(id, kind, genre_ok, false, false)
+                                .vote(id, kind, false, false)
                                 .map_err(|error| error.to_string())
                         },
                         Message::VoteSaved,
@@ -409,12 +405,12 @@ impl Votes {
                     .align_x(Center),
             )
             .width(Fill)
-            .padding([3, 10])
+            .padding([3, 4])
             .style(style::choice(!searching && filter == self.filter))
             .on_press(Message::Filter(filter))
             .into()
         };
-        let filters = column(FILTERS.map(|line| row(line.map(chip)).spacing(6).into())).spacing(6);
+        let filters = row(FILTERS.map(chip)).spacing(6);
         let search = text_input("Search (/)", &self.search)
             .style(style::field)
             .id(SEARCH)
@@ -853,15 +849,14 @@ impl Filter {
         match self {
             Filter::WouldTry => vote.kind == VoteKind::WouldTry,
             Filter::Bets => vote.bet,
-            Filter::NotThisGame => Pick::of(vote) == Pick::NotThisOne,
-            Filter::NotMyGenre => Pick::of(vote) == Pick::Vote(VoteKind::NotForMe),
+            Filter::NotForMe => vote.kind == VoteKind::NotForMe,
             Filter::All => true,
         }
     }
 
     /// The chip of a vote; a Later has none, so it shows in All.
     fn of(vote: &Vote) -> Filter {
-        [Filter::WouldTry, Filter::NotThisGame, Filter::NotMyGenre]
+        [Filter::WouldTry, Filter::NotForMe]
             .into_iter()
             .find(|filter| filter.keeps(vote))
             .unwrap_or(Filter::All)
@@ -896,8 +891,7 @@ fn filter_label(filter: Filter) -> &'static str {
     match filter {
         Filter::WouldTry => format::pick(Pick::Vote(VoteKind::WouldTry)),
         Filter::Bets => "Bets",
-        Filter::NotThisGame => format::pick(Pick::NotThisOne),
-        Filter::NotMyGenre => format::pick(Pick::Vote(VoteKind::NotForMe)),
+        Filter::NotForMe => format::pick(Pick::Vote(VoteKind::NotForMe)),
         Filter::All => "All",
     }
 }
@@ -946,8 +940,7 @@ impl From<VotesShow> for Filter {
         match show {
             VotesShow::WouldTry => Filter::WouldTry,
             VotesShow::Bets => Filter::Bets,
-            VotesShow::NotThisGame => Filter::NotThisGame,
-            VotesShow::NotMyGenre => Filter::NotMyGenre,
+            VotesShow::NotForMe => Filter::NotForMe,
             VotesShow::All => Filter::All,
         }
     }
@@ -958,8 +951,7 @@ impl From<Filter> for VotesShow {
         match filter {
             Filter::WouldTry => VotesShow::WouldTry,
             Filter::Bets => VotesShow::Bets,
-            Filter::NotThisGame => VotesShow::NotThisGame,
-            Filter::NotMyGenre => VotesShow::NotMyGenre,
+            Filter::NotForMe => VotesShow::NotForMe,
             Filter::All => VotesShow::All,
         }
     }
@@ -1443,7 +1435,7 @@ mod tests {
     fn the_search_looks_among_all_the_votes() {
         let rows = rows(
             &games(),
-            Filter::NotMyGenre,
+            Filter::NotForMe,
             Order::Newest,
             Shown::default(),
             " sat ",
@@ -1459,7 +1451,7 @@ mod tests {
             Filter::of(&Vote::new(VoteKind::Later, "2026-10-20")),
             Filter::All
         );
-        assert!(FILTERS.as_flattened().iter().all(|filter| {
+        assert!(FILTERS.iter().all(|filter| {
             !rows(&games(), *filter, Order::Newest, Shown::default(), "", None).contains(&AppId(3))
         }));
         assert!(
@@ -1480,40 +1472,20 @@ mod tests {
         let games = games();
 
         assert_eq!(count(&games, Filter::WouldTry, Shown::default()), 3);
-        assert_eq!(count(&games, Filter::NotMyGenre, Shown::default()), 1);
+        assert_eq!(count(&games, Filter::NotForMe, Shown::default()), 1);
         assert_eq!(count(&games, Filter::Bets, Shown::default()), 2);
         assert_eq!(count(&games, Filter::All, Shown::default()), 5);
     }
 
     #[test]
-    fn not_this_game_and_not_my_genre_have_a_chip_each() {
-        let mut games = games();
-        let mut not_this_one = voted(6, "Firewatch", VoteKind::NotForMe, "2026-11-13", false);
-        not_this_one.vote.genre_ok = true;
-        games.insert(not_this_one.id, not_this_one);
-
-        let shown = |filter| rows(&games, filter, Order::Newest, Shown::default(), "", None);
-        assert_eq!(shown(Filter::NotThisGame), ids(&[6]));
-        assert_eq!(shown(Filter::NotMyGenre), ids(&[5]));
-        assert_eq!(filter_label(Filter::NotThisGame), "Not this game");
-        assert_eq!(filter_label(Filter::NotMyGenre), "Not my genre");
-    }
-
-    #[test]
     fn a_vote_opens_on_its_own_chip() {
-        let not_this_one = Vote {
-            genre_ok: true,
-            ..Vote::new(VoteKind::NotForMe, "2026-11-13")
-        };
-
         assert_eq!(
             Filter::of(&Vote::new(VoteKind::WouldTry, "2026-11-13")),
             Filter::WouldTry
         );
-        assert_eq!(Filter::of(&not_this_one), Filter::NotThisGame);
         assert_eq!(
             Filter::of(&Vote::new(VoteKind::NotForMe, "2026-11-13")),
-            Filter::NotMyGenre
+            Filter::NotForMe
         );
     }
 
@@ -1568,12 +1540,12 @@ mod tests {
 
     #[test]
     fn says_why_the_list_is_empty() {
-        let not_my_genre = Filter::NotMyGenre;
+        let not_for_me = Filter::NotForMe;
 
-        assert_eq!(empty_text(true, not_my_genre, false, false, ""), NO_VOTES);
+        assert_eq!(empty_text(true, not_for_me, false, false, ""), NO_VOTES);
         assert_eq!(
-            empty_text(false, not_my_genre, false, false, ""),
-            "No Not my genre votes"
+            empty_text(false, not_for_me, false, false, ""),
+            "No Not for me votes"
         );
         assert_eq!(
             empty_text(false, Filter::WouldTry, false, false, ""),
@@ -1584,7 +1556,7 @@ mod tests {
             "No votes on Bets"
         );
         assert_eq!(
-            empty_text(false, not_my_genre, false, false, " hades "),
+            empty_text(false, not_for_me, false, false, " hades "),
             "No votes match \"hades\""
         );
     }
@@ -1670,8 +1642,8 @@ mod tests {
             "No Would try votes match the filters"
         );
         assert_eq!(
-            empty_text(false, Filter::NotMyGenre, true, false, ""),
-            "No Not my genre votes match the filters"
+            empty_text(false, Filter::NotForMe, true, false, ""),
+            "No Not for me votes match the filters"
         );
         assert_eq!(
             empty_text(false, Filter::Bets, true, false, ""),
@@ -1776,7 +1748,7 @@ mod tests {
             ids(&[3, 2])
         );
         assert_eq!(count(&games, would_try, HIDE_OWNED), 1);
-        assert_eq!(count(&games, Filter::NotMyGenre, HIDE_OWNED), 0);
+        assert_eq!(count(&games, Filter::NotForMe, HIDE_OWNED), 0);
         assert_eq!(count(&games, Filter::Bets, HIDE_OWNED), 1);
         assert_eq!(count(&games, Filter::All, HIDE_OWNED), 2);
     }
@@ -1839,8 +1811,8 @@ mod tests {
             "You own all your Would try games"
         );
         assert_eq!(
-            empty_text(false, Filter::NotMyGenre, false, true, ""),
-            "You own all your Not my genre games"
+            empty_text(false, Filter::NotForMe, false, true, ""),
+            "You own all your Not for me games"
         );
         assert_eq!(
             empty_text(false, Filter::Bets, false, true, ""),
@@ -1878,17 +1850,14 @@ mod tests {
     #[test]
     fn votes_with_the_numbers_and_opens_the_links_with_q_w_e() {
         assert!(matches!(
-            key_message(pressed(Key::Character("3".into()))),
+            key_message(pressed(Key::Character("2".into()))),
             Some(Message::Vote(Pick::Vote(VoteKind::NotForMe)))
         ));
         assert!(matches!(
-            key_message(pressed(Key::Character("2".into()))),
-            Some(Message::Vote(Pick::NotThisOne))
-        ));
-        assert!(matches!(
-            key_message(pressed(Key::Character("4".into()))),
+            key_message(pressed(Key::Character("3".into()))),
             Some(Message::Played)
         ));
+        assert!(key_message(pressed(Key::Character("4".into()))).is_none());
         assert!(matches!(
             key_message(pressed(Key::Character("w".into()))),
             Some(Message::Open(Link::Eneba))
@@ -2058,18 +2027,15 @@ mod tests {
     #[test]
     fn the_vote_shows_beside_the_name_only_in_all_and_bets() {
         let would_try = Vote::new(VoteKind::WouldTry, "2026-10-01");
-        let not_this_one = Vote {
-            genre_ok: true,
-            ..Vote::new(VoteKind::NotForMe, "2026-10-01")
-        };
+        let not_for_me = Vote::new(VoteKind::NotForMe, "2026-10-01");
         let later = Vote::new(VoteKind::Later, "2026-10-01");
 
         for filter in [Filter::All, Filter::Bets] {
             assert_eq!(vote_sign(filter, &would_try), Some(Sign::Up));
-            assert_eq!(vote_sign(filter, &not_this_one), Some(Sign::Down));
+            assert_eq!(vote_sign(filter, &not_for_me), Some(Sign::Down));
             assert_eq!(vote_sign(filter, &later), Some(Sign::Later));
         }
-        for filter in [Filter::WouldTry, Filter::NotThisGame, Filter::NotMyGenre] {
+        for filter in [Filter::WouldTry, Filter::NotForMe] {
             assert_eq!(vote_sign(filter, &would_try), None);
             assert_eq!(vote_sign(filter, &later), None);
         }
@@ -2094,7 +2060,7 @@ mod tests {
 
     #[test]
     fn the_chips_and_the_orders_go_to_the_file_and_back() {
-        for &filter in FILTERS.as_flattened().iter().chain([&Filter::All]) {
+        for &filter in FILTERS.iter().chain([&Filter::All]) {
             assert_eq!(Filter::from(VotesShow::from(filter)), filter);
         }
         for order in ORDERS {
@@ -2119,13 +2085,13 @@ mod tests {
     #[test]
     fn a_chip_chosen_from_outside_leaves_the_saved_one() {
         let saved = VotesSettings {
-            show: VotesShow::NotMyGenre,
+            show: VotesShow::NotForMe,
             ..VotesSettings::default()
         };
 
         assert_eq!(
             opening_chip(&saved, Some(Filter::WouldTry)),
-            (Filter::WouldTry, VotesShow::NotMyGenre)
+            (Filter::WouldTry, VotesShow::NotForMe)
         );
     }
 

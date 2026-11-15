@@ -22,7 +22,6 @@ const HEADER: &str = "\
 # later       not now: the game comes back in Discover after 30 days
 # not_for_me  not for you, it leaves the recommendations
 # bet = true  the vote was given to a bet
-# genre_ok = true  a not_for_me given as Not this one: the genre is fine, the game is not
 # searched = true  the vote was given to a game you looked up, not to a recommendation
 # at          when the vote was cast, in milliseconds since 1970 (for the last 24 hours and the 30 days of a later)
 ";
@@ -47,12 +46,6 @@ pub enum VotesError {
     #[error("the vote for {0} has bet = false, which can only be true")]
     BetNotTrue(u32),
 
-    #[error("the vote for {0} has genre_ok = false, which can only be true")]
-    GenreOkNotTrue(u32),
-
-    #[error("the vote for {0} has genre_ok, which only a not_for_me can have")]
-    GenreOkNotNotForMe(u32),
-
     #[error("the vote for {0} has searched = false, which can only be true")]
     SearchedNotTrue(u32),
 }
@@ -71,6 +64,8 @@ struct VoteEntry {
     date: String,
     at: Option<i64>,
     bet: Option<bool>,
+    // Written until 0.23: read and dropped, so old files still open.
+    #[allow(dead_code)]
     genre_ok: Option<bool>,
     searched: Option<bool>,
 }
@@ -152,11 +147,6 @@ fn votes_text(votes: &Votes, name: impl Fn(AppId) -> Option<String>) -> String {
             .at
             .map_or(String::new(), |at| format!(", at = {}", at.0));
         let bet = if vote.bet { ", bet = true" } else { "" };
-        let genre_ok = if vote.genre_ok {
-            ", genre_ok = true"
-        } else {
-            ""
-        };
         let searched = if vote.searched {
             ", searched = true"
         } else {
@@ -164,7 +154,7 @@ fn votes_text(votes: &Votes, name: impl Fn(AppId) -> Option<String>) -> String {
         };
         let _ = write!(
             text,
-            "{} = {{ vote = \"{}\", date = \"{}\"{at}{bet}{genre_ok}{searched} }}",
+            "{} = {{ vote = \"{}\", date = \"{}\"{at}{bet}{searched} }}",
             id.0,
             kind_name(vote.kind),
             vote.date
@@ -217,12 +207,6 @@ fn vote_from_entry(appid: u32, entry: VoteEntry) -> Result<Option<Vote>, VotesEr
         Some(true) => true,
         Some(false) => return Err(VotesError::BetNotTrue(appid)),
     };
-    let genre_ok = match (entry.genre_ok, &entry.vote) {
-        (None, _) => false,
-        (Some(false), _) => return Err(VotesError::GenreOkNotTrue(appid)),
-        (Some(true), VoteKindEntry::NotForMe) => true,
-        (Some(true), _) => return Err(VotesError::GenreOkNotNotForMe(appid)),
-    };
     let searched = match entry.searched {
         None => false,
         Some(true) => true,
@@ -234,7 +218,6 @@ fn vote_from_entry(appid: u32, entry: VoteEntry) -> Result<Option<Vote>, VotesEr
         date: entry.date,
         at: entry.at.map(Timestamp),
         bet,
-        genre_ok,
         searched,
     }))
 }
@@ -299,41 +282,27 @@ mod tests {
     }
 
     #[test]
-    fn not_this_one_survives_saving_and_loading() {
+    fn an_old_genre_ok_is_read_and_dropped() {
         let votes = parse_votes(
             r#"
             [votes]
             383870 = { vote = "not_for_me", date = "2026-11-13", at = 1794500000000, genre_ok = true } # Firewatch
-            412020 = { vote = "not_for_me", date = "2026-11-13" }
+            412020 = { vote = "not_for_me", date = "2026-11-13", genre_ok = false }
+            620 = { vote = "would_try", date = "2026-11-13", genre_ok = true }
             "#,
         )
         .unwrap()
         .votes;
 
-        assert!(votes[&AppId(383870)].genre_ok);
-        assert!(!votes[&AppId(412020)].genre_ok);
+        assert_eq!(votes[&AppId(383870)].kind, VoteKind::NotForMe);
+        assert_eq!(votes[&AppId(412020)].kind, VoteKind::NotForMe);
+        assert_eq!(votes[&AppId(620)].kind, VoteKind::WouldTry);
         let text = votes_text(&votes, |_| None);
+        assert!(!text.contains("genre_ok ="));
         assert!(text.contains(
-            "383870 = { vote = \"not_for_me\", date = \"2026-11-13\", at = 1794500000000, genre_ok = true }"
+            "383870 = { vote = \"not_for_me\", date = \"2026-11-13\", at = 1794500000000 }"
         ));
-        assert!(text.contains("412020 = { vote = \"not_for_me\", date = \"2026-11-13\" }"));
         assert_eq!(parse_votes(&text).unwrap().votes, votes);
-    }
-
-    #[test]
-    fn parse_votes_rejects_genre_ok_false() {
-        let result = parse_votes(
-            r#"votes = { 10 = { vote = "not_for_me", date = "2026-10-07", genre_ok = false } }"#,
-        );
-        assert!(matches!(result, Err(VotesError::GenreOkNotTrue(10))));
-    }
-
-    #[test]
-    fn parse_votes_rejects_genre_ok_on_another_vote() {
-        let result = parse_votes(
-            r#"votes = { 10 = { vote = "would_try", date = "2026-10-07", genre_ok = true } }"#,
-        );
-        assert!(matches!(result, Err(VotesError::GenreOkNotNotForMe(10))));
     }
 
     #[test]

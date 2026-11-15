@@ -461,9 +461,7 @@ pub fn vote(kind: VoteKind) -> &'static str {
 
 pub fn pick(pick: Pick) -> &'static str {
     match pick {
-        Pick::Vote(VoteKind::NotForMe) => "Not my genre",
         Pick::Vote(kind) => vote(kind),
-        Pick::NotThisOne => "Not this game",
         Pick::Played => "Played, liked it",
     }
 }
@@ -472,11 +470,7 @@ pub fn would_try_tip(hours: f64) -> String {
     format!("Counts as {hours} h of play in your taste. Stays in Votes for when it's on sale.")
 }
 
-pub const NOT_THIS_ONE_TIP: &str =
-    "You like this kind of game, just not this one. It won't come back.";
-
-pub const NOT_FOR_ME_TIP: &str =
-    "Not your kind of game, or you played it and didn't like it. It won't come back.";
+pub const NOT_FOR_ME_TIP: &str = "Not your kind of game, or not this one. It won't come back.";
 
 pub fn later_tip(days: i64) -> String {
     format!("Back in Discover in {days} days")
@@ -1269,8 +1263,8 @@ mod tests {
             "INFRA: voted Would try"
         );
         assert_eq!(
-            voted("Firewatch", Pick::NotThisOne),
-            "Firewatch: voted Not this game"
+            voted("Firewatch", Pick::Vote(VoteKind::NotForMe)),
+            "Firewatch: voted Not for me"
         );
     }
 

@@ -134,12 +134,12 @@ impl GamePage {
         let id = self.game.id;
         let task = match message {
             Message::Vote(pick) => match pick.ballot() {
-                Some((kind, genre_ok)) => self.save(
+                Some(kind) => self.save(
                     format::voted(&self.game.name, pick),
                     false,
                     move |gamepalate| {
                         gamepalate
-                            .vote(id, kind, genre_ok, false, true)
+                            .vote(id, kind, false, true)
                             .map_err(|error| error.to_string())
                     },
                 ),
@@ -150,7 +150,7 @@ impl GamePage {
                 false,
                 move |gamepalate| {
                     gamepalate
-                        .vote(id, VoteKind::Later, false, false, true)
+                        .vote(id, VoteKind::Later, false, true)
                         .map_err(|error| error.to_string())
                 },
             ),
@@ -545,10 +545,7 @@ fn joins_families(game: &GameView) -> bool {
 
 fn status(game: &GameView, today: Date) -> Option<Status> {
     let standing = game.standing?;
-    let voted = matches!(
-        standing,
-        GameStanding::WouldTry | GameStanding::NotThisOne | GameStanding::NotForMe
-    );
+    let voted = matches!(standing, GameStanding::WouldTry | GameStanding::NotForMe);
 
     match &game.vote {
         Some(vote) if voted => Some(Status::Voted(
@@ -657,16 +654,13 @@ mod tests {
         ));
         assert!(matches!(
             key_message(pressed(Key::Character("2".into()))),
-            Some(Message::Vote(Pick::NotThisOne))
-        ));
-        assert!(matches!(
-            key_message(pressed(Key::Character("3".into()))),
             Some(Message::Vote(Pick::Vote(VoteKind::NotForMe)))
         ));
         assert!(matches!(
-            key_message(pressed(Key::Character("4".into()))),
+            key_message(pressed(Key::Character("3".into()))),
             Some(Message::Played)
         ));
+        assert!(key_message(pressed(Key::Character("4".into()))).is_none());
         assert!(matches!(
             key_message(pressed(Key::Named(Named::Space))),
             Some(Message::Later)
@@ -723,7 +717,9 @@ mod tests {
 
     #[test]
     fn an_open_popup_stops_the_actions_but_not_going_back() {
-        assert!(stopped_by_popup(&Message::Vote(Pick::NotThisOne)));
+        assert!(stopped_by_popup(&Message::Vote(Pick::Vote(
+            VoteKind::NotForMe
+        ))));
         assert!(stopped_by_popup(&Message::Later));
         assert!(stopped_by_popup(&Message::Played));
         assert!(stopped_by_popup(&Message::RemoveVote));
@@ -756,14 +752,14 @@ mod tests {
 
     #[test]
     fn the_status_says_the_vote_and_its_day() {
-        let vote = Vote {
-            genre_ok: true,
-            ..Vote::new(VoteKind::NotForMe, "2026-11-13")
-        };
+        let vote = Vote::new(VoteKind::NotForMe, "2026-11-13");
 
         assert_eq!(
-            status(&found(Some(GameStanding::NotThisOne), Some(vote)), today()),
-            Some(Status::Voted(Pick::NotThisOne, "today".to_string()))
+            status(&found(Some(GameStanding::NotForMe), Some(vote)), today()),
+            Some(Status::Voted(
+                Pick::Vote(VoteKind::NotForMe),
+                "today".to_string()
+            ))
         );
         assert_eq!(
             status(

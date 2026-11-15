@@ -31,8 +31,9 @@ pub enum VotesShow {
     #[default]
     WouldTry,
     Bets,
-    NotThisGame,
-    NotMyGenre,
+    // The two noes of 0.23 are one vote now.
+    #[serde(alias = "not_this_game", alias = "not_my_genre")]
+    NotForMe,
     All,
 }
 
@@ -138,7 +139,7 @@ mod tests {
             }),
             families_played: Some(vec![AppId(220), AppId(730)]),
             votes: VotesSettings {
-                show: VotesShow::NotThisGame,
+                show: VotesShow::NotForMe,
                 order: VotesOrder::BestMatch,
                 hide_owned: false,
                 filters: FilterOptions {
@@ -160,7 +161,26 @@ mod tests {
         assert!(text.contains("theme = \"dark\"\n"));
         assert!(text.contains("[window]\nwidth = 1440\nheight = 900\nmaximized = true\n"));
         assert!(text.contains("families_played = [220, 730]\n"));
-        assert!(text.contains("[votes]\nshow = \"not_this_game\"\norder = \"best_match\"\n"));
+        assert!(text.contains("[votes]\nshow = \"not_for_me\"\norder = \"best_match\"\n"));
+    }
+
+    #[test]
+    fn the_two_old_noes_open_votes_on_not_for_me() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.toml");
+
+        for old in ["not_this_game", "not_my_genre"] {
+            std::fs::write(
+                &path,
+                format!("[votes]\nshow = \"{old}\"\norder = \"price\""),
+            )
+            .unwrap();
+
+            let votes = load_gui_settings(&path).votes;
+
+            assert_eq!(votes.show, VotesShow::NotForMe, "{old}");
+            assert_eq!(votes.order, VotesOrder::Price, "{old}");
+        }
     }
 
     #[test]
