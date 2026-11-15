@@ -120,7 +120,6 @@ impl Gamepalate {
         &self,
         id: AppId,
         kind: VoteKind,
-        genre_ok: bool,
         bet: bool,
         searched: bool,
     ) -> Result<(), VoteError> {
@@ -137,7 +136,6 @@ impl Gamepalate {
                 date,
                 at: Some(at),
                 bet,
-                genre_ok,
                 searched,
             },
             |id| self.saved_name(id),

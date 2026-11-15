@@ -259,14 +259,14 @@ impl Votes {
                 self.viewport = Some((viewport.absolute_offset().y, viewport.bounds().height));
             }
             Message::Vote(pick) => {
-                if let (Some(game), Some((kind, genre_ok))) = (self.current(), pick.ballot()) {
+                if let (Some(game), Some((kind, _))) = (self.current(), pick.ballot()) {
                     let text = format::voted(&game.name, pick);
                     let id = game.id;
                     let gamepalate = Arc::clone(&self.gamepalate);
                     let save = Task::perform(
                         async move {
                             gamepalate
-                                .vote(id, kind, genre_ok, false, false)
+                                .vote(id, kind, false, false)
                                 .map_err(|error| error.to_string())
                         },
                         Message::VoteSaved,
@@ -1486,31 +1486,11 @@ mod tests {
     }
 
     #[test]
-    fn not_this_game_and_not_my_genre_have_a_chip_each() {
-        let mut games = games();
-        let mut not_this_one = voted(6, "Firewatch", VoteKind::NotForMe, "2026-11-13", false);
-        not_this_one.vote.genre_ok = true;
-        games.insert(not_this_one.id, not_this_one);
-
-        let shown = |filter| rows(&games, filter, Order::Newest, Shown::default(), "", None);
-        assert_eq!(shown(Filter::NotThisGame), ids(&[6]));
-        assert_eq!(shown(Filter::NotMyGenre), ids(&[5]));
-        assert_eq!(filter_label(Filter::NotThisGame), "Not this game");
-        assert_eq!(filter_label(Filter::NotMyGenre), "Not my genre");
-    }
-
-    #[test]
     fn a_vote_opens_on_its_own_chip() {
-        let not_this_one = Vote {
-            genre_ok: true,
-            ..Vote::new(VoteKind::NotForMe, "2026-11-13")
-        };
-
         assert_eq!(
             Filter::of(&Vote::new(VoteKind::WouldTry, "2026-11-13")),
             Filter::WouldTry
         );
-        assert_eq!(Filter::of(&not_this_one), Filter::NotThisGame);
         assert_eq!(
             Filter::of(&Vote::new(VoteKind::NotForMe, "2026-11-13")),
             Filter::NotMyGenre
@@ -2058,10 +2038,7 @@ mod tests {
     #[test]
     fn the_vote_shows_beside_the_name_only_in_all_and_bets() {
         let would_try = Vote::new(VoteKind::WouldTry, "2026-10-01");
-        let not_this_one = Vote {
-            genre_ok: true,
-            ..Vote::new(VoteKind::NotForMe, "2026-10-01")
-        };
+        let not_this_one = Vote::new(VoteKind::NotForMe, "2026-10-01");
         let later = Vote::new(VoteKind::Later, "2026-10-01");
 
         for filter in [Filter::All, Filter::Bets] {

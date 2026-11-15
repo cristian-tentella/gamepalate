@@ -19,11 +19,7 @@ pub enum Pick {
 
 impl Pick {
     pub fn of(vote: &Vote) -> Pick {
-        if vote.genre_ok {
-            Pick::NotThisOne
-        } else {
-            Pick::Vote(vote.kind)
-        }
+        Pick::Vote(vote.kind)
     }
 
     /// The kind of vote the pick saves, and whether the genre is fine.
@@ -636,16 +632,6 @@ mod tests {
             Some((VoteKind::NotForMe, false))
         );
         assert_eq!(Pick::Played.ballot(), None);
-    }
-
-    #[test]
-    fn a_not_for_me_with_the_genre_ok_is_shown_as_not_this_one() {
-        let mut vote = Vote::new(VoteKind::NotForMe, "2026-11-13");
-        assert_eq!(Pick::of(&vote), Pick::Vote(VoteKind::NotForMe));
-
-        vote.genre_ok = true;
-
-        assert_eq!(Pick::of(&vote), Pick::NotThisOne);
     }
 
     #[test]

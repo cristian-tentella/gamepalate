@@ -283,7 +283,7 @@ impl Discover {
                     Task::perform(
                         async move {
                             gamepalate
-                                .vote(id, VoteKind::Later, false, bet, false)
+                                .vote(id, VoteKind::Later, bet, false)
                                 .map_err(|error| error.to_string())
                         },
                         Message::LaterSaved,
@@ -294,14 +294,14 @@ impl Discover {
             Message::LaterSaved(Ok(())) => {}
             Message::LaterSaved(Err(error)) => return self.show_toast(error),
             Message::Vote(pick) => {
-                if let (Some(game), Some((kind, genre_ok))) = (self.current(), pick.ballot()) {
+                if let (Some(game), Some((kind, _))) = (self.current(), pick.ballot()) {
                     let text = format::voted(&game.name, pick);
                     let gamepalate = Arc::clone(&self.gamepalate);
                     let (id, bet) = (game.id, game.bet);
                     let save = Task::perform(
                         async move {
                             gamepalate
-                                .vote(id, kind, genre_ok, bet, false)
+                                .vote(id, kind, bet, false)
                                 .map_err(|error| error.to_string())
                         },
                         Message::VoteSaved,
