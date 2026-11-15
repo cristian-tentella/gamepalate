@@ -134,7 +134,7 @@ impl GamePage {
         let id = self.game.id;
         let task = match message {
             Message::Vote(pick) => match pick.ballot() {
-                Some((kind, _)) => self.save(
+                Some(kind) => self.save(
                     format::voted(&self.game.name, pick),
                     false,
                     move |gamepalate| {
@@ -654,16 +654,13 @@ mod tests {
         ));
         assert!(matches!(
             key_message(pressed(Key::Character("2".into()))),
-            Some(Message::Vote(Pick::NotThisOne))
-        ));
-        assert!(matches!(
-            key_message(pressed(Key::Character("3".into()))),
             Some(Message::Vote(Pick::Vote(VoteKind::NotForMe)))
         ));
         assert!(matches!(
-            key_message(pressed(Key::Character("4".into()))),
+            key_message(pressed(Key::Character("3".into()))),
             Some(Message::Played)
         ));
+        assert!(key_message(pressed(Key::Character("4".into()))).is_none());
         assert!(matches!(
             key_message(pressed(Key::Named(Named::Space))),
             Some(Message::Later)
@@ -720,7 +717,9 @@ mod tests {
 
     #[test]
     fn an_open_popup_stops_the_actions_but_not_going_back() {
-        assert!(stopped_by_popup(&Message::Vote(Pick::NotThisOne)));
+        assert!(stopped_by_popup(&Message::Vote(Pick::Vote(
+            VoteKind::NotForMe
+        ))));
         assert!(stopped_by_popup(&Message::Later));
         assert!(stopped_by_popup(&Message::Played));
         assert!(stopped_by_popup(&Message::RemoveVote));
