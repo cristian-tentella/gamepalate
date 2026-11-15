@@ -24,14 +24,24 @@ pub struct SavedWindow {
     pub maximized: bool,
 }
 
-/// The chip Votes opens on; `all` is no chip chosen.
+/// The segment Votes opens on; `all` is every vote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VotesShow {
     #[default]
     WouldTry,
-    Bets,
     // The two noes of 0.23 are one vote now.
+    #[serde(alias = "not_this_game", alias = "not_my_genre")]
+    NotForMe,
+    All,
+}
+
+// Up to 0.24.0 the Bets were a chip; now they are a filter.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SavedShow {
+    WouldTry,
+    Bets,
     #[serde(alias = "not_this_game", alias = "not_my_genre")]
     NotForMe,
     All,
@@ -50,13 +60,12 @@ pub enum VotesOrder {
 
 /// How Votes was left: it opens the same way next time.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(from = "SavedVotes")]
 pub struct VotesSettings {
-    #[serde(deserialize_with = "or_default")]
     pub show: VotesShow,
-    #[serde(deserialize_with = "or_default")]
     pub order: VotesOrder,
     pub hide_owned: bool,
+    pub only_bets: bool,
     pub filters: FilterOptions,
 }
 
@@ -66,7 +75,50 @@ impl Default for VotesSettings {
             show: VotesShow::default(),
             order: VotesOrder::default(),
             hide_owned: true,
+            only_bets: false,
             filters: FilterOptions::default(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(default)]
+struct SavedVotes {
+    #[serde(deserialize_with = "or_default")]
+    show: Option<SavedShow>,
+    #[serde(deserialize_with = "or_default")]
+    order: VotesOrder,
+    hide_owned: bool,
+    only_bets: bool,
+    filters: FilterOptions,
+}
+
+impl Default for SavedVotes {
+    fn default() -> SavedVotes {
+        let votes = VotesSettings::default();
+        SavedVotes {
+            show: None,
+            order: votes.order,
+            hide_owned: votes.hide_owned,
+            only_bets: votes.only_bets,
+            filters: votes.filters,
+        }
+    }
+}
+
+impl From<SavedVotes> for VotesSettings {
+    fn from(saved: SavedVotes) -> VotesSettings {
+        let show = match saved.show {
+            None | Some(SavedShow::WouldTry) => VotesShow::WouldTry,
+            Some(SavedShow::NotForMe) => VotesShow::NotForMe,
+            Some(SavedShow::All | SavedShow::Bets) => VotesShow::All,
+        };
+        VotesSettings {
+            show,
+            order: saved.order,
+            hide_owned: saved.hide_owned,
+            only_bets: saved.only_bets || matches!(saved.show, Some(SavedShow::Bets)),
+            filters: saved.filters,
         }
     }
 }
@@ -142,6 +194,7 @@ mod tests {
                 show: VotesShow::NotForMe,
                 order: VotesOrder::BestMatch,
                 hide_owned: false,
+                only_bets: true,
                 filters: FilterOptions {
                     only_discounted: true,
                     min_positive_percent: Some(85),
@@ -184,6 +237,25 @@ mod tests {
     }
 
     #[test]
+    fn the_old_bets_chip_opens_all_the_votes_with_bets_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.toml");
+        std::fs::write(
+            &path,
+            "[votes]
+show = \"bets\"
+order = \"price\"",
+        )
+        .unwrap();
+
+        let votes = load_gui_settings(&path).votes;
+
+        assert_eq!(votes.show, VotesShow::All);
+        assert!(votes.only_bets);
+        assert_eq!(votes.order, VotesOrder::Price);
+    }
+
+    #[test]
     fn a_file_without_the_votes_opens_them_as_the_first_time() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("gui.toml");
@@ -195,6 +267,7 @@ mod tests {
         assert_eq!(votes.show, VotesShow::WouldTry);
         assert_eq!(votes.order, VotesOrder::Newest);
         assert!(votes.hide_owned);
+        assert!(!votes.only_bets);
     }
 
     #[test]

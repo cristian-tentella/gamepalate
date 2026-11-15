@@ -279,6 +279,39 @@ pub fn vote(flashed: bool, segment: Segment) -> impl Fn(&Theme, button::Status) 
     }
 }
 
+/// A segment of a choice, like the ones at the top of Votes: the chosen one is filled.
+pub fn segment(
+    current: bool,
+    segment: Segment,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let palette = theme.extended_palette();
+        let (background, text_color) = if current {
+            (palette.primary.base.color, palette.primary.base.text)
+        } else {
+            let deviation = match status {
+                button::Status::Hovered => 0.04,
+                button::Status::Pressed => 0.07,
+                button::Status::Active | button::Status::Disabled => 0.015,
+            };
+            (
+                palette::deviate(palette.background.base.color, deviation),
+                palette.background.base.text,
+            )
+        };
+
+        button::Style {
+            background: Some(background.into()),
+            text_color,
+            border: Border {
+                radius: segment.radius(),
+                ..Border::default()
+            },
+            ..button::Style::default()
+        }
+    }
+}
+
 /// The border around the segments of the verdicts.
 pub fn vote_group(theme: &Theme) -> container::Style {
     container::Style {
