@@ -10,7 +10,7 @@ use gamepalate_app::{
     VotesOrder, VotesSettings, VotesShow,
 };
 use iced::{
-    Center, Element, Event, Fill, Size, Subscription, Task, event,
+    Center, Element, Event, Fill, Length, Size, Subscription, Task, event,
     keyboard::{self, Key, key::Named},
     never, padding,
     widget::{
@@ -32,8 +32,9 @@ use super::{
 };
 use crate::{font, format, style};
 
-// One row of three equal chips: with 4 px at each side, "Not for me 185" fits in the list.
-const FILTERS: [Filter; 3] = [Filter::WouldTry, Filter::Bets, Filter::NotForMe];
+// One segmented row; each segment is as wide as its text asks, so "Not for me 1,185" fits.
+const FILTERS: [Filter; 3] = [Filter::WouldTry, Filter::NotForMe, Filter::All];
+const SEGMENT_HEIGHT: f32 = 26.0;
 const ORDERS: [Order; 4] = [
     Order::Newest,
     Order::Price,
@@ -56,10 +57,11 @@ pub struct Votes {
     gamepalate: Arc<Gamepalate>,
     games: BTreeMap<AppId, VotedGame>,
     filter: Filter,
-    // The chip saved in gui.toml: it changes only when a chip is chosen here.
+    // The segment saved in gui.toml: it changes only when a segment is chosen here.
     chip: VotesShow,
     order: Order,
     hide_owned: bool,
+    only_bets: bool,
     filters: FilterOptions,
     passing: Option<BTreeSet<AppId>>,
     panel: Panel,
@@ -79,9 +81,8 @@ pub struct Votes {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Filter {
     WouldTry,
-    Bets,
     NotForMe,
-    /// No chip chosen: every vote, the Laters too.
+    /// Every vote, the Laters too.
     All,
 }
 
@@ -146,6 +147,7 @@ impl Votes {
             chip,
             order: saved.order.into(),
             hide_owned: saved.hide_owned,
+            only_bets: saved.only_bets,
             filters,
             passing,
             panel: Panel::new(
@@ -153,8 +155,7 @@ impl Votes {
                 &FilterOptions::default(),
                 format::currency_symbol(gamepalate.currency()),
                 &SearchOptions::default(),
-            )
-            .without_bets(),
+            ),
             panel_open: false,
             tools_height: 0.0,
             search: String::new(),
@@ -214,7 +215,7 @@ impl Votes {
     fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Filter(filter) => {
-                self.filter = chosen_filter(self.filter, filter);
+                self.filter = filter;
                 self.chip = self.filter.into();
                 self.search.clear();
                 return Task::batch([self.refresh(), self.save_settings()]);
@@ -231,12 +232,14 @@ impl Votes {
             Message::ToggleFilters if self.panel_open => self.panel_open = false,
             Message::ToggleFilters => {
                 self.panel_open = true;
-                self.panel.show(&search_options(&self.filters));
+                self.panel
+                    .show(&search_options(&self.filters, self.only_bets));
             }
             Message::CloseFilters => self.panel_open = false,
             Message::ResetFilters => {
                 self.filters = FilterOptions::default();
                 self.passing = None;
+                self.only_bets = false;
                 return Task::batch([self.refresh(), self.save_settings()]);
             }
             Message::ToolsMeasured(size) => self.tools_height = size.height,
@@ -395,22 +398,37 @@ impl Votes {
 
     fn list(&self) -> Element<'_, Message> {
         let searching = !self.search.trim().is_empty();
-        let chip = |filter: Filter| {
-            let count = count(&self.games, filter, self.shown());
-            button(
-                text!("{} {}", filter_label(filter), format::count(count as u32))
-                    .size(font::NOTE_SIZE)
-                    .wrapping(Wrapping::None)
-                    .width(Fill)
-                    .align_x(Center),
-            )
-            .width(Fill)
-            .padding([3, 4])
-            .style(style::choice(!searching && filter == self.filter))
-            .on_press(Message::Filter(filter))
-            .into()
-        };
-        let filters = row(FILTERS.map(chip)).spacing(6);
+        let segments = FILTERS
+            .iter()
+            .enumerate()
+            .fold(row![], |segments, (index, &filter)| {
+                let count = count(&self.games, filter, self.shown());
+                let label = format!("{} {}", filter_label(filter), format::count(count as u32));
+                let portion = segment_portion(&label);
+                let segment = button(
+                    text(label)
+                        .size(font::NOTE_SIZE)
+                        .wrapping(Wrapping::None)
+                        .width(Fill)
+                        .height(Fill)
+                        .align_x(Center)
+                        .align_y(Center),
+                )
+                .width(Length::FillPortion(portion))
+                .height(Fill)
+                .padding([0, 4])
+                .style(style::segment(
+                    !searching && filter == self.filter,
+                    segment_place(index),
+                ))
+                .on_press(Message::Filter(filter));
+                let seam = (index > 0).then(|| rule::vertical(1).style(style::vote_seam));
+                segments.push(seam).push(segment)
+            });
+        let filters = container(segments.height(Fill))
+            .height(SEGMENT_HEIGHT)
+            .padding(1)
+            .style(style::vote_group);
         let search = text_input("Search (/)", &self.search)
             .style(style::field)
             .id(SEARCH)
@@ -466,7 +484,7 @@ impl Votes {
             };
             container(line).width(Fill).clip(true)
         });
-        let summary = (!searching && self.filter == Filter::Bets)
+        let summary = (!searching && self.only_bets)
             .then(|| bets_summary(&self.games))
             .flatten()
             .map(|(would_try, bets, others)| {
@@ -483,12 +501,12 @@ impl Votes {
                 empty_text(
                     self.games.is_empty(),
                     self.filter,
-                    self.passing.is_some(),
+                    self.is_filtered(),
                     self.owned_hidden(),
                     &self.search,
                 )
             };
-            let reset = (!sorting && !searching && self.passing.is_some()).then(|| {
+            let reset = (!sorting && !searching && self.is_filtered()).then(|| {
                 button(text("Reset filters").size(font::NOTE_SIZE))
                     .padding(0)
                     .style(style::link)
@@ -731,16 +749,23 @@ impl Votes {
     fn shown(&self) -> Shown<'_> {
         Shown {
             hide_owned: self.hide_owned,
+            only_bets: self.only_bets,
             passing: self.passing.as_ref(),
         }
     }
 
+    /// True when Bets only or a filter of the panel is on.
+    fn is_filtered(&self) -> bool {
+        self.only_bets || self.passing.is_some()
+    }
+
     fn filters_summary(&self) -> Option<String> {
-        filters_summary(&self.filters, self.gamepalate.currency())
+        filters_summary(&self.filters, self.only_bets, self.gamepalate.currency())
     }
 
     fn change_filters(&mut self, message: filters::Message) -> Task<Message> {
-        match self.panel.update(&search_options(&self.filters), message) {
+        let options = search_options(&self.filters, self.only_bets);
+        match self.panel.update(&options, message) {
             Action::Stay => Task::none(),
             Action::Close => {
                 self.panel_open = false;
@@ -752,6 +777,7 @@ impl Votes {
                     Ok(passing) => {
                         self.filters = options.filters;
                         self.passing = passing;
+                        self.only_bets = options.only_bets;
                         Task::batch([self.refresh(), self.save_settings()])
                     }
                     Err(error) => self.show_toast(error),
@@ -766,6 +792,7 @@ impl Votes {
             show: self.chip,
             order: self.order.into(),
             hide_owned: self.hide_owned,
+            only_bets: self.only_bets,
             filters: self.filters.clone(),
         };
 
@@ -779,7 +806,7 @@ impl Votes {
         )
     }
 
-    /// True when Hide owned is the only reason the chip has no games left.
+    /// True when Hide owned is the only reason the segment has no games left.
     fn owned_hidden(&self) -> bool {
         self.hide_owned && count(&self.games, self.filter, Shown::default()) > 0
     }
@@ -848,27 +875,17 @@ impl Filter {
     fn keeps(self, vote: &Vote) -> bool {
         match self {
             Filter::WouldTry => vote.kind == VoteKind::WouldTry,
-            Filter::Bets => vote.bet,
             Filter::NotForMe => vote.kind == VoteKind::NotForMe,
             Filter::All => true,
         }
     }
 
-    /// The chip of a vote; a Later has none, so it shows in All.
+    /// The segment of a vote; a Later has none of its own, so it shows in All.
     fn of(vote: &Vote) -> Filter {
         [Filter::WouldTry, Filter::NotForMe]
             .into_iter()
             .find(|filter| filter.keeps(vote))
             .unwrap_or(Filter::All)
-    }
-}
-
-/// A click on the chosen chip lets it go, and the list shows every vote.
-fn chosen_filter(current: Filter, clicked: Filter) -> Filter {
-    if clicked == current {
-        Filter::All
-    } else {
-        clicked
     }
 }
 
@@ -890,7 +907,6 @@ pub(super) fn by_id(games: Vec<VotedGame>) -> BTreeMap<AppId, VotedGame> {
 fn filter_label(filter: Filter) -> &'static str {
     match filter {
         Filter::WouldTry => format::pick(Pick::Vote(VoteKind::WouldTry)),
-        Filter::Bets => "Bets",
         Filter::NotForMe => format::pick(Pick::Vote(VoteKind::NotForMe)),
         Filter::All => "All",
     }
@@ -914,9 +930,9 @@ impl Sign {
     }
 }
 
-/// Only the chips that mix the votes show them; in the others the chip says the vote.
+/// Only All mixes the votes and shows them; in the others the segment says the vote.
 fn vote_sign(filter: Filter, vote: &Vote) -> Option<Sign> {
-    if !matches!(filter, Filter::Bets | Filter::All) {
+    if filter != Filter::All {
         return None;
     }
     Some(match vote.kind {
@@ -930,7 +946,7 @@ fn price_text(price: Option<Price>, currency: &Currency) -> String {
     price.map_or_else(|| "—".to_string(), |price| format::price(&price, currency))
 }
 
-/// The chip shown and the chip saved: a chip chosen from outside is not saved.
+/// The segment shown and the segment saved: one chosen from outside is not saved.
 fn opening_chip(saved: &VotesSettings, chosen: Option<Filter>) -> (Filter, VotesShow) {
     (chosen.unwrap_or(saved.show.into()), saved.show)
 }
@@ -939,7 +955,6 @@ impl From<VotesShow> for Filter {
     fn from(show: VotesShow) -> Filter {
         match show {
             VotesShow::WouldTry => Filter::WouldTry,
-            VotesShow::Bets => Filter::Bets,
             VotesShow::NotForMe => Filter::NotForMe,
             VotesShow::All => Filter::All,
         }
@@ -950,7 +965,6 @@ impl From<Filter> for VotesShow {
     fn from(filter: Filter) -> VotesShow {
         match filter {
             Filter::WouldTry => VotesShow::WouldTry,
-            Filter::Bets => VotesShow::Bets,
             Filter::NotForMe => VotesShow::NotForMe,
             Filter::All => VotesShow::All,
         }
@@ -979,16 +993,34 @@ impl From<Order> for VotesOrder {
     }
 }
 
-/// The options the panel works on: only the filters, without Bets only.
-fn search_options(filters: &FilterOptions) -> SearchOptions {
+/// The options the panel works on: the filters and Bets only.
+fn search_options(filters: &FilterOptions, only_bets: bool) -> SearchOptions {
     SearchOptions {
         filters: filters.clone(),
+        only_bets,
         ..SearchOptions::default()
     }
 }
 
-fn filters_summary(filters: &FilterOptions, currency: &Currency) -> Option<String> {
-    format::filters(&search_options(filters), currency)
+fn filters_summary(
+    filters: &FilterOptions,
+    only_bets: bool,
+    currency: &Currency,
+) -> Option<String> {
+    format::filters(&search_options(filters, only_bets), currency)
+}
+
+/// A segment's share of the row: as many parts as its text has characters.
+fn segment_portion(label: &str) -> u16 {
+    u16::try_from(label.chars().count()).unwrap_or(u16::MAX)
+}
+
+fn segment_place(index: usize) -> style::Segment {
+    match index {
+        0 => style::Segment::First,
+        index if index + 1 == FILTERS.len() => style::Segment::Last,
+        _ => style::Segment::Middle,
+    }
 }
 
 /// The voted games that pass the filters, or `None` when no filter is chosen.
@@ -1005,10 +1037,11 @@ fn passing(
         .map_err(|error| sentence(&error.to_string()))
 }
 
-/// Which games of a chip the list shows, besides the chip itself.
+/// Which games of a segment the list shows, besides the segment itself.
 #[derive(Clone, Copy, Default)]
 struct Shown<'a> {
     hide_owned: bool,
+    only_bets: bool,
     /// The games that pass the filters of the panel, when some are chosen.
     passing: Option<&'a BTreeSet<AppId>>,
 }
@@ -1016,6 +1049,7 @@ struct Shown<'a> {
 impl Shown<'_> {
     fn keeps(self, game: &VotedGame) -> bool {
         !(self.hide_owned && game.owned)
+            && (!self.only_bets || game.vote.bet)
             && self
                 .passing
                 .is_none_or(|passing| passing.contains(&game.id))
@@ -1125,18 +1159,14 @@ fn empty_text(
         format!("No votes match \"{search}\"")
     } else if filtered {
         match filter {
-            Filter::Bets => "No Bets match the filters".to_string(),
             Filter::All => "No votes match the filters".to_string(),
             _ => format!("No {} votes match the filters", filter_label(filter)),
         }
     } else if owned_hidden {
         match filter {
-            Filter::Bets => "You own all your Bets".to_string(),
             Filter::All => "You own all your voted games".to_string(),
             _ => format!("You own all your {} games", filter_label(filter)),
         }
-    } else if filter == Filter::Bets {
-        "No votes on Bets".to_string()
     } else {
         format!("No {} votes", filter_label(filter))
     }
@@ -1268,12 +1298,20 @@ mod tests {
 
     const HIDE_OWNED: Shown = Shown {
         hide_owned: true,
+        only_bets: false,
+        passing: None,
+    };
+
+    const BETS_ONLY: Shown = Shown {
+        hide_owned: false,
+        only_bets: true,
         passing: None,
     };
 
     fn passing_only(passing: &BTreeSet<AppId>) -> Shown<'_> {
         Shown {
             hide_owned: false,
+            only_bets: false,
             passing: Some(passing),
         }
     }
@@ -1287,9 +1325,8 @@ mod tests {
             vec!["Roguelike".to_string()],
             &FilterOptions::default(),
             "€".to_string(),
-            &search_options(filters),
+            &search_options(filters, false),
         )
-        .without_bets()
     }
 
     fn voted(id: u32, name: &str, kind: VoteKind, date: &str, bet: bool) -> VotedGame {
@@ -1418,17 +1455,18 @@ mod tests {
     }
 
     #[test]
-    fn the_bets_filter_keeps_only_the_bets() {
-        let rows = rows(
-            &games(),
-            Filter::Bets,
-            Order::Newest,
-            Shown::default(),
-            "",
-            None,
-        );
+    fn bets_only_keeps_only_the_bets_of_the_segment() {
+        let games = games();
 
-        assert_eq!(rows, ids(&[5, 2]));
+        assert_eq!(
+            rows(&games, Filter::All, Order::Newest, BETS_ONLY, "", None),
+            ids(&[5, 2])
+        );
+        assert_eq!(
+            rows(&games, Filter::WouldTry, Order::Newest, BETS_ONLY, "", None),
+            ids(&[2])
+        );
+        assert_eq!(count(&games, Filter::NotForMe, BETS_ONLY), 1);
     }
 
     #[test]
@@ -1446,12 +1484,20 @@ mod tests {
     }
 
     #[test]
+    fn the_segments_are_as_wide_as_their_text() {
+        assert_eq!(segment_portion("Not for me 1,185"), 16);
+        assert_eq!(segment_place(0), style::Segment::First);
+        assert_eq!(segment_place(1), style::Segment::Middle);
+        assert_eq!(segment_place(2), style::Segment::Last);
+    }
+
+    #[test]
     fn a_later_has_no_filter_and_shows_only_in_all() {
         assert_eq!(
             Filter::of(&Vote::new(VoteKind::Later, "2026-10-20")),
             Filter::All
         );
-        assert!(FILTERS.iter().all(|filter| {
+        assert!([Filter::WouldTry, Filter::NotForMe].iter().all(|filter| {
             !rows(&games(), *filter, Order::Newest, Shown::default(), "", None).contains(&AppId(3))
         }));
         assert!(
@@ -1473,7 +1519,6 @@ mod tests {
 
         assert_eq!(count(&games, Filter::WouldTry, Shown::default()), 3);
         assert_eq!(count(&games, Filter::NotForMe, Shown::default()), 1);
-        assert_eq!(count(&games, Filter::Bets, Shown::default()), 2);
         assert_eq!(count(&games, Filter::All, Shown::default()), 5);
     }
 
@@ -1487,16 +1532,6 @@ mod tests {
             Filter::of(&Vote::new(VoteKind::NotForMe, "2026-11-13")),
             Filter::NotForMe
         );
-    }
-
-    #[test]
-    fn a_click_on_the_chosen_chip_shows_every_vote() {
-        assert_eq!(chosen_filter(Filter::Bets, Filter::Bets), Filter::All);
-        assert_eq!(
-            chosen_filter(Filter::Bets, Filter::WouldTry),
-            Filter::WouldTry
-        );
-        assert_eq!(chosen_filter(Filter::All, Filter::Bets), Filter::Bets);
     }
 
     #[test]
@@ -1552,10 +1587,6 @@ mod tests {
             "No Would try votes"
         );
         assert_eq!(
-            empty_text(false, Filter::Bets, false, false, ""),
-            "No votes on Bets"
-        );
-        assert_eq!(
             empty_text(false, not_for_me, false, false, " hades "),
             "No votes match \"hades\""
         );
@@ -1588,8 +1619,8 @@ mod tests {
             ids(&[1])
         );
         assert_eq!(
-            rows(&games, Filter::Bets, Order::Newest, shown, "", None),
-            ids(&[5])
+            rows(&games, Filter::All, Order::Newest, shown, "", None),
+            ids(&[3, 5, 1])
         );
         assert_eq!(count(&games, Filter::WouldTry, shown), 1);
         assert_eq!(count(&games, Filter::All, shown), 3);
@@ -1646,10 +1677,6 @@ mod tests {
             "No Not for me votes match the filters"
         );
         assert_eq!(
-            empty_text(false, Filter::Bets, true, false, ""),
-            "No Bets match the filters"
-        );
-        assert_eq!(
             empty_text(false, Filter::All, true, false, ""),
             "No votes match the filters"
         );
@@ -1660,9 +1687,9 @@ mod tests {
     }
 
     #[test]
-    fn the_panel_of_votes_has_no_bets_only_and_starts_from_no_limit() {
+    fn the_panel_of_votes_has_bets_only_and_starts_from_no_limit() {
         let mut panel = votes_panel(&FilterOptions::default());
-        let none = search_options(&FilterOptions::default());
+        let none = search_options(&FilterOptions::default(), false);
 
         panel.update(&none, filters::Message::OnlyBets(true));
         panel.update(&none, filters::Message::OnSale(true));
@@ -1670,7 +1697,7 @@ mod tests {
             panic!("expected new filters");
         };
 
-        assert!(!changed.only_bets);
+        assert!(changed.only_bets);
         assert_eq!(
             changed.filters,
             FilterOptions {
@@ -1687,7 +1714,7 @@ mod tests {
             max_price_cents: Some(2000),
             ..FilterOptions::default()
         };
-        let options = search_options(&filters);
+        let options = search_options(&filters, false);
         let mut panel = votes_panel(&filters);
 
         panel.update(&options, filters::Message::OnSale(true));
@@ -1715,10 +1742,17 @@ mod tests {
             ..FilterOptions::default()
         };
 
-        assert_eq!(filters_summary(&FilterOptions::default(), &currency), None);
         assert_eq!(
-            filters_summary(&filters, &currency).as_deref(),
+            filters_summary(&FilterOptions::default(), false, &currency),
+            None
+        );
+        assert_eq!(
+            filters_summary(&filters, false, &currency).as_deref(),
             Some("On sale · ≤ 20,00€ · ≥ 85% positive · Tags: Roguelike")
+        );
+        assert_eq!(
+            filters_summary(&FilterOptions::default(), true, &currency).as_deref(),
+            Some("Bets only")
         );
     }
 
@@ -1740,16 +1774,11 @@ mod tests {
             ids(&[2])
         );
         assert_eq!(
-            rows(&games, Filter::Bets, Order::Newest, HIDE_OWNED, "", None),
-            ids(&[2])
-        );
-        assert_eq!(
             rows(&games, Filter::All, Order::Newest, HIDE_OWNED, "", None),
             ids(&[3, 2])
         );
         assert_eq!(count(&games, would_try, HIDE_OWNED), 1);
         assert_eq!(count(&games, Filter::NotForMe, HIDE_OWNED), 0);
-        assert_eq!(count(&games, Filter::Bets, HIDE_OWNED), 1);
         assert_eq!(count(&games, Filter::All, HIDE_OWNED), 2);
     }
 
@@ -1791,6 +1820,7 @@ mod tests {
         let passing = set(&[1, 3]);
         let both = Shown {
             hide_owned: true,
+            only_bets: false,
             passing: Some(&passing),
         };
 
@@ -1813,10 +1843,6 @@ mod tests {
         assert_eq!(
             empty_text(false, Filter::NotForMe, false, true, ""),
             "You own all your Not for me games"
-        );
-        assert_eq!(
-            empty_text(false, Filter::Bets, false, true, ""),
-            "You own all your Bets"
         );
         assert_eq!(
             empty_text(false, Filter::All, false, true, ""),
@@ -2025,16 +2051,14 @@ mod tests {
     }
 
     #[test]
-    fn the_vote_shows_beside_the_name_only_in_all_and_bets() {
+    fn the_vote_shows_beside_the_name_only_in_all() {
         let would_try = Vote::new(VoteKind::WouldTry, "2026-10-01");
         let not_for_me = Vote::new(VoteKind::NotForMe, "2026-10-01");
         let later = Vote::new(VoteKind::Later, "2026-10-01");
 
-        for filter in [Filter::All, Filter::Bets] {
-            assert_eq!(vote_sign(filter, &would_try), Some(Sign::Up));
-            assert_eq!(vote_sign(filter, &not_for_me), Some(Sign::Down));
-            assert_eq!(vote_sign(filter, &later), Some(Sign::Later));
-        }
+        assert_eq!(vote_sign(Filter::All, &would_try), Some(Sign::Up));
+        assert_eq!(vote_sign(Filter::All, &not_for_me), Some(Sign::Down));
+        assert_eq!(vote_sign(Filter::All, &later), Some(Sign::Later));
         for filter in [Filter::WouldTry, Filter::NotForMe] {
             assert_eq!(vote_sign(filter, &would_try), None);
             assert_eq!(vote_sign(filter, &later), None);
@@ -2060,7 +2084,7 @@ mod tests {
 
     #[test]
     fn the_chips_and_the_orders_go_to_the_file_and_back() {
-        for &filter in FILTERS.iter().chain([&Filter::All]) {
+        for filter in FILTERS {
             assert_eq!(Filter::from(VotesShow::from(filter)), filter);
         }
         for order in ORDERS {
@@ -2071,11 +2095,11 @@ mod tests {
     #[test]
     fn votes_open_on_the_saved_chip() {
         let saved = VotesSettings {
-            show: VotesShow::Bets,
+            show: VotesShow::All,
             ..VotesSettings::default()
         };
 
-        assert_eq!(opening_chip(&saved, None), (Filter::Bets, VotesShow::Bets));
+        assert_eq!(opening_chip(&saved, None), (Filter::All, VotesShow::All));
         assert_eq!(
             opening_chip(&VotesSettings::default(), None),
             (Filter::WouldTry, VotesShow::WouldTry)
