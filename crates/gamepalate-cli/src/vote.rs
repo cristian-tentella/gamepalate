@@ -31,7 +31,7 @@ pub struct VoteArgs {
 enum VoteChoice {
     /// You would try it: it counts as a signal
     WouldTry,
-    /// Not now: it comes back in the recommendations after 30 days
+    /// Not now: it comes back in the recommendations after 7 days
     Later,
     /// Not for you: it leaves the recommendations
     NotForMe,

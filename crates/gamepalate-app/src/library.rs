@@ -451,7 +451,7 @@ mod tests {
         region::Region,
         signals::{LibraryGame, RecentGame, Signals},
         timestamp::Timestamp,
-        votes::{Vote, VoteKind, Votes},
+        votes::{LATER_DAYS, Vote, VoteKind, Votes},
     };
 
     use super::*;
@@ -750,9 +750,11 @@ mod tests {
         voted(&mut fixture, later_since(0, 0));
         assert_eq!(
             standing_of(&fixture, 6),
-            Some(GameStanding::Later { days_left: 30 })
+            Some(GameStanding::Later {
+                days_left: LATER_DAYS
+            })
         );
-        voted(&mut fixture, later_since(29, 12));
+        voted(&mut fixture, later_since(LATER_DAYS - 1, 12));
         assert_eq!(
             standing_of(&fixture, 6),
             Some(GameStanding::Later { days_left: 1 })
@@ -763,7 +765,7 @@ mod tests {
     fn a_later_that_is_over_is_no_vote() {
         let mut fixture = Fixture::new();
 
-        voted(&mut fixture, later_since(30, 0));
+        voted(&mut fixture, later_since(LATER_DAYS, 0));
 
         assert_eq!(standing_of(&fixture, 6), None);
     }
