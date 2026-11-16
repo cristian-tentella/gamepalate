@@ -52,6 +52,7 @@ pub enum Message {
     Vote(Pick),
     Later,
     Played,
+    Star,
     RemoveVote,
     AddToFamily(String),
     Saved(String, bool, Result<Option<GameView>, String>),
@@ -74,7 +75,11 @@ pub enum Action {
 
 #[derive(Debug, PartialEq)]
 enum Status {
-    Voted(Pick, String),
+    Voted {
+        pick: Pick,
+        starred: bool,
+        day: String,
+    },
     Plain(String),
 }
 
@@ -166,6 +171,19 @@ impl GamePage {
                     },
                 ),
             Message::Played => Task::none(),
+            Message::Star if offers_star(&self.game) => {
+                let starred = !self.game.vote.as_ref().is_some_and(|vote| vote.starred);
+                self.save(
+                    format::star_toast(&self.game.name, starred),
+                    false,
+                    move |gamepalate| {
+                        gamepalate
+                            .star(id, starred, false, true)
+                            .map_err(|error| error.to_string())
+                    },
+                )
+            }
+            Message::Star => Task::none(),
             Message::RemoveVote if self.game.vote.is_some() => self.save(
                 format::vote_removed(&self.game.name),
                 false,
@@ -330,11 +348,17 @@ impl GamePage {
         let game = &self.game;
         let status = status(game, jiff::Zoned::now().date()).map(|status| {
             let spans = match status {
-                Status::Voted(pick, day) => vec![
-                    span("Voted "),
-                    span(format::pick(pick)).font(font::SEMIBOLD),
-                    span(format!(" · {day}")),
-                ],
+                Status::Voted { pick, starred, day } => {
+                    let mut spans = vec![
+                        span("Voted "),
+                        span(format::pick(pick)).font(font::SEMIBOLD),
+                    ];
+                    if starred {
+                        spans.push(span(" · Starred"));
+                    }
+                    spans.push(span(format!(" · {day}")));
+                    spans
+                }
                 Status::Plain(line) => vec![span(line)],
             };
             rich_text(spans)
@@ -397,11 +421,15 @@ impl GamePage {
 
     fn action_row(&self, width: f32) -> Element<'_, Message> {
         let game = &self.game;
-        let vote_width = game::vote_width(width, BESIDE_VOTES);
         let current = game.vote.as_ref().map(Pick::of);
         let (would_try_hours, elsewhere_hours) = (
             self.gamepalate.would_try_hours(),
             self.gamepalate.elsewhere_hours(),
+        );
+        let star = offers_star(game);
+        let vote_width = game::vote_width(
+            width,
+            BESIDE_VOTES + if star { game::STAR_SPACE } else { 0.0 },
         );
         let votes = game::vote_buttons(
             |key, pick| {
@@ -423,6 +451,12 @@ impl GamePage {
                 )
             },
             offers_played(game),
+            star.then(|| {
+                game::star_button(
+                    game.vote.as_ref().is_some_and(|vote| vote.starred),
+                    Some(Message::Star),
+                )
+            }),
         )
         .push(
             row![
@@ -538,6 +572,11 @@ fn offers_played(game: &GameView) -> bool {
     !game.in_library
 }
 
+/// A game you have cannot get a star.
+fn offers_star(game: &GameView) -> bool {
+    !game.owned()
+}
+
 /// The families are made of games you played, as in the Library.
 fn joins_families(game: &GameView) -> bool {
     game.in_library || game.played_elsewhere
@@ -548,10 +587,11 @@ fn status(game: &GameView, today: Date) -> Option<Status> {
     let voted = matches!(standing, GameStanding::WouldTry | GameStanding::NotForMe);
 
     match &game.vote {
-        Some(vote) if voted => Some(Status::Voted(
-            Pick::of(vote),
-            format::voted_day(&vote.date, today),
-        )),
+        Some(vote) if voted => Some(Status::Voted {
+            pick: Pick::of(vote),
+            starred: vote.starred,
+            day: format::voted_day(&vote.date, today),
+        }),
         _ => Some(Status::Plain(standing_text(standing))),
     }
 }
@@ -562,6 +602,7 @@ fn stopped_by_popup(message: &Message) -> bool {
         Message::Vote(_)
             | Message::Later
             | Message::Played
+            | Message::Star
             | Message::RemoveVote
             | Message::AddToFamily(_)
             | Message::Open(_)
@@ -604,6 +645,7 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         Key::Character(key) if key.eq_ignore_ascii_case("j") => {
             Some(Message::Showcase(showcase::Message::ScrollDown))
         }
+        Key::Character(key) if game::star_key(key.as_str()) => Some(Message::Star),
         Key::Character(key) => game::pick_key(key.as_str())
             .map(|pick| match pick {
                 Pick::Played => Message::Played,
@@ -677,6 +719,48 @@ mod tests {
     }
 
     #[test]
+    fn s_stars_the_game_in_either_case_and_ctrl_s_does_nothing() {
+        for key in ["s", "S"] {
+            assert!(matches!(
+                key_message(pressed(Key::Character(key.into()))),
+                Some(Message::Star)
+            ));
+        }
+        assert!(key_message(pressed_with(Key::Character("s".into()), Modifiers::CTRL)).is_none());
+    }
+
+    #[test]
+    fn a_game_you_have_has_no_star() {
+        let owned = found(Some(GameStanding::InLibrary { hours: 42.0 }), None);
+        let elsewhere = found(Some(GameStanding::PlayedElsewhere), None);
+        let unknown = found(None, None);
+        let later = found(
+            Some(GameStanding::Later { days_left: 3 }),
+            Some(Vote::new(VoteKind::Later, "2026-11-10")),
+        );
+
+        assert!(!offers_star(&owned) && !offers_star(&elsewhere));
+        assert!(offers_star(&unknown) && offers_star(&later));
+    }
+
+    #[test]
+    fn the_status_says_when_the_vote_has_the_star() {
+        let starred = Vote {
+            starred: true,
+            ..Vote::new(VoteKind::WouldTry, "2026-11-13")
+        };
+
+        assert_eq!(
+            status(&found(Some(GameStanding::WouldTry), Some(starred)), today()),
+            Some(Status::Voted {
+                pick: Pick::Vote(VoteKind::WouldTry),
+                starred: true,
+                day: "today".to_string()
+            })
+        );
+    }
+
+    #[test]
     fn escape_and_backspace_go_back() {
         for key in [Named::Escape, Named::Backspace] {
             assert!(matches!(
@@ -722,6 +806,7 @@ mod tests {
         ))));
         assert!(stopped_by_popup(&Message::Later));
         assert!(stopped_by_popup(&Message::Played));
+        assert!(stopped_by_popup(&Message::Star));
         assert!(stopped_by_popup(&Message::RemoveVote));
         assert!(stopped_by_popup(&Message::Open(Link::Eneba)));
         assert!(!stopped_by_popup(&Message::Back));
@@ -756,10 +841,11 @@ mod tests {
 
         assert_eq!(
             status(&found(Some(GameStanding::NotForMe), Some(vote)), today()),
-            Some(Status::Voted(
-                Pick::Vote(VoteKind::NotForMe),
-                "today".to_string()
-            ))
+            Some(Status::Voted {
+                pick: Pick::Vote(VoteKind::NotForMe),
+                starred: false,
+                day: "today".to_string()
+            })
         );
         assert_eq!(
             status(
@@ -769,10 +855,11 @@ mod tests {
                 ),
                 today()
             ),
-            Some(Status::Voted(
-                Pick::Vote(VoteKind::WouldTry),
-                "2 Nov".to_string()
-            ))
+            Some(Status::Voted {
+                pick: Pick::Vote(VoteKind::WouldTry),
+                starred: false,
+                day: "2 Nov".to_string()
+            })
         );
     }
 

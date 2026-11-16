@@ -41,6 +41,8 @@ const VOTE_SPACING: f32 = 8.0;
 const BACKLOG_WIDTH: f32 = 160.0;
 const COMPACT_BACKLOG_WIDTH: f32 = 140.0;
 const GROUP_SPACING: f32 = 12.0;
+/// What the star takes in the row of the votes: its square and the space before it.
+pub const STAR_SPACE: f32 = VOTE_HEIGHT + GROUP_SPACING;
 pub const LINKS_WIDTH: f32 = 340.0;
 pub const ACTION_SPACING: f32 = 16.0;
 const KEYCAP_SIZE: f32 = 18.0;
@@ -389,10 +391,43 @@ fn segment(pick: Pick) -> style::Segment {
     }
 }
 
-/// The two verdicts as one segmented group, then Played on its own unless `played` is false.
+pub fn star_key(key: &str) -> bool {
+    key.eq_ignore_ascii_case("s")
+}
+
+/// The star on its own: a square with only the glyph, filled like a chosen vote while the game
+/// has the star. The star is no vote in place of the others, so it stays out of their group.
+pub fn star_button<'a, Message: Clone + 'a>(
+    starred: bool,
+    on_press: Option<Message>,
+) -> Element<'a, Message> {
+    let button = button(
+        container(text(font::STAR).font(font::ICONS).size(font::icon(11.0)))
+            .center_x(Fill)
+            .center_y(Fill),
+    )
+    .width(VOTE_HEIGHT)
+    .height(VOTE_HEIGHT)
+    .padding(0)
+    .style(style::vote(starred, style::Segment::Alone))
+    .on_press_maybe(on_press);
+
+    tooltip(
+        button,
+        container(text(format::star_tip(starred)).size(font::NOTE_SIZE))
+            .padding([6, 10])
+            .style(style::popup),
+        tooltip::Position::Top,
+    )
+    .into()
+}
+
+/// The two verdicts as one segmented group, then Played on its own unless `played` is false, then
+/// the star if there is one.
 pub fn vote_buttons<'a, Message: 'a>(
     button: impl Fn(&'a str, Pick) -> Element<'a, Message>,
     played: bool,
+    star: Option<Element<'a, Message>>,
 ) -> Row<'a, Message> {
     let [would_try, not_for_me, played_button] = PICKS.map(|(key, pick)| button(key, pick));
     let seam = || rule::vertical(1).style(style::vote_seam);
@@ -403,6 +438,7 @@ pub fn vote_buttons<'a, Message: 'a>(
 
     row![verdicts]
         .push(played.then_some(played_button))
+        .push(star)
         .spacing(GROUP_SPACING)
         .align_y(Center)
 }
@@ -658,6 +694,15 @@ mod tests {
         assert_eq!(pick_key("3"), Some(Pick::Played));
         for key in ["4", "5", "6", "7"] {
             assert_eq!(pick_key(key), None);
+        }
+    }
+
+    #[test]
+    fn s_is_the_star_in_either_case() {
+        assert!(star_key("s"));
+        assert!(star_key("S"));
+        for key in ["1", "q", "ss", ""] {
+            assert!(!star_key(key));
         }
     }
 

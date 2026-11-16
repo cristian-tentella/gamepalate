@@ -24,7 +24,7 @@ mod steam_account;
 pub mod steam_client;
 pub mod tags;
 pub mod update;
-pub use app::{Gamepalate, OpenError, RecommendError, VoteError, VotedGame};
+pub use app::{Gamepalate, OpenError, RecommendError, StarError, VoteError, VotedGame};
 pub use capsules::{CAPSULE_HEIGHT, CAPSULE_WIDTH, Capsule};
 pub use catalog_search::{MAX_MATCHES, MIN_SEARCH_CHARS};
 pub use details::GameDetails;

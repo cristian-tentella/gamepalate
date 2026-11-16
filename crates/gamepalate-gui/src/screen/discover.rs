@@ -2,6 +2,7 @@ pub(super) mod filters;
 mod queue;
 
 use std::{
+    collections::HashSet,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -90,6 +91,8 @@ pub struct Discover {
     bet_every: usize,
     toasts: Toasts,
     played: Option<AppId>,
+    /// The games starred here, so Back finds the star on and S takes it off.
+    starred: HashSet<AppId>,
     flash: Option<Flash>,
     timers_started: u64,
     showcase: Showcase,
@@ -124,6 +127,8 @@ pub enum Message {
     VoteSaved(Result<(), String>),
     Played,
     PlayedSaved(String, Result<bool, String>),
+    Star,
+    StarSaved(AppId, bool, Result<(), String>),
     Undo,
     Undone(Result<(), String>),
     Open(Link),
@@ -201,6 +206,7 @@ impl Discover {
             bet_every: gamepalate.bet_every(),
             toasts: Toasts::default(),
             played: None,
+            starred: HashSet::new(),
             flash: None,
             timers_started: 0,
             showcase: Showcase::new(gamepalate),
@@ -324,6 +330,9 @@ impl Discover {
                 }
             }
             Message::Later => {
+                if let Some(id) = self.current().map(|game| game.id) {
+                    self.starred.remove(&id);
+                }
                 let save = self.current().map(|game| {
                     let gamepalate = Arc::clone(&self.gamepalate);
                     let (id, bet) = (game.id, game.bet);
@@ -355,6 +364,9 @@ impl Discover {
                     let text = format::voted(&game.name, pick);
                     let gamepalate = Arc::clone(&self.gamepalate);
                     let (id, bet) = (game.id, game.bet);
+                    if kind != VoteKind::WouldTry {
+                        self.starred.remove(&id);
+                    }
                     let save = Task::perform(
                         async move {
                             gamepalate
@@ -381,6 +393,7 @@ impl Discover {
                     let (id, name) = (game.id, game.name.clone());
                     let gamepalate = Arc::clone(&self.gamepalate);
                     self.played = Some(id);
+                    self.starred.remove(&id);
                     let save = Task::perform(
                         async move {
                             gamepalate
@@ -402,6 +415,49 @@ impl Discover {
             }
             Message::PlayedSaved(_, Err(error)) => {
                 self.played = None;
+                return self.show_toast(error);
+            }
+            Message::Star => {
+                let Some(game) = self.current() else {
+                    return Task::none();
+                };
+                let (id, bet, name) = (game.id, game.bet, game.name.clone());
+                // Back on a game starred a moment ago: S takes the star off and stays on it
+                let starred = !self.starred.remove(&id);
+                if starred {
+                    self.starred.insert(id);
+                }
+                let gamepalate = Arc::clone(&self.gamepalate);
+                let save = Task::perform(
+                    async move {
+                        gamepalate
+                            .star(id, starred, bet, false)
+                            .map_err(|error| error.to_string())
+                    },
+                    move |result| Message::StarSaved(id, starred, result),
+                );
+                let toast = self.show_toast(format::star_toast(&name, starred));
+                if !starred {
+                    return Task::batch([save, toast]);
+                }
+                return Task::batch([
+                    save,
+                    toast,
+                    self.flash(Pick::Vote(VoteKind::WouldTry)),
+                    self.advance(),
+                ]);
+            }
+            Message::StarSaved(_, true, Ok(())) => {
+                self.votes_this_session += 1;
+                self.votes_last_day = self.gamepalate.votes_in_last_day();
+            }
+            Message::StarSaved(_, _, Ok(())) => {}
+            Message::StarSaved(id, starred, Err(error)) => {
+                if starred {
+                    self.starred.remove(&id);
+                } else {
+                    self.starred.insert(id);
+                }
                 return self.show_toast(error);
             }
             Message::Undo => {
@@ -694,9 +750,13 @@ impl Discover {
             Layout::Beside(shot_width) => shot_width,
             Layout::Stacked(_) => width - game::LINKS_WIDTH,
         };
-        let vote_width = game::vote_width(available, if compact { 0.0 } else { HINT_WIDTH });
-        let game = self.current();
         let backlog = self.options.mode == DiscoverMode::Backlog;
+        let star_space = if backlog { 0.0 } else { game::STAR_SPACE };
+        let vote_width = game::vote_width(
+            available,
+            star_space + if compact { 0.0 } else { HINT_WIDTH },
+        );
+        let game = self.current();
         let hints = (!compact).then(|| {
             row![
                 style::divider(),
@@ -737,6 +797,10 @@ impl Discover {
                     )
                 },
                 true,
+                Some(game::star_button(
+                    game.is_some_and(|game| self.starred.contains(&game.id)),
+                    game.is_some().then_some(Message::Star),
+                )),
             )
         }
         .push(hints);
@@ -1272,7 +1336,7 @@ fn after(duration: Duration, message: Message) -> Task<Message> {
 /// The Backlog has no verdicts: the number keys do nothing, and Space is still a Later.
 fn in_mode(mode: DiscoverMode, message: Message) -> Option<Message> {
     match message {
-        Message::Vote(_) | Message::Played if mode == DiscoverMode::Backlog => None,
+        Message::Vote(_) | Message::Played | Message::Star if mode == DiscoverMode::Backlog => None,
         message => Some(message),
     }
 }
@@ -1286,6 +1350,7 @@ fn stopped_by_popup(message: &Message) -> bool {
             | Message::Previous
             | Message::Vote(_)
             | Message::Played
+            | Message::Star
             | Message::Open(_)
             | Message::ToggleFilters
     )
@@ -1300,6 +1365,7 @@ fn acts_on_the_game(message: &Message) -> bool {
             | Message::Previous
             | Message::Vote(_)
             | Message::Played
+            | Message::Star
             | Message::Open(_)
             | Message::Showcase(
                 showcase::Message::NextScreenshot
@@ -1359,6 +1425,7 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         Key::Character(key) if key.eq_ignore_ascii_case("j") => {
             Some(Message::Showcase(showcase::Message::ScrollDown))
         }
+        Key::Character(key) if game::star_key(key.as_str()) => Some(Message::Star),
         Key::Character(key) => game::pick_key(key.as_str())
             .map(|pick| match pick {
                 Pick::Played => Message::Played,
@@ -1704,11 +1771,29 @@ mod tests {
     }
 
     #[test]
+    fn s_stars_the_game_in_either_case_and_ctrl_s_does_nothing() {
+        for key in ["s", "S"] {
+            assert!(matches!(
+                key_message(pressed(Key::Character(key.into()))),
+                Some(Message::Star)
+            ));
+        }
+        assert!(key_message(with_ctrl(Key::Character("s".into()))).is_none());
+    }
+
+    #[test]
+    fn an_open_popup_or_panel_stops_the_star() {
+        assert!(stopped_by_popup(&Message::Star));
+        assert!(acts_on_the_game(&Message::Star));
+    }
+
+    #[test]
     fn the_backlog_has_no_votes() {
         for message in [
             Message::Vote(Pick::Vote(VoteKind::WouldTry)),
             Message::Vote(Pick::Vote(VoteKind::NotForMe)),
             Message::Played,
+            Message::Star,
         ] {
             assert!(in_mode(DiscoverMode::Backlog, message.clone()).is_none());
             assert!(in_mode(DiscoverMode::New, message).is_some());

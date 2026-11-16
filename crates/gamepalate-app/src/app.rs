@@ -46,7 +46,7 @@ use crate::{
     images::{ImageCache, cache_dir},
     log::{failed, known_converted},
 };
-pub use votes::{VoteError, VotedGame};
+pub use votes::{StarError, VoteError, VotedGame};
 
 pub(crate) const GUI_FILE: &str = "gui.toml";
 const FAMILIES_FILE: &str = "families.toml";

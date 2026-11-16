@@ -255,6 +255,14 @@ pub struct GameView {
     pub other_families: Vec<String>,
 }
 
+impl GameView {
+    /// In the library, borrowed, played recently or played elsewhere: a game you have, which
+    /// cannot get a star.
+    pub fn owned(&self) -> bool {
+        self.in_library || self.played_elsewhere
+    }
+}
+
 /// A game is in the Library when you own it, borrow it or played it lately: the wishlist and the
 /// followed games are in the Library page, but they are not games you have.
 fn in_library(id: AppId, inputs: &SearchInputs) -> bool {
@@ -824,6 +832,7 @@ mod tests {
 
         assert_eq!(view.name, "Outer Wilds");
         assert!(view.in_library && !view.played_elsewhere);
+        assert!(view.owned());
         assert_eq!(view.standing, Some(GameStanding::InLibrary { hours: 50.0 }));
         assert_eq!(view.vote, None);
         assert_eq!(view.other_families, ["cozy"]);
@@ -847,9 +856,21 @@ mod tests {
         let view = game_view(AppId(4), &fixture.inputs(), NOW).unwrap();
 
         assert_eq!(view.standing, Some(GameStanding::NotForMe));
-        let vote = view.vote.unwrap();
+        let vote = view.vote.clone().unwrap();
         assert!(vote.searched && !vote.bet);
         assert!(!view.in_library && !view.played_elsewhere);
+        assert!(!view.owned());
+    }
+
+    #[test]
+    fn a_game_played_elsewhere_is_owned_in_its_page() {
+        let mut fixture = Fixture::new();
+        fixture.corrections.played_elsewhere.insert(AppId(6));
+
+        let view = game_view(AppId(6), &fixture.inputs(), NOW).unwrap();
+
+        assert!(!view.in_library && view.played_elsewhere);
+        assert!(view.owned());
     }
 
     #[test]

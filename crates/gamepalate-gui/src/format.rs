@@ -509,6 +509,18 @@ pub fn vote_removed(name: &str) -> String {
     format!("{name}: vote removed")
 }
 
+pub fn star_tip(starred: bool) -> &'static str {
+    if starred { "Unstar · S" } else { "Star · S" }
+}
+
+pub fn star_toast(name: &str, starred: bool) -> String {
+    if starred {
+        format!("{name}: starred")
+    } else {
+        format!("{name}: star removed")
+    }
+}
+
 /// Where a game stands in Discover. A game played elsewhere is left out as owned, but it is not
 /// yours.
 pub fn discover_place(place: &DiscoverPlace, played_elsewhere: bool) -> String {
@@ -647,6 +659,14 @@ mod tests {
     #[test]
     fn the_saved_key_is_in_the_system_keyring() {
         assert_eq!(key_text(KeySource::Saved), "Saved in the system keyring");
+    }
+
+    #[test]
+    fn the_star_says_what_the_next_press_does() {
+        assert_eq!(star_tip(false), "Star · S");
+        assert_eq!(star_tip(true), "Unstar · S");
+        assert_eq!(star_toast("Hades", true), "Hades: starred");
+        assert_eq!(star_toast("Hades", false), "Hades: star removed");
     }
 
     #[test]

@@ -30,6 +30,7 @@ pub struct SavedWindow {
 pub enum VotesShow {
     #[default]
     WouldTry,
+    Starred,
     // The two noes of 0.23 are one vote now.
     #[serde(alias = "not_this_game", alias = "not_my_genre")]
     NotForMe,
@@ -41,6 +42,7 @@ pub enum VotesShow {
 #[serde(rename_all = "snake_case")]
 enum SavedShow {
     WouldTry,
+    Starred,
     Bets,
     #[serde(alias = "not_this_game", alias = "not_my_genre")]
     NotForMe,
@@ -110,6 +112,7 @@ impl From<SavedVotes> for VotesSettings {
     fn from(saved: SavedVotes) -> VotesSettings {
         let show = match saved.show {
             None | Some(SavedShow::WouldTry) => VotesShow::WouldTry,
+            Some(SavedShow::Starred) => VotesShow::Starred,
             Some(SavedShow::NotForMe) => VotesShow::NotForMe,
             Some(SavedShow::All | SavedShow::Bets) => VotesShow::All,
         };
@@ -215,6 +218,23 @@ mod tests {
         assert!(text.contains("[window]\nwidth = 1440\nheight = 900\nmaximized = true\n"));
         assert!(text.contains("families_played = [220, 730]\n"));
         assert!(text.contains("[votes]\nshow = \"not_for_me\"\norder = \"best_match\"\n"));
+    }
+
+    #[test]
+    fn the_starred_chip_is_saved_and_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.toml");
+        let mut settings = GuiSettings::default();
+        settings.votes.show = VotesShow::Starred;
+
+        save_gui_settings(&path, &settings).unwrap();
+
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("[votes]\nshow = \"starred\"\n")
+        );
+        assert_eq!(load_gui_settings(&path).votes.show, VotesShow::Starred);
     }
 
     #[test]

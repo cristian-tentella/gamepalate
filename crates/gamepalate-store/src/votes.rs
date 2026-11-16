@@ -23,6 +23,7 @@ const HEADER: &str = "\
 # not_for_me  not for you, it leaves the recommendations
 # bet = true  the vote was given to a bet
 # searched = true  the vote was given to a game you looked up, not to a recommendation
+# starred = true  you are thinking of buying it (only on would_try)
 # at          when the vote was cast, in milliseconds since 1970 (for the last 24 hours and the 7 days of a later)
 ";
 
@@ -48,6 +49,12 @@ pub enum VotesError {
 
     #[error("the vote for {0} has searched = false, which can only be true")]
     SearchedNotTrue(u32),
+
+    #[error("the vote for {0} has starred = false, which can only be true")]
+    StarredNotTrue(u32),
+
+    #[error("the vote for {0} has starred = true, which only a would_try can have")]
+    StarredNotWouldTry(u32),
 }
 
 #[derive(Deserialize)]
@@ -68,6 +75,7 @@ struct VoteEntry {
     #[allow(dead_code)]
     genre_ok: Option<bool>,
     searched: Option<bool>,
+    starred: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -152,9 +160,10 @@ fn votes_text(votes: &Votes, name: impl Fn(AppId) -> Option<String>) -> String {
         } else {
             ""
         };
+        let starred = if vote.starred { ", starred = true" } else { "" };
         let _ = write!(
             text,
-            "{} = {{ vote = \"{}\", date = \"{}\"{at}{bet}{searched} }}",
+            "{} = {{ vote = \"{}\", date = \"{}\"{at}{bet}{searched}{starred} }}",
             id.0,
             kind_name(vote.kind),
             vote.date
@@ -212,6 +221,14 @@ fn vote_from_entry(appid: u32, entry: VoteEntry) -> Result<Option<Vote>, VotesEr
         Some(true) => true,
         Some(false) => return Err(VotesError::SearchedNotTrue(appid)),
     };
+    let starred = match entry.starred {
+        None => false,
+        Some(true) => true,
+        Some(false) => return Err(VotesError::StarredNotTrue(appid)),
+    };
+    if starred && !matches!(entry.vote.kind(), Some(VoteKind::WouldTry)) {
+        return Err(VotesError::StarredNotWouldTry(appid));
+    }
 
     Ok(entry.vote.kind().map(|kind| Vote {
         kind,
@@ -219,6 +236,7 @@ fn vote_from_entry(appid: u32, entry: VoteEntry) -> Result<Option<Vote>, VotesEr
         at: entry.at.map(Timestamp),
         bet,
         searched,
+        starred,
     }))
 }
 
@@ -333,6 +351,74 @@ mod tests {
             r#"votes = { 10 = { vote = "later", date = "2026-10-07", searched = false } }"#,
         );
         assert!(matches!(result, Err(VotesError::SearchedNotTrue(10))));
+    }
+
+    #[test]
+    fn a_star_survives_saving_and_loading() {
+        let votes = parse_votes(
+            r#"
+            [votes]
+            1145360 = { vote = "would_try", date = "2026-11-16", at = 1794835200000, starred = true } # Disco Elysium
+            620 = { vote = "would_try", date = "2026-11-16" }
+            "#,
+        )
+        .unwrap()
+        .votes;
+
+        assert!(votes[&AppId(1145360)].starred);
+        assert!(!votes[&AppId(620)].starred);
+        let text = votes_text(&votes, |_| None);
+        assert!(text.contains(
+            "1145360 = { vote = \"would_try\", date = \"2026-11-16\", at = 1794835200000, starred = true }"
+        ));
+        assert!(text.contains("620 = { vote = \"would_try\", date = \"2026-11-16\" }"));
+        assert_eq!(parse_votes(&text).unwrap().votes, votes);
+    }
+
+    #[test]
+    fn the_star_comes_after_the_other_signs() {
+        let votes = Votes::from([(
+            AppId(10),
+            Vote {
+                bet: true,
+                searched: true,
+                starred: true,
+                ..Vote::new(VoteKind::WouldTry, "2026-11-16")
+            },
+        )]);
+
+        let text = votes_text(&votes, |_| None);
+
+        assert!(text.contains(
+            "10 = { vote = \"would_try\", date = \"2026-11-16\", bet = true, searched = true, starred = true }"
+        ));
+    }
+
+    #[test]
+    fn parse_votes_rejects_starred_false() {
+        let result = parse_votes(
+            r#"votes = { 10 = { vote = "would_try", date = "2026-10-07", starred = false } }"#,
+        );
+        assert!(matches!(result, Err(VotesError::StarredNotTrue(10))));
+    }
+
+    #[test]
+    fn parse_votes_rejects_a_star_on_another_vote() {
+        for kind in ["not_for_me", "later"] {
+            let text = format!(
+                r#"votes = {{ 10 = {{ vote = "{kind}", date = "2026-10-07", starred = true }} }}"#
+            );
+            let error = parse_votes(&text).unwrap_err();
+            assert!(matches!(error, VotesError::StarredNotWouldTry(10)));
+            assert!(error.to_string().contains("10"));
+        }
+    }
+
+    #[test]
+    fn the_header_explains_the_star() {
+        assert!(
+            HEADER.contains("# starred = true  you are thinking of buying it (only on would_try)")
+        );
     }
 
     fn two_votes() -> Votes {
