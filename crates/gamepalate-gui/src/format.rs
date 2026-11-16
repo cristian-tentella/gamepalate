@@ -485,8 +485,8 @@ pub fn later_tip(days: i64) -> String {
     format!("Back in Discover in {days} days")
 }
 
-pub const NEXT_TIP: &str = "Skips to the next game, and saves nothing";
 pub const PLAY_TIP: &str = "Starts the game in Steam, or installs it";
+pub const NOT_IN_BACKLOG_TIP: &str = "Not used in Backlog, where you own the games";
 pub const SHOW_IN_LIBRARY_TIP: &str = "Opens the game in your Steam library";
 
 pub fn played_tip(hours: f64) -> String {
@@ -1177,7 +1177,7 @@ mod tests {
 
     #[test]
     fn the_later_tip_says_when_the_game_comes_back() {
-        assert_eq!(later_tip(30), "Back in Discover in 30 days");
+        assert_eq!(later_tip(7), "Back in Discover in 7 days");
     }
 
     #[test]

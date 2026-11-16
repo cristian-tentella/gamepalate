@@ -364,37 +364,13 @@ fn segment_at(index: usize, count: usize) -> style::Segment {
     }
 }
 
-/// What Space does: Later saves a vote, Next only moves on.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Skip {
-    Later,
-    Next,
-}
-
-impl Skip {
-    fn label(self) -> &'static str {
-        match self {
-            Skip::Later => "Later",
-            Skip::Next => "Next",
-        }
-    }
-
-    fn tip(self) -> String {
-        match self {
-            Skip::Later => format::later_tip(LATER_DAYS),
-            Skip::Next => format::NEXT_TIP.to_string(),
-        }
-    }
-}
-
 pub fn moves<'a, Message: Clone + 'a>(
-    skip: Skip,
-    on_skip: Option<Message>,
+    on_later: Option<Message>,
     back: Option<Message>,
 ) -> Row<'a, Message> {
     let skip = tooltip(
-        key_button("Space", skip.label(), font::BAR_SIZE, on_skip),
-        container(text(skip.tip()).size(font::NOTE_SIZE))
+        key_button("Space", "Later", font::BAR_SIZE, on_later),
+        container(text(format::later_tip(LATER_DAYS)).size(font::NOTE_SIZE))
             .padding([6, 10])
             .style(style::popup),
         tooltip::Position::Top,

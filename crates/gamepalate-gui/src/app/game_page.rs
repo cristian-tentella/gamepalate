@@ -427,7 +427,7 @@ impl GamePage {
         .push(
             row![
                 style::divider(),
-                game::moves(game::Skip::Later, Some(Message::Later), Some(Message::Back)),
+                game::moves(Some(Message::Later), Some(Message::Back)),
             ]
             .spacing(game::ACTION_SPACING)
             .align_y(Center),

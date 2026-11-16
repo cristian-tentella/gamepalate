@@ -270,11 +270,14 @@ impl Panel {
             "Price",
             row![
                 self.range(mode, Field::MinPrice, Field::MaxPrice, Some(&self.currency)),
-                checkbox(on_sale)
-                    .label("On sale, at least")
-                    .text_size(font::BAR_SIZE)
-                    .on_toggle_maybe(buying.then_some(Message::OnSale)),
-                self.number(Field::MinDiscount, buying && on_sale),
+                not_in_backlog(
+                    mode,
+                    checkbox(on_sale)
+                        .label("On sale, at least")
+                        .text_size(font::BAR_SIZE)
+                        .on_toggle_maybe(buying.then_some(Message::OnSale))
+                ),
+                self.number(mode, Field::MinDiscount, buying && on_sale),
                 text("%").size(font::BAR_SIZE),
             ]
             .spacing(8)
@@ -287,7 +290,11 @@ impl Panel {
             row![
                 self.range(mode, Field::MinReviews, Field::MaxReviews, None),
                 text("At least").size(font::BAR_SIZE),
-                self.number(Field::MinPositive, is_enabled(mode, Field::MinPositive)),
+                self.number(
+                    mode,
+                    Field::MinPositive,
+                    is_enabled(mode, Field::MinPositive)
+                ),
                 text("% positive").size(font::BAR_SIZE),
             ]
             .spacing(8)
@@ -396,9 +403,9 @@ impl Panel {
     ) -> Element<'a, Message> {
         container(
             row![
-                self.number(min, is_enabled(mode, min)),
+                self.number(mode, min, is_enabled(mode, min)),
                 text("–").size(font::BAR_SIZE),
-                self.number(max, is_enabled(mode, max))
+                self.number(mode, max, is_enabled(mode, max))
             ]
             .push(unit.map(|unit| text(unit).size(font::BAR_SIZE)))
             .spacing(6)
@@ -408,21 +415,26 @@ impl Panel {
         .into()
     }
 
-    fn number(&self, field: Field, enabled: bool) -> Element<'_, Message> {
+    fn number(&self, mode: DiscoverMode, field: Field, enabled: bool) -> Element<'_, Message> {
         // A grey field doesn't apply its default either: the Backlog has no minimum of reviews
         let placeholder = if enabled || !field.is_for_buying() {
             self.placeholders[index(field)].as_str()
         } else {
             "any"
         };
-        text_input(placeholder, &self.texts[index(field)])
+        let input = text_input(placeholder, &self.texts[index(field)])
             .style(style::field)
             .on_input_maybe(enabled.then_some(move |value| Message::Input(field, value)))
             .on_submit(Message::Done)
             .size(font::BAR_SIZE)
             .padding([5, 8])
-            .width(NUMBER_WIDTH)
-            .into()
+            .width(NUMBER_WIDTH);
+
+        if field.is_for_buying() {
+            not_in_backlog(mode, input)
+        } else {
+            input.into()
+        }
     }
 
     fn forget_error(&mut self, field: Field) {
@@ -434,6 +446,25 @@ impl Panel {
             self.error = None;
         }
     }
+}
+
+/// What the Backlog greys says why when the pointer rests on it.
+fn not_in_backlog<'a>(
+    mode: DiscoverMode,
+    control: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    if mode == DiscoverMode::New {
+        return control.into();
+    }
+
+    tooltip(
+        control,
+        container(text(format::NOT_IN_BACKLOG_TIP).size(font::NOTE_SIZE))
+            .padding([6, 10])
+            .style(style::popup),
+        tooltip::Position::Bottom,
+    )
+    .into()
 }
 
 fn label(name: &str) -> Element<'_, Message> {
