@@ -111,6 +111,9 @@ pub enum Message {
     Previous,
     Later,
     LaterSaved(Result<(), String>),
+    Next,
+    Play,
+    ShowInLibrary,
     Vote(Pick),
     VoteSaved(Result<(), String>),
     Played,
@@ -206,6 +209,9 @@ impl Discover {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let Some(message) = in_mode(self.options.mode, message) else {
+            return Task::none();
+        };
         if self.showcase.is_open() {
             if matches!(message, Message::CloseFilters) {
                 return self.update(Message::Showcase(showcase::Message::Close));
@@ -301,6 +307,17 @@ impl Discover {
             }
             Message::LaterSaved(Ok(())) => {}
             Message::LaterSaved(Err(error)) => return self.show_toast(error),
+            Message::Next => return self.advance(),
+            Message::Play => {
+                if let Some(game) = self.current() {
+                    super::open(format::play_url(game.id));
+                }
+            }
+            Message::ShowInLibrary => {
+                if let Some(game) = self.current() {
+                    super::open(format::library_url(game.id));
+                }
+            }
             Message::Vote(pick) => {
                 if let (Some(game), Some(kind)) = (self.current(), pick.ballot()) {
                     let text = format::voted(&game.name, pick);
@@ -658,11 +675,18 @@ impl Discover {
         };
         let vote_width = game::vote_width(available, if compact { 0.0 } else { HINT_WIDTH });
         let game = self.current();
+        let backlog = self.options.mode == DiscoverMode::Backlog;
         let hints = (!compact).then(|| {
+            let (skip, message) = if backlog {
+                (game::Skip::Next, Message::Next)
+            } else {
+                (game::Skip::Later, Message::Later)
+            };
             row![
                 style::divider(),
                 game::moves(
-                    game.is_some().then_some(Message::Later),
+                    skip,
+                    game.is_some().then_some(message),
                     Some(Message::Previous)
                 ),
             ]
@@ -674,24 +698,32 @@ impl Discover {
             self.gamepalate.would_try_hours(),
             self.gamepalate.elsewhere_hours(),
         );
-        let votes = game::vote_buttons(
-            |key, pick| {
-                let message = match pick {
-                    Pick::Played => Message::Played,
-                    pick => Message::Vote(pick),
-                };
-                game::vote_button(
-                    key,
-                    pick,
-                    game::tip(pick, would_try_hours, elsewhere_hours),
-                    compact,
-                    vote_width,
-                    game.is_some().then_some(message),
-                    flashed == Some(pick),
-                )
-            },
-            true,
-        )
+        let votes = if backlog {
+            game::backlog_buttons(
+                compact,
+                game.is_some().then_some(Message::Play),
+                game.is_some().then_some(Message::ShowInLibrary),
+            )
+        } else {
+            game::vote_buttons(
+                |key, pick| {
+                    let message = match pick {
+                        Pick::Played => Message::Played,
+                        pick => Message::Vote(pick),
+                    };
+                    game::vote_button(
+                        key,
+                        pick,
+                        game::tip(pick, would_try_hours, elsewhere_hours),
+                        compact,
+                        vote_width,
+                        game.is_some().then_some(message),
+                        flashed == Some(pick),
+                    )
+                },
+                true,
+            )
+        }
         .push(hints);
         let links = game::links(|link| game.is_some().then_some(Message::Open(link)));
         let (votes, spacing) = match layout {
@@ -1146,10 +1178,25 @@ fn after(duration: Duration, message: Message) -> Task<Message> {
     Task::perform(tokio::time::sleep(duration), move |_| message)
 }
 
+/// The Backlog has no votes: the number keys do nothing, and Space moves on without saving.
+fn in_mode(mode: DiscoverMode, message: Message) -> Option<Message> {
+    if mode != DiscoverMode::Backlog {
+        return Some(message);
+    }
+    match message {
+        Message::Vote(_) | Message::Played => None,
+        Message::Later => Some(Message::Next),
+        message => Some(message),
+    }
+}
+
 fn stopped_by_popup(message: &Message) -> bool {
     matches!(
         message,
         Message::Later
+            | Message::Next
+            | Message::Play
+            | Message::ShowInLibrary
             | Message::Previous
             | Message::Vote(_)
             | Message::Played
@@ -1162,6 +1209,9 @@ fn acts_on_the_game(message: &Message) -> bool {
     matches!(
         message,
         Message::Later
+            | Message::Next
+            | Message::Play
+            | Message::ShowInLibrary
             | Message::Previous
             | Message::Vote(_)
             | Message::Played
@@ -1516,6 +1566,52 @@ mod tests {
         assert!(!stopped_by_popup(&Message::Showcase(
             showcase::Message::ToggleTags
         )));
+    }
+
+    #[test]
+    fn the_backlog_has_no_votes() {
+        for message in [
+            Message::Vote(Pick::Vote(VoteKind::WouldTry)),
+            Message::Vote(Pick::Vote(VoteKind::NotForMe)),
+            Message::Played,
+        ] {
+            assert!(in_mode(DiscoverMode::Backlog, message.clone()).is_none());
+            assert!(in_mode(DiscoverMode::New, message).is_some());
+        }
+    }
+
+    #[test]
+    fn space_moves_on_in_the_backlog_and_saves_a_later_in_new() {
+        let space = || key_message(pressed(Key::Named(Named::Space))).unwrap();
+
+        assert!(matches!(
+            in_mode(DiscoverMode::Backlog, space()),
+            Some(Message::Next)
+        ));
+        assert!(matches!(
+            in_mode(DiscoverMode::New, space()),
+            Some(Message::Later)
+        ));
+    }
+
+    #[test]
+    fn the_backlog_keeps_the_other_keys() {
+        for message in [
+            Message::Previous,
+            Message::Play,
+            Message::ShowInLibrary,
+            Message::Open(Link::Steam),
+        ] {
+            assert!(in_mode(DiscoverMode::Backlog, message).is_some());
+        }
+    }
+
+    #[test]
+    fn the_open_filters_and_popups_stop_play_show_and_next() {
+        for message in [Message::Next, Message::Play, Message::ShowInLibrary] {
+            assert!(acts_on_the_game(&message));
+            assert!(stopped_by_popup(&message));
+        }
     }
 
     #[test]

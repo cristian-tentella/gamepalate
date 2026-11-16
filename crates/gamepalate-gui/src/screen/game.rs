@@ -38,6 +38,8 @@ pub const PICKS: [(&str, Pick); 3] = [
 pub const VOTE_HEIGHT: f32 = 36.0;
 const VOTE_WIDTH: f32 = 172.0;
 const VOTE_SPACING: f32 = 8.0;
+const BACKLOG_WIDTH: f32 = 160.0;
+const COMPACT_BACKLOG_WIDTH: f32 = 140.0;
 const GROUP_SPACING: f32 = 12.0;
 pub const LINKS_WIDTH: f32 = 340.0;
 pub const ACTION_SPACING: f32 = 16.0;
@@ -362,19 +364,43 @@ fn segment_at(index: usize, count: usize) -> style::Segment {
     }
 }
 
+/// What Space does: Later saves a vote, Next only moves on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Skip {
+    Later,
+    Next,
+}
+
+impl Skip {
+    fn label(self) -> &'static str {
+        match self {
+            Skip::Later => "Later",
+            Skip::Next => "Next",
+        }
+    }
+
+    fn tip(self) -> String {
+        match self {
+            Skip::Later => format::later_tip(LATER_DAYS),
+            Skip::Next => format::NEXT_TIP.to_string(),
+        }
+    }
+}
+
 pub fn moves<'a, Message: Clone + 'a>(
-    later: Option<Message>,
+    skip: Skip,
+    on_skip: Option<Message>,
     back: Option<Message>,
 ) -> Row<'a, Message> {
-    let later = tooltip(
-        key_button("Space", "Later", font::BAR_SIZE, later),
-        container(text(format::later_tip(LATER_DAYS)).size(font::NOTE_SIZE))
+    let skip = tooltip(
+        key_button("Space", skip.label(), font::BAR_SIZE, on_skip),
+        container(text(skip.tip()).size(font::NOTE_SIZE))
             .padding([6, 10])
             .style(style::popup),
         tooltip::Position::Top,
     );
 
-    row![later, key_button("⌫", "Back", font::BAR_SIZE, back)]
+    row![skip, key_button("⌫", "Back", font::BAR_SIZE, back)]
         .spacing(ACTION_SPACING)
         .align_y(Center)
 }
@@ -403,6 +429,58 @@ pub fn vote_buttons<'a, Message: 'a>(
         .push(played.then_some(played_button))
         .spacing(GROUP_SPACING)
         .align_y(Center)
+}
+
+/// Play and Show in library, the two buttons that take the place of the votes in the Backlog.
+/// Both have the same width, which a narrow window makes smaller.
+pub fn backlog_buttons<'a, Message: Clone + 'a>(
+    compact: bool,
+    play: Option<Message>,
+    show: Option<Message>,
+) -> Row<'a, Message> {
+    let (size, width) = if compact {
+        (COMPACT_VOTE_SIZE, COMPACT_BACKLOG_WIDTH)
+    } else {
+        (font::VOTE_SIZE, BACKLOG_WIDTH)
+    };
+    let action = |label: &'a str,
+                  tip: &'a str,
+                  style: fn(&iced::Theme, button::Status) -> button::Style,
+                  on_press: Option<Message>| {
+        let label = text(label)
+            .size(size)
+            .font(font::SEMIBOLD)
+            .wrapping(text::Wrapping::None)
+            .width(Fill)
+            .height(Fill)
+            .align_x(Center)
+            .align_y(Center);
+
+        tooltip(
+            button(label)
+                .width(width)
+                .height(VOTE_HEIGHT)
+                .padding(0)
+                .style(style)
+                .on_press_maybe(on_press),
+            container(text(tip).size(font::NOTE_SIZE))
+                .padding([6, 10])
+                .style(style::popup),
+            tooltip::Position::Top,
+        )
+    };
+
+    row![
+        action("Play", format::PLAY_TIP, style::primary, play),
+        action(
+            "Show in library",
+            format::SHOW_IN_LIBRARY_TIP,
+            style::secondary,
+            show
+        ),
+    ]
+    .spacing(VOTE_SPACING)
+    .align_y(Center)
 }
 
 pub fn vote_width(available: f32, beside: f32) -> Length {

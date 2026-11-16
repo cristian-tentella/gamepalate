@@ -490,6 +490,10 @@ pub fn later_tip(days: i64) -> String {
     format!("Back in Discover in {days} days")
 }
 
+pub const NEXT_TIP: &str = "Skips to the next game, and saves nothing";
+pub const PLAY_TIP: &str = "Starts the game in Steam, or installs it";
+pub const SHOW_IN_LIBRARY_TIP: &str = "Opens the game in your Steam library";
+
 pub fn played_tip(hours: f64) -> String {
     format!("Counts as {hours} h of play, like a game in your Library")
 }
@@ -609,6 +613,14 @@ pub fn eneba_url(name: &str) -> String {
 
 pub fn hltb_url(name: &str) -> String {
     format!("https://howlongtobeat.com/?q={}", search_text(name))
+}
+
+pub fn play_url(id: AppId) -> String {
+    format!("steam://rungameid/{}", id.0)
+}
+
+pub fn library_url(id: AppId) -> String {
+    format!("steam://nav/games/details/{}", id.0)
 }
 
 fn search_text(name: &str) -> String {
@@ -1373,5 +1385,14 @@ mod tests {
             "https://howlongtobeat.com/?q=Hades%20II%3A%20Caf%C3%A9%20%26%20Co."
         );
         assert!(eneba_url("Celeste").ends_with("&text=Celeste"));
+    }
+
+    #[test]
+    fn opens_a_game_in_steam_by_its_app_id() {
+        assert_eq!(play_url(AppId(1145360)), "steam://rungameid/1145360");
+        assert_eq!(
+            library_url(AppId(1145360)),
+            "steam://nav/games/details/1145360"
+        );
     }
 }
