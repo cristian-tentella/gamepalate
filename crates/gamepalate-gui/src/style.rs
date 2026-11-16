@@ -589,6 +589,18 @@ pub fn list_row(current: bool) -> impl Fn(&Theme, button::Status) -> button::Sty
     }
 }
 
+/// A grey block where a game's page will be, while it loads.
+pub fn skeleton(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(theme.extended_palette().background.weak.color.into()),
+        border: Border {
+            radius: 6.0.into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
+    }
+}
+
 pub fn veil(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(

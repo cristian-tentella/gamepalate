@@ -100,6 +100,7 @@ fn votes_passing(
         inputs.families,
         inputs.votes,
         inputs.corrections,
+        &inputs.config.signals,
     );
     Ok(inputs
         .votes

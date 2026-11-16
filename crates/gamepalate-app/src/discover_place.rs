@@ -1,5 +1,6 @@
 use gamepalate_core::{
-    filters::{Filter, FilterContext, active_filters, first_failed, hits_ban},
+    effective_hours::{HoursSource, hours_by_source},
+    filters::{DiscoverMode, Filter, FilterContext, active_filters, first_failed, hits_ban},
     game::Game,
     ids::{AppId, TagId},
     search::{SearchInputs, SearchOptions, recommend},
@@ -8,11 +9,13 @@ use gamepalate_core::{
 
 use crate::names::tag_name;
 
-/// Where a game stands in Discover, as if you opened it now from the start.
+/// Where a game stands in Discover, as if you opened it now from the start. A game of your
+/// backlog is looked for in the Backlog, any other in New.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiscoverPlace {
     Shown {
         position: usize,
+        mode: DiscoverMode,
     },
     LeftOut(LeftOut),
     /// It passes the filters, but no list of yours has it.
@@ -23,6 +26,10 @@ pub enum DiscoverPlace {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LeftOut {
     Owned,
+    /// You played it, for this many hours: it's not a game for Discover any more.
+    Played(f64),
+    Wishlist,
+    Followed,
     FamilyGame,
     Hidden,
     Voted,
@@ -44,19 +51,26 @@ pub(crate) fn discover_place(
     now: Timestamp,
 ) -> Option<DiscoverPlace> {
     let game = inputs.catalog.game(id)?;
-    let filters = active_filters(&options.filters, inputs.config, inputs.catalog).ok()?;
     let context = FilterContext::new(
         inputs.signals,
         inputs.families,
         inputs.votes,
         inputs.corrections,
+        &inputs.config.signals,
     );
+    let mode = if context.backlog.contains(&id) {
+        DiscoverMode::Backlog
+    } else {
+        DiscoverMode::New
+    };
+    let filters = active_filters(&options.filters, inputs.config, inputs.catalog, mode).ok()?;
     if let Some(filter) = first_failed(game, &filters, &context, now) {
         return Some(DiscoverPlace::LeftOut(left_out(filter, game, inputs)));
     }
 
     let every_game = SearchOptions {
         limit: Some(usize::MAX),
+        mode,
         ..options.clone()
     };
     let recommendation = recommend(inputs, &every_game, now).ok()?;
@@ -69,6 +83,7 @@ pub(crate) fn discover_place(
         {
             Some(recommended) if recommended.affinity > 0.0 => DiscoverPlace::Shown {
                 position: recommended.position,
+                mode,
             },
             _ => DiscoverPlace::NoMatch,
         },
@@ -81,7 +96,16 @@ fn left_out(filter: &Filter, game: &Game, inputs: &SearchInputs) -> LeftOut {
         |tag_id: Option<TagId>| tag_id.map_or_else(String::new, |id| tag_name(id, inputs.catalog));
 
     match filter {
-        Filter::Owned => LeftOut::Owned,
+        Filter::Owned => played_hours(game.id, inputs).map_or(LeftOut::Owned, LeftOut::Played),
+        // The game is not in the backlog, so it can't be the filter that fails there
+        Filter::Backlog => LeftOut::Owned,
+        Filter::WishedOrFollowed => {
+            if inputs.signals.wishlist.contains(&game.id) {
+                LeftOut::Wishlist
+            } else {
+                LeftOut::Followed
+            }
+        }
         Filter::FamilyGames => LeftOut::FamilyGame,
         Filter::Hidden => LeftOut::Hidden,
         Filter::NotForMe | Filter::Voted => LeftOut::Voted,
@@ -108,6 +132,35 @@ fn left_out(filter: &Filter, game: &Game, inputs: &SearchInputs) -> LeftOut {
     }
 }
 
+/// The hours of Steam for a game that is past the backlog. A Would try, a wishlist, a followed
+/// game or one played elsewhere has no hours of yours behind it, so it has none.
+fn played_hours(id: AppId, inputs: &SearchInputs) -> Option<f64> {
+    let hours = hours_by_source(
+        inputs.signals,
+        inputs.votes,
+        &inputs.corrections.played_elsewhere,
+        &inputs.config.signals,
+    );
+    let &(effective, source) = hours.get(&id)?;
+    if source != HoursSource::Played || effective < inputs.config.signals.min_hours {
+        return None;
+    }
+    let signals = inputs.signals;
+    signals
+        .recent
+        .iter()
+        .find(|game| game.id == id)
+        .map(|game| game.total_hours)
+        .or_else(|| {
+            signals
+                .library
+                .iter()
+                .chain(&signals.borrowed)
+                .find(|game| game.id == id)
+                .map(|game| game.total_hours)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -118,7 +171,7 @@ mod tests {
         corrections::{Ban, Corrections},
         currency::Currency,
         families::Families,
-        filters::FilterOptions,
+        filters::{DiscoverMode, FilterOptions},
         game::{GameTag, Price, Reviews},
         game_vector::{GameVector, game_vectors},
         off_catalog::OffCatalogGames,
@@ -277,7 +330,106 @@ mod tests {
         );
         assert_eq!(
             fixture.place(1, &without_voted()),
-            Some(DiscoverPlace::LeftOut(LeftOut::Owned))
+            Some(DiscoverPlace::LeftOut(LeftOut::Played(20.0)))
+        );
+    }
+
+    fn unplayed(id: u32) -> LibraryGame {
+        LibraryGame {
+            id: AppId(id),
+            total_hours: 0.5,
+            last_played: None,
+        }
+    }
+
+    #[test]
+    fn a_game_of_the_backlog_has_its_place_in_the_backlog() {
+        let mut fixture = Fixture::new();
+        // 6 has 40 reviews, too few for New, and a game of the backlog doesn't need them
+        fixture.signals.library.extend([unplayed(2), unplayed(6)]);
+        let options = without_voted();
+        let in_backlog = recommend(
+            &fixture.inputs(),
+            &SearchOptions {
+                limit: Some(100),
+                mode: DiscoverMode::Backlog,
+                ..options.clone()
+            },
+            NOW,
+        )
+        .unwrap();
+
+        assert_eq!(in_backlog.games.len(), 2);
+        for recommended in &in_backlog.games {
+            assert_eq!(
+                fixture.place(recommended.id.0, &options),
+                Some(DiscoverPlace::Shown {
+                    position: recommended.position,
+                    mode: DiscoverMode::Backlog
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn a_game_of_the_backlog_is_left_out_by_the_filters_of_the_backlog() {
+        let mut fixture = Fixture::new();
+        fixture.signals.library.push(unplayed(2));
+        fixture.corrections.hidden_games = BTreeSet::from([AppId(2)]);
+
+        assert_eq!(
+            fixture.place(2, &without_voted()),
+            Some(DiscoverPlace::LeftOut(LeftOut::Hidden))
+        );
+    }
+
+    #[test]
+    fn a_game_played_a_little_is_out_of_the_backlog_with_its_hours() {
+        let mut fixture = Fixture::new();
+        fixture.signals.library.push(LibraryGame {
+            id: AppId(2),
+            total_hours: 2.5,
+            last_played: None,
+        });
+
+        assert_eq!(
+            fixture.place(2, &without_voted()),
+            Some(DiscoverPlace::LeftOut(LeftOut::Played(2.5)))
+        );
+    }
+
+    #[test]
+    fn a_game_played_elsewhere_or_with_a_would_try_has_no_hours_of_yours() {
+        let mut fixture = Fixture::new();
+        fixture.signals.library.extend([unplayed(2), unplayed(3)]);
+        fixture.corrections.played_elsewhere = BTreeSet::from([AppId(2)]);
+        fixture.votes = Votes::from([(AppId(3), Vote::new(VoteKind::WouldTry, "2026-11-01"))]);
+
+        for id in [2, 3] {
+            assert_eq!(
+                fixture.place(id, &without_voted()),
+                Some(DiscoverPlace::LeftOut(LeftOut::Owned))
+            );
+        }
+    }
+
+    #[test]
+    fn a_wishlist_or_followed_game_is_not_in_new() {
+        let mut fixture = Fixture::new();
+        fixture.signals.wishlist = vec![AppId(2), AppId(3)];
+        fixture.signals.followed = vec![AppId(3), AppId(4)];
+
+        assert_eq!(
+            fixture.place(2, &without_voted()),
+            Some(DiscoverPlace::LeftOut(LeftOut::Wishlist))
+        );
+        assert_eq!(
+            fixture.place(3, &without_voted()),
+            Some(DiscoverPlace::LeftOut(LeftOut::Wishlist))
+        );
+        assert_eq!(
+            fixture.place(4, &without_voted()),
+            Some(DiscoverPlace::LeftOut(LeftOut::Followed))
         );
     }
 
@@ -335,7 +487,8 @@ mod tests {
             assert_eq!(
                 fixture.place(recommended.id.0, &options),
                 Some(DiscoverPlace::Shown {
-                    position: recommended.position
+                    position: recommended.position,
+                    mode: DiscoverMode::New
                 })
             );
         }

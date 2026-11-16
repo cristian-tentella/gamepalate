@@ -1,17 +1,20 @@
 use std::{
-    cmp::Reverse,
+    cmp::{Ordering, Reverse},
     collections::{HashMap, HashSet},
 };
 
 use crate::{
     catalog::{Catalog, Freshness},
-    config::Config,
+    config::{Config, RelevanceConfig},
     corrections::Corrections,
     creators::{LikedCreators, liked_creators},
     effective_hours::hours_by_source,
     explanation::{KnownFrom, KnownGame, known_from, known_games, similar_to, specific_tags},
     families::{Families, Family},
-    filters::{Blame, FilterContext, FilterOptions, TagNameError, active_filters, apply_filters},
+    filters::{
+        Blame, DiscoverMode, FilterContext, FilterOptions, TagNameError, active_filters,
+        apply_filters,
+    },
     game::{Price, Reviews},
     game_vector::GameVector,
     ids::AppId,
@@ -38,6 +41,17 @@ pub enum SortBy {
     Relevance,
     Discount,
     Price,
+    Positive,
+}
+
+impl SortBy {
+    /// The Backlog has no price to order by, so only the orders that don't need one hold there.
+    pub fn in_backlog(self) -> SortBy {
+        match self {
+            SortBy::Positive => SortBy::Positive,
+            SortBy::Relevance | SortBy::Discount | SortBy::Price => SortBy::Relevance,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -53,6 +67,9 @@ pub struct SearchOptions {
     pub sort: SortBy,
     pub limit: Option<usize>,
     pub filters: FilterOptions,
+    // Not saved: Discover opens on New
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub mode: DiscoverMode,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -254,6 +271,31 @@ pub fn sort_picks(picks: &mut [Pick], sort: SortBy, catalog: &Catalog, now: Time
         SortBy::Price => {
             picks.sort_by_key(|pick| price(pick).map_or(u32::MAX, |price| price.final_cents()))
         }
+        SortBy::Positive => picks.sort_by(|a, b| {
+            let reviews = |pick: &Pick| {
+                catalog.game(pick.game.id).map_or(
+                    Reviews {
+                        total: 0,
+                        positive: 0,
+                    },
+                    |game| game.reviews,
+                )
+            };
+            positive_order(reviews(a), reviews(b))
+        }),
+    }
+}
+
+/// The share of positive reviews, highest first, then the most reviewed. A game without
+/// reviews goes last.
+fn positive_order(a: Reviews, b: Reviews) -> Ordering {
+    match (a.total, b.total) {
+        (0, 0) => Ordering::Equal,
+        (0, _) => Ordering::Greater,
+        (_, 0) => Ordering::Less,
+        _ => (u64::from(b.positive) * u64::from(a.total))
+            .cmp(&(u64::from(a.positive) * u64::from(b.total)))
+            .then(b.total.cmp(&a.total)),
     }
 }
 
@@ -376,7 +418,13 @@ pub fn recommend_from(
     continuation: Continuation,
     now: Timestamp,
 ) -> Result<Recommendation, SearchError> {
-    let filters = active_filters(&options.filters, inputs.config, inputs.catalog)?;
+    let backlog = options.mode == DiscoverMode::Backlog;
+    let filters = active_filters(
+        &options.filters,
+        inputs.config,
+        inputs.catalog,
+        options.mode,
+    )?;
     let mut tastes = search_tastes(inputs, options.family.as_deref())?;
     if options.signals_only && options.family.is_none() {
         tastes.truncate(1);
@@ -386,18 +434,29 @@ pub fn recommend_from(
         inputs.families,
         inputs.votes,
         inputs.corrections,
+        &inputs.config.signals,
     );
+    // You already bought the games of the backlog, so how good they are doesn't count
+    let relevance = RelevanceConfig {
+        quality_weight: if backlog {
+            0.0
+        } else {
+            inputs.config.relevance.quality_weight
+        },
+        ..inputs.config.relevance
+    };
+    let sort = if backlog {
+        options.sort.in_backlog()
+    } else {
+        options.sort
+    };
     let filter_outcome = apply_filters(inputs.catalog, &filters, &filter_context, now);
 
     let rankings: Vec<Vec<RankedGame>> = tastes
         .iter()
         .map(|search_taste| {
-            let mut ranked = ranking(
-                inputs.game_vectors,
-                &search_taste.taste,
-                &inputs.config.relevance,
-            )
-            .unwrap_or_default();
+            let mut ranked =
+                ranking(inputs.game_vectors, &search_taste.taste, &relevance).unwrap_or_default();
             ranked.retain(|game| filter_outcome.candidates.contains(&game.id));
 
             ranked
@@ -445,7 +504,7 @@ pub fn recommend_from(
         .collect();
     let limit = options.limit.unwrap_or(inputs.config.results.count);
     let mut next = continuation.clone();
-    let picks = if options.sort == SortBy::Relevance {
+    let picks = if sort == SortBy::Relevance {
         merged_lists(
             &voted,
             &bet_lists,
@@ -468,7 +527,7 @@ pub fn recommend_from(
             &mut from_start,
             usize::MAX,
         );
-        sort_picks(&mut picks, options.sort, inputs.catalog, now);
+        sort_picks(&mut picks, sort, inputs.catalog, now);
         picks.retain(|pick| !continuation.shown.contains(&pick.game.id));
         picks.truncate(limit);
         picks
@@ -511,7 +570,7 @@ pub fn recommend_from(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use super::*;
     use crate::{
@@ -670,6 +729,283 @@ mod tests {
             relevance: 0.0,
             affinity: 0.0,
         }
+    }
+
+    // The games, by id: 1 is the one Signal; 10 to 13, 17 and 18 are in the library, 13 only
+    // borrowed; 14 is in the wishlist, 15 followed; 16 and 19 are not known at all.
+    struct BacklogCase {
+        catalog: Catalog,
+        vectors: Vec<GameVector>,
+        signals: Signals,
+        votes: Votes,
+        corrections: Corrections,
+        families: Families,
+        off_catalog: OffCatalogGames,
+        config: Config,
+    }
+
+    impl BacklogCase {
+        fn new() -> BacklogCase {
+            let library = |id: u32, hours: f64| LibraryGame {
+                id: AppId(id),
+                total_hours: hours,
+                last_played: None,
+            };
+            let few_reviews = |id: u32| Game {
+                reviews: Reviews {
+                    total: 40,
+                    positive: 39,
+                },
+                price: Price {
+                    original_cents: 100,
+                    discount: None,
+                },
+                ..game(id, 1)
+            };
+            let poor = |id: u32| Game {
+                reviews: Reviews {
+                    total: 1500,
+                    positive: 1150,
+                },
+                ..game(id, 1)
+            };
+            let catalog = Catalog::new(
+                vec![
+                    game(1, 1),
+                    game(10, 1),
+                    game(11, 1),
+                    game(12, 1),
+                    game(13, 1),
+                    game(14, 1),
+                    game(15, 1),
+                    game(16, 1),
+                    few_reviews(17),
+                    poor(18),
+                    poor(19),
+                    game(20, 2),
+                ],
+                BTreeMap::new(),
+                BTreeMap::from([(TagId(1), 1.0), (TagId(2), 1.0)]),
+                Freshness {
+                    prices_updated_at: NOW,
+                    tags_updated_at: NOW,
+                    region: Region::ITALY,
+                },
+                Currency::italian(),
+            );
+            BacklogCase {
+                vectors: game_vectors(&catalog),
+                catalog,
+                signals: Signals {
+                    read_at: NOW,
+                    library: vec![
+                        library(1, 20.0),
+                        library(10, 0.0),
+                        library(11, 0.0),
+                        library(12, 1.0),
+                        library(17, 0.5),
+                        library(18, 0.0),
+                    ],
+                    borrowed: vec![library(13, 0.0)],
+                    recent: vec![],
+                    wishlist: vec![AppId(14)],
+                    followed: vec![AppId(15)],
+                },
+                votes: Votes::from([(AppId(12), Vote::new(VoteKind::WouldTry, "2026-11-01"))]),
+                corrections: Corrections {
+                    played_elsewhere: BTreeSet::from([AppId(11)]),
+                    ..Corrections::default()
+                },
+                families: Families::default(),
+                off_catalog: OffCatalogGames::new(),
+                config: Config::default(),
+            }
+        }
+
+        fn run(&self, options: &SearchOptions) -> Recommendation {
+            let inputs = SearchInputs {
+                catalog: &self.catalog,
+                game_vectors: &self.vectors,
+                signals: &self.signals,
+                votes: &self.votes,
+                corrections: &self.corrections,
+                families: &self.families,
+                off_catalog: &self.off_catalog,
+                config: &self.config,
+            };
+            let options = SearchOptions {
+                limit: Some(100),
+                ..options.clone()
+            };
+
+            recommend(&inputs, &options, NOW).unwrap()
+        }
+
+        fn ids(&self, options: &SearchOptions) -> Vec<u32> {
+            let mut ids: Vec<u32> = self.run(options).games.iter().map(|g| g.id.0).collect();
+            ids.sort();
+            ids
+        }
+    }
+
+    fn backlog() -> SearchOptions {
+        SearchOptions {
+            mode: DiscoverMode::Backlog,
+            ..SearchOptions::default()
+        }
+    }
+
+    #[test]
+    fn new_leaves_out_the_wishlist_and_the_followed_games() {
+        let ids = BacklogCase::new().ids(&SearchOptions::default());
+
+        // 14 and 15 are known, 17 has too few reviews, 20 has no tag in common with the taste
+        assert_eq!(ids, [16, 19, 20]);
+    }
+
+    #[test]
+    fn the_backlog_is_the_library_under_the_minimum_effective_hours() {
+        let ids = BacklogCase::new().ids(&backlog());
+
+        // Not 1 (a Signal), 11 (played elsewhere), 12 (a Would try), 13 (borrowed), 14, 15, 16
+        assert_eq!(ids, [10, 17, 18]);
+    }
+
+    #[test]
+    fn the_backlog_has_no_minimum_reviews_nor_price() {
+        let mut options = backlog();
+        options.filters.min_reviews = Some(5000);
+        options.filters.max_price_cents = Some(50);
+        options.filters.min_discount_percent = Some(50);
+        options.filters.max_reviews = Some(100);
+
+        // 17 has 40 reviews, and no game costs 0.50 € or less
+        assert_eq!(BacklogCase::new().ids(&options), [10, 17, 18]);
+    }
+
+    #[test]
+    fn the_backlog_still_leaves_out_hidden_games_and_what_the_filters_say() {
+        let mut case = BacklogCase::new();
+        case.corrections.hidden_games = BTreeSet::from([AppId(10)]);
+        let mut options = backlog();
+        options.filters.min_positive_percent = Some(80);
+
+        // 18 has 77% positive
+        assert_eq!(case.ids(&options), [17]);
+    }
+
+    #[test]
+    fn the_backlog_does_not_weigh_the_quality() {
+        let case = BacklogCase::new();
+        let relevance = |recommendation: &Recommendation, id: u32| {
+            recommendation
+                .games
+                .iter()
+                .find(|game| game.id == AppId(id))
+                .unwrap()
+                .relevance
+        };
+
+        let in_backlog = case.run(&backlog());
+        // 10 and 18 have the same tags, 18 is worse
+        assert_eq!(relevance(&in_backlog, 10), relevance(&in_backlog, 18));
+        assert!(relevance(&in_backlog, 10) > 0.0);
+
+        let in_new = case.run(&SearchOptions::default());
+        assert!(relevance(&in_new, 16) > relevance(&in_new, 19));
+    }
+
+    #[test]
+    fn orders_by_the_share_of_positive_reviews_and_puts_games_without_reviews_last() {
+        let reviews = |total, positive| Reviews { total, positive };
+        let mut games = [
+            reviews(0, 0),
+            reviews(100, 80),
+            reviews(10, 9),
+            reviews(1000, 900),
+            reviews(40, 39),
+        ];
+
+        games.sort_by(|a, b| positive_order(*a, *b));
+
+        assert_eq!(
+            games,
+            [
+                reviews(40, 39),
+                reviews(1000, 900),
+                reviews(10, 9),
+                reviews(100, 80),
+                reviews(0, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_backlog_orders_by_positive_reviews_when_asked() {
+        let case = BacklogCase::new();
+        let order = |sort| {
+            case.run(&SearchOptions { sort, ..backlog() })
+                .games
+                .iter()
+                .map(|game| game.id.0)
+                .collect::<Vec<_>>()
+        };
+
+        // 17 has 97.5% positive, 10 has 90% and 18 has 77%
+        assert_eq!(order(SortBy::Positive), [17, 10, 18]);
+        assert_eq!(SortBy::Price.in_backlog(), SortBy::Relevance);
+        assert_eq!(SortBy::Positive.in_backlog(), SortBy::Positive);
+    }
+
+    #[test]
+    fn new_orders_by_positive_reviews_too() {
+        let case = BacklogCase::new();
+        let games = case
+            .run(&SearchOptions {
+                sort: SortBy::Positive,
+                ..SearchOptions::default()
+            })
+            .games;
+        let share = |game: &RecommendedGame| {
+            f64::from(game.reviews.positive) / f64::from(game.reviews.total)
+        };
+
+        assert!(games.len() > 1);
+        assert!(
+            games
+                .windows(2)
+                .all(|pair| share(&pair[0]) >= share(&pair[1]))
+        );
+    }
+
+    #[test]
+    fn the_backlog_is_always_in_the_order_of_relevance() {
+        let case = BacklogCase::new();
+        let order = |sort| {
+            case.run(&SearchOptions { sort, ..backlog() })
+                .games
+                .iter()
+                .map(|game| game.id.0)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(order(SortBy::Price), order(SortBy::Relevance));
+        assert_eq!(order(SortBy::Discount), order(SortBy::Relevance));
+    }
+
+    #[test]
+    fn an_empty_backlog_is_not_blamed_on_a_filter() {
+        let mut case = BacklogCase::new();
+        case.signals.library = vec![LibraryGame {
+            id: AppId(1),
+            total_hours: 20.0,
+            last_played: None,
+        }];
+
+        let recommendation = case.run(&backlog());
+
+        assert!(recommendation.games.is_empty());
+        assert!(recommendation.empty_because.is_none());
     }
 
     #[test]

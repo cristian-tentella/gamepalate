@@ -1,7 +1,7 @@
 use gamepalate_app::{
-    AppId, Blame, CheckResult, Controller, Currency, DeckCheck, DiscoverPlace, KnownFrom, LeftOut,
-    Price, ProtonDb, ProtonTier, Reviews, SearchOptions, SteamDeck, Timestamp, VoteKind,
-    reviews::Review, settings::KeySource,
+    AppId, Blame, CheckResult, Controller, Currency, DeckCheck, DiscoverMode, DiscoverPlace,
+    KnownFrom, LeftOut, Price, ProtonDb, ProtonTier, Reviews, SearchOptions, SteamDeck, Timestamp,
+    VoteKind, reviews::Review, settings::KeySource,
 };
 use jiff::{civil::Date, tz::TimeZone};
 
@@ -79,25 +79,28 @@ pub fn filters(options: &SearchOptions, currency: &Currency) -> Option<String> {
     if options.only_bets {
         parts.push("Bets only".to_string());
     }
-    if filters.only_discounted {
-        parts.push("On sale".to_string());
-    }
-    if let Some(percent) = filters.min_discount_percent {
-        parts.push(format!("≥ {percent}% off"));
-    }
-    match (filters.min_price_cents, filters.max_price_cents) {
-        (Some(min), Some(max)) => {
-            parts.push(format!("{}–{}", currency.format(min), currency.format(max)))
+    // What you pay and how many bought it don't matter for a game you own
+    if options.mode == DiscoverMode::New {
+        if filters.only_discounted {
+            parts.push("On sale".to_string());
         }
-        (Some(min), None) => parts.push(format!("≥ {}", currency.format(min))),
-        (None, Some(max)) => parts.push(format!("≤ {}", currency.format(max))),
-        (None, None) => {}
-    }
-    match (filters.min_reviews, filters.max_reviews) {
-        (Some(min), Some(max)) => parts.push(format!("{}–{} reviews", count(min), count(max))),
-        (Some(min), None) => parts.push(format!("≥ {} reviews", count(min))),
-        (None, Some(max)) => parts.push(format!("≤ {} reviews", count(max))),
-        (None, None) => {}
+        if let Some(percent) = filters.min_discount_percent {
+            parts.push(format!("≥ {percent}% off"));
+        }
+        match (filters.min_price_cents, filters.max_price_cents) {
+            (Some(min), Some(max)) => {
+                parts.push(format!("{}–{}", currency.format(min), currency.format(max)))
+            }
+            (Some(min), None) => parts.push(format!("≥ {}", currency.format(min))),
+            (None, Some(max)) => parts.push(format!("≤ {}", currency.format(max))),
+            (None, None) => {}
+        }
+        match (filters.min_reviews, filters.max_reviews) {
+            (Some(min), Some(max)) => parts.push(format!("{}–{} reviews", count(min), count(max))),
+            (Some(min), None) => parts.push(format!("≥ {} reviews", count(min))),
+            (None, Some(max)) => parts.push(format!("≤ {} reviews", count(max))),
+            (None, None) => {}
+        }
     }
     if let Some(percent) = filters.min_positive_percent {
         parts.push(format!("≥ {percent}% positive"));
@@ -120,7 +123,10 @@ pub fn filters(options: &SearchOptions, currency: &Currency) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
-pub fn empty_because(blame: Option<&Blame>) -> String {
+pub fn empty_because(blame: Option<&Blame>, empty_backlog: bool) -> String {
+    if empty_backlog {
+        return "No games in your backlog".to_string();
+    }
     let Some(blame) = blame else {
         return "No game passes your filters".to_string();
     };
@@ -135,12 +141,15 @@ pub fn empty_because(blame: Option<&Blame>) -> String {
     )
 }
 
-pub fn votes_this_session(session: usize, last_day: usize) -> String {
-    let session = match session {
+pub fn votes_this_session(session: usize) -> String {
+    match session {
         1 => "1 vote this session".to_string(),
         votes => format!("{votes} votes this session"),
-    };
-    format!("{session} · {last_day} in the last 24 hours")
+    }
+}
+
+pub fn votes_last_day(last_day: usize) -> String {
+    format!("{last_day} in the last 24 hours")
 }
 
 pub fn count(number: u32) -> String {
@@ -476,6 +485,10 @@ pub fn later_tip(days: i64) -> String {
     format!("Back in Discover in {days} days")
 }
 
+pub const PLAY_TIP: &str = "Starts the game in Steam, or installs it";
+pub const NOT_IN_BACKLOG_TIP: &str = "Not used in Backlog, where you own the games";
+pub const SHOW_IN_LIBRARY_TIP: &str = "Opens the game in your Steam library";
+
 pub fn played_tip(hours: f64) -> String {
     format!("Counts as {hours} h of play, like a game in your Library")
 }
@@ -500,8 +513,12 @@ pub fn vote_removed(name: &str) -> String {
 /// yours.
 pub fn discover_place(place: &DiscoverPlace, played_elsewhere: bool) -> String {
     let left_out = match place {
-        DiscoverPlace::Shown { position } => {
-            return format!("#{} in Discover", count(*position as u32));
+        DiscoverPlace::Shown { position, mode } => {
+            let list = match mode {
+                DiscoverMode::New => "Discover",
+                DiscoverMode::Backlog => "Backlog",
+            };
+            return format!("#{} in {list}", count(*position as u32));
         }
         DiscoverPlace::NoMatch => "no match with your tastes".to_string(),
         DiscoverPlace::LeftOut(LeftOut::Owned) if played_elsewhere => {
@@ -509,6 +526,9 @@ pub fn discover_place(place: &DiscoverPlace, played_elsewhere: bool) -> String {
         }
         DiscoverPlace::LeftOut(left_out) => match left_out {
             LeftOut::Owned => "you own it".to_string(),
+            LeftOut::Played(played) => format!("you've played it for {}", hours(*played)),
+            LeftOut::Wishlist => "it's on your wishlist".to_string(),
+            LeftOut::Followed => "you follow it".to_string(),
             LeftOut::FamilyGame => "it's in a family".to_string(),
             LeftOut::Hidden => "you hid it".to_string(),
             LeftOut::Voted => "you voted it".to_string(),
@@ -590,6 +610,14 @@ pub fn hltb_url(name: &str) -> String {
     format!("https://howlongtobeat.com/?q={}", search_text(name))
 }
 
+pub fn play_url(id: AppId) -> String {
+    format!("steam://rungameid/{}", id.0)
+}
+
+pub fn library_url(id: AppId) -> String {
+    format!("steam://nav/games/details/{}", id.0)
+}
+
 fn search_text(name: &str) -> String {
     let name: String = name.chars().filter(|c| !"™®©".contains(*c)).collect();
     let mut encoded = String::new();
@@ -645,8 +673,24 @@ mod tests {
     #[test]
     fn the_place_in_discover_says_the_position_or_what_leaves_the_game_out() {
         assert_eq!(
-            discover_place(&DiscoverPlace::Shown { position: 1214 }, false),
+            discover_place(
+                &DiscoverPlace::Shown {
+                    position: 1214,
+                    mode: DiscoverMode::New
+                },
+                false
+            ),
             "#1,214 in Discover"
+        );
+        assert_eq!(
+            discover_place(
+                &DiscoverPlace::Shown {
+                    position: 12,
+                    mode: DiscoverMode::Backlog
+                },
+                false
+            ),
+            "#12 in Backlog"
         );
         assert_eq!(
             discover_place(&DiscoverPlace::LeftOut(LeftOut::Owned), false),
@@ -655,6 +699,18 @@ mod tests {
         assert_eq!(
             discover_place(&DiscoverPlace::LeftOut(LeftOut::Owned), true),
             "Not in Discover: you played it elsewhere"
+        );
+        assert_eq!(
+            discover_place(&DiscoverPlace::LeftOut(LeftOut::Played(5.0)), false),
+            "Not in Discover: you've played it for 5 h"
+        );
+        assert_eq!(
+            discover_place(&DiscoverPlace::LeftOut(LeftOut::Wishlist), false),
+            "Not in Discover: it's on your wishlist"
+        );
+        assert_eq!(
+            discover_place(&DiscoverPlace::LeftOut(LeftOut::Followed), false),
+            "Not in Discover: you follow it"
         );
         assert_eq!(
             discover_place(
@@ -872,14 +928,52 @@ mod tests {
         };
 
         assert_eq!(
-            empty_because(Some(&blame(1234))),
+            empty_because(Some(&blame(1234)), false),
             "No game passes your filters. Try loosening max price, which removed 1,234 games."
         );
         assert_eq!(
-            empty_because(Some(&blame(1))),
+            empty_because(Some(&blame(1)), false),
             "No game passes your filters. Try loosening max price, which removed 1 game."
         );
-        assert_eq!(empty_because(None), "No game passes your filters");
+        assert_eq!(empty_because(None, false), "No game passes your filters");
+    }
+
+    #[test]
+    fn an_empty_backlog_says_so_before_any_filter_is_blamed() {
+        let blame = Blame {
+            filter: "min positive",
+            discarded: 3,
+        };
+
+        assert_eq!(
+            empty_because(Some(&blame), true),
+            "No games in your backlog"
+        );
+        assert_eq!(empty_because(None, true), "No games in your backlog");
+    }
+
+    #[test]
+    fn the_summary_in_the_backlog_leaves_out_the_price_and_the_reviews() {
+        let mut options = SearchOptions::default();
+        options.filters.only_discounted = true;
+        options.filters.min_discount_percent = Some(30);
+        options.filters.min_price_cents = Some(500);
+        options.filters.max_price_cents = Some(1500);
+        options.filters.min_reviews = Some(1000);
+        options.filters.max_reviews = Some(50_000);
+        options.filters.min_positive_percent = Some(80);
+        options.filters.tags = vec!["Puzzle".to_string()];
+        options.only_bets = true;
+        options.mode = DiscoverMode::Backlog;
+
+        assert_eq!(
+            filters(&options, &Currency::italian()).as_deref(),
+            Some("Bets only · ≥ 80% positive · Tags: Puzzle")
+        );
+
+        options.mode = DiscoverMode::New;
+        let summary = filters(&options, &Currency::italian()).unwrap();
+        assert!(summary.contains("On sale") && summary.contains("reviews"));
     }
 
     #[test]
@@ -920,14 +1014,9 @@ mod tests {
 
     #[test]
     fn counts_votes_in_singular_and_plural() {
-        assert_eq!(
-            votes_this_session(1, 5),
-            "1 vote this session · 5 in the last 24 hours"
-        );
-        assert_eq!(
-            votes_this_session(12, 40),
-            "12 votes this session · 40 in the last 24 hours"
-        );
+        assert_eq!(votes_this_session(1), "1 vote this session");
+        assert_eq!(votes_this_session(12), "12 votes this session");
+        assert_eq!(votes_last_day(40), "40 in the last 24 hours");
     }
 
     #[test]
@@ -1088,7 +1177,7 @@ mod tests {
 
     #[test]
     fn the_later_tip_says_when_the_game_comes_back() {
-        assert_eq!(later_tip(30), "Back in Discover in 30 days");
+        assert_eq!(later_tip(7), "Back in Discover in 7 days");
     }
 
     #[test]
@@ -1275,5 +1364,14 @@ mod tests {
             "https://howlongtobeat.com/?q=Hades%20II%3A%20Caf%C3%A9%20%26%20Co."
         );
         assert!(eneba_url("Celeste").ends_with("&text=Celeste"));
+    }
+
+    #[test]
+    fn opens_a_game_in_steam_by_its_app_id() {
+        assert_eq!(play_url(AppId(1145360)), "steam://rungameid/1145360");
+        assert_eq!(
+            library_url(AppId(1145360)),
+            "steam://nav/games/details/1145360"
+        );
     }
 }

@@ -10,8 +10,8 @@ use crate::{
     discover_place::{DiscoverPlace, discover_place},
     library::{
         FoundGame, GameCorrection, GameCorrectionError, GameView, LibraryView,
-        PlayedElsewhereError, changed_played_elsewhere, corrected_game, found_games,
-        game_correction, game_view, library_view,
+        PlayedElsewhereError, backlog_ranked, changed_played_elsewhere, corrected_game,
+        found_games, game_correction, game_view, library_view,
     },
     log::failed,
     profile::{ProfileView, profile_view},
@@ -80,6 +80,11 @@ impl Gamepalate {
         let ids = self.names.find(text, &self.files.catalog);
         let now = Timestamp(jiff::Timestamp::now().as_millisecond());
         self.with_inputs(|inputs| found_games(&ids, inputs, now))
+    }
+
+    /// How many games of the library under `min_hours` the Backlog can show.
+    pub fn backlog_ranked(&self) -> usize {
+        self.with_inputs(backlog_ranked)
     }
 
     /// One game of the catalog for its page, read again after each change.

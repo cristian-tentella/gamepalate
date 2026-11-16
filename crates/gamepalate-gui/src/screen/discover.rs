@@ -10,21 +10,21 @@ use std::{
 };
 
 use gamepalate_app::{
-    AppId, Blame, FilterOptions, Gamepalate, RecommendError, Recommendation, RecommendedGame,
-    SearchOptions, VoteKind,
+    AppId, Blame, DiscoverMode, FilterOptions, Gamepalate, RecommendError, Recommendation,
+    RecommendedGame, SearchOptions, VoteKind,
 };
 use iced::{
-    Center, Element, Event, Fill, Size, Subscription, Task, event,
+    Center, Element, Event, Fill, Length, Size, Subscription, Task, event,
     keyboard::{self, Key, key::Named},
     mouse, padding,
     widget::{
-        Column, button, column, container, mouse_area, opaque, pick_list, responsive, row,
+        Column, button, column, container, mouse_area, opaque, pick_list, responsive, row, rule,
         scrollable, space, stack, text, tooltip,
     },
 };
 
 use self::{
-    filters::{Action, Panel, SORTS, Sort, Source},
+    filters::{Action, Panel, Sort, Source},
     queue::Queue,
 };
 use super::{
@@ -57,6 +57,12 @@ const SIMILAR_GAP: f32 = 12.0;
 const SCROLLBAR_GAP: f32 = 12.0;
 const GAME_PADDING: f32 = 16.0;
 const FILTERS_HEIGHT: f32 = 34.0;
+// The gap between the controls of the filters bar, and the one inside a label and its control
+const BAR_SPACING: f32 = 12.0;
+const LABEL_SPACING: f32 = 6.0;
+const FILTERS_PADDING: f32 = 8.0;
+const MODE_SEGMENT_HEIGHT: f32 = 26.0;
+const MODE_SEGMENT_WIDTH: f32 = 64.0;
 const VOTES_PADDING: f32 = 10.0;
 const SEPARATOR: f32 = 1.0;
 const HINT_WIDTH: f32 = 200.0;
@@ -64,6 +70,9 @@ const MEDIA_BELOW: f32 = 80.0;
 const SIDE_HEIGHT: f32 = 560.0;
 const STACKED_BELOW: f32 = 440.0;
 const STACKED_TOP: f32 = 24.0;
+const SKELETON_LINE: f32 = 12.0;
+const SKELETON_TITLE: f32 = 26.0;
+const SKELETON_FIGURE: f32 = 34.0;
 
 pub struct Discover {
     gamepalate: Arc<Gamepalate>,
@@ -75,6 +84,7 @@ pub struct Discover {
     searches: u64,
     updating: bool,
     empty_because: Option<Blame>,
+    backlog_ranked: usize,
     votes_this_session: usize,
     votes_last_day: usize,
     bet_every: usize,
@@ -84,6 +94,7 @@ pub struct Discover {
     timers_started: u64,
     showcase: Showcase,
     state: State,
+    before: Option<Before>,
 }
 
 struct Flash {
@@ -95,6 +106,7 @@ struct Flash {
 pub enum Message {
     Recommended(u64, Result<Recommendation, RecommendError>),
     MoreRecommended(u64, Result<Recommendation, RecommendError>),
+    Mode(DiscoverMode),
     Source(Source),
     Sort(Sort),
     Filters(filters::Message),
@@ -106,6 +118,8 @@ pub enum Message {
     Previous,
     Later,
     LaterSaved(Result<(), String>),
+    Play,
+    ShowInLibrary,
     Vote(Pick),
     VoteSaved(Result<(), String>),
     Played,
@@ -123,6 +137,30 @@ enum State {
     Loading,
     Ready(Queue),
     Failed(String),
+}
+
+/// The games of the mode left behind while the other mode loads, so a search that fails or an
+/// undo can bring them back.
+struct Before {
+    mode: DiscoverMode,
+    queue: Queue,
+}
+
+fn park(state: &mut State, before: &mut Option<Before>, mode: DiscoverMode) {
+    if let State::Ready(queue) = std::mem::replace(state, State::Loading) {
+        *before = Some(Before { mode, queue });
+    }
+}
+
+/// Whether there are games of `mode` to show again, bringing back the ones parked.
+fn restore(state: &mut State, before: Option<Before>, mode: DiscoverMode) -> bool {
+    match before {
+        Some(before) if before.mode == mode && !matches!(state, State::Ready(_)) => {
+            *state = State::Ready(before.queue);
+            true
+        }
+        _ => matches!(state, State::Ready(_)),
+    }
 }
 
 impl Discover {
@@ -157,6 +195,7 @@ impl Discover {
             searches: 0,
             updating: changed,
             empty_because: None,
+            backlog_ranked: gamepalate.backlog_ranked(),
             votes_this_session: 0,
             votes_last_day: gamepalate.votes_in_last_day(),
             bet_every: gamepalate.bet_every(),
@@ -166,6 +205,7 @@ impl Discover {
             timers_started: 0,
             showcase: Showcase::new(gamepalate),
             state: State::Loading,
+            before: None,
         };
         let task = discover.recommend();
 
@@ -174,6 +214,7 @@ impl Discover {
 
     pub fn use_gamepalate(&mut self, gamepalate: &Arc<Gamepalate>) {
         self.gamepalate = Arc::clone(gamepalate);
+        self.backlog_ranked = gamepalate.backlog_ranked();
     }
 
     /// Votes, corrections or families changed on another page: the games start again from the
@@ -190,6 +231,7 @@ impl Discover {
         }
         self.sources = filters::sources(families);
         self.votes_last_day = self.gamepalate.votes_in_last_day();
+        self.backlog_ranked = self.gamepalate.backlog_ranked();
         self.recommend()
     }
 
@@ -198,6 +240,9 @@ impl Discover {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let Some(message) = in_mode(self.options.mode, message) else {
+            return Task::none();
+        };
         if self.showcase.is_open() {
             if matches!(message, Message::CloseFilters) {
                 return self.update(Message::Showcase(showcase::Message::Close));
@@ -228,6 +273,7 @@ impl Discover {
                     Task::none()
                 };
                 self.empty_because = recommendation.empty_because;
+                self.before = None;
                 let mut queue = Queue::new(recommendation.games, recommendation.continuation);
                 let load = queue.wants_next();
                 self.state = State::Ready(queue);
@@ -235,10 +281,11 @@ impl Discover {
             }
             Message::Recommended(_, Err(error)) => {
                 let updating = std::mem::take(&mut self.updating);
+                let before = self.before.take();
                 let previous = self
                     .undo
                     .take()
-                    .filter(|_| updating && matches!(self.state, State::Ready(_)));
+                    .filter(|previous| updating && restore(&mut self.state, before, previous.mode));
                 let Some(previous) = previous else {
                     self.state = State::Failed(error.to_string());
                     return Task::none();
@@ -293,6 +340,16 @@ impl Discover {
             }
             Message::LaterSaved(Ok(())) => {}
             Message::LaterSaved(Err(error)) => return self.show_toast(error),
+            Message::Play => {
+                if let Some(game) = self.current() {
+                    super::open(format::play_url(game.id));
+                }
+            }
+            Message::ShowInLibrary => {
+                if let Some(game) = self.current() {
+                    super::open(format::library_url(game.id));
+                }
+            }
             Message::Vote(pick) => {
                 if let (Some(game), Some(kind)) = (self.current(), pick.ballot()) {
                     let text = format::voted(&game.name, pick);
@@ -369,10 +426,24 @@ impl Discover {
                 }
             }
             Message::OpenSimilar(_) => {}
+            Message::Mode(mode) => {
+                let options = SearchOptions {
+                    mode,
+                    ..self.options.clone()
+                };
+                if options != self.options {
+                    self.panel_open = false;
+                    self.panel.show(&options);
+                }
+                return self.search_if_changed(options);
+            }
             Message::Source(source) => {
                 let options = filters::with_source(&self.options, source);
                 return self.search_if_changed(options);
             }
+            // The Backlog has no price to order by, and the order of New is not lost
+            Message::Sort(Sort(sort))
+                if self.options.mode == DiscoverMode::Backlog && sort.in_backlog() != sort => {}
             Message::Sort(Sort(sort)) => {
                 let options = SearchOptions {
                     sort,
@@ -388,7 +459,10 @@ impl Discover {
             }
             Message::CloseFilters => self.panel_open = false,
             Message::ResetFilters => {
-                let defaults = discover_options(SearchOptions::default());
+                let defaults = discover_options(SearchOptions {
+                    mode: self.options.mode,
+                    ..SearchOptions::default()
+                });
                 if defaults != self.options {
                     self.panel.show(&defaults);
                     return self.search(defaults);
@@ -455,7 +529,8 @@ impl Discover {
             format::filters(&self.options, self.gamepalate.currency())
         };
         let arrow = if self.panel_open { '▴' } else { '▾' };
-        let line = row![
+        let (sorts, sort) = filters::sorts(&self.options);
+        let from = row![
             text("From").size(font::NOTE_SIZE).style(style::muted),
             container(
                 pick_list(
@@ -469,13 +544,19 @@ impl Discover {
                 .menu_style(style::menu)
             )
             .max_width(FROM_MAX_WIDTH),
-            pick_list(SORTS, Some(Sort(self.options.sort)), Message::Sort)
+        ]
+        .spacing(LABEL_SPACING)
+        .align_y(Center);
+        // The Filters button has no box until the pointer is on it, so its own padding counts as
+        // space: what is left of the bar gap is what it takes to keep the gaps even to the eye.
+        let tail = row![
+            pick_list(sorts, Some(sort), Message::Sort)
                 .text_size(font::NOTE_SIZE)
                 .padding([4, 8])
                 .style(style::dropdown)
                 .menu_style(style::menu),
             button(text!("Filters (Ctrl+F) {arrow}").size(font::NOTE_SIZE))
-                .padding([4, 8])
+                .padding([4.0, FILTERS_PADDING])
                 .style(style::text_button)
                 .on_press(Message::ToggleFilters),
         ]
@@ -503,26 +584,37 @@ impl Discover {
             .width(Fill)
             .clip(true),
         )
-        .push(
-            text(format::votes_this_session(
-                self.votes_this_session,
-                self.votes_last_day,
-            ))
-            .size(font::NOTE_SIZE)
-            .style(style::muted)
-            .wrapping(text::Wrapping::None),
-        )
-        .spacing(8)
-        .align_y(Center);
+        .spacing(BAR_SPACING - FILTERS_PADDING)
+        .align_y(Center)
+        .width(Fill);
+        let line = row![self.mode_switch(), from, tail]
+            .push((self.options.mode == DiscoverMode::New).then(|| {
+                tooltip(
+                    text(format::votes_this_session(self.votes_this_session))
+                        .size(font::NOTE_SIZE)
+                        .style(style::muted)
+                        .wrapping(text::Wrapping::None),
+                    container(
+                        text(format::votes_last_day(self.votes_last_day)).size(font::NOTE_SIZE),
+                    )
+                    .padding([6, 10])
+                    .style(style::popup),
+                    tooltip::Position::Bottom,
+                )
+            }))
+            .spacing(BAR_SPACING)
+            .align_y(Center);
         let filters = container(line)
             .padding(padding::left(left).right(right))
             .width(Fill)
             .height(FILTERS_HEIGHT)
             .align_y(Center);
         let popup = self.panel_open.then(|| {
-            let panel = container(scrollable(self.panel.view().map(Message::Filters)).spacing(8))
-                .padding(20)
-                .style(style::popup);
+            let panel = container(
+                scrollable(self.panel.view(self.options.mode).map(Message::Filters)).spacing(8),
+            )
+            .padding(20)
+            .style(style::popup);
             stack![
                 opaque(
                     mouse_area(space().width(Fill).height(Fill)).on_press(Message::CloseFilters)
@@ -536,7 +628,7 @@ impl Discover {
             .width(Fill)
             .height(Fill)
             .clip(true);
-        let veil = self.updating.then(|| {
+        let veil = (self.updating && matches!(self.state, State::Ready(_))).then(|| {
             container(text("Updating…").style(style::muted))
                 .center(Fill)
                 .style(style::veil)
@@ -558,6 +650,44 @@ impl Discover {
         column![filters, style::separator(), below].into()
     }
 
+    fn mode_switch(&self) -> Element<'_, Message> {
+        let mode = self.options.mode;
+        let segments = [
+            (DiscoverMode::New, "New"),
+            (DiscoverMode::Backlog, "Backlog"),
+        ]
+        .into_iter()
+        .enumerate()
+        .fold(row![], |segments, (index, (choice, label))| {
+            let place = if index == 0 {
+                style::Segment::First
+            } else {
+                style::Segment::Last
+            };
+            let segment = button(
+                text(label)
+                    .size(font::NOTE_SIZE)
+                    .width(Fill)
+                    .height(Fill)
+                    .align_x(Center)
+                    .align_y(Center),
+            )
+            .width(MODE_SEGMENT_WIDTH)
+            .height(Fill)
+            .padding([0, 4])
+            .style(style::segment(mode == choice, place))
+            .on_press(Message::Mode(choice));
+            let seam = (index > 0).then(|| rule::vertical(1).style(style::vote_seam));
+            segments.push(seam).push(segment)
+        });
+
+        container(segments.height(Fill))
+            .height(MODE_SEGMENT_HEIGHT)
+            .padding(1)
+            .style(style::vote_group)
+            .into()
+    }
+
     fn vote_row(&self, width: f32, layout: Layout) -> Element<'_, Message> {
         let compact = width < COMPACT_WIDTH;
         let available = match layout {
@@ -566,6 +696,7 @@ impl Discover {
         };
         let vote_width = game::vote_width(available, if compact { 0.0 } else { HINT_WIDTH });
         let game = self.current();
+        let backlog = self.options.mode == DiscoverMode::Backlog;
         let hints = (!compact).then(|| {
             row![
                 style::divider(),
@@ -582,24 +713,32 @@ impl Discover {
             self.gamepalate.would_try_hours(),
             self.gamepalate.elsewhere_hours(),
         );
-        let votes = game::vote_buttons(
-            |key, pick| {
-                let message = match pick {
-                    Pick::Played => Message::Played,
-                    pick => Message::Vote(pick),
-                };
-                game::vote_button(
-                    key,
-                    pick,
-                    game::tip(pick, would_try_hours, elsewhere_hours),
-                    compact,
-                    vote_width,
-                    game.is_some().then_some(message),
-                    flashed == Some(pick),
-                )
-            },
-            true,
-        )
+        let votes = if backlog {
+            game::backlog_buttons(
+                compact,
+                game.is_some().then_some(Message::Play),
+                game.is_some().then_some(Message::ShowInLibrary),
+            )
+        } else {
+            game::vote_buttons(
+                |key, pick| {
+                    let message = match pick {
+                        Pick::Played => Message::Played,
+                        pick => Message::Vote(pick),
+                    };
+                    game::vote_button(
+                        key,
+                        pick,
+                        game::tip(pick, would_try_hours, elsewhere_hours),
+                        compact,
+                        vote_width,
+                        game.is_some().then_some(message),
+                        flashed == Some(pick),
+                    )
+                },
+                true,
+            )
+        }
         .push(hints);
         let links = game::links(|link| game.is_some().then_some(Message::Open(link)));
         let (votes, spacing) = match layout {
@@ -640,8 +779,13 @@ impl Discover {
     }
 
     fn search(&mut self, options: SearchOptions) -> Task<Message> {
+        let leaving = self.options.mode;
+        let mode_changes = options.mode != leaving;
         self.undo = Some(std::mem::replace(&mut self.options, options));
         self.updating = true;
+        if mode_changes {
+            park(&mut self.state, &mut self.before, leaving);
+        }
         self.recommend()
     }
 
@@ -864,7 +1008,7 @@ impl Discover {
 
     fn game(&self, layout: Layout, height: f32) -> Element<'_, Message> {
         let content: Element<'_, Message> = match &self.state {
-            State::Loading => text("Loading…").style(style::muted).into(),
+            State::Loading => skeleton(layout, height),
             State::Failed(error) => column![
                 text!("Error: {error}"),
                 small_button("Reset filters", Message::ResetFilters),
@@ -891,7 +1035,11 @@ impl Discover {
             .spacing(8);
 
         column![
-            text(format::empty_because(self.empty_because.as_ref())).style(style::muted),
+            text(format::empty_because(
+                self.empty_because.as_ref(),
+                self.options.mode == DiscoverMode::Backlog && self.backlog_ranked == 0,
+            ))
+            .style(style::muted),
             buttons,
         ]
         .spacing(12)
@@ -1039,6 +1187,77 @@ impl Layout {
     }
 }
 
+fn bone<'a>(width: impl Into<Length>, height: f32) -> Element<'a, Message> {
+    container(space().width(Fill).height(Fill))
+        .width(width)
+        .height(height)
+        .style(style::skeleton)
+        .into()
+}
+
+fn skeleton_text<'a>(width: f32) -> Column<'a, Message> {
+    column![
+        bone(width, SKELETON_LINE),
+        bone(width, SKELETON_LINE),
+        bone(width, SKELETON_LINE),
+        bone(width * 0.6, SKELETON_LINE),
+    ]
+    .spacing(10)
+}
+
+// The header image, the name and the figures, as `Discover::summary` lays them out
+fn skeleton_summary<'a>(width: f32) -> Column<'a, Message> {
+    column![
+        bone(width, width * 215.0 / 460.0),
+        column![
+            bone(width * 0.8, SKELETON_TITLE),
+            row![
+                bone(THUMBNAIL_WIDTH * 0.6, SKELETON_FIGURE),
+                bone(THUMBNAIL_WIDTH * 0.7, SKELETON_FIGURE)
+            ]
+            .spacing(INFO_SPACING),
+        ]
+        .spacing(TITLE_SPACING),
+    ]
+    .spacing(HEADER_SPACING)
+}
+
+/// What the game looks like before it arrives, in the same places as the real page.
+fn skeleton<'a>(layout: Layout, height: f32) -> Element<'a, Message> {
+    let (shot_width, shot_height) = layout.shot_size();
+    let content: Element<'a, Message> = match layout {
+        Layout::Beside(_) => row![
+            bone(shot_width, shot_height),
+            skeleton_summary(SIDE_WIDTH)
+                .push(skeleton_text(SIDE_WIDTH))
+                .spacing(GROUP_SPACING)
+                .width(SIDE_WIDTH),
+        ]
+        .spacing(CARD_SPACING)
+        .into(),
+        Layout::Stacked(_) => {
+            let header_width = ((shot_width - CARD_SPACING) / 2.0).min(SIDE_WIDTH);
+            column![
+                row![
+                    skeleton_summary(header_width),
+                    skeleton_text(shot_width - header_width - CARD_SPACING),
+                ]
+                .spacing(CARD_SPACING),
+                bone(shot_width, shot_height),
+            ]
+            .spacing(CARD_SPACING)
+            .width(shot_width)
+            .into()
+        }
+    };
+
+    container(content)
+        .center_x(Fill)
+        .height(Fill)
+        .padding(padding::right(SCROLLBAR_GAP).top(layout.top_space(height)))
+        .into()
+}
+
 fn bar_edges(width: f32, content_width: f32) -> (f32, f32) {
     let start = GAME_PADDING + (width - 2.0 * GAME_PADDING - SCROLLBAR_GAP - content_width) / 2.0;
     let left = start.max(GAME_PADDING);
@@ -1050,10 +1269,20 @@ fn after(duration: Duration, message: Message) -> Task<Message> {
     Task::perform(tokio::time::sleep(duration), move |_| message)
 }
 
+/// The Backlog has no verdicts: the number keys do nothing, and Space is still a Later.
+fn in_mode(mode: DiscoverMode, message: Message) -> Option<Message> {
+    match message {
+        Message::Vote(_) | Message::Played if mode == DiscoverMode::Backlog => None,
+        message => Some(message),
+    }
+}
+
 fn stopped_by_popup(message: &Message) -> bool {
     matches!(
         message,
         Message::Later
+            | Message::Play
+            | Message::ShowInLibrary
             | Message::Previous
             | Message::Vote(_)
             | Message::Played
@@ -1066,6 +1295,8 @@ fn acts_on_the_game(message: &Message) -> bool {
     matches!(
         message,
         Message::Later
+            | Message::Play
+            | Message::ShowInLibrary
             | Message::Previous
             | Message::Vote(_)
             | Message::Played
@@ -1140,6 +1371,7 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
 
 #[cfg(test)]
 mod tests {
+    use gamepalate_app::Continuation;
     use iced::keyboard::{Location, Modifiers, key};
 
     use super::*;
@@ -1420,6 +1652,96 @@ mod tests {
         assert!(!stopped_by_popup(&Message::Showcase(
             showcase::Message::ToggleTags
         )));
+    }
+
+    #[test]
+    fn a_new_mode_starts_empty_and_a_failed_search_brings_the_old_games_back() {
+        let mut state = State::Ready(Queue::new(Vec::new(), Continuation::default()));
+        let mut before = None;
+
+        park(&mut state, &mut before, DiscoverMode::New);
+
+        assert!(matches!(state, State::Loading));
+        assert!(before.as_ref().is_some_and(|b| b.mode == DiscoverMode::New));
+        assert!(restore(&mut state, before, DiscoverMode::New));
+        assert!(matches!(state, State::Ready(_)));
+    }
+
+    #[test]
+    fn games_of_another_mode_are_not_brought_back() {
+        let mut state = State::Ready(Queue::new(Vec::new(), Continuation::default()));
+        let mut before = None;
+        park(&mut state, &mut before, DiscoverMode::New);
+
+        assert!(!restore(&mut state, before, DiscoverMode::Backlog));
+        assert!(matches!(state, State::Loading));
+    }
+
+    #[test]
+    fn a_second_switch_while_loading_keeps_the_first_games() {
+        let mut state = State::Ready(Queue::new(Vec::new(), Continuation::default()));
+        let mut before = None;
+        park(&mut state, &mut before, DiscoverMode::New);
+
+        park(&mut state, &mut before, DiscoverMode::Backlog);
+
+        assert!(before.as_ref().is_some_and(|b| b.mode == DiscoverMode::New));
+    }
+
+    #[test]
+    fn a_search_without_a_mode_change_keeps_what_is_shown() {
+        let mut state = State::Ready(Queue::new(Vec::new(), Continuation::default()));
+
+        assert!(restore(&mut state, None, DiscoverMode::New));
+        assert!(matches!(state, State::Ready(_)));
+    }
+
+    #[test]
+    fn the_skeleton_follows_both_layouts() {
+        for layout in [Layout::Beside(700.0), Layout::Stacked(900.0)] {
+            let _: Element<'_, Message> = skeleton(layout, 600.0);
+        }
+    }
+
+    #[test]
+    fn the_backlog_has_no_votes() {
+        for message in [
+            Message::Vote(Pick::Vote(VoteKind::WouldTry)),
+            Message::Vote(Pick::Vote(VoteKind::NotForMe)),
+            Message::Played,
+        ] {
+            assert!(in_mode(DiscoverMode::Backlog, message.clone()).is_none());
+            assert!(in_mode(DiscoverMode::New, message).is_some());
+        }
+    }
+
+    #[test]
+    fn space_is_a_later_in_both_modes() {
+        let space = || key_message(pressed(Key::Named(Named::Space))).unwrap();
+
+        for mode in [DiscoverMode::Backlog, DiscoverMode::New] {
+            assert!(matches!(in_mode(mode, space()), Some(Message::Later)));
+        }
+    }
+
+    #[test]
+    fn the_backlog_keeps_the_other_keys() {
+        for message in [
+            Message::Previous,
+            Message::Play,
+            Message::ShowInLibrary,
+            Message::Open(Link::Steam),
+        ] {
+            assert!(in_mode(DiscoverMode::Backlog, message).is_some());
+        }
+    }
+
+    #[test]
+    fn the_open_filters_and_popups_stop_play_and_show() {
+        for message in [Message::Play, Message::ShowInLibrary] {
+            assert!(acts_on_the_game(&message));
+            assert!(stopped_by_popup(&message));
+        }
     }
 
     #[test]

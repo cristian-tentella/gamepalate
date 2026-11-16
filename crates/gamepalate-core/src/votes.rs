@@ -58,7 +58,7 @@ pub fn cast(votes: &mut Votes, id: AppId, vote: Vote) {
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 // A guess, not a measure: long enough for a sale or a mood to change.
-pub const LATER_DAYS: i64 = 30;
+pub const LATER_DAYS: i64 = 7;
 
 impl Vote {
     /// A vote cast on `date`, without a time, a bet or a search.
@@ -101,7 +101,7 @@ pub fn standing(votes: &Votes, id: AppId, now: Timestamp) -> Option<&Vote> {
     votes.get(&id).filter(|vote| !vote.has_lapsed(now))
 }
 
-// A vote saved without a time has only its day: its midnight in UTC is close enough for 30 days.
+// A vote saved without a time has only its day: its midnight in UTC is close enough for 7 days.
 fn day_start(date: &str) -> Option<Timestamp> {
     let mut parts = date.splitn(3, '-').map(str::parse::<i64>);
     let (Some(Ok(year)), Some(Ok(month)), Some(Ok(day))) =
@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn a_later_lapses_30_days_after_it_was_cast() {
+    fn a_later_lapses_after_its_days_after_it_was_cast() {
         let at = 1_794_404_475_152;
         let later = vote(VoteKind::Later, "2026-11-11", Some(at));
 
@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn a_later_without_a_time_lapses_30_days_after_its_day() {
+    fn a_later_without_a_time_lapses_after_its_days_after_its_day() {
         let later = vote(VoteKind::Later, "2026-11-11", None);
         let day = day_start("2026-11-11").unwrap();
 
@@ -285,9 +285,12 @@ mod tests {
         let later = vote(VoteKind::Later, "2026-11-11", Some(at));
         let at_ms = |ms| Timestamp(at + ms);
 
-        assert_eq!(later.days_left(at_ms(0)), Some(30));
-        assert_eq!(later.days_left(at_ms(DAY_MS)), Some(29));
-        assert_eq!(later.days_left(at_ms(29 * DAY_MS + DAY_MS / 2)), Some(1));
+        assert_eq!(later.days_left(at_ms(0)), Some(LATER_DAYS));
+        assert_eq!(later.days_left(at_ms(DAY_MS)), Some(LATER_DAYS - 1));
+        assert_eq!(
+            later.days_left(at_ms((LATER_DAYS - 1) * DAY_MS + DAY_MS / 2)),
+            Some(1)
+        );
         assert_eq!(later.days_left(at_ms(LATER_DAYS * DAY_MS - 1)), Some(1));
         assert_eq!(later.days_left(at_ms(LATER_DAYS * DAY_MS)), None);
     }

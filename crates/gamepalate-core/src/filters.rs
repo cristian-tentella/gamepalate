@@ -2,8 +2,9 @@ use std::collections::BTreeSet;
 
 use crate::{
     catalog::Catalog,
-    config::Config,
+    config::{Config, SignalsConfig},
     corrections::{Ban, Corrections},
+    effective_hours::effective_hours,
     families::Families,
     game::{Game, Price},
     ids::{AppId, TagId},
@@ -32,9 +33,20 @@ pub struct FilterOptions {
     pub without_tags: Vec<String>,
 }
 
+/// Where the candidates of a search come from: the games you don't know, or the ones you own
+/// and haven't played yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiscoverMode {
+    #[default]
+    New,
+    Backlog,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Filter {
     Owned,
+    Backlog,
+    WishedOrFollowed,
     FamilyGames,
     Hidden,
     NotForMe,
@@ -56,6 +68,8 @@ impl Filter {
     pub fn name(&self) -> &'static str {
         match self {
             Filter::Owned => "owned games",
+            Filter::Backlog => "games outside the backlog",
+            Filter::WishedOrFollowed => "wishlist and followed games",
             Filter::FamilyGames => "family games",
             Filter::Hidden => "hidden games",
             Filter::NotForMe => "not for me games",
@@ -75,7 +89,10 @@ impl Filter {
     }
 
     pub fn is_blamable(&self) -> bool {
-        !matches!(self, Filter::Owned | Filter::FamilyGames)
+        !matches!(
+            self,
+            Filter::Owned | Filter::Backlog | Filter::WishedOrFollowed | Filter::FamilyGames
+        )
     }
 
     pub fn passes(
@@ -87,6 +104,8 @@ impl Filter {
     ) -> bool {
         match self {
             Filter::Owned => !context.owned.contains(&game.id),
+            Filter::Backlog => context.backlog.contains(&game.id),
+            Filter::WishedOrFollowed => !context.wished_or_followed.contains(&game.id),
             Filter::FamilyGames => !context.family_games.contains(&game.id),
             Filter::Hidden => !context.corrections.hidden_games.contains(&game.id),
             Filter::NotForMe => !context.vote_kind(game.id).is_some_and(VoteKind::is_no),
@@ -120,6 +139,9 @@ impl Filter {
 #[derive(Debug, Clone)]
 pub struct FilterContext<'a> {
     pub owned: BTreeSet<AppId>,
+    /// The games of the library played under `min_hours` effective hours.
+    pub backlog: BTreeSet<AppId>,
+    pub wished_or_followed: BTreeSet<AppId>,
     pub family_games: BTreeSet<AppId>,
     pub votes: &'a Votes,
     pub corrections: &'a Corrections,
@@ -131,8 +153,16 @@ impl<'a> FilterContext<'a> {
         families: &Families,
         votes: &'a Votes,
         corrections: &'a Corrections,
+        signals_config: &SignalsConfig,
     ) -> FilterContext<'a> {
         let owned = owned_games(signals, corrections);
+        let backlog = backlog_games(signals, votes, corrections, signals_config);
+        let wished_or_followed = signals
+            .wishlist
+            .iter()
+            .chain(&signals.followed)
+            .copied()
+            .collect();
         let family_games = families
             .families
             .iter()
@@ -141,6 +171,8 @@ impl<'a> FilterContext<'a> {
 
         FilterContext {
             owned,
+            backlog,
+            wished_or_followed,
             family_games,
             votes,
             corrections,
@@ -158,6 +190,32 @@ pub fn owned_games(signals: &Signals, corrections: &Corrections) -> BTreeSet<App
         .played()
         .chain(signals.recent.iter().map(|game| game.id))
         .chain(corrections.played_elsewhere.iter().copied())
+        .collect()
+}
+
+/// The games of the library with fewer effective hours than `min_hours`, so no Signal. Borrowed
+/// games are someone else's and stay out.
+pub fn backlog_games(
+    signals: &Signals,
+    votes: &Votes,
+    corrections: &Corrections,
+    signals_config: &SignalsConfig,
+) -> BTreeSet<AppId> {
+    let hours = effective_hours(
+        signals,
+        votes,
+        &corrections.played_elsewhere,
+        signals_config,
+    );
+    signals
+        .library
+        .iter()
+        .map(|game| game.id)
+        .filter(|id| {
+            hours
+                .get(id)
+                .is_some_and(|&hours| hours < signals_config.min_hours)
+        })
         .collect()
 }
 
@@ -234,17 +292,31 @@ pub fn active_filters(
     options: &FilterOptions,
     config: &Config,
     catalog: &Catalog,
+    mode: DiscoverMode,
 ) -> Result<Vec<Filter>, TagNameError> {
-    let mut filters = vec![
-        Filter::Owned,
-        Filter::FamilyGames,
-        Filter::Hidden,
-        Filter::NotForMe,
-        Filter::BannedTags,
-        Filter::MinReviews(options.min_reviews.unwrap_or(config.relevance.min_reviews)),
-    ];
+    let backlog = mode == DiscoverMode::Backlog;
+    // In the backlog the game is already bought: nothing about price or reviews counts
+    let mut filters = if backlog {
+        vec![
+            Filter::Backlog,
+            Filter::FamilyGames,
+            Filter::Hidden,
+            Filter::NotForMe,
+            Filter::BannedTags,
+        ]
+    } else {
+        vec![
+            Filter::Owned,
+            Filter::WishedOrFollowed,
+            Filter::FamilyGames,
+            Filter::Hidden,
+            Filter::NotForMe,
+            Filter::BannedTags,
+            Filter::MinReviews(options.min_reviews.unwrap_or(config.relevance.min_reviews)),
+        ]
+    };
 
-    if let Some(max) = options.max_reviews {
+    if let Some(max) = options.max_reviews.filter(|_| !backlog) {
         filters.push(Filter::MaxReviews(max));
     }
     let min_positive_percent = options
@@ -262,7 +334,10 @@ pub fn active_filters(
     {
         filters.push(Filter::EarlyAccess);
     }
-    filters.extend(price_and_tag_filters(options, catalog)?);
+    if !backlog {
+        filters.extend(price_filters(options));
+    }
+    filters.extend(tag_filters(options, catalog)?);
 
     Ok(filters)
 }
@@ -271,6 +346,12 @@ fn price_and_tag_filters(
     options: &FilterOptions,
     catalog: &Catalog,
 ) -> Result<Vec<Filter>, TagNameError> {
+    let mut filters = price_filters(options);
+    filters.extend(tag_filters(options, catalog)?);
+    Ok(filters)
+}
+
+fn price_filters(options: &FilterOptions) -> Vec<Filter> {
     let mut filters = Vec::new();
     if let Some(min) = options.min_price_cents {
         filters.push(Filter::MinPrice(min));
@@ -283,6 +364,11 @@ fn price_and_tag_filters(
         None if options.only_discounted => filters.push(Filter::OnlyDiscounted),
         None => {}
     }
+    filters
+}
+
+fn tag_filters(options: &FilterOptions, catalog: &Catalog) -> Result<Vec<Filter>, TagNameError> {
+    let mut filters = Vec::new();
     if !options.tags.is_empty() {
         filters.push(Filter::RequiredTags(find_tags(&options.tags, catalog)?));
     }
@@ -404,7 +490,13 @@ mod tests {
         let votes = Votes::new();
         let corrections = Corrections::default();
 
-        let context = FilterContext::new(&signals, &Families::default(), &votes, &corrections);
+        let context = FilterContext::new(
+            &signals,
+            &Families::default(),
+            &votes,
+            &corrections,
+            &SignalsConfig::default(),
+        );
 
         assert_eq!(
             context.owned,
@@ -428,7 +520,13 @@ mod tests {
             ..Corrections::default()
         };
 
-        let context = FilterContext::new(&signals, &Families::default(), &votes, &corrections);
+        let context = FilterContext::new(
+            &signals,
+            &Families::default(),
+            &votes,
+            &corrections,
+            &SignalsConfig::default(),
+        );
 
         assert_eq!(context.owned, BTreeSet::from([AppId(5)]));
     }
@@ -560,12 +658,14 @@ mod tests {
         };
         let config = Config::default();
 
-        let filters = active_filters(&options, &config, &catalog_with_tags()).unwrap();
+        let filters =
+            active_filters(&options, &config, &catalog_with_tags(), DiscoverMode::New).unwrap();
 
         assert_eq!(
             filters,
             vec![
                 Filter::Owned,
+                Filter::WishedOrFollowed,
                 Filter::FamilyGames,
                 Filter::Hidden,
                 Filter::NotForMe,
@@ -580,6 +680,137 @@ mod tests {
                 Filter::RequiredTags(vec![TagId(1)]),
                 Filter::ExcludedTags(vec![TagId(2)]),
             ]
+        );
+    }
+
+    #[test]
+    fn the_backlog_keeps_the_filters_about_what_you_want_to_play() {
+        let options = FilterOptions {
+            min_reviews: Some(500),
+            max_reviews: Some(5000),
+            min_positive_percent: Some(80),
+            without_voted: true,
+            without_early_access: Some(true),
+            min_price_cents: Some(500),
+            max_price_cents: Some(2000),
+            only_discounted: true,
+            min_discount_percent: Some(30),
+            tags: vec!["Roguelike".to_string()],
+            without_tags: vec!["Horror".to_string()],
+        };
+
+        let filters = active_filters(
+            &options,
+            &Config::default(),
+            &catalog_with_tags(),
+            DiscoverMode::Backlog,
+        )
+        .unwrap();
+
+        assert_eq!(
+            filters,
+            vec![
+                Filter::Backlog,
+                Filter::FamilyGames,
+                Filter::Hidden,
+                Filter::NotForMe,
+                Filter::BannedTags,
+                Filter::MinPositivePercent(80),
+                Filter::Voted,
+                Filter::EarlyAccess,
+                Filter::RequiredTags(vec![TagId(1)]),
+                Filter::ExcludedTags(vec![TagId(2)]),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_backlog_ignores_the_minimum_reviews_of_the_config() {
+        let filters = active_filters(
+            &FilterOptions::default(),
+            &Config::default(),
+            &catalog_with_tags(),
+            DiscoverMode::Backlog,
+        )
+        .unwrap();
+
+        assert!(
+            !filters
+                .iter()
+                .any(|filter| matches!(filter, Filter::MinReviews(_)))
+        );
+    }
+
+    fn library_game(id: u32, hours: f64) -> crate::signals::LibraryGame {
+        crate::signals::LibraryGame {
+            id: AppId(id),
+            total_hours: hours,
+            last_played: None,
+        }
+    }
+
+    #[test]
+    fn the_backlog_is_the_library_under_the_minimum_effective_hours() {
+        use crate::votes::Vote;
+
+        let signals = Signals {
+            read_at: Timestamp(0),
+            // 1: untouched; 2: 5 h; 3: 0 h but played elsewhere; 4: 1 h with a Would try;
+            // 5: 1 h but followed; 6: borrowed; 7: 1.5 h
+            library: vec![
+                library_game(1, 0.0),
+                library_game(2, 5.0),
+                library_game(3, 0.0),
+                library_game(4, 1.0),
+                library_game(5, 1.0),
+                library_game(7, 1.5),
+            ],
+            borrowed: vec![library_game(6, 0.5)],
+            recent: vec![],
+            wishlist: vec![],
+            followed: vec![AppId(5)],
+        };
+        let votes = Votes::from([(AppId(4), Vote::new(VoteKind::WouldTry, "2026-11-01"))]);
+        let corrections = Corrections {
+            played_elsewhere: BTreeSet::from([AppId(3)]),
+            ..Corrections::default()
+        };
+
+        let context = FilterContext::new(
+            &signals,
+            &Families::default(),
+            &votes,
+            &corrections,
+            &SignalsConfig::default(),
+        );
+
+        assert_eq!(context.backlog, BTreeSet::from([AppId(1), AppId(7)]));
+    }
+
+    #[test]
+    fn wishlist_and_followed_games_are_known() {
+        let signals = Signals {
+            read_at: Timestamp(0),
+            library: vec![],
+            borrowed: vec![],
+            recent: vec![],
+            wishlist: vec![AppId(1)],
+            followed: vec![AppId(2)],
+        };
+        let votes = Votes::new();
+        let corrections = Corrections::default();
+
+        let context = FilterContext::new(
+            &signals,
+            &Families::default(),
+            &votes,
+            &corrections,
+            &SignalsConfig::default(),
+        );
+
+        assert_eq!(
+            context.wished_or_followed,
+            BTreeSet::from([AppId(1), AppId(2)])
         );
     }
 
@@ -611,7 +842,13 @@ mod tests {
         };
         let votes = Votes::new();
         let corrections = Corrections::default();
-        let context = FilterContext::new(&signals, &Families::default(), &votes, &corrections);
+        let context = FilterContext::new(
+            &signals,
+            &Families::default(),
+            &votes,
+            &corrections,
+            &SignalsConfig::default(),
+        );
         let filters = [
             Filter::Hidden,
             Filter::MinReviews(50),

@@ -6,8 +6,8 @@ use std::{
 };
 
 use gamepalate_app::{
-    AppId, Currency, FilterOptions, Gamepalate, Price, SearchOptions, Vote, VoteKind, VotedGame,
-    VotesOrder, VotesSettings, VotesShow,
+    AppId, Currency, DiscoverMode, FilterOptions, Gamepalate, Price, SearchOptions, Vote, VoteKind,
+    VotedGame, VotesOrder, VotesSettings, VotesShow,
 };
 use iced::{
     Center, Element, Event, Fill, Length, Size, Subscription, Task, event,
@@ -368,9 +368,11 @@ impl Votes {
                 .width(Fill);
 
         let popup = self.panel_open.then(|| {
-            let panel = container(scrollable(self.panel.view().map(Message::Filters)).spacing(8))
-                .padding(20)
-                .style(style::popup);
+            let panel = container(
+                scrollable(self.panel.view(DiscoverMode::New).map(Message::Filters)).spacing(8),
+            )
+            .padding(20)
+            .style(style::popup);
             stack![
                 opaque(
                     mouse_area(space().width(Fill).height(Fill)).on_press(Message::CloseFilters)

@@ -19,11 +19,11 @@ const HEADER: &str = "\
 # gamepalate rewrites this file at every vote: comments added by hand are lost.
 #
 # would_try   you would try it, it counts as a signal
-# later       not now: the game comes back in Discover after 30 days
+# later       not now: the game comes back in Discover after 7 days
 # not_for_me  not for you, it leaves the recommendations
 # bet = true  the vote was given to a bet
 # searched = true  the vote was given to a game you looked up, not to a recommendation
-# at          when the vote was cast, in milliseconds since 1970 (for the last 24 hours and the 30 days of a later)
+# at          when the vote was cast, in milliseconds since 1970 (for the last 24 hours and the 7 days of a later)
 ";
 
 #[derive(Debug, thiserror::Error)]

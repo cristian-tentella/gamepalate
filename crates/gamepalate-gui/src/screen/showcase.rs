@@ -407,7 +407,6 @@ impl Showcase {
             self.expanded.clear();
             self.tags = current.and_then(|id| self.gamepalate.game_tags(id));
             self.originals.clear();
-            self.thumbnails.clear();
         }
     }
 
@@ -425,7 +424,9 @@ impl Showcase {
         self.descriptions.keep_only(nearby);
         self.reviews.keep_only(nearby);
 
-        Task::batch([details, images, self.load_versions()])
+        let ahead = self.load_first_thumbnails(upcoming, nearby);
+
+        Task::batch([details, images, self.load_versions(), ahead])
     }
 
     pub fn load_headers(&mut self, ids: &[AppId]) -> Task<Message> {

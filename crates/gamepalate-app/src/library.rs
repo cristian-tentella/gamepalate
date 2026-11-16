@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, path::Path};
 use gamepalate_core::{
     corrections::Corrections,
     effective_hours::{HoursSource, hours_by_source},
+    filters::backlog_games,
     game::{Price, Reviews},
     ids::AppId,
     profile::{heaviest_tags, profile_games},
@@ -54,6 +55,20 @@ pub struct LibraryGameView {
     pub correction: GameCorrection,
     pub families: Vec<String>,
     pub held_out: bool,
+}
+
+/// How many games of the library the Backlog of Discover can show: the ones under the hours
+/// threshold that are in the catalog.
+pub(crate) fn backlog_ranked(inputs: &SearchInputs) -> usize {
+    backlog_games(
+        inputs.signals,
+        inputs.votes,
+        inputs.corrections,
+        &inputs.config.signals,
+    )
+    .iter()
+    .filter(|&&id| inputs.catalog.game(id).is_some())
+    .count()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -436,7 +451,7 @@ mod tests {
         region::Region,
         signals::{LibraryGame, RecentGame, Signals},
         timestamp::Timestamp,
-        votes::{Vote, VoteKind, Votes},
+        votes::{LATER_DAYS, Vote, VoteKind, Votes},
     };
 
     use super::*;
@@ -608,6 +623,26 @@ mod tests {
         assert_eq!(view.dampen, 0.5);
     }
 
+    #[test]
+    fn the_backlog_counts_only_the_games_it_can_rank() {
+        let mut fixture = Fixture::new();
+        assert_eq!(backlog_ranked(&fixture.inputs()), 1);
+
+        // 81 and 82 are not in the catalog, and 82 is past the threshold
+        fixture.signals.library.push(LibraryGame {
+            id: AppId(81),
+            total_hours: 0.0,
+            last_played: None,
+        });
+        fixture.signals.library.push(LibraryGame {
+            id: AppId(82),
+            total_hours: 9.0,
+            last_played: None,
+        });
+
+        assert_eq!(backlog_ranked(&fixture.inputs()), 1);
+    }
+
     const NOW: Timestamp = Timestamp(1_794_404_475_152);
     const DAY: i64 = 24 * 60 * 60 * 1000;
 
@@ -715,9 +750,11 @@ mod tests {
         voted(&mut fixture, later_since(0, 0));
         assert_eq!(
             standing_of(&fixture, 6),
-            Some(GameStanding::Later { days_left: 30 })
+            Some(GameStanding::Later {
+                days_left: LATER_DAYS
+            })
         );
-        voted(&mut fixture, later_since(29, 12));
+        voted(&mut fixture, later_since(LATER_DAYS - 1, 12));
         assert_eq!(
             standing_of(&fixture, 6),
             Some(GameStanding::Later { days_left: 1 })
@@ -728,7 +765,7 @@ mod tests {
     fn a_later_that_is_over_is_no_vote() {
         let mut fixture = Fixture::new();
 
-        voted(&mut fixture, later_since(30, 0));
+        voted(&mut fixture, later_since(LATER_DAYS, 0));
 
         assert_eq!(standing_of(&fixture, 6), None);
     }
