@@ -1,6 +1,6 @@
 use std::fmt;
 
-use gamepalate_app::{FilterOptions, SearchOptions, SortBy, parse_price};
+use gamepalate_app::{DiscoverMode, FilterOptions, SearchOptions, SortBy, parse_price};
 use iced::{
     Center, Element, Fill, Theme, padding,
     widget::{
@@ -56,6 +56,15 @@ pub const SORTS: [Sort; 3] = [
     Sort(SortBy::Price),
 ];
 
+/// The orders the menu offers, and the one it shows. A game you own has no price to order by, so
+/// the Backlog offers only the relevance; the order chosen for New stays in the options.
+pub fn sorts(options: &SearchOptions) -> (&'static [Sort], Sort) {
+    match options.mode {
+        DiscoverMode::New => (&SORTS, Sort(options.sort)),
+        DiscoverMode::Backlog => (&SORTS[..1], SORTS[0]),
+    }
+}
+
 pub fn sources(families: Vec<String>) -> Vec<Source> {
     [Source::AllTastes, Source::Signals]
         .into_iter()
@@ -101,6 +110,25 @@ pub enum Field {
     MinReviews,
     MaxReviews,
     MinPositive,
+}
+
+impl Field {
+    /// Whether the field is about buying the game: what it costs and how many bought it.
+    fn is_for_buying(self) -> bool {
+        match self {
+            Field::MaxPrice
+            | Field::MinPrice
+            | Field::MinDiscount
+            | Field::MinReviews
+            | Field::MaxReviews => true,
+            Field::MinPositive => false,
+        }
+    }
+}
+
+/// The fields of a mode that can be changed. The others stay grey, with the value they have.
+fn is_enabled(mode: DiscoverMode, field: Field) -> bool {
+    mode == DiscoverMode::New || !field.is_for_buying()
 }
 
 const FIELDS: [Field; 6] = [
@@ -229,19 +257,20 @@ impl Panel {
         Action::Stay
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
+    pub fn view(&self, mode: DiscoverMode) -> Element<'_, Message> {
         let filters = &self.filters;
         let on_sale = filters.only_discounted;
+        let buying = mode == DiscoverMode::New;
 
         let price = self.line(
             "Price",
             row![
-                self.range(Field::MinPrice, Field::MaxPrice, Some(&self.currency)),
+                self.range(mode, Field::MinPrice, Field::MaxPrice, Some(&self.currency)),
                 checkbox(on_sale)
                     .label("On sale, at least")
                     .text_size(font::BAR_SIZE)
-                    .on_toggle(Message::OnSale),
-                self.number(Field::MinDiscount, on_sale),
+                    .on_toggle_maybe(buying.then_some(Message::OnSale)),
+                self.number(Field::MinDiscount, buying && on_sale),
                 text("%").size(font::BAR_SIZE),
             ]
             .spacing(8)
@@ -252,9 +281,9 @@ impl Panel {
         let reviews = self.line(
             "Reviews",
             row![
-                self.range(Field::MinReviews, Field::MaxReviews, None),
+                self.range(mode, Field::MinReviews, Field::MaxReviews, None),
                 text("At least").size(font::BAR_SIZE),
-                self.number(Field::MinPositive, true),
+                self.number(Field::MinPositive, is_enabled(mode, Field::MinPositive)),
                 text("% positive").size(font::BAR_SIZE),
             ]
             .spacing(8)
@@ -354,12 +383,18 @@ impl Panel {
         .into()
     }
 
-    fn range<'a>(&'a self, min: Field, max: Field, unit: Option<&'a str>) -> Element<'a, Message> {
+    fn range<'a>(
+        &'a self,
+        mode: DiscoverMode,
+        min: Field,
+        max: Field,
+        unit: Option<&'a str>,
+    ) -> Element<'a, Message> {
         container(
             row![
-                self.number(min, true),
+                self.number(min, is_enabled(mode, min)),
                 text("–").size(font::BAR_SIZE),
-                self.number(max, true)
+                self.number(max, is_enabled(mode, max))
             ]
             .push(unit.map(|unit| text(unit).size(font::BAR_SIZE)))
             .spacing(6)
@@ -370,7 +405,13 @@ impl Panel {
     }
 
     fn number(&self, field: Field, enabled: bool) -> Element<'_, Message> {
-        text_input(&self.placeholders[index(field)], &self.texts[index(field)])
+        // A grey field doesn't apply its default either: the Backlog has no minimum of reviews
+        let placeholder = if enabled || !field.is_for_buying() {
+            self.placeholders[index(field)].as_str()
+        } else {
+            "any"
+        };
+        text_input(placeholder, &self.texts[index(field)])
             .style(style::field)
             .on_input_maybe(enabled.then_some(move |value| Message::Input(field, value)))
             .on_submit(Message::Done)
@@ -566,6 +607,61 @@ mod tests {
             Action::Search(changed) => changed,
             action => panic!("expected a search, got {action:?}"),
         }
+    }
+
+    #[test]
+    fn the_backlog_greys_what_is_about_buying_and_keeps_the_rest() {
+        for field in FIELDS {
+            assert!(is_enabled(DiscoverMode::New, field));
+        }
+        for field in [
+            Field::MaxPrice,
+            Field::MinPrice,
+            Field::MinDiscount,
+            Field::MinReviews,
+            Field::MaxReviews,
+        ] {
+            assert!(!is_enabled(DiscoverMode::Backlog, field));
+        }
+        assert!(is_enabled(DiscoverMode::Backlog, Field::MinPositive));
+    }
+
+    #[test]
+    fn the_greyed_values_are_still_there_when_the_panel_is_done_in_the_backlog() {
+        let mut options = SearchOptions {
+            mode: DiscoverMode::Backlog,
+            sort: SortBy::Discount,
+            ..SearchOptions::default()
+        };
+        options.filters.max_price_cents = Some(1500);
+        options.filters.only_discounted = true;
+        options.filters.min_discount_percent = Some(40);
+        options.filters.min_reviews = Some(500);
+        let mut panel = panel(&options);
+        type_in(&mut panel, &options, Field::MinPositive, "85");
+
+        let changed = done(&mut panel, &options);
+
+        assert_eq!(changed.filters.min_positive_percent, Some(85));
+        assert_eq!(changed.filters.max_price_cents, Some(1500));
+        assert!(changed.filters.only_discounted);
+        assert_eq!(changed.filters.min_discount_percent, Some(40));
+        assert_eq!(changed.filters.min_reviews, Some(500));
+        assert_eq!(changed.sort, SortBy::Discount);
+        assert_eq!(changed.mode, DiscoverMode::Backlog);
+    }
+
+    #[test]
+    fn the_backlog_offers_only_the_relevance_and_keeps_the_chosen_order() {
+        let mut options = SearchOptions {
+            sort: SortBy::Price,
+            ..SearchOptions::default()
+        };
+        assert_eq!(sorts(&options), (&SORTS[..], Sort(SortBy::Price)));
+
+        options.mode = DiscoverMode::Backlog;
+        assert_eq!(sorts(&options), (&SORTS[..1], Sort(SortBy::Relevance)));
+        assert_eq!(options.sort, SortBy::Price);
     }
 
     #[test]

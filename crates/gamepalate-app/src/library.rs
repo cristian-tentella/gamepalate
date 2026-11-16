@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, path::Path};
 use gamepalate_core::{
     corrections::Corrections,
     effective_hours::{HoursSource, hours_by_source},
+    filters::backlog_games,
     game::{Price, Reviews},
     ids::AppId,
     profile::{heaviest_tags, profile_games},
@@ -54,6 +55,32 @@ pub struct LibraryGameView {
     pub correction: GameCorrection,
     pub families: Vec<String>,
     pub held_out: bool,
+}
+
+/// How many games of the library the Backlog of Discover can show, and how many it can't
+/// because they are not in the catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BacklogCounts {
+    pub ranked: usize,
+    pub unranked: usize,
+}
+
+pub(crate) fn backlog_counts(inputs: &SearchInputs) -> BacklogCounts {
+    let backlog = backlog_games(
+        inputs.signals,
+        inputs.votes,
+        inputs.corrections,
+        &inputs.config.signals,
+    );
+    let ranked = backlog
+        .iter()
+        .filter(|&&id| inputs.catalog.game(id).is_some())
+        .count();
+
+    BacklogCounts {
+        ranked,
+        unranked: backlog.len() - ranked,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -606,6 +633,38 @@ mod tests {
         assert_eq!(view.wishlist_hours, 5.0);
         assert_eq!(view.followed_hours, 3.0);
         assert_eq!(view.dampen, 0.5);
+    }
+
+    #[test]
+    fn the_backlog_counts_the_games_it_can_rank_and_the_ones_out_of_the_catalog() {
+        let mut fixture = Fixture::new();
+        assert_eq!(
+            backlog_counts(&fixture.inputs()),
+            BacklogCounts {
+                ranked: 1,
+                unranked: 0
+            }
+        );
+
+        // 81 and 82 are not in the catalog, and 82 is past the threshold
+        fixture.signals.library.push(LibraryGame {
+            id: AppId(81),
+            total_hours: 0.0,
+            last_played: None,
+        });
+        fixture.signals.library.push(LibraryGame {
+            id: AppId(82),
+            total_hours: 9.0,
+            last_played: None,
+        });
+
+        assert_eq!(
+            backlog_counts(&fixture.inputs()),
+            BacklogCounts {
+                ranked: 1,
+                unranked: 1
+            }
+        );
     }
 
     const NOW: Timestamp = Timestamp(1_794_404_475_152);

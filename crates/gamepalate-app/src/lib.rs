@@ -70,8 +70,8 @@ pub use gamepalate_store::gui::{
 };
 pub use images::{DecodedImage, ImageKind, LoadImageError};
 pub use library::{
-    FoundGame, GameCorrection, GameCorrectionError, GameStanding, GameView, LibraryGameView,
-    LibraryView, PlayedElsewhereError,
+    BacklogCounts, FoundGame, GameCorrection, GameCorrectionError, GameStanding, GameView,
+    LibraryGameView, LibraryView, PlayedElsewhereError,
 };
 pub use profile::{
     CorrectedGameView, CorrectionsView, FamilyView, HoursGame, ProfileView, SourceView, TagView,

@@ -616,7 +616,7 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
 
 #[cfg(test)]
 mod tests {
-    use gamepalate_app::{LeftOut, Price, Reviews, Vote};
+    use gamepalate_app::{DiscoverMode, LeftOut, Price, Reviews, Vote};
     use iced::keyboard::{Location, Modifiers, key};
 
     use super::*;
@@ -809,7 +809,10 @@ mod tests {
 
         place.answer(
             before_the_vote,
-            Some(DiscoverPlace::Shown { position: 214 }),
+            Some(DiscoverPlace::Shown {
+                position: 214,
+                mode: DiscoverMode::New,
+            }),
         );
         assert_eq!(place.found, None);
 

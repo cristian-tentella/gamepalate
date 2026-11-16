@@ -1,7 +1,7 @@
 use gamepalate_app::{
-    AppId, Blame, CheckResult, Controller, Currency, DeckCheck, DiscoverPlace, KnownFrom, LeftOut,
-    Price, ProtonDb, ProtonTier, Reviews, SearchOptions, SteamDeck, Timestamp, VoteKind,
-    reviews::Review, settings::KeySource,
+    AppId, Blame, CheckResult, Controller, Currency, DeckCheck, DiscoverMode, DiscoverPlace,
+    KnownFrom, LeftOut, Price, ProtonDb, ProtonTier, Reviews, SearchOptions, SteamDeck, Timestamp,
+    VoteKind, reviews::Review, settings::KeySource,
 };
 use jiff::{civil::Date, tz::TimeZone};
 
@@ -79,25 +79,28 @@ pub fn filters(options: &SearchOptions, currency: &Currency) -> Option<String> {
     if options.only_bets {
         parts.push("Bets only".to_string());
     }
-    if filters.only_discounted {
-        parts.push("On sale".to_string());
-    }
-    if let Some(percent) = filters.min_discount_percent {
-        parts.push(format!("≥ {percent}% off"));
-    }
-    match (filters.min_price_cents, filters.max_price_cents) {
-        (Some(min), Some(max)) => {
-            parts.push(format!("{}–{}", currency.format(min), currency.format(max)))
+    // What you pay and how many bought it don't matter for a game you own
+    if options.mode == DiscoverMode::New {
+        if filters.only_discounted {
+            parts.push("On sale".to_string());
         }
-        (Some(min), None) => parts.push(format!("≥ {}", currency.format(min))),
-        (None, Some(max)) => parts.push(format!("≤ {}", currency.format(max))),
-        (None, None) => {}
-    }
-    match (filters.min_reviews, filters.max_reviews) {
-        (Some(min), Some(max)) => parts.push(format!("{}–{} reviews", count(min), count(max))),
-        (Some(min), None) => parts.push(format!("≥ {} reviews", count(min))),
-        (None, Some(max)) => parts.push(format!("≤ {} reviews", count(max))),
-        (None, None) => {}
+        if let Some(percent) = filters.min_discount_percent {
+            parts.push(format!("≥ {percent}% off"));
+        }
+        match (filters.min_price_cents, filters.max_price_cents) {
+            (Some(min), Some(max)) => {
+                parts.push(format!("{}–{}", currency.format(min), currency.format(max)))
+            }
+            (Some(min), None) => parts.push(format!("≥ {}", currency.format(min))),
+            (None, Some(max)) => parts.push(format!("≤ {}", currency.format(max))),
+            (None, None) => {}
+        }
+        match (filters.min_reviews, filters.max_reviews) {
+            (Some(min), Some(max)) => parts.push(format!("{}–{} reviews", count(min), count(max))),
+            (Some(min), None) => parts.push(format!("≥ {} reviews", count(min))),
+            (None, Some(max)) => parts.push(format!("≤ {} reviews", count(max))),
+            (None, None) => {}
+        }
     }
     if let Some(percent) = filters.min_positive_percent {
         parts.push(format!("≥ {percent}% positive"));
@@ -120,7 +123,10 @@ pub fn filters(options: &SearchOptions, currency: &Currency) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
-pub fn empty_because(blame: Option<&Blame>) -> String {
+pub fn empty_because(blame: Option<&Blame>, empty_backlog: bool) -> String {
+    if empty_backlog {
+        return "No games in your backlog".to_string();
+    }
     let Some(blame) = blame else {
         return "No game passes your filters".to_string();
     };
@@ -133,6 +139,14 @@ pub fn empty_because(blame: Option<&Blame>) -> String {
         "No game passes your filters. Try loosening {}, which removed {games}.",
         blame.filter
     )
+}
+
+pub fn backlog_threshold(min_hours: f64) -> String {
+    format!("Games you own, played under {}", hours(min_hours))
+}
+
+pub fn unranked_games(games: usize) -> Option<String> {
+    (games > 0).then(|| format!("{} of your games can't be ranked", count(games as u32)))
 }
 
 pub fn votes_this_session(session: usize, last_day: usize) -> String {
@@ -500,8 +514,12 @@ pub fn vote_removed(name: &str) -> String {
 /// yours.
 pub fn discover_place(place: &DiscoverPlace, played_elsewhere: bool) -> String {
     let left_out = match place {
-        DiscoverPlace::Shown { position } => {
-            return format!("#{} in Discover", count(*position as u32));
+        DiscoverPlace::Shown { position, mode } => {
+            let list = match mode {
+                DiscoverMode::New => "Discover",
+                DiscoverMode::Backlog => "Backlog",
+            };
+            return format!("#{} in {list}", count(*position as u32));
         }
         DiscoverPlace::NoMatch => "no match with your tastes".to_string(),
         DiscoverPlace::LeftOut(LeftOut::Owned) if played_elsewhere => {
@@ -648,8 +666,24 @@ mod tests {
     #[test]
     fn the_place_in_discover_says_the_position_or_what_leaves_the_game_out() {
         assert_eq!(
-            discover_place(&DiscoverPlace::Shown { position: 1214 }, false),
+            discover_place(
+                &DiscoverPlace::Shown {
+                    position: 1214,
+                    mode: DiscoverMode::New
+                },
+                false
+            ),
             "#1,214 in Discover"
+        );
+        assert_eq!(
+            discover_place(
+                &DiscoverPlace::Shown {
+                    position: 12,
+                    mode: DiscoverMode::Backlog
+                },
+                false
+            ),
+            "#12 in Backlog"
         );
         assert_eq!(
             discover_place(&DiscoverPlace::LeftOut(LeftOut::Owned), false),
@@ -887,14 +921,63 @@ mod tests {
         };
 
         assert_eq!(
-            empty_because(Some(&blame(1234))),
+            empty_because(Some(&blame(1234)), false),
             "No game passes your filters. Try loosening max price, which removed 1,234 games."
         );
         assert_eq!(
-            empty_because(Some(&blame(1))),
+            empty_because(Some(&blame(1)), false),
             "No game passes your filters. Try loosening max price, which removed 1 game."
         );
-        assert_eq!(empty_because(None), "No game passes your filters");
+        assert_eq!(empty_because(None, false), "No game passes your filters");
+    }
+
+    #[test]
+    fn an_empty_backlog_says_so_before_any_filter_is_blamed() {
+        let blame = Blame {
+            filter: "min positive",
+            discarded: 3,
+        };
+
+        assert_eq!(
+            empty_because(Some(&blame), true),
+            "No games in your backlog"
+        );
+        assert_eq!(empty_because(None, true), "No games in your backlog");
+    }
+
+    #[test]
+    fn the_backlog_explains_its_threshold_and_the_games_it_cannot_rank() {
+        assert_eq!(backlog_threshold(2.0), "Games you own, played under 2 h");
+        assert_eq!(backlog_threshold(1.5), "Games you own, played under 1.5 h");
+        assert_eq!(
+            unranked_games(23).as_deref(),
+            Some("23 of your games can't be ranked")
+        );
+        assert_eq!(unranked_games(0), None);
+    }
+
+    #[test]
+    fn the_summary_in_the_backlog_leaves_out_the_price_and_the_reviews() {
+        let mut options = SearchOptions::default();
+        options.filters.only_discounted = true;
+        options.filters.min_discount_percent = Some(30);
+        options.filters.min_price_cents = Some(500);
+        options.filters.max_price_cents = Some(1500);
+        options.filters.min_reviews = Some(1000);
+        options.filters.max_reviews = Some(50_000);
+        options.filters.min_positive_percent = Some(80);
+        options.filters.tags = vec!["Puzzle".to_string()];
+        options.only_bets = true;
+        options.mode = DiscoverMode::Backlog;
+
+        assert_eq!(
+            filters(&options, &Currency::italian()).as_deref(),
+            Some("Bets only · ≥ 80% positive · Tags: Puzzle")
+        );
+
+        options.mode = DiscoverMode::New;
+        let summary = filters(&options, &Currency::italian()).unwrap();
+        assert!(summary.contains("On sale") && summary.contains("reviews"));
     }
 
     #[test]

@@ -10,21 +10,21 @@ use std::{
 };
 
 use gamepalate_app::{
-    AppId, Blame, FilterOptions, Gamepalate, RecommendError, Recommendation, RecommendedGame,
-    SearchOptions, VoteKind,
+    AppId, BacklogCounts, Blame, DiscoverMode, FilterOptions, Gamepalate, RecommendError,
+    Recommendation, RecommendedGame, SearchOptions, VoteKind,
 };
 use iced::{
     Center, Element, Event, Fill, Size, Subscription, Task, event,
     keyboard::{self, Key, key::Named},
     mouse, padding,
     widget::{
-        Column, button, column, container, mouse_area, opaque, pick_list, responsive, row,
+        Column, button, column, container, mouse_area, opaque, pick_list, responsive, row, rule,
         scrollable, space, stack, text, tooltip,
     },
 };
 
 use self::{
-    filters::{Action, Panel, SORTS, Sort, Source},
+    filters::{Action, Panel, Sort, Source},
     queue::Queue,
 };
 use super::{
@@ -57,6 +57,9 @@ const SIMILAR_GAP: f32 = 12.0;
 const SCROLLBAR_GAP: f32 = 12.0;
 const GAME_PADDING: f32 = 16.0;
 const FILTERS_HEIGHT: f32 = 34.0;
+const MODE_HEIGHT: f32 = 44.0;
+const MODE_SEGMENT_HEIGHT: f32 = 26.0;
+const MODE_SEGMENT_WIDTH: f32 = 80.0;
 const VOTES_PADDING: f32 = 10.0;
 const SEPARATOR: f32 = 1.0;
 const HINT_WIDTH: f32 = 200.0;
@@ -75,6 +78,7 @@ pub struct Discover {
     searches: u64,
     updating: bool,
     empty_because: Option<Blame>,
+    backlog: BacklogCounts,
     votes_this_session: usize,
     votes_last_day: usize,
     bet_every: usize,
@@ -95,6 +99,7 @@ struct Flash {
 pub enum Message {
     Recommended(u64, Result<Recommendation, RecommendError>),
     MoreRecommended(u64, Result<Recommendation, RecommendError>),
+    Mode(DiscoverMode),
     Source(Source),
     Sort(Sort),
     Filters(filters::Message),
@@ -157,6 +162,7 @@ impl Discover {
             searches: 0,
             updating: changed,
             empty_because: None,
+            backlog: gamepalate.backlog_counts(),
             votes_this_session: 0,
             votes_last_day: gamepalate.votes_in_last_day(),
             bet_every: gamepalate.bet_every(),
@@ -174,6 +180,7 @@ impl Discover {
 
     pub fn use_gamepalate(&mut self, gamepalate: &Arc<Gamepalate>) {
         self.gamepalate = Arc::clone(gamepalate);
+        self.backlog = gamepalate.backlog_counts();
     }
 
     /// Votes, corrections or families changed on another page: the games start again from the
@@ -190,6 +197,7 @@ impl Discover {
         }
         self.sources = filters::sources(families);
         self.votes_last_day = self.gamepalate.votes_in_last_day();
+        self.backlog = self.gamepalate.backlog_counts();
         self.recommend()
     }
 
@@ -369,10 +377,23 @@ impl Discover {
                 }
             }
             Message::OpenSimilar(_) => {}
+            Message::Mode(mode) => {
+                let options = SearchOptions {
+                    mode,
+                    ..self.options.clone()
+                };
+                if options != self.options {
+                    self.panel_open = false;
+                    self.panel.show(&options);
+                }
+                return self.search_if_changed(options);
+            }
             Message::Source(source) => {
                 let options = filters::with_source(&self.options, source);
                 return self.search_if_changed(options);
             }
+            // The Backlog has no order to choose, and the one of New is not lost
+            Message::Sort(_) if self.options.mode == DiscoverMode::Backlog => {}
             Message::Sort(Sort(sort)) => {
                 let options = SearchOptions {
                     sort,
@@ -388,7 +409,10 @@ impl Discover {
             }
             Message::CloseFilters => self.panel_open = false,
             Message::ResetFilters => {
-                let defaults = discover_options(SearchOptions::default());
+                let defaults = discover_options(SearchOptions {
+                    mode: self.options.mode,
+                    ..SearchOptions::default()
+                });
                 if defaults != self.options {
                     self.panel.show(&defaults);
                     return self.search(defaults);
@@ -441,10 +465,11 @@ impl Discover {
         let game_size = Size::new(
             size.width - 2.0 * GAME_PADDING,
             size.height
+                - MODE_HEIGHT
                 - FILTERS_HEIGHT
                 - VOTE_HEIGHT
                 - 2.0 * VOTES_PADDING
-                - 2.0 * SEPARATOR
+                - 3.0 * SEPARATOR
                 - 2.0 * GAME_PADDING,
         );
         let layout = Layout::new(game_size, showcase::max_screenshot_width(scale));
@@ -455,6 +480,7 @@ impl Discover {
             format::filters(&self.options, self.gamepalate.currency())
         };
         let arrow = if self.panel_open { '▴' } else { '▾' };
+        let (sorts, sort) = filters::sorts(&self.options);
         let line = row![
             text("From").size(font::NOTE_SIZE).style(style::muted),
             container(
@@ -469,7 +495,7 @@ impl Discover {
                 .menu_style(style::menu)
             )
             .max_width(FROM_MAX_WIDTH),
-            pick_list(SORTS, Some(Sort(self.options.sort)), Message::Sort)
+            pick_list(sorts, Some(sort), Message::Sort)
                 .text_size(font::NOTE_SIZE)
                 .padding([4, 8])
                 .style(style::dropdown)
@@ -520,9 +546,11 @@ impl Discover {
             .height(FILTERS_HEIGHT)
             .align_y(Center);
         let popup = self.panel_open.then(|| {
-            let panel = container(scrollable(self.panel.view().map(Message::Filters)).spacing(8))
-                .padding(20)
-                .style(style::popup);
+            let panel = container(
+                scrollable(self.panel.view(self.options.mode).map(Message::Filters)).spacing(8),
+            )
+            .padding(20)
+            .style(style::popup);
             stack![
                 opaque(
                     mouse_area(space().width(Fill).height(Fill)).on_press(Message::CloseFilters)
@@ -555,7 +583,71 @@ impl Discover {
 
         let below = stack![column![main, style::separator(), votes]].push(popup);
 
-        column![filters, style::separator(), below].into()
+        column![
+            self.mode_bar(left, right),
+            style::separator(),
+            filters,
+            style::separator(),
+            below
+        ]
+        .into()
+    }
+
+    fn mode_bar(&self, left: f32, right: f32) -> Element<'_, Message> {
+        let mode = self.options.mode;
+        let segments = [
+            (DiscoverMode::New, "New"),
+            (DiscoverMode::Backlog, "Backlog"),
+        ]
+        .into_iter()
+        .enumerate()
+        .fold(row![], |segments, (index, (choice, label))| {
+            let place = if index == 0 {
+                style::Segment::First
+            } else {
+                style::Segment::Last
+            };
+            let segment = button(
+                text(label)
+                    .size(font::NOTE_SIZE)
+                    .width(Fill)
+                    .height(Fill)
+                    .align_x(Center)
+                    .align_y(Center),
+            )
+            .width(MODE_SEGMENT_WIDTH)
+            .height(Fill)
+            .padding([0, 4])
+            .style(style::segment(mode == choice, place))
+            .on_press(Message::Mode(choice));
+            let seam = (index > 0).then(|| rule::vertical(1).style(style::vote_seam));
+            segments.push(seam).push(segment)
+        });
+        let buttons = container(segments.height(Fill))
+            .height(MODE_SEGMENT_HEIGHT)
+            .padding(1)
+            .style(style::vote_group);
+        let notes = (mode == DiscoverMode::Backlog).then(|| {
+            column![
+                text(format::backlog_threshold(self.gamepalate.min_hours()))
+                    .size(font::NOTE_SIZE)
+                    .wrapping(text::Wrapping::None)
+            ]
+            .push(format::unranked_games(self.backlog.unranked).map(|line| {
+                text(line)
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted)
+                    .wrapping(text::Wrapping::None)
+            }))
+            .spacing(2)
+        });
+
+        container(row![buttons].push(notes).spacing(16).align_y(Center))
+            .padding(padding::left(left).right(right))
+            .width(Fill)
+            .height(MODE_HEIGHT)
+            .align_y(Center)
+            .into()
     }
 
     fn vote_row(&self, width: f32, layout: Layout) -> Element<'_, Message> {
@@ -891,7 +983,11 @@ impl Discover {
             .spacing(8);
 
         column![
-            text(format::empty_because(self.empty_because.as_ref())).style(style::muted),
+            text(format::empty_because(
+                self.empty_because.as_ref(),
+                self.options.mode == DiscoverMode::Backlog && self.backlog.ranked == 0,
+            ))
+            .style(style::muted),
             buttons,
         ]
         .spacing(12)

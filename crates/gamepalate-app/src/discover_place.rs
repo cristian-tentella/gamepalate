@@ -15,6 +15,7 @@ use crate::names::tag_name;
 pub enum DiscoverPlace {
     Shown {
         position: usize,
+        mode: DiscoverMode,
     },
     LeftOut(LeftOut),
     /// It passes the filters, but no list of yours has it.
@@ -82,6 +83,7 @@ pub(crate) fn discover_place(
         {
             Some(recommended) if recommended.affinity > 0.0 => DiscoverPlace::Shown {
                 position: recommended.position,
+                mode,
             },
             _ => DiscoverPlace::NoMatch,
         },
@@ -362,7 +364,8 @@ mod tests {
             assert_eq!(
                 fixture.place(recommended.id.0, &options),
                 Some(DiscoverPlace::Shown {
-                    position: recommended.position
+                    position: recommended.position,
+                    mode: DiscoverMode::Backlog
                 })
             );
         }
@@ -484,7 +487,8 @@ mod tests {
             assert_eq!(
                 fixture.place(recommended.id.0, &options),
                 Some(DiscoverPlace::Shown {
-                    position: recommended.position
+                    position: recommended.position,
+                    mode: DiscoverMode::New
                 })
             );
         }
