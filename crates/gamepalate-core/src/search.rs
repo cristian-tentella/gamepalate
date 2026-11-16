@@ -1,5 +1,5 @@
 use std::{
-    cmp::Reverse,
+    cmp::{Ordering, Reverse},
     collections::{HashMap, HashSet},
 };
 
@@ -41,6 +41,17 @@ pub enum SortBy {
     Relevance,
     Discount,
     Price,
+    Positive,
+}
+
+impl SortBy {
+    /// The Backlog has no price to order by, so only the orders that don't need one hold there.
+    pub fn in_backlog(self) -> SortBy {
+        match self {
+            SortBy::Positive => SortBy::Positive,
+            SortBy::Relevance | SortBy::Discount | SortBy::Price => SortBy::Relevance,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -260,6 +271,31 @@ pub fn sort_picks(picks: &mut [Pick], sort: SortBy, catalog: &Catalog, now: Time
         SortBy::Price => {
             picks.sort_by_key(|pick| price(pick).map_or(u32::MAX, |price| price.final_cents()))
         }
+        SortBy::Positive => picks.sort_by(|a, b| {
+            let reviews = |pick: &Pick| {
+                catalog.game(pick.game.id).map_or(
+                    Reviews {
+                        total: 0,
+                        positive: 0,
+                    },
+                    |game| game.reviews,
+                )
+            };
+            positive_order(reviews(a), reviews(b))
+        }),
+    }
+}
+
+/// The share of positive reviews, highest first, then the most reviewed. A game without
+/// reviews goes last.
+fn positive_order(a: Reviews, b: Reviews) -> Ordering {
+    match (a.total, b.total) {
+        (0, 0) => Ordering::Equal,
+        (0, _) => Ordering::Greater,
+        (_, 0) => Ordering::Less,
+        _ => (u64::from(b.positive) * u64::from(a.total))
+            .cmp(&(u64::from(a.positive) * u64::from(b.total)))
+            .then(b.total.cmp(&a.total)),
     }
 }
 
@@ -410,7 +446,7 @@ pub fn recommend_from(
         ..inputs.config.relevance
     };
     let sort = if backlog {
-        SortBy::Relevance
+        options.sort.in_backlog()
     } else {
         options.sort
     };
@@ -877,6 +913,69 @@ mod tests {
 
         let in_new = case.run(&SearchOptions::default());
         assert!(relevance(&in_new, 16) > relevance(&in_new, 19));
+    }
+
+    #[test]
+    fn orders_by_the_share_of_positive_reviews_and_puts_games_without_reviews_last() {
+        let reviews = |total, positive| Reviews { total, positive };
+        let mut games = [
+            reviews(0, 0),
+            reviews(100, 80),
+            reviews(10, 9),
+            reviews(1000, 900),
+            reviews(40, 39),
+        ];
+
+        games.sort_by(|a, b| positive_order(*a, *b));
+
+        assert_eq!(
+            games,
+            [
+                reviews(40, 39),
+                reviews(1000, 900),
+                reviews(10, 9),
+                reviews(100, 80),
+                reviews(0, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_backlog_orders_by_positive_reviews_when_asked() {
+        let case = BacklogCase::new();
+        let order = |sort| {
+            case.run(&SearchOptions { sort, ..backlog() })
+                .games
+                .iter()
+                .map(|game| game.id.0)
+                .collect::<Vec<_>>()
+        };
+
+        // 17 has 97.5% positive, 10 has 90% and 18 has 77%
+        assert_eq!(order(SortBy::Positive), [17, 10, 18]);
+        assert_eq!(SortBy::Price.in_backlog(), SortBy::Relevance);
+        assert_eq!(SortBy::Positive.in_backlog(), SortBy::Positive);
+    }
+
+    #[test]
+    fn new_orders_by_positive_reviews_too() {
+        let case = BacklogCase::new();
+        let games = case
+            .run(&SearchOptions {
+                sort: SortBy::Positive,
+                ..SearchOptions::default()
+            })
+            .games;
+        let share = |game: &RecommendedGame| {
+            f64::from(game.reviews.positive) / f64::from(game.reviews.total)
+        };
+
+        assert!(games.len() > 1);
+        assert!(
+            games
+                .windows(2)
+                .all(|pair| share(&pair[0]) >= share(&pair[1]))
+        );
     }
 
     #[test]

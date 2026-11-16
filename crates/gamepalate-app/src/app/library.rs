@@ -9,8 +9,8 @@ use super::Gamepalate;
 use crate::{
     discover_place::{DiscoverPlace, discover_place},
     library::{
-        BacklogCounts, FoundGame, GameCorrection, GameCorrectionError, GameView, LibraryView,
-        PlayedElsewhereError, backlog_counts, changed_played_elsewhere, corrected_game,
+        FoundGame, GameCorrection, GameCorrectionError, GameView, LibraryView,
+        PlayedElsewhereError, backlog_ranked, changed_played_elsewhere, corrected_game,
         found_games, game_correction, game_view, library_view,
     },
     log::failed,
@@ -82,9 +82,9 @@ impl Gamepalate {
         self.with_inputs(|inputs| found_games(&ids, inputs, now))
     }
 
-    /// The games of the library under `min_hours` that the Backlog can show, and the ones it can't.
-    pub fn backlog_counts(&self) -> BacklogCounts {
-        self.with_inputs(backlog_counts)
+    /// How many games of the library under `min_hours` the Backlog can show.
+    pub fn backlog_ranked(&self) -> usize {
+        self.with_inputs(backlog_ranked)
     }
 
     /// One game of the catalog for its page, read again after each change.

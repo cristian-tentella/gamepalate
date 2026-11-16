@@ -49,10 +49,6 @@ impl Gamepalate {
         self.files.config.signals.would_try_hours
     }
 
-    pub fn min_hours(&self) -> f64 {
-        self.files.config.signals.min_hours
-    }
-
     pub fn elsewhere_hours(&self) -> f64 {
         self.files.config.signals.elsewhere_hours
     }

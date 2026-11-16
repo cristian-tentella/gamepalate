@@ -57,30 +57,18 @@ pub struct LibraryGameView {
     pub held_out: bool,
 }
 
-/// How many games of the library the Backlog of Discover can show, and how many it can't
-/// because they are not in the catalog.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct BacklogCounts {
-    pub ranked: usize,
-    pub unranked: usize,
-}
-
-pub(crate) fn backlog_counts(inputs: &SearchInputs) -> BacklogCounts {
-    let backlog = backlog_games(
+/// How many games of the library the Backlog of Discover can show: the ones under the hours
+/// threshold that are in the catalog.
+pub(crate) fn backlog_ranked(inputs: &SearchInputs) -> usize {
+    backlog_games(
         inputs.signals,
         inputs.votes,
         inputs.corrections,
         &inputs.config.signals,
-    );
-    let ranked = backlog
-        .iter()
-        .filter(|&&id| inputs.catalog.game(id).is_some())
-        .count();
-
-    BacklogCounts {
-        ranked,
-        unranked: backlog.len() - ranked,
-    }
+    )
+    .iter()
+    .filter(|&&id| inputs.catalog.game(id).is_some())
+    .count()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -636,15 +624,9 @@ mod tests {
     }
 
     #[test]
-    fn the_backlog_counts_the_games_it_can_rank_and_the_ones_out_of_the_catalog() {
+    fn the_backlog_counts_only_the_games_it_can_rank() {
         let mut fixture = Fixture::new();
-        assert_eq!(
-            backlog_counts(&fixture.inputs()),
-            BacklogCounts {
-                ranked: 1,
-                unranked: 0
-            }
-        );
+        assert_eq!(backlog_ranked(&fixture.inputs()), 1);
 
         // 81 and 82 are not in the catalog, and 82 is past the threshold
         fixture.signals.library.push(LibraryGame {
@@ -658,13 +640,7 @@ mod tests {
             last_played: None,
         });
 
-        assert_eq!(
-            backlog_counts(&fixture.inputs()),
-            BacklogCounts {
-                ranked: 1,
-                unranked: 1
-            }
-        );
+        assert_eq!(backlog_ranked(&fixture.inputs()), 1);
     }
 
     const NOW: Timestamp = Timestamp(1_794_404_475_152);

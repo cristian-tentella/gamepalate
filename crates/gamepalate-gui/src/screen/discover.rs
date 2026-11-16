@@ -10,8 +10,8 @@ use std::{
 };
 
 use gamepalate_app::{
-    AppId, BacklogCounts, Blame, DiscoverMode, FilterOptions, Gamepalate, RecommendError,
-    Recommendation, RecommendedGame, SearchOptions, VoteKind,
+    AppId, Blame, DiscoverMode, FilterOptions, Gamepalate, RecommendError, Recommendation,
+    RecommendedGame, SearchOptions, VoteKind,
 };
 use iced::{
     Center, Element, Event, Fill, Size, Subscription, Task, event,
@@ -57,9 +57,8 @@ const SIMILAR_GAP: f32 = 12.0;
 const SCROLLBAR_GAP: f32 = 12.0;
 const GAME_PADDING: f32 = 16.0;
 const FILTERS_HEIGHT: f32 = 34.0;
-const MODE_HEIGHT: f32 = 44.0;
 const MODE_SEGMENT_HEIGHT: f32 = 26.0;
-const MODE_SEGMENT_WIDTH: f32 = 80.0;
+const MODE_SEGMENT_WIDTH: f32 = 64.0;
 const VOTES_PADDING: f32 = 10.0;
 const SEPARATOR: f32 = 1.0;
 const HINT_WIDTH: f32 = 200.0;
@@ -78,7 +77,7 @@ pub struct Discover {
     searches: u64,
     updating: bool,
     empty_because: Option<Blame>,
-    backlog: BacklogCounts,
+    backlog_ranked: usize,
     votes_this_session: usize,
     votes_last_day: usize,
     bet_every: usize,
@@ -165,7 +164,7 @@ impl Discover {
             searches: 0,
             updating: changed,
             empty_because: None,
-            backlog: gamepalate.backlog_counts(),
+            backlog_ranked: gamepalate.backlog_ranked(),
             votes_this_session: 0,
             votes_last_day: gamepalate.votes_in_last_day(),
             bet_every: gamepalate.bet_every(),
@@ -183,7 +182,7 @@ impl Discover {
 
     pub fn use_gamepalate(&mut self, gamepalate: &Arc<Gamepalate>) {
         self.gamepalate = Arc::clone(gamepalate);
-        self.backlog = gamepalate.backlog_counts();
+        self.backlog_ranked = gamepalate.backlog_ranked();
     }
 
     /// Votes, corrections or families changed on another page: the games start again from the
@@ -200,7 +199,7 @@ impl Discover {
         }
         self.sources = filters::sources(families);
         self.votes_last_day = self.gamepalate.votes_in_last_day();
-        self.backlog = self.gamepalate.backlog_counts();
+        self.backlog_ranked = self.gamepalate.backlog_ranked();
         self.recommend()
     }
 
@@ -409,8 +408,9 @@ impl Discover {
                 let options = filters::with_source(&self.options, source);
                 return self.search_if_changed(options);
             }
-            // The Backlog has no order to choose, and the one of New is not lost
-            Message::Sort(_) if self.options.mode == DiscoverMode::Backlog => {}
+            // The Backlog has no price to order by, and the order of New is not lost
+            Message::Sort(Sort(sort))
+                if self.options.mode == DiscoverMode::Backlog && sort.in_backlog() != sort => {}
             Message::Sort(Sort(sort)) => {
                 let options = SearchOptions {
                     sort,
@@ -482,11 +482,10 @@ impl Discover {
         let game_size = Size::new(
             size.width - 2.0 * GAME_PADDING,
             size.height
-                - MODE_HEIGHT
                 - FILTERS_HEIGHT
                 - VOTE_HEIGHT
                 - 2.0 * VOTES_PADDING
-                - 3.0 * SEPARATOR
+                - 2.0 * SEPARATOR
                 - 2.0 * GAME_PADDING,
         );
         let layout = Layout::new(game_size, showcase::max_screenshot_width(scale));
@@ -499,6 +498,7 @@ impl Discover {
         let arrow = if self.panel_open { '▴' } else { '▾' };
         let (sorts, sort) = filters::sorts(&self.options);
         let line = row![
+            self.mode_switch(),
             text("From").size(font::NOTE_SIZE).style(style::muted),
             container(
                 pick_list(
@@ -546,15 +546,18 @@ impl Discover {
             .width(Fill)
             .clip(true),
         )
-        .push(
-            text(format::votes_this_session(
-                self.votes_this_session,
-                self.votes_last_day,
-            ))
-            .size(font::NOTE_SIZE)
-            .style(style::muted)
-            .wrapping(text::Wrapping::None),
-        )
+        .push((self.options.mode == DiscoverMode::New).then(|| {
+            tooltip(
+                text(format::votes_this_session(self.votes_this_session))
+                    .size(font::NOTE_SIZE)
+                    .style(style::muted)
+                    .wrapping(text::Wrapping::None),
+                container(text(format::votes_last_day(self.votes_last_day)).size(font::NOTE_SIZE))
+                    .padding([6, 10])
+                    .style(style::popup),
+                tooltip::Position::Bottom,
+            )
+        }))
         .spacing(8)
         .align_y(Center);
         let filters = container(line)
@@ -600,17 +603,10 @@ impl Discover {
 
         let below = stack![column![main, style::separator(), votes]].push(popup);
 
-        column![
-            self.mode_bar(left, right),
-            style::separator(),
-            filters,
-            style::separator(),
-            below
-        ]
-        .into()
+        column![filters, style::separator(), below].into()
     }
 
-    fn mode_bar(&self, left: f32, right: f32) -> Element<'_, Message> {
+    fn mode_switch(&self) -> Element<'_, Message> {
         let mode = self.options.mode;
         let segments = [
             (DiscoverMode::New, "New"),
@@ -640,30 +636,11 @@ impl Discover {
             let seam = (index > 0).then(|| rule::vertical(1).style(style::vote_seam));
             segments.push(seam).push(segment)
         });
-        let buttons = container(segments.height(Fill))
+
+        container(segments.height(Fill))
             .height(MODE_SEGMENT_HEIGHT)
             .padding(1)
-            .style(style::vote_group);
-        let notes = (mode == DiscoverMode::Backlog).then(|| {
-            column![
-                text(format::backlog_threshold(self.gamepalate.min_hours()))
-                    .size(font::NOTE_SIZE)
-                    .wrapping(text::Wrapping::None)
-            ]
-            .push(format::unranked_games(self.backlog.unranked).map(|line| {
-                text(line)
-                    .size(font::NOTE_SIZE)
-                    .style(style::muted)
-                    .wrapping(text::Wrapping::None)
-            }))
-            .spacing(2)
-        });
-
-        container(row![buttons].push(notes).spacing(16).align_y(Center))
-            .padding(padding::left(left).right(right))
-            .width(Fill)
-            .height(MODE_HEIGHT)
-            .align_y(Center)
+            .style(style::vote_group)
             .into()
     }
 
@@ -1017,7 +994,7 @@ impl Discover {
         column![
             text(format::empty_because(
                 self.empty_because.as_ref(),
-                self.options.mode == DiscoverMode::Backlog && self.backlog.ranked == 0,
+                self.options.mode == DiscoverMode::Backlog && self.backlog_ranked == 0,
             ))
             .style(style::muted),
             buttons,

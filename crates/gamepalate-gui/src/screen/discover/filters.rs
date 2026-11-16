@@ -46,22 +46,26 @@ impl fmt::Display for Sort {
             SortBy::Relevance => "By relevance",
             SortBy::Discount => "By discount",
             SortBy::Price => "By price",
+            SortBy::Positive => "By positive reviews",
         })
     }
 }
 
-pub const SORTS: [Sort; 3] = [
+// The orders of the Backlog come first
+pub const SORTS: [Sort; 4] = [
     Sort(SortBy::Relevance),
+    Sort(SortBy::Positive),
     Sort(SortBy::Discount),
     Sort(SortBy::Price),
 ];
 
 /// The orders the menu offers, and the one it shows. A game you own has no price to order by, so
-/// the Backlog offers only the relevance; the order chosen for New stays in the options.
+/// the Backlog offers the relevance and the positive reviews; the order chosen for New stays in
+/// the options until the Backlog picks another.
 pub fn sorts(options: &SearchOptions) -> (&'static [Sort], Sort) {
     match options.mode {
         DiscoverMode::New => (&SORTS, Sort(options.sort)),
-        DiscoverMode::Backlog => (&SORTS[..1], SORTS[0]),
+        DiscoverMode::Backlog => (&SORTS[..2], Sort(options.sort.in_backlog())),
     }
 }
 
@@ -652,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn the_backlog_offers_only_the_relevance_and_keeps_the_chosen_order() {
+    fn the_backlog_offers_the_relevance_and_the_positive_reviews_and_keeps_the_chosen_order() {
         let mut options = SearchOptions {
             sort: SortBy::Price,
             ..SearchOptions::default()
@@ -660,8 +664,11 @@ mod tests {
         assert_eq!(sorts(&options), (&SORTS[..], Sort(SortBy::Price)));
 
         options.mode = DiscoverMode::Backlog;
-        assert_eq!(sorts(&options), (&SORTS[..1], Sort(SortBy::Relevance)));
+        assert_eq!(sorts(&options), (&SORTS[..2], Sort(SortBy::Relevance)));
         assert_eq!(options.sort, SortBy::Price);
+
+        options.sort = SortBy::Positive;
+        assert_eq!(sorts(&options), (&SORTS[..2], Sort(SortBy::Positive)));
     }
 
     #[test]

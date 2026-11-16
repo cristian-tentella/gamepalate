@@ -141,20 +141,15 @@ pub fn empty_because(blame: Option<&Blame>, empty_backlog: bool) -> String {
     )
 }
 
-pub fn backlog_threshold(min_hours: f64) -> String {
-    format!("Games you own, played under {}", hours(min_hours))
-}
-
-pub fn unranked_games(games: usize) -> Option<String> {
-    (games > 0).then(|| format!("{} of your games can't be ranked", count(games as u32)))
-}
-
-pub fn votes_this_session(session: usize, last_day: usize) -> String {
-    let session = match session {
+pub fn votes_this_session(session: usize) -> String {
+    match session {
         1 => "1 vote this session".to_string(),
         votes => format!("{votes} votes this session"),
-    };
-    format!("{session} · {last_day} in the last 24 hours")
+    }
+}
+
+pub fn votes_last_day(last_day: usize) -> String {
+    format!("{last_day} in the last 24 hours")
 }
 
 pub fn count(number: u32) -> String {
@@ -958,17 +953,6 @@ mod tests {
     }
 
     #[test]
-    fn the_backlog_explains_its_threshold_and_the_games_it_cannot_rank() {
-        assert_eq!(backlog_threshold(2.0), "Games you own, played under 2 h");
-        assert_eq!(backlog_threshold(1.5), "Games you own, played under 1.5 h");
-        assert_eq!(
-            unranked_games(23).as_deref(),
-            Some("23 of your games can't be ranked")
-        );
-        assert_eq!(unranked_games(0), None);
-    }
-
-    #[test]
     fn the_summary_in_the_backlog_leaves_out_the_price_and_the_reviews() {
         let mut options = SearchOptions::default();
         options.filters.only_discounted = true;
@@ -1030,14 +1014,9 @@ mod tests {
 
     #[test]
     fn counts_votes_in_singular_and_plural() {
-        assert_eq!(
-            votes_this_session(1, 5),
-            "1 vote this session · 5 in the last 24 hours"
-        );
-        assert_eq!(
-            votes_this_session(12, 40),
-            "12 votes this session · 40 in the last 24 hours"
-        );
+        assert_eq!(votes_this_session(1), "1 vote this session");
+        assert_eq!(votes_this_session(12), "12 votes this session");
+        assert_eq!(votes_last_day(40), "40 in the last 24 hours");
     }
 
     #[test]
