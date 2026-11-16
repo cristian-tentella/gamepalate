@@ -14,7 +14,7 @@ use gamepalate_core::{
     search::SearchInputs,
     taste::game_name,
     timestamp::Timestamp,
-    votes::{Vote, VoteKind, Votes, cast, cast_in_last_day},
+    votes::{Vote, VoteKind, Votes, cast, cast_in_last_day, standing},
 };
 use gamepalate_store::votes::{VotesError, remove_vote, save_votes};
 
@@ -41,6 +41,15 @@ pub struct VoteError {
     source: VotesError,
 }
 
+/// Why a star was not saved.
+#[derive(Debug, thiserror::Error)]
+pub enum StarError {
+    #[error("a game you have cannot be starred")]
+    Owned,
+    #[error(transparent)]
+    Vote(#[from] VoteError),
+}
+
 fn saved_vote(
     path: &Path,
     votes: &Votes,
@@ -50,6 +59,50 @@ fn saved_vote(
 ) -> Result<Votes, VoteError> {
     let mut changed = votes.clone();
     cast(&mut changed, id, vote);
+    save_votes(path, &changed, name).map_err(|source| VoteError {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(changed)
+}
+
+/// The votes with the star put on `id` or taken off it. A star needs a Would try: the game gets
+/// `new_vote`, a Would try, when it has none that counts. A game you have cannot get a star.
+/// Without a change, or with an error, nothing is saved.
+fn saved_star(
+    path: &Path,
+    votes: &Votes,
+    id: AppId,
+    starred: bool,
+    owned: bool,
+    new_vote: Vote,
+    name: impl Fn(AppId) -> Option<String>,
+) -> Result<Votes, StarError> {
+    if starred && owned {
+        return Err(StarError::Owned);
+    }
+    let now = new_vote.at.unwrap_or(Timestamp(0));
+    let mut changed = votes.clone();
+    match standing(votes, id, now) {
+        Some(vote) if vote.kind == VoteKind::WouldTry => {
+            if vote.starred == starred {
+                return Ok(changed);
+            }
+            if let Some(vote) = changed.get_mut(&id) {
+                vote.starred = starred;
+            }
+        }
+        _ if starred => cast(
+            &mut changed,
+            id,
+            Vote {
+                kind: VoteKind::WouldTry,
+                starred: true,
+                ..new_vote
+            },
+        ),
+        _ => return Ok(changed),
+    }
     save_votes(path, &changed, name).map_err(|source| VoteError {
         path: path.to_path_buf(),
         source,
@@ -138,10 +191,46 @@ impl Gamepalate {
                 at: Some(at),
                 bet,
                 searched,
+                starred: false,
             },
             |id| self.saved_name(id),
         )
         .inspect_err(failed("could not save the vote"))?;
+        Ok(())
+    }
+
+    /// Puts the star on a game, or takes it off. A star needs a Would try: a game with another
+    /// vote or none gets one, with `bet` and `searched` as `vote` would give it. Taking the star
+    /// off leaves the Would try. A game you have cannot get a star, and nothing is saved.
+    pub fn star(
+        &self,
+        id: AppId,
+        starred: bool,
+        bet: bool,
+        searched: bool,
+    ) -> Result<(), StarError> {
+        let owned = starred
+            && self.with_inputs(|inputs| {
+                owned_games(inputs.signals, inputs.corrections).contains(&id)
+            });
+        let mut votes = self.write_votes();
+        let now = jiff::Zoned::now();
+        let new_vote = Vote {
+            at: Some(Timestamp(now.timestamp().as_millisecond())),
+            bet,
+            searched,
+            ..Vote::new(VoteKind::WouldTry, &now.date().to_string())
+        };
+        *votes = saved_star(
+            &self.data_dir.join("votes.toml"),
+            &votes,
+            id,
+            starred,
+            owned,
+            new_vote,
+            |id| self.saved_name(id),
+        )
+        .inspect_err(failed("could not save the star"))?;
         Ok(())
     }
 
@@ -247,6 +336,202 @@ mod tests {
         assert!(std::fs::read_to_string(&path).unwrap().contains(
             "620 = { vote = \"would_try\", date = \"2026-10-30\", at = 1762500000000, bet = true } # Portal 2"
         ));
+    }
+
+    const NOW: i64 = 1_794_835_200_000;
+
+    fn star_in(
+        path: &Path,
+        votes: &Votes,
+        starred: bool,
+        owned: bool,
+        searched: bool,
+    ) -> Result<Votes, StarError> {
+        saved_star(
+            path,
+            votes,
+            AppId(620),
+            starred,
+            owned,
+            Vote {
+                at: Some(Timestamp(NOW)),
+                bet: true,
+                searched,
+                ..Vote::new(VoteKind::WouldTry, "2026-11-16")
+            },
+            |_| Some("Portal 2".to_string()),
+        )
+    }
+
+    fn voted_as(kind: VoteKind, starred: bool) -> Votes {
+        Votes::from([(
+            AppId(620),
+            Vote {
+                at: Some(Timestamp(NOW - 1000)),
+                starred,
+                ..Vote::new(kind, "2026-11-15")
+            },
+        )])
+    }
+
+    #[test]
+    fn a_star_on_a_game_without_a_vote_gives_a_would_try() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        let votes = star_in(&path, &Votes::new(), true, false, true).unwrap();
+
+        let vote = &votes[&AppId(620)];
+        assert_eq!(vote.kind, VoteKind::WouldTry);
+        assert!(vote.starred && vote.searched);
+        assert_eq!(vote.at, Some(Timestamp(NOW)));
+        assert_eq!(
+            gamepalate_store::votes::load_votes(&path).unwrap().votes,
+            votes
+        );
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("searched = true, starred = true } # Portal 2")
+        );
+    }
+
+    #[test]
+    fn a_star_from_a_recommendation_keeps_the_bet() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        let votes = star_in(&path, &Votes::new(), true, false, false).unwrap();
+
+        assert!(votes[&AppId(620)].bet);
+        assert!(!votes[&AppId(620)].searched);
+    }
+
+    #[test]
+    fn a_star_turns_a_not_for_me_and_a_later_into_a_would_try() {
+        for kind in [VoteKind::NotForMe, VoteKind::Later] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("votes.toml");
+
+            let votes = star_in(&path, &voted_as(kind, false), true, false, false).unwrap();
+
+            let vote = &votes[&AppId(620)];
+            assert_eq!(vote.kind, VoteKind::WouldTry);
+            assert!(vote.starred);
+            assert_eq!(vote.at, Some(Timestamp(NOW)));
+        }
+    }
+
+    #[test]
+    fn a_star_on_a_would_try_keeps_the_vote_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+        let before = voted_as(VoteKind::WouldTry, false);
+
+        let votes = star_in(&path, &before, true, false, true).unwrap();
+
+        assert_eq!(
+            votes[&AppId(620)],
+            Vote {
+                starred: true,
+                ..before[&AppId(620)].clone()
+            }
+        );
+    }
+
+    #[test]
+    fn taking_the_star_off_leaves_the_would_try() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+        let before = voted_as(VoteKind::WouldTry, true);
+
+        let votes = star_in(&path, &before, false, false, false).unwrap();
+
+        assert_eq!(votes[&AppId(620)].kind, VoteKind::WouldTry);
+        assert!(!votes[&AppId(620)].starred);
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains(", starred")
+        );
+    }
+
+    #[test]
+    fn taking_the_star_off_a_game_without_one_saves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        for before in [
+            Votes::new(),
+            voted_as(VoteKind::WouldTry, false),
+            voted_as(VoteKind::NotForMe, false),
+        ] {
+            let votes = star_in(&path, &before, false, false, false).unwrap();
+            assert_eq!(votes, before);
+        }
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_star_on_a_starred_game_saves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+        let before = voted_as(VoteKind::WouldTry, true);
+
+        assert_eq!(star_in(&path, &before, true, false, false).unwrap(), before);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_game_you_have_gets_no_star_and_nothing_is_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        for before in [Votes::new(), voted_as(VoteKind::WouldTry, false)] {
+            let error = star_in(&path, &before, true, true, false).unwrap_err();
+            assert!(matches!(error, StarError::Owned));
+        }
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_game_you_have_can_lose_its_star() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+        let before = voted_as(VoteKind::WouldTry, true);
+
+        let votes = star_in(&path, &before, false, true, false).unwrap();
+
+        assert!(!votes[&AppId(620)].starred);
+    }
+
+    #[test]
+    fn removing_the_vote_takes_the_star_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+        let votes = star_in(&path, &Votes::new(), true, false, false).unwrap();
+
+        let votes = remove_vote(&path, &votes, AppId(620), |_| None).unwrap();
+
+        assert!(votes.is_empty());
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains(", starred")
+        );
+    }
+
+    #[test]
+    fn a_star_that_cannot_be_saved_names_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").join("votes.toml");
+
+        let error = star_in(&path, &Votes::new(), true, false, false).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!("could not save the vote in {}", path.display())
+        );
     }
 
     #[test]

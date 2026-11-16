@@ -11,6 +11,8 @@ pub struct Vote {
     pub at: Option<Timestamp>,
     pub bet: bool,
     pub searched: bool,
+    /// The game is one you are thinking of buying. Only a Would try can have it.
+    pub starred: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -48,12 +50,25 @@ impl VoteKind {
     }
 }
 
-/// Saves `vote` in place of the old one. A bet stays a bet.
+/// Saves `vote` in place of the old one. A bet stays a bet, and a star stays on a Would try.
 /// `searched` is the new vote's own: a vote from Discover after a search is a vote from Discover.
 pub fn cast(votes: &mut Votes, id: AppId, vote: Vote) {
+    debug_assert!(
+        !vote.starred || vote.kind == VoteKind::WouldTry,
+        "only a Would try can be starred"
+    );
     // A game found with a search was not recommended, so its vote does not answer a bet.
     let bet = !vote.searched && (vote.bet || votes.get(&id).is_some_and(|old| old.bet));
-    votes.insert(id, Vote { bet, ..vote });
+    let starred = vote.kind == VoteKind::WouldTry
+        && (vote.starred || votes.get(&id).is_some_and(|old| old.starred));
+    votes.insert(
+        id,
+        Vote {
+            bet,
+            starred,
+            ..vote
+        },
+    );
 }
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
@@ -61,7 +76,7 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 pub const LATER_DAYS: i64 = 7;
 
 impl Vote {
-    /// A vote cast on `date`, without a time, a bet or a search.
+    /// A vote cast on `date`, without a time, a bet, a search or a star.
     pub fn new(kind: VoteKind, date: &str) -> Vote {
         Vote {
             kind,
@@ -69,6 +84,7 @@ impl Vote {
             at: None,
             bet: false,
             searched: false,
+            starred: false,
         }
     }
 
@@ -213,6 +229,79 @@ mod tests {
         cast_on(&mut votes, VoteKind::WouldTry, false);
 
         assert!(!votes[&AppId(620)].searched);
+    }
+
+    fn starred(kind: VoteKind) -> Vote {
+        Vote {
+            starred: kind == VoteKind::WouldTry,
+            ..vote(kind, "2026-11-16", None)
+        }
+    }
+
+    #[test]
+    fn a_star_stays_on_a_would_try() {
+        let mut votes = Votes::new();
+        cast(&mut votes, AppId(620), starred(VoteKind::WouldTry));
+
+        cast_on(&mut votes, VoteKind::WouldTry, false);
+
+        assert!(votes[&AppId(620)].starred);
+    }
+
+    #[test]
+    fn a_star_is_lost_with_another_vote() {
+        for kind in [VoteKind::Later, VoteKind::NotForMe] {
+            let mut votes = Votes::new();
+            cast(&mut votes, AppId(620), starred(VoteKind::WouldTry));
+
+            cast_on(&mut votes, kind, false);
+
+            assert!(!votes[&AppId(620)].starred);
+            assert_eq!(votes[&AppId(620)].kind, kind);
+        }
+    }
+
+    #[test]
+    fn a_star_does_not_come_back_after_another_vote() {
+        let mut votes = Votes::new();
+        cast(&mut votes, AppId(620), starred(VoteKind::WouldTry));
+        cast_on(&mut votes, VoteKind::Later, false);
+
+        cast_on(&mut votes, VoteKind::WouldTry, false);
+
+        assert!(!votes[&AppId(620)].starred);
+    }
+
+    #[test]
+    fn a_new_star_on_a_starred_would_try_stays() {
+        let mut votes = Votes::new();
+        cast(&mut votes, AppId(620), starred(VoteKind::WouldTry));
+
+        cast(&mut votes, AppId(620), starred(VoteKind::WouldTry));
+
+        assert!(votes[&AppId(620)].starred);
+    }
+
+    #[test]
+    fn a_vote_without_a_star_does_not_give_one() {
+        let mut votes = Votes::new();
+        cast_on(&mut votes, VoteKind::NotForMe, false);
+
+        cast(&mut votes, AppId(620), starred(VoteKind::WouldTry));
+
+        assert!(votes[&AppId(620)].starred);
+        assert!(!vote(VoteKind::WouldTry, "2026-11-16", None).starred);
+    }
+
+    #[test]
+    fn a_star_does_not_change_a_bet() {
+        let mut votes = Votes::new();
+        cast_on(&mut votes, VoteKind::Later, true);
+
+        cast(&mut votes, AppId(620), starred(VoteKind::WouldTry));
+
+        assert!(votes[&AppId(620)].bet);
+        assert!(votes[&AppId(620)].starred);
     }
 
     fn cast_at(votes: &mut Votes, id: u32, at: Option<i64>) {

@@ -61,6 +61,7 @@ impl VoteArgs {
             at: Some(at),
             bet: self.bet,
             searched: false,
+            starred: false,
         }
     }
 }
