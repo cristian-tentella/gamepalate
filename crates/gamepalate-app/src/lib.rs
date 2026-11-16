@@ -40,7 +40,7 @@ pub use gamepalate_core::{
     currency::{Currency, parse_price},
     effective_hours::HoursSource,
     explanation::KnownFrom,
-    filters::{Blame, FilterOptions},
+    filters::{Blame, DiscoverMode, FilterOptions},
     game::{Discount, Price, Reviews},
     ids::{AppId, SteamId, TagId},
     opinion::Labels,

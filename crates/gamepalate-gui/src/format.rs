@@ -509,6 +509,9 @@ pub fn discover_place(place: &DiscoverPlace, played_elsewhere: bool) -> String {
         }
         DiscoverPlace::LeftOut(left_out) => match left_out {
             LeftOut::Owned => "you own it".to_string(),
+            LeftOut::Played(played) => format!("you've played it for {}", hours(*played)),
+            LeftOut::Wishlist => "it's on your wishlist".to_string(),
+            LeftOut::Followed => "you follow it".to_string(),
             LeftOut::FamilyGame => "it's in a family".to_string(),
             LeftOut::Hidden => "you hid it".to_string(),
             LeftOut::Voted => "you voted it".to_string(),
@@ -655,6 +658,18 @@ mod tests {
         assert_eq!(
             discover_place(&DiscoverPlace::LeftOut(LeftOut::Owned), true),
             "Not in Discover: you played it elsewhere"
+        );
+        assert_eq!(
+            discover_place(&DiscoverPlace::LeftOut(LeftOut::Played(5.0)), false),
+            "Not in Discover: you've played it for 5 h"
+        );
+        assert_eq!(
+            discover_place(&DiscoverPlace::LeftOut(LeftOut::Wishlist), false),
+            "Not in Discover: it's on your wishlist"
+        );
+        assert_eq!(
+            discover_place(&DiscoverPlace::LeftOut(LeftOut::Followed), false),
+            "Not in Discover: you follow it"
         );
         assert_eq!(
             discover_place(

@@ -411,6 +411,7 @@ fn evaluation_inputs<'a>(
         inputs.families,
         inputs.votes,
         inputs.corrections,
+        &config.signals,
     );
     let competitor_indices = competitors(inputs.catalog, &context, config.relevance.min_reviews);
 
