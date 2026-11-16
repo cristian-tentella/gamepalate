@@ -114,6 +114,7 @@ pub enum Message {
     VoteSaved(Result<(), String>),
     Played,
     PlayedSaved(AppId, String, Result<bool, String>),
+    Star,
     Undo,
     Undone(Result<(), String>),
     SettingsSaved(Result<(), String>),
@@ -271,6 +272,22 @@ impl Votes {
                         Message::VoteSaved,
                     );
                     return Task::batch([save, self.show_toast(text), self.next()]);
+                }
+            }
+            Message::Star => {
+                if let Some(game) = self.current().filter(|game| may_star(game)) {
+                    let (id, starred) = (game.id, !game.vote.starred);
+                    let text = format::star_toast(&game.name, starred);
+                    let gamepalate = Arc::clone(&self.gamepalate);
+                    let save = Task::perform(
+                        async move {
+                            gamepalate
+                                .star(id, starred, false, false)
+                                .map_err(|error| error.to_string())
+                        },
+                        Message::VoteSaved,
+                    );
+                    return Task::batch([save, self.show_toast(text)]);
                 }
             }
             Message::VoteSaved(Ok(())) => {
@@ -685,11 +702,12 @@ impl Votes {
 
     fn vote_row(&self, width: f32) -> Element<'_, Message> {
         let game = self.current();
-        let vote_width = game::vote_width(width, 0.0);
         let (would_try_hours, elsewhere_hours) = (
             self.gamepalate.would_try_hours(),
             self.gamepalate.elsewhere_hours(),
         );
+        let star = game.is_some_and(may_star);
+        let vote_width = game::vote_width(width, if star { game::STAR_SPACE } else { 0.0 });
         let votes = game::vote_buttons(
             |key, pick| {
                 let message = match pick {
@@ -708,6 +726,8 @@ impl Votes {
                 )
             },
             true,
+            game.filter(|game| may_star(game))
+                .map(|game| game::star_button(game.vote.starred, Some(Message::Star))),
         )
         .width(Fill);
 
@@ -1187,6 +1207,11 @@ fn scroll_target(index: usize, offset: f32, height: f32) -> Option<f32> {
     }
 }
 
+/// A game you have cannot get a star, and S leaves it alone.
+fn may_star(game: &VotedGame) -> bool {
+    !game.owned
+}
+
 fn scrolled_by_popup(message: Message, popup_open: bool) -> Message {
     match message {
         Message::Previous if popup_open => Message::Showcase(showcase::Message::ScrollUp),
@@ -1202,6 +1227,7 @@ fn stopped_by_popup(message: &Message) -> bool {
             | Message::Next
             | Message::Vote(_)
             | Message::Played
+            | Message::Star
             | Message::Open(_)
             | Message::FocusSearch
             | Message::ToggleFilters
@@ -1215,6 +1241,7 @@ fn acts_on_the_page(message: &Message) -> bool {
             | Message::Next
             | Message::Vote(_)
             | Message::Played
+            | Message::Star
             | Message::Open(_)
             | Message::FocusSearch
             | Message::Showcase(
@@ -1281,6 +1308,7 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         Key::Character(character) if character.eq_ignore_ascii_case("j") => {
             Some(Message::Showcase(showcase::Message::ScrollDown))
         }
+        Key::Character(character) if game::star_key(&character) => Some(Message::Star),
         Key::Character(character) => game::pick_key(&character)
             .map(|pick| match pick {
                 Pick::Played => Message::Played,
@@ -2018,10 +2046,35 @@ mod tests {
     }
 
     #[test]
+    fn s_stars_the_game_in_either_case_and_ctrl_s_does_nothing() {
+        for key in ["s", "S"] {
+            assert!(matches!(
+                key_message(pressed(Key::Character(key.into()))),
+                Some(Message::Star)
+            ));
+        }
+        assert!(key_message(pressed_with(Key::Character("s".into()), Modifiers::CTRL)).is_none());
+    }
+
+    #[test]
+    fn a_game_you_have_cannot_get_a_star() {
+        let mut game = voted(1, "Hades", VoteKind::WouldTry, "2026-10-01", false);
+        assert!(may_star(&game));
+        game.owned = true;
+        assert!(!may_star(&game));
+    }
+
+    #[test]
+    fn an_open_popup_stops_the_star() {
+        assert!(stopped_by_popup(&Message::Star));
+    }
+
+    #[test]
     fn the_open_filters_stop_the_keys_of_the_page() {
         let number = key_message(pressed(Key::Character("1".into()))).unwrap();
 
         assert!(acts_on_the_page(&number));
+        assert!(acts_on_the_page(&Message::Star));
         for message in [
             Message::Next,
             Message::Previous,

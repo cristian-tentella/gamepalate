@@ -21,6 +21,7 @@ const DESCENT: f32 = 0.316;
 pub const ICONS: Font = Font::with_name("Material Symbols Outlined");
 pub const THUMB_UP: char = '\u{E8DC}';
 pub const THUMB_DOWN: char = '\u{E8DB}';
+pub const STAR: char = '\u{E838}';
 
 pub const REGULAR: Font = Font::with_name("Atkinson Hyperlegible Next");
 pub const SEMIBOLD: Font = Font {
