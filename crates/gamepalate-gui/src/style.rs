@@ -227,6 +227,11 @@ pub enum Segment {
     First,
     Middle,
     Last,
+    // The four corners of a grid of segments.
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
 }
 
 impl Segment {
@@ -238,6 +243,10 @@ impl Segment {
             Segment::First => border::Radius::default().left(inner),
             Segment::Middle => border::Radius::default(),
             Segment::Last => border::Radius::default().right(inner),
+            Segment::TopLeft => border::Radius::default().top_left(inner),
+            Segment::TopRight => border::Radius::default().top_right(inner),
+            Segment::BottomLeft => border::Radius::default().bottom_left(inner),
+            Segment::BottomRight => border::Radius::default().bottom_right(inner),
         }
     }
 }

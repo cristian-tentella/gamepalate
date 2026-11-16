@@ -10,7 +10,7 @@ use gamepalate_app::{
     VotedGame, VotesOrder, VotesSettings, VotesShow,
 };
 use iced::{
-    Center, Element, Event, Fill, Length, Size, Subscription, Task, event,
+    Center, Element, Event, Fill, Size, Subscription, Task, event,
     keyboard::{self, Key, key::Named},
     never, padding,
     widget::{
@@ -32,9 +32,16 @@ use super::{
 };
 use crate::{font, format, style};
 
-// One segmented row; each segment is as wide as its text asks, so "Not for me 1,185" fits.
-const FILTERS: [Filter; 3] = [Filter::WouldTry, Filter::NotForMe, Filter::All];
+// Two rows of two equal segments: four in one row would not fit the 340 px of the list.
+const FILTERS: [Filter; 4] = [
+    Filter::Starred,
+    Filter::WouldTry,
+    Filter::NotForMe,
+    Filter::All,
+];
 const SEGMENT_HEIGHT: f32 = 26.0;
+// Two rows, the seam between them and the padding inside the border.
+const SEGMENTS_HEIGHT: f32 = 2.0 * SEGMENT_HEIGHT + 1.0 + 2.0;
 const ORDERS: [Order; 4] = [
     Order::Newest,
     Order::Price,
@@ -52,6 +59,8 @@ const SCROLLBAR_GAP: f32 = 12.0;
 const SIGN_SIZE: f32 = 11.0;
 const SIGN_WIDTH: f32 = 18.0;
 const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–3.";
+const NO_STARRED: &str = "No starred games";
+const STARRED_HINT: &str = "Press S on a game you are thinking of buying";
 
 pub struct Votes {
     gamepalate: Arc<Gamepalate>,
@@ -80,6 +89,8 @@ pub struct Votes {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Filter {
+    /// The Would try votes with the star.
+    Starred,
     WouldTry,
     NotForMe,
     /// Every vote, the Laters too.
@@ -417,23 +428,11 @@ impl Votes {
 
     fn list(&self) -> Element<'_, Message> {
         let searching = !self.search.trim().is_empty();
-        let segments = FILTERS
-            .iter()
-            .enumerate()
-            .fold(row![], |segments, (index, &filter)| {
-                let count = count(&self.games, filter, self.shown());
-                let label = format!("{} {}", filter_label(filter), format::count(count as u32));
-                let portion = segment_portion(&label);
-                let segment = button(
-                    text(label)
-                        .size(font::NOTE_SIZE)
-                        .wrapping(Wrapping::None)
-                        .width(Fill)
-                        .height(Fill)
-                        .align_x(Center)
-                        .align_y(Center),
-                )
-                .width(Length::FillPortion(portion))
+        let segment = |index: usize| -> Element<'_, Message> {
+            let filter = FILTERS[index];
+            let count = format::count(count(&self.games, filter, self.shown()) as u32);
+            let segment = button(container(segment_label(filter, count)).center(Fill))
+                .width(Fill)
                 .height(Fill)
                 .padding([0, 4])
                 .style(style::segment(
@@ -441,13 +440,38 @@ impl Votes {
                     segment_place(index),
                 ))
                 .on_press(Message::Filter(filter));
-                let seam = (index > 0).then(|| rule::vertical(1).style(style::vote_seam));
-                segments.push(seam).push(segment)
-            });
-        let filters = container(segments.height(Fill))
-            .height(SEGMENT_HEIGHT)
-            .padding(1)
-            .style(style::vote_group);
+            if filter == Filter::Starred {
+                tooltip(
+                    segment,
+                    container(text(filter_label(filter)).size(font::NOTE_SIZE))
+                        .padding([6, 10])
+                        .style(style::popup),
+                    tooltip::Position::Bottom,
+                )
+                .into()
+            } else {
+                segment.into()
+            }
+        };
+        let segments = |first: usize| {
+            row![
+                segment(first),
+                rule::vertical(1).style(style::vote_seam),
+                segment(first + 1)
+            ]
+            .height(Fill)
+        };
+        let filters = container(
+            column![
+                segments(0),
+                rule::horizontal(1).style(style::vote_seam),
+                segments(2)
+            ]
+            .height(Fill),
+        )
+        .height(SEGMENTS_HEIGHT)
+        .padding(1)
+        .style(style::vote_group);
         let search = text_input("Search (/)", &self.search)
             .style(style::field)
             .id(SEARCH)
@@ -531,8 +555,11 @@ impl Votes {
                     .style(style::link)
                     .on_press(Message::ResetFilters)
             });
+            let hint = (note == NO_STARRED)
+                .then(|| text(STARRED_HINT).size(font::NOTE_SIZE).style(style::muted));
             container(
                 column![text(note).size(font::NOTE_SIZE).style(style::muted)]
+                    .push(hint)
                     .push(reset)
                     .spacing(8),
             )
@@ -584,9 +611,16 @@ impl Votes {
         });
         let later =
             (sign == Some(Sign::Later)).then(|| note("Later ·".to_string()).style(style::muted));
+        let star = shows_star(self.filter, &game.vote).then(|| {
+            text(font::STAR)
+                .font(font::ICONS)
+                .size(font::icon(SIGN_SIZE))
+                .style(style::muted)
+        });
         let name = container(
             row![]
                 .push(later)
+                .push(star)
                 .push(
                     text(&game.name)
                         .size(font::BAR_SIZE)
@@ -896,15 +930,17 @@ impl Votes {
 impl Filter {
     fn keeps(self, vote: &Vote) -> bool {
         match self {
+            Filter::Starred => vote.kind == VoteKind::WouldTry && vote.starred,
             Filter::WouldTry => vote.kind == VoteKind::WouldTry,
             Filter::NotForMe => vote.kind == VoteKind::NotForMe,
             Filter::All => true,
         }
     }
 
-    /// The segment of a vote; a Later has none of its own, so it shows in All.
+    /// The segment of a vote; a Later has none of its own, so it shows in All. A starred vote
+    /// goes to Starred, the segment that tells most about it.
     fn of(vote: &Vote) -> Filter {
-        [Filter::WouldTry, Filter::NotForMe]
+        [Filter::Starred, Filter::WouldTry, Filter::NotForMe]
             .into_iter()
             .find(|filter| filter.keeps(vote))
             .unwrap_or(Filter::All)
@@ -928,9 +964,27 @@ pub(super) fn by_id(games: Vec<VotedGame>) -> BTreeMap<AppId, VotedGame> {
 
 fn filter_label(filter: Filter) -> &'static str {
     match filter {
+        Filter::Starred => "Starred",
         Filter::WouldTry => format::pick(Pick::Vote(VoteKind::WouldTry)),
         Filter::NotForMe => format::pick(Pick::Vote(VoteKind::NotForMe)),
         Filter::All => "All",
+    }
+}
+
+/// What a segment says: the star and the count for Starred, the name and the count for the rest.
+fn segment_label<'a>(filter: Filter, count: String) -> Element<'a, Message> {
+    let note = |line: String| text(line).size(font::NOTE_SIZE).wrapping(Wrapping::None);
+    match filter {
+        Filter::Starred => row![
+            text(font::STAR)
+                .font(font::ICONS)
+                .size(font::icon(SIGN_SIZE)),
+            note(count)
+        ]
+        .spacing(4)
+        .align_y(Center)
+        .into(),
+        filter => note(format!("{} {count}", filter_label(filter))).into(),
     }
 }
 
@@ -964,6 +1018,11 @@ fn vote_sign(filter: Filter, vote: &Vote) -> Option<Sign> {
     })
 }
 
+/// The small star before a name: in Would try and in All, where the segment does not say it.
+fn shows_star(filter: Filter, vote: &Vote) -> bool {
+    vote.starred && matches!(filter, Filter::WouldTry | Filter::All)
+}
+
 fn price_text(price: Option<Price>, currency: &Currency) -> String {
     price.map_or_else(|| "—".to_string(), |price| format::price(&price, currency))
 }
@@ -976,6 +1035,7 @@ fn opening_chip(saved: &VotesSettings, chosen: Option<Filter>) -> (Filter, Votes
 impl From<VotesShow> for Filter {
     fn from(show: VotesShow) -> Filter {
         match show {
+            VotesShow::Starred => Filter::Starred,
             VotesShow::WouldTry => Filter::WouldTry,
             VotesShow::NotForMe => Filter::NotForMe,
             VotesShow::All => Filter::All,
@@ -986,6 +1046,7 @@ impl From<VotesShow> for Filter {
 impl From<Filter> for VotesShow {
     fn from(filter: Filter) -> VotesShow {
         match filter {
+            Filter::Starred => VotesShow::Starred,
             Filter::WouldTry => VotesShow::WouldTry,
             Filter::NotForMe => VotesShow::NotForMe,
             Filter::All => VotesShow::All,
@@ -1032,16 +1093,13 @@ fn filters_summary(
     format::filters(&search_options(filters, only_bets), currency)
 }
 
-/// A segment's share of the row: as many parts as its text has characters.
-fn segment_portion(label: &str) -> u16 {
-    u16::try_from(label.chars().count()).unwrap_or(u16::MAX)
-}
-
+/// The corner of the grid a segment sits in, counting along the rows.
 fn segment_place(index: usize) -> style::Segment {
     match index {
-        0 => style::Segment::First,
-        index if index + 1 == FILTERS.len() => style::Segment::Last,
-        _ => style::Segment::Middle,
+        0 => style::Segment::TopLeft,
+        1 => style::Segment::TopRight,
+        2 => style::Segment::BottomLeft,
+        _ => style::Segment::BottomRight,
     }
 }
 
@@ -1182,13 +1240,17 @@ fn empty_text(
     } else if filtered {
         match filter {
             Filter::All => "No votes match the filters".to_string(),
+            Filter::Starred => "No starred games match the filters".to_string(),
             _ => format!("No {} votes match the filters", filter_label(filter)),
         }
     } else if owned_hidden {
         match filter {
             Filter::All => "You own all your voted games".to_string(),
+            Filter::Starred => "You own all your starred games".to_string(),
             _ => format!("You own all your {} games", filter_label(filter)),
         }
+    } else if filter == Filter::Starred {
+        NO_STARRED.to_string()
     } else {
         format!("No {} votes", filter_label(filter))
     }
@@ -1514,11 +1576,147 @@ mod tests {
     }
 
     #[test]
-    fn the_segments_are_as_wide_as_their_text() {
-        assert_eq!(segment_portion("Not for me 1,185"), 16);
-        assert_eq!(segment_place(0), style::Segment::First);
-        assert_eq!(segment_place(1), style::Segment::Middle);
-        assert_eq!(segment_place(2), style::Segment::Last);
+    fn the_segments_sit_in_the_four_corners_of_the_grid() {
+        assert_eq!(FILTERS.len(), 4);
+        assert_eq!(segment_place(0), style::Segment::TopLeft);
+        assert_eq!(segment_place(1), style::Segment::TopRight);
+        assert_eq!(segment_place(2), style::Segment::BottomLeft);
+        assert_eq!(segment_place(3), style::Segment::BottomRight);
+        assert_eq!(FILTERS[0], Filter::Starred);
+    }
+
+    fn starred(mut game: VotedGame) -> VotedGame {
+        game.vote.starred = true;
+        game
+    }
+
+    fn with_stars() -> BTreeMap<AppId, VotedGame> {
+        let mut games = games();
+        let mut owned = starred(voted(6, "Hades", VoteKind::WouldTry, "2026-10-05", false));
+        owned.owned = true;
+        games.extend(by_id(vec![
+            starred(voted(7, "Tunic", VoteKind::WouldTry, "2026-10-25", true)),
+            starred(voted(8, "Celeste", VoteKind::WouldTry, "2026-10-30", false)),
+            owned,
+        ]));
+        games.get_mut(&AppId(2)).unwrap().vote.starred = true;
+        games
+    }
+
+    #[test]
+    fn the_starred_segment_keeps_the_would_try_votes_with_the_star() {
+        let games = with_stars();
+
+        assert_eq!(
+            rows(
+                &games,
+                Filter::Starred,
+                Order::Newest,
+                Shown::default(),
+                "",
+                None
+            ),
+            ids(&[8, 7, 2, 6])
+        );
+        assert_eq!(count(&games, Filter::Starred, Shown::default()), 4);
+        assert_eq!(count(&games, Filter::WouldTry, Shown::default()), 6);
+        assert_eq!(count(&games, Filter::All, Shown::default()), 8);
+    }
+
+    #[test]
+    fn the_starred_count_follows_hide_owned_bets_only_and_the_filters() {
+        let games = with_stars();
+        let passing = set(&[2, 8]);
+
+        assert_eq!(count(&games, Filter::Starred, HIDE_OWNED), 3);
+        assert_eq!(count(&games, Filter::Starred, BETS_ONLY), 2);
+        assert_eq!(count(&games, Filter::Starred, passing_only(&passing)), 2);
+        assert_eq!(
+            rows(&games, Filter::Starred, Order::Newest, HIDE_OWNED, "", None),
+            ids(&[8, 7, 2])
+        );
+        assert_eq!(
+            rows(&games, Filter::Starred, Order::Newest, BETS_ONLY, "", None),
+            ids(&[7, 2])
+        );
+        assert_eq!(
+            rows(
+                &games,
+                Filter::Starred,
+                Order::Price,
+                passing_only(&passing),
+                "",
+                None
+            ),
+            ids(&[2, 8])
+        );
+    }
+
+    #[test]
+    fn a_game_that_loses_the_star_leaves_the_starred_segment() {
+        let mut games = with_stars();
+        games.get_mut(&AppId(7)).unwrap().vote.starred = false;
+        let rows = rows(
+            &games,
+            Filter::Starred,
+            Order::Newest,
+            Shown::default(),
+            "",
+            None,
+        );
+
+        assert_eq!(rows, ids(&[8, 2, 6]));
+        assert_eq!(kept_selection(&rows, Some(AppId(7)), 1), 1);
+    }
+
+    #[test]
+    fn a_starred_vote_opens_on_the_starred_segment() {
+        let mut vote = Vote::new(VoteKind::WouldTry, "2026-11-16");
+        vote.starred = true;
+
+        assert_eq!(Filter::of(&vote), Filter::Starred);
+        assert_eq!(
+            Filter::of(&Vote::new(VoteKind::WouldTry, "2026-11-16")),
+            Filter::WouldTry
+        );
+    }
+
+    #[test]
+    fn the_small_star_shows_only_in_would_try_and_in_all() {
+        let mut vote = Vote::new(VoteKind::WouldTry, "2026-11-16");
+        let plain = vote.clone();
+        vote.starred = true;
+
+        assert!(shows_star(Filter::WouldTry, &vote));
+        assert!(shows_star(Filter::All, &vote));
+        assert!(!shows_star(Filter::Starred, &vote));
+        assert!(!shows_star(Filter::NotForMe, &vote));
+        assert!(!shows_star(Filter::WouldTry, &plain));
+        assert!(!shows_star(Filter::All, &plain));
+    }
+
+    #[test]
+    fn the_starred_segment_says_why_it_is_empty() {
+        assert_eq!(
+            empty_text(false, Filter::Starred, false, false, ""),
+            NO_STARRED
+        );
+        assert_eq!(
+            empty_text(false, Filter::Starred, true, false, ""),
+            "No starred games match the filters"
+        );
+        assert_eq!(
+            empty_text(false, Filter::Starred, false, true, ""),
+            "You own all your starred games"
+        );
+        assert_eq!(
+            empty_text(false, Filter::Starred, false, false, "hades"),
+            "No votes match \"hades\""
+        );
+        assert_eq!(
+            empty_text(true, Filter::Starred, false, false, ""),
+            NO_VOTES
+        );
     }
 
     #[test]
