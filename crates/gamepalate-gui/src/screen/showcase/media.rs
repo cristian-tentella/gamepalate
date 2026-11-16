@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use ::image::imageops::FilterType;
 use gamepalate_app::{AppId, ImageKind, original_screenshot, thumbnail_screenshot};
@@ -198,6 +201,32 @@ impl Showcase {
             wanted
                 .into_iter()
                 .map(|(version, url)| self.load_version(version, url)),
+        )
+    }
+
+    /// The blurred first screenshot of the games coming up, so it is already there when one of
+    /// them is shown. The blurred ones of games no longer nearby are dropped.
+    pub(super) fn load_first_thumbnails(
+        &mut self,
+        upcoming: &[AppId],
+        nearby: &[AppId],
+    ) -> Task<Message> {
+        let mut kept: Vec<&String> = Vec::new();
+        for &id in upcoming.iter().chain(nearby) {
+            kept.extend(self.screenshots(id));
+        }
+        let kept: HashSet<String> = kept.into_iter().cloned().collect();
+        self.thumbnails.retain(|url, _| kept.contains(url));
+
+        let first: Vec<String> = upcoming
+            .iter()
+            .filter_map(|&id| self.first_screenshot(id))
+            .collect();
+
+        Task::batch(
+            first
+                .into_iter()
+                .map(|url| self.load_version(Version::Thumbnail, url)),
         )
     }
 
