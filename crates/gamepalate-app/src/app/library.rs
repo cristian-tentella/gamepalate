@@ -7,6 +7,7 @@ use gamepalate_core::{
 
 use super::Gamepalate;
 use crate::{
+    catalog_search::game_in,
     discover_place::{DiscoverPlace, discover_place},
     library::{
         FoundGame, GameCorrection, GameCorrectionError, GameView, LibraryView,
@@ -80,6 +81,12 @@ impl Gamepalate {
         let ids = self.names.find(text, &self.files.catalog);
         let now = Timestamp(jiff::Timestamp::now().as_millisecond());
         self.with_inputs(|inputs| found_games(&ids, inputs, now))
+    }
+
+    /// The game an appid or a store link names, when it is in the catalog: what Enter opens in
+    /// Browse when the name leaves no row.
+    pub fn game_in(&self, text: &str) -> Option<AppId> {
+        game_in(text, &self.files.catalog)
     }
 
     /// How many games of the library under `min_hours` the Backlog can show.

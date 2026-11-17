@@ -1,4 +1,5 @@
 mod account;
+mod browse;
 mod config;
 mod families;
 mod library;
@@ -46,6 +47,7 @@ use crate::{
     images::{ImageCache, cache_dir},
     log::{failed, known_converted},
 };
+pub use browse::BrowseRow;
 pub use votes::{StarError, VoteError, VotedGame};
 
 pub(crate) const GUI_FILE: &str = "gui.toml";

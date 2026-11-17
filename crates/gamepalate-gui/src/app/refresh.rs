@@ -328,7 +328,7 @@ impl App {
                     let entered = self.enter(gamepalate);
                     return Task::batch([read, entered]);
                 }
-                let placed = self.game_page_uses(&gamepalate);
+                let placed = self.new_gamepalate(&gamepalate);
                 self.gamepalate = Some(gamepalate);
                 self.parked = None;
                 self.find_pending();
@@ -454,7 +454,7 @@ impl App {
         if let Some(parked) = &mut self.parked {
             parked.use_gamepalate(self.gamepalate.as_deref(), &gamepalate);
         }
-        let placed = self.game_page_uses(&gamepalate);
+        let placed = self.new_gamepalate(&gamepalate);
         self.gamepalate = Some(gamepalate);
         self.find_pending();
         placed

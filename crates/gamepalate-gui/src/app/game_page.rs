@@ -109,6 +109,15 @@ impl GamePage {
         self.changed
     }
 
+    pub fn id(&self) -> AppId {
+        self.game.id
+    }
+
+    /// The blurred picture of the page under the sheet, if the window is still the same size.
+    pub fn backdrop(&self) -> Option<image::Handle> {
+        self.backdrop.clone()
+    }
+
     /// The blurred page no longer fits the window: the veil stays alone.
     pub fn resized(&mut self) {
         self.backdrop = None;
@@ -560,14 +569,15 @@ impl Place {
     }
 }
 
-/// A game of the Library is played already: 4 is not offered there.
-fn sheet_size(area: Size) -> Size {
+/// The sheet in `area`, the size below the top bar. Browse takes the same size.
+pub(super) fn sheet_size(area: Size) -> Size {
     Size::new(
         (area.width * SHEET_SHARE).min(SHEET_MAX_WIDTH),
         area.height * SHEET_SHARE,
     )
 }
 
+/// A game of the Library is played already: 4 is not offered there.
 fn offers_played(game: &GameView) -> bool {
     !game.in_library
 }

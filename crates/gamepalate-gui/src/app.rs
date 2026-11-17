@@ -86,6 +86,8 @@ pub struct App {
     search: Search,
     account: Account,
     game_page: Option<Box<GamePage>>,
+    /// The game on the sheet was picked in Browse: the sheet goes back to it.
+    game_from_browse: bool,
     parked: Option<Parked>,
 }
 
@@ -187,6 +189,7 @@ impl App {
             search: Search::default(),
             account: Account::default(),
             game_page: None,
+            game_from_browse: false,
             parked: None,
         };
         let task = match setup::start(FirstRun::check(None)) {
@@ -231,6 +234,7 @@ impl App {
             Message::Navigate(page) if self.page() == Some(page) => {
                 self.search.close();
                 self.account.close();
+                self.game_from_browse = false;
                 let changed = self.game_page.take().is_some_and(|page| page.changed());
                 self.close_game_page(changed)
             }
@@ -240,7 +244,7 @@ impl App {
                 Some(window) => {
                     window::screenshot(window).map(move |shot| Message::SimilarShot(id, shot))
                 }
-                None => self.open_game(id, None),
+                None => self.open_game(id, None, false),
             },
             Message::SimilarShot(id, screenshot) => Task::perform(
                 async move {
@@ -251,7 +255,7 @@ impl App {
                 },
                 move |handle| Message::SimilarBlurred(id, handle),
             ),
-            Message::SimilarBlurred(id, handle) => self.open_game(id, handle),
+            Message::SimilarBlurred(id, handle) => self.open_game(id, handle, false),
             // A Discover set aside still gets the answers of what it started
             Message::Discover(message) => {
                 let discover = match &mut self.screen {
@@ -351,7 +355,7 @@ impl App {
                 if let Screen::Settings(screen) = &mut self.screen {
                     screen.reopened(&gamepalate);
                 }
-                let placed = self.game_page_uses(&gamepalate);
+                let placed = self.new_gamepalate(&gamepalate);
                 let account = self.account.load(&gamepalate).map(Message::Account);
                 self.gamepalate = Some(gamepalate);
                 self.parked = None;
@@ -382,9 +386,13 @@ impl App {
                     .update(message, gamepalate, self.window, PAGE_TOP)
                 {
                     search::Action::Run(task) => task.map(Message::Search),
-                    search::Action::Open(id, backdrop) => {
+                    search::Action::Open {
+                        id,
+                        backdrop,
+                        from_browse,
+                    } => {
                         let saving = self.save_settings();
-                        Task::batch([self.open_game(id, backdrop), saving])
+                        Task::batch([self.open_game(id, backdrop, from_browse), saving])
                     }
                 }
             }
@@ -404,9 +412,10 @@ impl App {
                 let Some(page) = &mut self.game_page else {
                     return Task::none();
                 };
+                let (id, backdrop) = (page.id(), page.backdrop());
                 match page.update(message) {
                     game_page::Action::Run(task) => task.map(Message::GamePage),
-                    game_page::Action::Close { changed } => self.close_game_page(changed),
+                    game_page::Action::Close { changed } => self.leave_game(id, changed, backdrop),
                 }
             }
             Message::Setup(message) => {
@@ -639,8 +648,12 @@ impl App {
         let area = Size::new(self.resized.width, self.resized.height - PAGE_TOP);
         let content = stack![content]
             .push(self.game_page.as_ref().map(|page| {
-                page.view(self.scale, area, page_name(self.page()))
-                    .map(Message::GamePage)
+                page.view(
+                    self.scale,
+                    area,
+                    under_name(self.page(), self.game_from_browse),
+                )
+                .map(Message::GamePage)
             }))
             .push(
                 self.search
@@ -724,6 +737,7 @@ impl App {
         self.search.close();
         self.account.close();
         self.game_page = None;
+        self.game_from_browse = false;
         let saving = self.save_settings();
 
         Task::batch([self.open(page), saving])
@@ -800,23 +814,62 @@ impl App {
     }
 
     /// A game found by name opens over the page, which keeps its state. A game out of the catalog
-    /// has no page of its own: it opens where it is.
-    fn open_game(&mut self, id: AppId, backdrop: Option<image::Handle>) -> Task<Message> {
+    /// has no page of its own: it opens where it is. A game opened from the page of one that came
+    /// from Browse goes back to Browse too.
+    fn open_game(
+        &mut self,
+        id: AppId,
+        backdrop: Option<image::Handle>,
+        from_browse: bool,
+    ) -> Task<Message> {
         let Some(gamepalate) = &self.gamepalate else {
             return Task::none();
         };
         let Some((page, task)) = GamePage::new(gamepalate, id, backdrop) else {
             return self.show_game(id);
         };
-        let changed = self.game_page.take().is_some_and(|page| page.changed());
+        let from_browse = from_browse || (self.game_page.is_some() && self.game_from_browse);
+        let left = self.game_page.take();
+        if let Some(left) = &left
+            && left.changed()
+            && self.game_from_browse
+        {
+            self.search.game_changed(gamepalate, left.id());
+        }
+        let changed = left.is_some_and(|page| page.changed());
         let refreshed = self.close_game_page(changed);
         self.game_page = Some(Box::new(page));
+        self.game_from_browse = from_browse;
 
         Task::batch([refreshed, task.map(Message::GamePage)])
     }
 
-    /// The page of a game saves on the new facade, and finds its place in Discover again.
-    fn game_page_uses(&mut self, gamepalate: &Arc<Gamepalate>) -> Task<Message> {
+    /// The page of a game closes. If the game was picked in Browse, its row takes the new
+    /// standing and the panel opens again on the table, in the same update, over the blurred
+    /// picture the sheet was holding: the page under is never seen sharp in between.
+    fn leave_game(
+        &mut self,
+        id: AppId,
+        changed: bool,
+        backdrop: Option<image::Handle>,
+    ) -> Task<Message> {
+        let from_browse = std::mem::take(&mut self.game_from_browse);
+        let closed = self.close_game_page(changed);
+        let Some(gamepalate) = self.gamepalate.as_ref().filter(|_| from_browse) else {
+            return closed;
+        };
+        if changed {
+            self.search.game_changed(gamepalate, id);
+        }
+        let reopened = self.search.reopen(gamepalate, backdrop);
+
+        Task::batch([closed, reopened.map(Message::Search)])
+    }
+
+    /// The page of a game saves on the new facade, and finds its place in Discover again. The
+    /// list of Browse is made again the next time it opens.
+    fn new_gamepalate(&mut self, gamepalate: &Arc<Gamepalate>) -> Task<Message> {
+        self.search.use_gamepalate();
         match &mut self.game_page {
             Some(page) => page.use_gamepalate(gamepalate).map(Message::GamePage),
             None => Task::none(),
@@ -873,6 +926,15 @@ impl App {
         .style(style::tab(current))
         .on_press_maybe((!current || self.game_page.is_some()).then_some(Message::Navigate(page)))
         .into()
+    }
+}
+
+/// Where a game's sheet goes back to: Browse for a game picked there, else the page under it.
+fn under_name(page: Option<Page>, from_browse: bool) -> &'static str {
+    if from_browse {
+        "Browse"
+    } else {
+        page_name(page)
     }
 }
 
@@ -1107,6 +1169,15 @@ mod tests {
         assert_eq!(page_name(Some(Page::Library)), "Library");
         assert_eq!(page_name(Some(Page::Votes)), "Votes");
         assert_eq!(page_name(None), "Discover");
+    }
+
+    #[test]
+    fn the_sheet_of_a_game_picked_in_browse_goes_back_to_browse() {
+        assert_eq!(under_name(Some(Page::Discover), true), "Browse");
+        assert_eq!(under_name(Some(Page::Library), true), "Browse");
+        assert_eq!(under_name(Some(Page::Discover), false), "Discover");
+        assert_eq!(under_name(Some(Page::Votes), false), "Votes");
+        assert_eq!(under_name(None, false), "Discover");
     }
 
     #[test]

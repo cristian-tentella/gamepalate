@@ -1,4 +1,7 @@
-use std::cmp::Reverse;
+use std::{
+    cmp::Reverse,
+    sync::{Arc, OnceLock},
+};
 
 use gamepalate_core::{catalog::Catalog, ids::AppId};
 
@@ -10,6 +13,14 @@ pub const MAX_MATCHES: usize = 8;
 #[derive(Debug)]
 pub(crate) struct NameIndex {
     entries: Vec<Entry>,
+    /// The entry of each game, by its position in `Catalog::games`.
+    slots: Vec<u32>,
+    /// Where the name of each game falls among all the names, by position. Made the first time
+    /// a list is put in order by name.
+    ranks: OnceLock<Vec<u32>>,
+    /// The names to show, by position. Made the first time a list is built, so a row costs a
+    /// count and not a copy of the name.
+    shown: OnceLock<Vec<Arc<str>>>,
 }
 
 #[derive(Debug)]
@@ -18,20 +29,78 @@ struct Entry {
     name: Box<str>,
 }
 
+/// A text to look for in all the names, already folded. Never empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NameQuery(String);
+
 impl NameIndex {
     pub(crate) fn new(catalog: &Catalog) -> NameIndex {
-        let mut games: Vec<_> = catalog.games().iter().collect();
-        games.sort_by_key(|game| (Reverse(game.reviews.total), game.id));
+        let mut games: Vec<_> = catalog.games().iter().enumerate().collect();
+        games.sort_by_key(|(_, game)| (Reverse(game.reviews.total), game.id));
 
-        NameIndex {
-            entries: games
-                .into_iter()
-                .map(|game| Entry {
+        let mut slots = vec![0; games.len()];
+        let entries = games
+            .into_iter()
+            .enumerate()
+            .map(|(slot, (position, game))| {
+                slots[position] = slot as u32;
+                Entry {
                     id: game.id,
                     name: folded(game.name.trim()).into_boxed_str(),
-                })
-                .collect(),
+                }
+            })
+            .collect();
+
+        NameIndex {
+            entries,
+            slots,
+            ranks: OnceLock::new(),
+            shown: OnceLock::new(),
         }
+    }
+
+    /// What to look for in all the names for `text`; none for a text that is empty. Unlike a
+    /// search, it has no minimum of characters.
+    pub(crate) fn query(text: &str) -> Option<NameQuery> {
+        let text = folded(text.trim());
+        (!text.is_empty()).then_some(NameQuery(text))
+    }
+
+    /// Whether the name of the game at `position` in `Catalog::games` has the text in it.
+    pub(crate) fn matches(&self, position: usize, query: &NameQuery) -> bool {
+        self.entries[self.slots[position] as usize]
+            .name
+            .contains(&query.0)
+    }
+
+    /// The name of each game as the catalog has it, by position in `Catalog::games`. The catalog
+    /// must be the one the index was made for.
+    pub(crate) fn shown_names(&self, catalog: &Catalog) -> &[Arc<str>] {
+        let names = self.shown.get_or_init(|| {
+            catalog
+                .games()
+                .iter()
+                .map(|game| Arc::from(&*game.name))
+                .collect()
+        });
+        debug_assert_eq!(names.len(), self.slots.len());
+        names
+    }
+
+    /// Where the name of each game falls among all the names, by position in `Catalog::games`:
+    /// the same folded names the search uses, and the lower appid first when two are equal.
+    pub(crate) fn name_ranks(&self) -> &[u32] {
+        self.ranks.get_or_init(|| {
+            let name_at =
+                |position: u32| &self.entries[self.slots[position as usize] as usize].name;
+            let mut positions: Vec<u32> = (0..self.slots.len() as u32).collect();
+            positions.sort_unstable_by(|&a, &b| name_at(a).cmp(name_at(b)).then(a.cmp(&b)));
+            let mut ranks = vec![0; positions.len()];
+            for (rank, position) in positions.into_iter().enumerate() {
+                ranks[position as usize] = rank as u32;
+            }
+            ranks
+        })
     }
 
     /// The games of the whole catalog for `text`: the game of an appid or of a store link when
@@ -78,6 +147,11 @@ impl NameIndex {
             .take(MAX_MATCHES)
             .collect()
     }
+}
+
+/// The game of the catalog that an appid or a store link in `text` names, if there is one.
+pub(crate) fn game_in(text: &str, catalog: &Catalog) -> Option<AppId> {
+    catalog.game(appid_in(text)?).map(|game| game.id)
 }
 
 /// The appid in a text that is only digits (`10`) or has `/app/<digits>` in it, like the
@@ -271,6 +345,25 @@ mod tests {
     }
 
     #[test]
+    fn only_an_appid_or_a_link_names_a_game_in_the_catalog() {
+        let catalog = catalog(vec![
+            game(1145360, "Hades", 10),
+            game(10, "Counter-Strike", 10),
+        ]);
+
+        assert_eq!(game_in("10", &catalog), Some(AppId(10)));
+        assert_eq!(
+            game_in(
+                "https://store.steampowered.com/app/1145360/Hades/",
+                &catalog
+            ),
+            Some(AppId(1145360))
+        );
+        assert_eq!(game_in("hades", &catalog), None);
+        assert_eq!(game_in("620", &catalog), None);
+    }
+
+    #[test]
     fn a_link_without_an_appid_is_a_name() {
         let games = vec![game(1, "Steam Cleaner", 10)];
 
@@ -285,6 +378,59 @@ mod tests {
 
         assert_eq!(before.search("portal"), [AppId(1)]);
         assert_eq!(after.search("portal"), [AppId(2)]);
+    }
+
+    #[test]
+    fn a_query_is_folded_and_has_no_minimum_of_characters() {
+        assert_eq!(NameIndex::query("  ÁB "), Some(NameQuery("ab".to_string())));
+        assert_eq!(NameIndex::query("x"), Some(NameQuery("x".to_string())));
+        assert_eq!(NameIndex::query(""), None);
+        assert_eq!(NameIndex::query("   "), None);
+    }
+
+    #[test]
+    fn the_name_of_a_position_is_found_whatever_the_order_of_the_search() {
+        // By position the games are 1, 2, 3; the search puts 2 first
+        let games = vec![
+            game(1, "Alpha", 10),
+            game(2, "Pokémon Snap", 900),
+            game(3, "Beta", 50),
+        ];
+        let index = NameIndex::new(&catalog(games));
+        let query = |text| NameIndex::query(text).unwrap();
+
+        assert!(index.matches(1, &query("pokemon")));
+        assert!(!index.matches(0, &query("pokemon")));
+        assert!(index.matches(0, &query("a")));
+        assert!(index.matches(2, &query("et")));
+        assert!(!index.matches(2, &query("alpha")));
+    }
+
+    #[test]
+    fn the_ranks_follow_the_folded_names_and_then_the_appid() {
+        let games = vec![
+            game(1, "Abzz", 10),
+            game(2, "Ábzu", 10),
+            game(3, "Abc", 10),
+            game(4, "ABC", 10),
+            game(5, "Zeta", 10),
+        ];
+        let index = NameIndex::new(&catalog(games));
+
+        // abzz, abzu, abc, abc, zeta
+        assert_eq!(index.name_ranks(), [3, 2, 0, 1, 4]);
+    }
+
+    #[test]
+    fn the_names_to_show_keep_the_case_and_the_accents() {
+        let games = vec![game(2, "Ábzu", 10), game(1, "ABC", 10)];
+        let catalog = catalog(games);
+        let index = NameIndex::new(&catalog);
+
+        let shown: Vec<&str> = index.shown_names(&catalog).iter().map(|n| &**n).collect();
+
+        // By position, that is by appid
+        assert_eq!(shown, ["ABC", "Ábzu"]);
     }
 
     #[test]

@@ -172,6 +172,7 @@ pub struct Panel {
     currency: String,
     filters: FilterOptions,
     only_bets: bool,
+    offers_bets: bool,
     texts: [String; 6],
     error: Option<(Field, String)>,
     tags: combo_box::State<String>,
@@ -191,6 +192,7 @@ impl Panel {
             currency,
             filters: FilterOptions::default(),
             only_bets: false,
+            offers_bets: true,
             texts: Default::default(),
             error: None,
             tags: combo_box::State::new(tags.clone()),
@@ -198,6 +200,12 @@ impl Panel {
         };
         panel.show(options);
         panel
+    }
+
+    /// The panel of a list that has no Bets: Browse lists the whole catalog.
+    pub fn without_bets(mut self) -> Panel {
+        self.offers_bets = false;
+        self
     }
 
     pub fn show(&mut self, options: &SearchOptions) {
@@ -340,7 +348,7 @@ impl Panel {
                 .text_size(font::BAR_SIZE)
                 .on_toggle(Message::EarlyAccess),
         ]
-        .push(
+        .push(self.offers_bets.then(|| {
             row![
                 checkbox(self.only_bets)
                     .label("Bets only")
@@ -349,8 +357,8 @@ impl Panel {
                 bets,
             ]
             .spacing(6)
-            .align_y(Center),
-        )
+            .align_y(Center)
+        }))
         .spacing(SPACING)
         .align_y(Center);
 
@@ -780,6 +788,14 @@ mod tests {
         assert!(changed.only_bets);
         assert_eq!(changed.family.as_deref(), Some("Puzzle"));
         assert_eq!(changed.sort, SortBy::Price);
+    }
+
+    #[test]
+    fn only_the_panel_of_browse_has_no_bets_only() {
+        let options = SearchOptions::default();
+
+        assert!(panel(&options).offers_bets);
+        assert!(!panel(&options).without_bets().offers_bets);
     }
 
     #[test]

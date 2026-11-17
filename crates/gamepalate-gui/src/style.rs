@@ -3,7 +3,7 @@ use iced::{
     overlay::menu,
     padding,
     theme::palette,
-    widget::{button, container, pick_list, progress_bar, rule, text, text_input},
+    widget::{button, container, pick_list, progress_bar, rule, slider, text, text_input},
 };
 
 const BADGE_TINT: f32 = 0.14;
@@ -282,6 +282,84 @@ pub fn vote(flashed: bool, segment: Segment) -> impl Fn(&Theme, button::Status) 
                 color: background.strong.color,
                 width,
                 radius: segment.radius(),
+            },
+            ..button::Style::default()
+        }
+    }
+}
+
+/// The handle of a long list: a thin rail with a wide, short handle that is easy to grab.
+pub fn scrubber(theme: &Theme, status: slider::Status) -> slider::Style {
+    let palette = theme.extended_palette();
+    let handle = match status {
+        slider::Status::Active => palette.background.strong.color,
+        slider::Status::Hovered => palette.primary.weak.color,
+        slider::Status::Dragged => palette.primary.base.color,
+    };
+
+    slider::Style {
+        rail: slider::Rail {
+            backgrounds: (
+                palette.background.weak.color.into(),
+                palette.background.weak.color.into(),
+            ),
+            width: 4.0,
+            border: Border {
+                radius: 2.0.into(),
+                ..Border::default()
+            },
+        },
+        handle: slider::Handle {
+            shape: slider::HandleShape::Rectangle {
+                width: 28,
+                border_radius: 4.0.into(),
+            },
+            background: handle.into(),
+            border_width: 0.0,
+            border_color: Color::TRANSPARENT,
+        },
+    }
+}
+
+/// What a filter chip does to the list: nothing, shows only its games, or hides them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chip {
+    Off,
+    Only,
+    Hide,
+}
+
+/// A pill for a filter: an outline while it does nothing, tinted when it shows only its games
+/// (the accent) or hides them (red).
+pub fn filter_chip(state: Chip) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let palette = theme.extended_palette();
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let (background, text_color, border_color) = match state {
+            Chip::Off => (
+                hovered.then_some(palette.background.weak.color),
+                palette.background.base.text,
+                palette.background.strong.color,
+            ),
+            Chip::Only => (
+                Some(palette.primary.weak.color),
+                palette.primary.weak.text,
+                palette.primary.base.color,
+            ),
+            Chip::Hide => (
+                Some(palette.danger.weak.color),
+                palette.danger.weak.text,
+                palette.danger.base.color,
+            ),
+        };
+
+        button::Style {
+            background: background.map(Into::into),
+            text_color,
+            border: Border {
+                color: border_color,
+                width: 1.0,
+                radius: 999.0.into(),
             },
             ..button::Style::default()
         }
@@ -933,6 +1011,14 @@ pub fn text_button(theme: &Theme, status: button::Status) -> button::Style {
             ..Border::default()
         },
         ..link(theme, status)
+    }
+}
+
+/// A column heading of a table: the hover fills the whole cell, square.
+pub fn column_heading(theme: &Theme, status: button::Status) -> button::Style {
+    button::Style {
+        border: Border::default(),
+        ..text_button(theme, status)
     }
 }
 

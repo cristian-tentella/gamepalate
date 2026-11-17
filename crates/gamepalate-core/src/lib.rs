@@ -1,6 +1,7 @@
 pub mod affinity;
 pub mod automatic_families;
 pub mod best_match;
+pub mod browse;
 pub mod catalog;
 pub mod config;
 pub mod corrections;

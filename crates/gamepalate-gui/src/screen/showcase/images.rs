@@ -5,7 +5,7 @@ use std::{
 
 use iced::widget::image::Allocation;
 
-const MAX_LOADS: usize = 16;
+pub const MAX_LOADS: usize = 16;
 const MAX_PICTURES: usize = 100;
 
 pub enum Picture<T = Allocation> {
@@ -17,13 +17,22 @@ pub enum Picture<T = Allocation> {
 pub struct Images<T = Allocation, K = String> {
     pictures: HashMap<K, Picture<T>>,
     waiting: VecDeque<K>,
+    /// How many pictures are kept before the far ones are forgotten.
+    capacity: usize,
 }
 
 impl<T, K> Default for Images<T, K> {
     fn default() -> Self {
+        Images::with_capacity(MAX_PICTURES)
+    }
+}
+
+impl<T, K> Images<T, K> {
+    pub fn with_capacity(capacity: usize) -> Self {
         Images {
             pictures: HashMap::new(),
             waiting: VecDeque::new(),
+            capacity,
         }
     }
 }
@@ -64,7 +73,7 @@ impl<T, K: Hash + Eq + Clone> Images<T, K> {
     }
 
     pub fn keep_only(&mut self, nearby: &[K]) {
-        if self.pictures.len() <= MAX_PICTURES {
+        if self.pictures.len() <= self.capacity {
             return;
         }
         self.pictures
@@ -148,6 +157,19 @@ mod tests {
         assert!(images.get(&url(1)).is_some());
         assert!(images.get(&url(500)).is_some());
         assert!(images.get(&url(2)).is_none());
+    }
+
+    #[test]
+    fn a_larger_capacity_keeps_more() {
+        let mut images = Images::<u8>::with_capacity(MAX_PICTURES * 2);
+        for id in 1..=MAX_PICTURES as u32 + 1 {
+            images.want(vec![url(id)]);
+            images.loaded(url(id), handle());
+        }
+
+        images.keep_only(&[url(1)]);
+
+        assert!(images.get(&url(2)).is_some());
     }
 
     #[test]
