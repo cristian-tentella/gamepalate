@@ -3,7 +3,7 @@ use iced::{
     overlay::menu,
     padding,
     theme::palette,
-    widget::{button, container, pick_list, progress_bar, rule, text, text_input},
+    widget::{button, container, pick_list, progress_bar, rule, slider, text, text_input},
 };
 
 const BADGE_TINT: f32 = 0.14;
@@ -285,6 +285,39 @@ pub fn vote(flashed: bool, segment: Segment) -> impl Fn(&Theme, button::Status) 
             },
             ..button::Style::default()
         }
+    }
+}
+
+/// The handle of a long list: a thin rail with a wide, short handle that is easy to grab.
+pub fn scrubber(theme: &Theme, status: slider::Status) -> slider::Style {
+    let palette = theme.extended_palette();
+    let handle = match status {
+        slider::Status::Active => palette.background.strong.color,
+        slider::Status::Hovered => palette.primary.weak.color,
+        slider::Status::Dragged => palette.primary.base.color,
+    };
+
+    slider::Style {
+        rail: slider::Rail {
+            backgrounds: (
+                palette.background.weak.color.into(),
+                palette.background.weak.color.into(),
+            ),
+            width: 4.0,
+            border: Border {
+                radius: 2.0.into(),
+                ..Border::default()
+            },
+        },
+        handle: slider::Handle {
+            shape: slider::HandleShape::Rectangle {
+                width: 28,
+                border_radius: 4.0.into(),
+            },
+            background: handle.into(),
+            border_width: 0.0,
+            border_color: Color::TRANSPARENT,
+        },
     }
 }
 

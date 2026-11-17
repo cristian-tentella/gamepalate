@@ -9,10 +9,10 @@ use iced::{
     widget::{
         Id, button, column, container, image, mouse_area, opaque, operation, rich_text, row,
         scrollable,
-        scrollable::{AbsoluteOffset, Viewport},
+        scrollable::{AbsoluteOffset, Direction, Scrollbar, Viewport},
         sensor, space, span, stack, text,
         text::Wrapping,
-        tooltip,
+        tooltip, vertical_slider,
     },
 };
 use jiff::{civil::Date, tz::TimeZone};
@@ -160,6 +160,8 @@ pub enum Message {
     Filters(filters::Message),
     Measured(Size),
     Scrolled(Viewport),
+    /// The scrubber moved to a row position: 0 is the top of the list.
+    Scrub(u32),
     CapsuleLoaded(AppId, Option<image::Handle>),
     CapsuleAllocated(AppId, Option<image::Allocation>),
 }
@@ -224,6 +226,16 @@ impl Browse {
                 self.offset = offset;
                 self.height = Some(viewport.bounds().height);
                 self.load_capsules(gamepalate)
+            }
+            Message::Scrub(position) => {
+                let offset = scrub_offset(position, self.rows.len(), self.height());
+                self.upward = offset < self.offset;
+                self.offset = offset;
+                Task::batch([
+                    scroll_to(offset),
+                    self.load_capsules(gamepalate),
+                    operation::focus(FIELD),
+                ])
             }
             Message::CapsuleLoaded(id, None) => {
                 self.capsules.loaded(id, None);
@@ -850,24 +862,59 @@ impl Browse {
     /// one for those below.
     fn list<'a>(
         &self,
-        row: impl Fn(usize) -> Element<'a, SearchMessage>,
+        row_of: impl Fn(usize) -> Element<'a, SearchMessage>,
     ) -> Element<'a, SearchMessage> {
         let count = self.rows.len();
         let shown = shown(self.offset, self.height(), count);
         let above = rows_height(shown.start);
         let below = rows_height(count - shown.end);
 
-        scrollable(
-            container(
+        row![
+            scrollable(
                 column![space().height(above)]
-                    .extend(shown.map(row))
-                    .push(space().height(below)),
+                    .extend(shown.map(row_of))
+                    .push(space().height(below))
             )
-            .padding(padding::right(SCROLLBAR_GAP)),
+            .id(LIST)
+            .direction(Direction::Vertical(Scrollbar::hidden()))
+            .on_scroll(|viewport| SearchMessage::Browse(Message::Scrolled(viewport)))
+            .width(Fill)
+            .height(Fill),
+            self.scrubber(),
+        ]
+        .into()
+    }
+
+    /// The place in the list, as a handle that is always easy to grab: the bar of a scrollable
+    /// shrinks to 2 px with 100,000 rows. Its tooltip says which rows are in sight.
+    fn scrubber<'a>(&self) -> Element<'a, SearchMessage> {
+        let (count, height) = (self.rows.len(), self.height());
+        let last = scrub_last(count, height);
+        if last == 0 {
+            return space().width(SCROLLBAR_GAP).into();
+        }
+        let position = scrub_position(self.offset, count, height);
+        let seen = visible(self.offset, height, count);
+        let number = |count: usize| format::count(u32::try_from(count).unwrap_or(u32::MAX));
+        let tip = format!(
+            "{}–{} of {}",
+            number(seen.start + 1),
+            number(seen.end),
+            number(count)
+        );
+
+        tooltip(
+            vertical_slider(0..=last, last - position, move |value| {
+                SearchMessage::Browse(Message::Scrub(last - value))
+            })
+            .width(SCROLLBAR_GAP)
+            .height(Fill)
+            .style(style::scrubber),
+            container(text(tip).size(font::NOTE_SIZE))
+                .padding([6, 10])
+                .style(style::popup),
+            tooltip::Position::Left,
         )
-        .id(LIST)
-        .on_scroll(|viewport| SearchMessage::Browse(Message::Scrolled(viewport)))
-        .height(Fill)
         .into()
     }
 
@@ -1145,6 +1192,33 @@ fn wanted(offset: f32, height: f32, count: usize, upward: bool) -> Vec<usize> {
         let ahead = visible.end..(visible.end + screen).min(count);
         visible.chain(ahead).collect()
     }
+}
+
+/// The last position of the scrubber: how many rows the top of the list can go down.
+fn scrub_last(count: usize, height: f32) -> u32 {
+    u32::try_from(count.saturating_sub(page_rows(height))).unwrap_or(u32::MAX)
+}
+
+/// How far the list is scrolled at `position`, from 0 at the top to `scrub_last` at the bottom.
+fn scrub_offset(position: u32, count: usize, height: f32) -> f32 {
+    let last = scrub_last(count, height);
+    let most = (f64::from(rows_height(count)) - f64::from(height)).max(0.0);
+    if last == 0 {
+        return 0.0;
+    }
+
+    (f64::from(position.min(last)) / f64::from(last) * most) as f32
+}
+
+/// The position of the scrubber for an offset: the inverse of `scrub_offset`.
+fn scrub_position(offset: f32, count: usize, height: f32) -> u32 {
+    let last = scrub_last(count, height);
+    let most = (f64::from(rows_height(count)) - f64::from(height)).max(0.0);
+    if most == 0.0 {
+        return 0;
+    }
+
+    ((f64::from(offset) / most).clamp(0.0, 1.0) * f64::from(last)).round() as u32
 }
 
 fn rows_height(rows: usize) -> f32 {
@@ -1536,6 +1610,49 @@ mod tests {
         filters.min_reviews = Some(1);
         filters.tags = vec!["Roguelike".to_string()];
         assert_eq!(others_on(&filters), 3, "a range counts once");
+    }
+
+    #[test]
+    fn the_scrubber_reaches_both_ends_of_a_huge_list() {
+        let last = scrub_last(SALES, HEIGHT);
+        let bottom = rows_height(SALES) - HEIGHT;
+
+        assert_eq!(scrub_offset(0, SALES, HEIGHT), 0.0);
+        assert_eq!(scrub_offset(last, SALES, HEIGHT), bottom);
+        assert_eq!(scrub_offset(last + 10, SALES, HEIGHT), bottom, "no further");
+        let middle = scrub_offset(last / 2, SALES, HEIGHT);
+        assert!((middle - bottom / 2.0).abs() < 1.0);
+        let in_sight = visible(bottom, HEIGHT, SALES);
+        assert_eq!(
+            in_sight.end, SALES,
+            "the last game is in sight at the bottom"
+        );
+    }
+
+    #[test]
+    fn the_scrubber_follows_the_scroll_and_back() {
+        for position in [0, 1, 777, 59_000, scrub_last(SALES, HEIGHT)] {
+            let offset = scrub_offset(position, SALES, HEIGHT);
+
+            let back = scrub_position(offset, SALES, HEIGHT);
+
+            assert!(
+                back.abs_diff(position) <= 1,
+                "{position} came back as {back}"
+            );
+        }
+        assert_eq!(scrub_position(-5.0, SALES, HEIGHT), 0);
+        assert_eq!(
+            scrub_position(f32::MAX, SALES, HEIGHT),
+            scrub_last(SALES, HEIGHT)
+        );
+    }
+
+    #[test]
+    fn a_list_that_fits_has_no_scrubber() {
+        assert_eq!(scrub_last(5, HEIGHT), 0);
+        assert_eq!(scrub_offset(3, 5, HEIGHT), 0.0);
+        assert_eq!(scrub_position(10.0, 5, HEIGHT), 0);
     }
 
     #[test]
