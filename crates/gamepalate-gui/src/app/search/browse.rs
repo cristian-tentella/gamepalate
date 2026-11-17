@@ -7,8 +7,8 @@ use gamepalate_app::{
 use iced::{
     Center, ContentFit, Element, Fill, Length, Right, Size, Task, never, padding,
     widget::{
-        Id, button, checkbox, column, container, image, mouse_area, opaque, operation, rich_text,
-        row, rule, scrollable,
+        Id, button, column, container, image, mouse_area, opaque, operation, rich_text, row,
+        scrollable,
         scrollable::{AbsoluteOffset, Viewport},
         sensor, space, span, stack, text,
         text::Wrapping,
@@ -29,7 +29,7 @@ use crate::{
         sentence,
         showcase::images::{Images, Picture},
     },
-    style,
+    style::{self, Chip},
 };
 
 const LIST: Id = Id::new("browse-list");
@@ -47,22 +47,6 @@ const PRICE_WIDTH: f32 = 120.0;
 const RATING_WIDTH: f32 = 120.0;
 const ENDS_WIDTH: f32 = 110.0;
 const NO_GAMES: &str = "No games match";
-const SIDE_WIDTH: f32 = 216.0;
-const SIDE_PADDING: f32 = 12.0;
-const GROUP_WIDTH: f32 = 126.0;
-const GROUP_HEIGHT: f32 = 26.0;
-const NAME_MIN_WIDTH: f32 = 260.0;
-const SUMMARY_CHAR_WIDTH: f32 = 6.5;
-/// What the columns after Name take, with the capsule, the gaps, the padding and the scrollbar.
-const COLUMNS_WIDTH: f32 = CAPSULE_WIDTH
-    + DISCOUNT_WIDTH
-    + PRICE_WIDTH
-    + RATING_WIDTH
-    + ENDS_WIDTH
-    + 5.0 * COLUMN_SPACING
-    + 2.0 * ROW_PADDING
-    + SCROLLBAR_GAP;
-const CHOICES: [Choice; 3] = [Choice::Without, Choice::Any, Choice::Only];
 const KINDS: [Kind; 6] = [
     Kind::Library,
     Kind::Wishlist,
@@ -127,6 +111,19 @@ impl Kind {
             Kind::Wishlist => Some("Wishlist and followed"),
             _ => None,
         }
+    }
+
+    /// The tooltip of its chip: what the next click does, and what the kind means if it needs
+    /// saying. The second line is empty when it does not.
+    fn advice(self, choice: Choice) -> [String; 2] {
+        let label = self.label();
+        let click = match choice {
+            Choice::Any => format!("Show only {label}"),
+            Choice::Only => format!("Hide {label}"),
+            Choice::Without => format!("Show {label} again"),
+        };
+
+        [click, self.tip().map(str::to_string).unwrap_or_default()]
     }
 
     fn choice(self, options: &BrowseOptions) -> Choice {
@@ -634,26 +631,19 @@ impl Browse {
             .height(Fill)
             .into()
         };
-        let body: Element<'a, SearchMessage> = if side_beside(size.width) {
-            row![
-                table,
-                rule::vertical(1).style(rule::weak),
-                self.side().width(SIDE_WIDTH)
-            ]
-            .height(Fill)
-            .into()
-        } else {
-            column![self.chips(), style::separator(), table]
-                .height(Fill)
-                .into()
-        };
-        let top = sensor(column![field, style::separator(), self.toolbar()])
-            .on_show(|size| SearchMessage::Browse(Message::Measured(size)))
-            .on_resize(|size| SearchMessage::Browse(Message::Measured(size)));
+        let top = sensor(column![
+            field,
+            style::separator(),
+            self.toolbar(),
+            self.chips()
+        ])
+        .on_show(|size| SearchMessage::Browse(Message::Measured(size)))
+        .on_resize(|size| SearchMessage::Browse(Message::Measured(size)));
         let content = container(
             column![top]
-                .push(self.active(size.width))
-                .push(body)
+                .push(self.problem())
+                .push(style::separator())
+                .push(table)
                 .height(Fill),
         )
         .width(size.width)
@@ -662,20 +652,22 @@ impl Browse {
         stack![content].push(self.popup(size.height)).into()
     }
 
-    /// The count, and the two controls that change the list the most.
+    /// The count, and the button of the other filters.
     fn toolbar(&self) -> Element<'_, SearchMessage> {
         let arrow = if self.panel_open { '▴' } else { '▾' };
+        let others = others_on(&self.options.filters);
+        let label = if others == 0 {
+            format!("Filters {arrow}")
+        } else {
+            format!("Filters · {others} {arrow}")
+        };
 
         row![
             text(games_count(self.rows.len()))
                 .size(font::NOTE_SIZE)
                 .style(style::muted),
             space().width(Fill),
-            checkbox(self.options.filters.only_discounted)
-                .label("On sale")
-                .text_size(font::NOTE_SIZE)
-                .on_toggle(|on| SearchMessage::Browse(Message::OnSale(on))),
-            button(text!("Filters {arrow}").size(font::NOTE_SIZE))
+            button(text(label).size(font::NOTE_SIZE))
                 .padding([4, 8])
                 .style(style::text_button)
                 .on_press(SearchMessage::Browse(Message::ToggleFilters)),
@@ -686,45 +678,21 @@ impl Browse {
         .into()
     }
 
-    /// The filters that are on, or why the last ones were not applied.
-    fn active(&self, width: f32) -> Option<Element<'_, SearchMessage>> {
-        let line = |line: String| {
-            text(line)
-                .size(font::NOTE_SIZE)
-                .style(style::muted)
-                .wrapping(Wrapping::None)
-        };
-        let line: Element<'_, SearchMessage> = if let Some(error) = &self.error {
-            text(error)
-                .size(font::NOTE_SIZE)
-                .style(text::danger)
-                .wrapping(Wrapping::None)
-                .into()
-        } else {
-            let summary = format::filters(
-                &search_options(&self.options.filters),
-                self.currency.as_ref()?,
-            )?;
-            match format::short_filters(&summary, summary_chars(width)) {
-                Some(short) => tooltip(
-                    line(short),
-                    container(text(summary).size(font::NOTE_SIZE))
-                        .padding([6, 10])
-                        .max_width(width - 32.0)
-                        .style(style::popup),
-                    tooltip::Position::Bottom,
-                )
-                .into(),
-                None => line(summary).into(),
-            }
-        };
+    /// Why the last filters were not applied.
+    fn problem(&self) -> Option<Element<'_, SearchMessage>> {
+        let error = self.error.as_ref()?;
 
         Some(
-            container(line)
-                .width(Fill)
-                .padding(padding::left(16).right(16).bottom(6))
-                .clip(true)
-                .into(),
+            container(
+                text(error)
+                    .size(font::NOTE_SIZE)
+                    .style(text::danger)
+                    .wrapping(Wrapping::None),
+            )
+            .width(Fill)
+            .padding(padding::left(16).right(16).bottom(6))
+            .clip(true)
+            .into(),
         )
     }
 
@@ -758,97 +726,91 @@ impl Browse {
         )
     }
 
-    /// The three-state filters in a column right of the table.
-    fn side(&self) -> iced::widget::Column<'_, SearchMessage> {
-        column![text("Show").size(font::NOTE_SIZE).style(style::muted)]
-            .extend(KINDS.map(|kind| {
-                row![
-                    container(self.kind_label(kind)).width(Fill),
-                    self.choices(kind)
-                ]
-                .align_y(Center)
-                .into()
-            }))
-            .push(
-                button(text("Reset").size(font::NOTE_SIZE))
-                    .padding([4, 8])
-                    .style(style::text_button)
-                    .on_press(SearchMessage::Browse(Message::ResetAll)),
-            )
-            .spacing(10)
-            .padding(SIDE_PADDING)
-    }
-
-    /// The same filters in a row that wraps, when the table needs the room.
+    /// The filters on the kind of game, one chip each, in a row that wraps if the window is
+    /// narrow. A chip goes from not filtering to showing only those games, to hiding them.
     fn chips(&self) -> Element<'_, SearchMessage> {
+        let on_sale = if self.options.filters.only_discounted {
+            Chip::Only
+        } else {
+            Chip::Off
+        };
+        let sale = self.chip(
+            "On sale",
+            on_sale,
+            [
+                if on_sale == Chip::Only {
+                    "Show games at any price".to_string()
+                } else {
+                    "Show only games on sale".to_string()
+                },
+                String::new(),
+            ],
+            Message::OnSale(on_sale == Chip::Off),
+        );
+
         container(
-            row(KINDS.map(|kind| {
-                row![self.kind_label(kind), self.choices(kind)]
-                    .spacing(8)
-                    .align_y(Center)
-                    .into()
-            }))
-            .push(
-                button(text("Reset").size(font::NOTE_SIZE))
-                    .padding([4, 8])
-                    .style(style::text_button)
-                    .on_press(SearchMessage::Browse(Message::ResetAll)),
-            )
-            .spacing(16)
-            .wrap()
-            .vertical_spacing(8),
+            row![sale]
+                .extend(KINDS.map(|kind| {
+                    let choice = kind.choice(&self.options);
+                    self.chip(
+                        kind.label(),
+                        chip_state(choice),
+                        kind.advice(choice),
+                        Message::Show(kind, next_choice(choice)),
+                    )
+                }))
+                .push(
+                    button(text("Reset").size(font::NOTE_SIZE))
+                        .padding([4, 8])
+                        .style(style::text_button)
+                        .on_press(SearchMessage::Browse(Message::ResetAll)),
+                )
+                .spacing(8)
+                .wrap()
+                .vertical_spacing(6),
         )
-        .padding([8, 16])
+        .padding(padding::left(16).right(16).bottom(8))
         .into()
     }
 
-    fn kind_label(&self, kind: Kind) -> Element<'_, SearchMessage> {
-        let label = text(kind.label()).size(font::NOTE_SIZE);
-        match kind.tip() {
-            Some(tip) => tooltip(
-                label,
-                container(text(tip).size(font::NOTE_SIZE))
-                    .padding([6, 10])
-                    .style(style::popup),
-                tooltip::Position::Bottom,
-            )
-            .into(),
-            None => label.into(),
-        }
-    }
-
-    /// Hide, Any or Only, as one button in three parts.
-    fn choices(&self, kind: Kind) -> Element<'_, SearchMessage> {
-        let current = kind.choice(&self.options);
-        let part = |index: usize| {
-            let choice = CHOICES[index];
-            let place = match index {
-                0 => style::Segment::First,
-                1 => style::Segment::Middle,
-                _ => style::Segment::Last,
-            };
-            button(container(text(choice_label(choice)).size(font::NOTE_SIZE)).center(Fill))
-                .width(Fill)
-                .height(Fill)
-                .padding([0, 4])
-                .style(style::segment(choice == current, place))
-                .on_press(SearchMessage::Browse(Message::Show(kind, choice)))
+    /// A chip: its icon says what it does to the list, its tooltip what the next click does.
+    /// `tip` has one or two lines; a line left empty is not shown.
+    fn chip<'a>(
+        &self,
+        label: &'static str,
+        state: Chip,
+        tip: [String; 2],
+        message: Message,
+    ) -> Element<'a, SearchMessage> {
+        let icon = match state {
+            Chip::Off => None,
+            Chip::Only => Some(font::CHECK),
+            Chip::Hide => Some(font::BLOCK),
         };
+        let mut content = row![].spacing(4).align_y(Center);
+        if let Some(icon) = icon {
+            content = content.push(text(icon).font(font::ICONS).size(font::icon(11.0)));
+        }
+        let chip = button(content.push(text(label).size(font::NOTE_SIZE)))
+            .padding([3, 10])
+            .style(style::filter_chip(state))
+            .on_press(SearchMessage::Browse(message));
+        let lines: Vec<String> = tip.into_iter().filter(|line| !line.is_empty()).collect();
+        let several = lines.len() > 1;
 
-        container(
-            row![
-                part(0),
-                rule::vertical(1).style(style::vote_seam),
-                part(1),
-                rule::vertical(1).style(style::vote_seam),
-                part(2),
-            ]
-            .height(Fill),
+        tooltip(
+            chip,
+            container(
+                column(lines.into_iter().map(|line| {
+                    let line = if several { format!("{line}.") } else { line };
+                    text(line).size(font::NOTE_SIZE).into()
+                }))
+                .spacing(2),
+            )
+            .padding([6, 10])
+            .style(style::popup),
+            tooltip::Position::Bottom,
         )
-        .width(GROUP_WIDTH)
-        .height(GROUP_HEIGHT)
-        .padding(1)
-        .style(style::vote_group)
         .into()
     }
 
@@ -1048,22 +1010,39 @@ fn changed(options: &BrowseOptions, message: &Message) -> BrowseOptions {
     next
 }
 
-fn choice_label(choice: Choice) -> &'static str {
+/// The chip that stands for `choice`: showing only those games, hiding them, or neither.
+fn chip_state(choice: Choice) -> Chip {
     match choice {
-        Choice::Without => "Hide",
-        Choice::Any => "Any",
-        Choice::Only => "Only",
+        Choice::Without => Chip::Hide,
+        Choice::Any => Chip::Off,
+        Choice::Only => Chip::Only,
     }
 }
 
-/// Whether the three-state filters have a column of their own, and Name still has its room.
-fn side_beside(width: f32) -> bool {
-    width >= COLUMNS_WIDTH + 1.0 + SIDE_WIDTH + NAME_MIN_WIDTH
+/// What a click on a chip does: not filtering, then only, then hide, then not filtering again.
+fn next_choice(choice: Choice) -> Choice {
+    match choice {
+        Choice::Any => Choice::Only,
+        Choice::Only => Choice::Without,
+        Choice::Without => Choice::Any,
+    }
 }
 
-/// How many characters of the filters' line fit in `width`.
-fn summary_chars(width: f32) -> usize {
-    ((width - 32.0).max(0.0) / SUMMARY_CHAR_WIDTH) as usize
+/// How many of the filters in the popup are on: a range counts once, with one end or both.
+fn others_on(filters: &FilterOptions) -> usize {
+    [
+        filters.min_reviews.is_some() || filters.max_reviews.is_some(),
+        filters.min_positive_percent.is_some(),
+        filters.without_voted,
+        filters.without_early_access.is_some(),
+        filters.min_price_cents.is_some() || filters.max_price_cents.is_some(),
+        filters.min_discount_percent.is_some(),
+        !filters.tags.is_empty(),
+        !filters.without_tags.is_empty(),
+    ]
+    .into_iter()
+    .filter(|on| *on)
+    .count()
 }
 
 fn note<'a>(line: String) -> Element<'a, SearchMessage> {
@@ -1418,7 +1397,7 @@ mod tests {
     #[test]
     fn each_kind_has_its_own_choice() {
         for kind in KINDS {
-            for choice in CHOICES {
+            for choice in [Choice::Without, Choice::Any, Choice::Only] {
                 let mut options = BrowseOptions::default();
                 kind.set(&mut options, choice);
 
@@ -1533,24 +1512,58 @@ mod tests {
     }
 
     #[test]
-    fn the_three_states_sit_beside_the_table_only_when_name_keeps_its_room() {
-        // The narrowest window is 960 wide, and the panel takes 90% of it.
-        assert!(!side_beside(960.0 * 0.9));
-        assert!(side_beside(1_200.0));
-        let least = COLUMNS_WIDTH + 1.0 + SIDE_WIDTH + NAME_MIN_WIDTH;
-        assert!(side_beside(least));
-        assert!(!side_beside(least - 1.0));
+    fn a_chip_goes_from_nothing_to_only_to_hide_and_back() {
+        let mut choice = Choice::Any;
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            choice = next_choice(choice);
+            seen.push(choice);
+        }
+
+        assert_eq!(seen, [Choice::Only, Choice::Without, Choice::Any]);
+        assert_eq!(
+            [Choice::Any, Choice::Only, Choice::Without].map(chip_state),
+            [Chip::Off, Chip::Only, Chip::Hide]
+        );
     }
 
     #[test]
-    fn the_summary_takes_the_characters_that_fit() {
-        assert_eq!(summary_chars(0.0), 0);
-        assert!(summary_chars(864.0) > 100);
+    fn the_tooltip_of_a_chip_says_the_next_click() {
+        assert_eq!(
+            Kind::Starred.advice(Choice::Any),
+            ["Show only Starred".to_string(), String::new()]
+        );
+        assert_eq!(
+            Kind::Starred.advice(Choice::Only)[0],
+            "Hide Starred".to_string()
+        );
+        assert_eq!(
+            Kind::Library.advice(Choice::Without),
+            [
+                "Show Library again".to_string(),
+                "Owned, borrowed and played elsewhere".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn the_button_counts_the_filters_of_the_popup_and_not_the_chips() {
+        let mut filters = FilterOptions::default();
+        assert_eq!(others_on(&filters), 0);
+
+        filters.only_discounted = true;
+        assert_eq!(others_on(&filters), 0, "On sale is a chip");
+
+        filters.min_price_cents = Some(100);
+        filters.max_price_cents = Some(500);
+        filters.max_reviews = Some(10);
+        filters.min_reviews = Some(1);
+        filters.tags = vec!["Roguelike".to_string()];
+        assert_eq!(others_on(&filters), 3, "a range counts once");
     }
 
     #[test]
     fn the_choices_have_their_words() {
-        assert_eq!(CHOICES.map(choice_label), ["Hide", "Any", "Only"]);
         assert_eq!(
             KINDS.map(Kind::label),
             [

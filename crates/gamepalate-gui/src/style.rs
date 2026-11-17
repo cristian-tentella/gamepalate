@@ -288,6 +288,51 @@ pub fn vote(flashed: bool, segment: Segment) -> impl Fn(&Theme, button::Status) 
     }
 }
 
+/// What a filter chip does to the list: nothing, shows only its games, or hides them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chip {
+    Off,
+    Only,
+    Hide,
+}
+
+/// A pill for a filter: an outline while it does nothing, tinted when it shows only its games
+/// (the accent) or hides them (red).
+pub fn filter_chip(state: Chip) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let palette = theme.extended_palette();
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let (background, text_color, border_color) = match state {
+            Chip::Off => (
+                hovered.then_some(palette.background.weak.color),
+                palette.background.base.text,
+                palette.background.strong.color,
+            ),
+            Chip::Only => (
+                Some(palette.primary.weak.color),
+                palette.primary.weak.text,
+                palette.primary.base.color,
+            ),
+            Chip::Hide => (
+                Some(palette.danger.weak.color),
+                palette.danger.weak.text,
+                palette.danger.base.color,
+            ),
+        };
+
+        button::Style {
+            background: background.map(Into::into),
+            text_color,
+            border: Border {
+                color: border_color,
+                width: 1.0,
+                radius: 999.0.into(),
+            },
+            ..button::Style::default()
+        }
+    }
+}
+
 /// A segment of a choice, like the ones at the top of Votes: the chosen one is filled.
 pub fn segment(
     current: bool,
