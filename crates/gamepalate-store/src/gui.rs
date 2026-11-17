@@ -1,6 +1,11 @@
 use std::path::Path;
 
-use gamepalate_core::{filters::FilterOptions, ids::AppId, search::SearchOptions};
+use gamepalate_core::{
+    browse::{BrowseOptions, BrowseOrder, Choice},
+    filters::FilterOptions,
+    ids::AppId,
+    search::SearchOptions,
+};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 
 use crate::atomic::write_atomically;
@@ -126,6 +131,49 @@ impl From<SavedVotes> for VotesSettings {
     }
 }
 
+/// How Browse was left, as the file has it. A field that cannot be read is left out, so it takes
+/// the default and the others stay.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct SavedBrowse {
+    #[serde(deserialize_with = "or_none")]
+    order: Option<BrowseOrder>,
+    #[serde(deserialize_with = "or_none")]
+    descending: Option<bool>,
+    #[serde(deserialize_with = "or_none")]
+    library: Option<Choice>,
+    #[serde(deserialize_with = "or_none")]
+    wished: Option<Choice>,
+    #[serde(deserialize_with = "or_none")]
+    would_try: Option<Choice>,
+    #[serde(deserialize_with = "or_none")]
+    starred: Option<Choice>,
+    #[serde(deserialize_with = "or_none")]
+    not_for_me: Option<Choice>,
+    #[serde(deserialize_with = "or_none")]
+    later: Option<Choice>,
+    #[serde(deserialize_with = "or_none")]
+    filters: Option<FilterOptions>,
+}
+
+impl From<SavedBrowse> for BrowseOptions {
+    fn from(saved: SavedBrowse) -> BrowseOptions {
+        let first = BrowseOptions::default();
+        let order = saved.order.unwrap_or(first.order);
+        BrowseOptions {
+            filters: saved.filters.unwrap_or(first.filters),
+            order,
+            descending: saved.descending.unwrap_or(order.descending_first()),
+            library: saved.library.unwrap_or(first.library),
+            wished: saved.wished.unwrap_or(first.wished),
+            would_try: saved.would_try.unwrap_or(first.would_try),
+            starred: saved.starred.unwrap_or(first.starred),
+            not_for_me: saved.not_for_me.unwrap_or(first.not_for_me),
+            later: saved.later.unwrap_or(first.later),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GuiSettings {
@@ -138,6 +186,9 @@ pub struct GuiSettings {
     // A section of Votes that cannot be read is the default one, and the rest of the file stays.
     #[serde(deserialize_with = "or_default")]
     pub votes: VotesSettings,
+    // The same for Browse, which also has a default of its own: on sale, without the Library.
+    #[serde(deserialize_with = "saved_browse")]
+    pub browse: BrowseOptions,
 }
 
 impl Default for GuiSettings {
@@ -149,8 +200,29 @@ impl Default for GuiSettings {
             window: None,
             families_played: None,
             votes: VotesSettings::default(),
+            browse: BrowseOptions::default(),
         }
     }
+}
+
+fn saved_browse<'de, D>(deserializer: D) -> Result<BrowseOptions, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = toml::Value::deserialize(deserializer)?;
+    Ok(value
+        .try_into::<SavedBrowse>()
+        .map(BrowseOptions::from)
+        .unwrap_or_default())
+}
+
+fn or_none<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let value = toml::Value::deserialize(deserializer)?;
+    Ok(value.try_into().ok())
 }
 
 // A value from a newer or a hand-edited file is the default, instead of losing the whole file.
@@ -204,6 +276,7 @@ mod tests {
                     ..FilterOptions::default()
                 },
             },
+            browse: BrowseOptions::default(),
         };
         settings.search.family = Some("Puzzle".to_string());
         settings.search.filters.max_price_cents = Some(1500);
@@ -331,6 +404,102 @@ order = \"price\"",
 
         assert_eq!(settings.theme, ThemeChoice::Dark);
         assert_eq!(settings.votes, VotesSettings::default());
+    }
+
+    #[test]
+    fn the_browse_options_are_saved_and_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.toml");
+        let settings = GuiSettings {
+            browse: BrowseOptions {
+                filters: FilterOptions {
+                    only_discounted: false,
+                    max_price_cents: Some(2000),
+                    tags: vec!["Roguelike".to_string()],
+                    ..FilterOptions::default()
+                },
+                order: BrowseOrder::Price,
+                descending: true,
+                library: Choice::Any,
+                wished: Choice::Only,
+                would_try: Choice::Only,
+                starred: Choice::Without,
+                not_for_me: Choice::Any,
+                later: Choice::Without,
+            },
+            ..GuiSettings::default()
+        };
+
+        save_gui_settings(&path, &settings).unwrap();
+
+        assert_eq!(load_gui_settings(&path), settings);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[browse]\n"));
+        assert!(text.contains("order = \"price\"\n"));
+        assert!(text.contains("starred = \"hide\"\n"));
+        assert!(text.contains("would_try = \"only\"\n"));
+        assert!(text.contains("[browse.filters]\n"));
+    }
+
+    #[test]
+    fn a_file_without_browse_opens_it_as_the_first_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.toml");
+        std::fs::write(&path, "theme = \"dark\"").unwrap();
+
+        let browse = load_gui_settings(&path).browse;
+
+        assert_eq!(browse, BrowseOptions::default());
+        assert!(browse.filters.only_discounted);
+        assert_eq!(browse.library, Choice::Without);
+        assert_eq!(browse.not_for_me, Choice::Without);
+    }
+
+    #[test]
+    fn a_wrong_value_in_browse_takes_the_default_of_that_field_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.toml");
+        std::fs::write(
+            &path,
+            "theme = \"dark\"\n[browse]\norder = \"newest\"\ndescending = false\nlibrary = \"any\"\nwished = 3\nwould_try = \"only\"\n[browse.filters]\nmax_price_cents = \"cheap\"",
+        )
+        .unwrap();
+
+        let settings = load_gui_settings(&path);
+        let defaults = BrowseOptions::default();
+
+        assert_eq!(settings.theme, ThemeChoice::Dark);
+        assert_eq!(settings.browse.order, defaults.order);
+        assert!(!settings.browse.descending);
+        assert_eq!(settings.browse.library, Choice::Any);
+        assert_eq!(settings.browse.wished, defaults.wished);
+        assert_eq!(settings.browse.would_try, Choice::Only);
+        assert_eq!(settings.browse.not_for_me, defaults.not_for_me);
+        assert_eq!(settings.browse.filters, defaults.filters);
+    }
+
+    #[test]
+    fn a_browse_that_is_not_a_section_keeps_the_rest_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.toml");
+        std::fs::write(&path, "theme = \"dark\"\nbrowse = 3").unwrap();
+
+        let settings = load_gui_settings(&path);
+
+        assert_eq!(settings.theme, ThemeChoice::Dark);
+        assert_eq!(settings.browse, BrowseOptions::default());
+    }
+
+    #[test]
+    fn a_browse_order_without_its_direction_takes_the_natural_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.toml");
+        std::fs::write(&path, "[browse]\norder = \"name\"").unwrap();
+
+        let browse = load_gui_settings(&path).browse;
+
+        assert_eq!(browse.order, BrowseOrder::Name);
+        assert!(!browse.descending);
     }
 
     #[test]

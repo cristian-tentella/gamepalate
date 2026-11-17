@@ -19,6 +19,7 @@ pub enum Choice {
     #[default]
     Any,
     Only,
+    #[cfg_attr(feature = "serde", serde(rename = "hide"))]
     Without,
 }
 
