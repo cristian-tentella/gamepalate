@@ -422,6 +422,14 @@ impl Search {
         .padding([4, 8])
         .style(style::text_button)
         .on_press(Message::SwitchMode);
+        let close = button(
+            row![text("Close").size(font::NOTE_SIZE), keycap("Esc")]
+                .spacing(6)
+                .align_y(Center),
+        )
+        .padding([4, 8])
+        .style(style::text_button)
+        .on_press(Message::Close);
 
         row![
             text(LENS)
@@ -447,7 +455,7 @@ impl Search {
                 .style(style::popup),
                 tooltip::Position::Bottom,
             ),
-            keycap("Esc"),
+            close,
         ]
         .spacing(10)
         .padding([0, 16])
