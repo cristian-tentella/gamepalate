@@ -42,6 +42,8 @@ const CAPSULES_KEPT: usize = 200;
 const SCROLLBAR_GAP: f32 = 12.0;
 const ROW_PADDING: f32 = 10.0;
 const COLUMN_SPACING: f32 = 12.0;
+/// How far a column heading reaches past its column on each side.
+const HEADING_PAD: f32 = 4.0;
 const DISCOUNT_WIDTH: f32 = 64.0;
 const PRICE_WIDTH: f32 = 120.0;
 const RATING_WIDTH: f32 = 120.0;
@@ -818,6 +820,8 @@ impl Browse {
     }
 
     fn head(&self) -> Element<'_, SearchMessage> {
+        // A heading is a few pixels wider than its column on each side, so its hover has some
+        // room around the text, and the text stays over the figures of the column.
         let heading = |order: BrowseOrder, width: Length, right: bool| {
             let mut label = column_name(order).to_string();
             if self.options.order == order {
@@ -833,26 +837,30 @@ impl Browse {
             } else {
                 container(label).width(Fill)
             };
+            let width = match width {
+                Length::Fixed(width) => Length::Fixed(width + 2.0 * HEADING_PAD),
+                other => other,
+            };
             button(label)
-                .padding([4, 0])
+                .padding([4.0, HEADING_PAD])
                 .width(width)
                 .style(style::column_heading)
                 .on_press(SearchMessage::Browse(Message::Sort(order)))
         };
 
         row![
-            space().width(CAPSULE_WIDTH),
+            space().width(CAPSULE_WIDTH + HEADING_PAD),
             heading(BrowseOrder::Name, Fill, false),
             heading(BrowseOrder::Discount, DISCOUNT_WIDTH.into(), true),
             heading(BrowseOrder::Price, PRICE_WIDTH.into(), true),
             heading(BrowseOrder::Rating, RATING_WIDTH.into(), true),
             heading(BrowseOrder::Ends, ENDS_WIDTH.into(), true),
         ]
-        .spacing(COLUMN_SPACING)
+        .spacing(COLUMN_SPACING - 2.0 * HEADING_PAD)
         .align_y(Center)
         .padding(
             padding::left(ROW_PADDING)
-                .right(ROW_PADDING + SCROLLBAR_GAP)
+                .right(ROW_PADDING + SCROLLBAR_GAP - HEADING_PAD)
                 .bottom(4),
         )
         .into()
