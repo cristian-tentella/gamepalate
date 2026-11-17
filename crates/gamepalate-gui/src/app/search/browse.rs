@@ -5,7 +5,7 @@ use gamepalate_app::{
     GameStanding, Gamepalate, Price, Reviews, SearchOptions,
 };
 use iced::{
-    Center, Color, ContentFit, Element, Fill, Length, Right, Size, Task, never, padding,
+    Center, ContentFit, Element, Fill, Length, Right, Size, Task, never, padding,
     widget::{
         Id, button, column, container, image, mouse_area, opaque, operation, rich_text, row,
         scrollable,
@@ -771,19 +771,13 @@ impl Browse {
         tip: [String; 2],
         message: Message,
     ) -> Element<'a, SearchMessage> {
-        // The icon is always there, and only shows when the chip does something: the chip keeps its
-        // size from one state to the other.
-        let glyph = if state == Chip::Hide {
-            font::BLOCK
-        } else {
-            font::CHECK
+        // Every state has its icon, all as wide as each other: the chip keeps its size.
+        let glyph = match state {
+            Chip::Off => font::DASH,
+            Chip::Only => font::CHECK,
+            Chip::Hide => font::BLOCK,
         };
         let icon = text(glyph).font(font::ICONS).size(font::icon(11.0));
-        let icon = if state == Chip::Off {
-            icon.color(Color::TRANSPARENT)
-        } else {
-            icon
-        };
         let chip = button(
             row![icon, text(label).size(font::NOTE_SIZE)]
                 .spacing(3)
