@@ -1,5 +1,6 @@
 use gamepalate_core::{
     ids::{AppId, SteamId},
+    region::Region,
     signals::{LibraryGame, RecentGame, SignalsReading},
     timestamp::Timestamp,
 };
@@ -60,12 +61,14 @@ struct PlayerSummary {
     steamid: String,
     personaname: Option<String>,
     avatarfull: Option<String>,
+    loccountrycode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerProfile {
     pub name: Option<String>,
     pub avatar_url: Option<String>,
+    pub country: Option<Region>,
 }
 
 #[derive(Deserialize)]
@@ -307,6 +310,7 @@ fn parse_player_summary(
         .map(|player| PlayerProfile {
             name: non_empty(player.personaname),
             avatar_url: non_empty(player.avatarfull),
+            country: player.loccountrycode.as_deref().and_then(Region::new),
         }))
 }
 
@@ -432,6 +436,7 @@ mod tests {
             Some(PlayerProfile {
                 name: Some("me".to_string()),
                 avatar_url: Some("https://avatars.example/me_full.jpg".to_string()),
+                country: None,
             })
         );
     }
@@ -446,8 +451,29 @@ mod tests {
             parse_player_summary(ME, value).unwrap(),
             Some(PlayerProfile {
                 name: None,
-                avatar_url: None
+                avatar_url: None,
+                country: None
             })
+        );
+    }
+
+    #[test]
+    fn a_player_summary_gives_the_country_when_it_is_a_region() {
+        let country = |code: Value| {
+            let value = json!({ "response": { "players": [
+                { "steamid": "76561198000000000", "loccountrycode": code }
+            ] } });
+            parse_player_summary(ME, value).unwrap().unwrap().country
+        };
+
+        assert_eq!(country(json!("DE")), Region::new("DE"));
+        assert_eq!(country(json!("it")), None);
+        assert_eq!(country(json!("ITA")), None);
+        assert_eq!(country(json!("")), None);
+        let missing = json!({ "response": { "players": [ { "steamid": "76561198000000000" } ] } });
+        assert_eq!(
+            parse_player_summary(ME, missing).unwrap().unwrap().country,
+            None
         );
     }
 
