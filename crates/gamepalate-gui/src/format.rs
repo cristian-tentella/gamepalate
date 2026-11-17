@@ -241,6 +241,21 @@ fn ends_in(end: Timestamp, zone: &TimeZone, today: Date) -> Option<String> {
     })
 }
 
+/// When a discount ends, for a column headed «Ends». `zone` and `today` come once for a whole
+/// list, not once for each row.
+pub fn short_ends(end: Timestamp, zone: &TimeZone, today: Date) -> Option<String> {
+    let end = jiff::Timestamp::from_millisecond(end.0)
+        .ok()?
+        .to_zoned(zone.clone());
+    let days = today.until(end.date()).ok()?.get_days();
+    Some(match days {
+        ..=0 => "Today".to_string(),
+        1 => "Tomorrow".to_string(),
+        2..=7 => format!("In {days} days"),
+        _ => end.strftime("%-d %b").to_string(),
+    })
+}
+
 pub fn reviews(reviews: &Reviews) -> (String, String) {
     if reviews.total == 0 {
         return (String::new(), "No reviews yet".to_string());
@@ -1099,6 +1114,18 @@ mod tests {
         assert_eq!(ends(7), Some("Ends in 7 days".to_string()));
         assert_eq!(ends(8), Some("Ends 10 Nov".to_string()));
         assert_eq!(ends(-1), Some("Ends today".to_string()));
+    }
+
+    #[test]
+    fn says_when_the_discount_ends_in_a_column() {
+        let today = Date::constant(2026, 11, 2);
+        let ends =
+            |days: i64| short_ends(Timestamp(NOW.0 + days * 24 * HOUR), &TimeZone::UTC, today);
+
+        assert_eq!(ends(0), Some("Today".to_string()));
+        assert_eq!(ends(1), Some("Tomorrow".to_string()));
+        assert_eq!(ends(3), Some("In 3 days".to_string()));
+        assert_eq!(ends(10), Some("12 Nov".to_string()));
     }
 
     #[test]

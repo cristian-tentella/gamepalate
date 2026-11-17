@@ -560,14 +560,15 @@ impl Place {
     }
 }
 
-/// A game of the Library is played already: 4 is not offered there.
-fn sheet_size(area: Size) -> Size {
+/// The sheet in `area`, the size below the top bar. Browse takes the same size.
+pub(super) fn sheet_size(area: Size) -> Size {
     Size::new(
         (area.width * SHEET_SHARE).min(SHEET_MAX_WIDTH),
         area.height * SHEET_SHARE,
     )
 }
 
+/// A game of the Library is played already: 4 is not offered there.
 fn offers_played(game: &GameView) -> bool {
     !game.in_library
 }

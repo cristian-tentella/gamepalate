@@ -1,3 +1,5 @@
+mod browse;
+
 use std::{sync::Arc, time::Instant};
 
 use gamepalate_app::{AppId, FoundGame, GameStanding, Gamepalate, MIN_SEARCH_CHARS};
@@ -7,12 +9,15 @@ use iced::{
     padding,
     widget::{
         Id, button, column, container, image, mouse_area, opaque, operation,
-        operation::RelativeOffset, row, scrollable, space, stack, text, text_input,
+        operation::RelativeOffset, row, scrollable, space, stack, text, text_input, tooltip,
     },
     window,
 };
 
-use super::backdrop::{self, Blurred, faded_in};
+use super::{
+    backdrop::{self, Blurred, faded_in},
+    game_page::sheet_size,
+};
 use crate::{
     font,
     screen::{
@@ -21,10 +26,12 @@ use crate::{
     },
     style,
 };
+use browse::Browse;
 
 const FIELD: Id = Id::new("game-search");
 const LIST: Id = Id::new("game-search-list");
 const PLACEHOLDER: &str = "Search games";
+const BROWSE_PLACEHOLDER: &str = "Filter by name";
 const HINT: &str = "Type at least 3 letters, an appid or a store link";
 const NO_GAMES: &str = "No games found";
 pub const TIP: &str = "Search games (Ctrl+K)";
@@ -54,6 +61,17 @@ pub struct Search {
     backdrop: Option<Backdrop>,
     now: Option<Instant>,
     capsules: Images<image::Allocation, AppId>,
+    mode: Mode,
+    browse: Browse,
+}
+
+/// The panel finds a game by name, or browses the whole catalog in a table. Tab goes from one to
+/// the other with the same text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Mode {
+    #[default]
+    Find,
+    Browse,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -85,6 +103,8 @@ pub enum Message {
     Frame(Instant),
     CapsuleLoaded(AppId, Option<image::Handle>),
     CapsuleAllocated(AppId, Option<image::Allocation>),
+    SwitchMode,
+    Browse(browse::Message),
 }
 
 pub enum Action {
@@ -157,6 +177,11 @@ impl Search {
                     backdrop.shown.get_or_insert(now);
                 }
             }
+            Message::Input(text) if self.mode == Mode::Browse => {
+                self.typed = true;
+                self.text = text;
+                return Action::Run(self.browse.relist(gamepalate, &self.text));
+            }
             Message::Input(text) => {
                 self.typed = true;
                 self.found = gamepalate.find_games(&text);
@@ -167,14 +192,36 @@ impl Search {
                     self.load_capsules(gamepalate),
                 ]));
             }
+            Message::Down if self.mode == Mode::Browse => return Action::Run(self.browse.down()),
+            Message::Up if self.mode == Mode::Browse => return Action::Run(self.browse.up()),
             Message::Down => {
                 return Action::Run(self.select(below(self.selected, self.found.len())));
             }
             Message::Up => return Action::Run(self.select(above(self.selected))),
             Message::Submit => {
-                if let Some(id) = self.chosen() {
+                let chosen = match self.mode {
+                    Mode::Find => self.chosen(),
+                    Mode::Browse => self.browse.chosen(),
+                };
+                if let Some(id) = chosen {
                     return self.pick(id);
                 }
+            }
+            Message::SwitchMode => {
+                let task = match self.switch() {
+                    Mode::Find => {
+                        self.found = gamepalate.find_games(&self.text);
+                        Task::batch([
+                            operation::snap_to(LIST, RelativeOffset::START),
+                            self.load_capsules(gamepalate),
+                        ])
+                    }
+                    Mode::Browse => self.browse.enter(gamepalate, &self.text),
+                };
+                return Action::Run(Task::batch([task, operation::focus(FIELD)]));
+            }
+            Message::Browse(message) => {
+                return Action::Run(self.browse.update(message, gamepalate, &self.text));
             }
             Message::Close => self.close(),
             Message::Pick(id) => return self.pick(id),
@@ -270,6 +317,14 @@ impl Search {
     }
 
     fn placed(&self, size: Size) -> Element<'_, Message> {
+        if self.mode == Mode::Browse {
+            let sheet = sheet_size(size);
+            return container(opaque(
+                container(self.browse.view(self.field(), sheet)).style(style::popup),
+            ))
+            .center(Fill)
+            .into();
+        }
         let (top, width) = panel_place(size);
 
         container(opaque(
@@ -282,13 +337,27 @@ impl Search {
         .into()
     }
 
-    fn panel(&self, max_height: f32) -> Element<'_, Message> {
-        let field = row![
+    /// The field, with the way to the other mode and Esc on its right.
+    fn field(&self) -> Element<'_, Message> {
+        let (placeholder, other, tip) = match self.mode {
+            Mode::Find => (PLACEHOLDER, "Browse", "Browse the catalog (Tab)"),
+            Mode::Browse => (BROWSE_PLACEHOLDER, "Search", "Search by name (Tab)"),
+        };
+        let switch = button(
+            row![text(other).size(font::NOTE_SIZE), keycap("Tab")]
+                .spacing(6)
+                .align_y(Center),
+        )
+        .padding([4, 8])
+        .style(style::text_button)
+        .on_press(Message::SwitchMode);
+
+        row![
             text(LENS)
                 .font(font::ICONS)
                 .size(font::icon(14.0))
                 .style(style::muted),
-            text_input(PLACEHOLDER, &self.text)
+            text_input(placeholder, &self.text)
                 .id(FIELD)
                 .on_input(Message::Input)
                 .on_submit(Message::Submit)
@@ -296,11 +365,23 @@ impl Search {
                 .size(FIELD_SIZE)
                 .padding([12, 0])
                 .width(Fill),
+            tooltip(
+                switch,
+                container(text(tip).size(font::NOTE_SIZE))
+                    .padding([6, 10])
+                    .style(style::popup),
+                tooltip::Position::Bottom,
+            ),
             keycap("Esc"),
         ]
         .spacing(10)
         .padding([0, 16])
-        .align_y(Center);
+        .align_y(Center)
+        .into()
+    }
+
+    fn panel(&self, max_height: f32) -> Element<'_, Message> {
+        let field = self.field();
 
         let body: Element<'_, Message> = if self.found.is_empty() {
             let note = if self.text.trim().chars().count() < MIN_SEARCH_CHARS {
@@ -368,15 +449,27 @@ impl Search {
         .into()
     }
 
-    /// The panel opens with the last text selected, so typing replaces it.
+    /// The panel opens on Search with the last text selected, so typing replaces it. Browse
+    /// keeps its state for Tab.
     fn show(&mut self, gamepalate: &Arc<Gamepalate>) -> Task<Message> {
         self.state = State::Open;
+        self.mode = Mode::Find;
         self.typed = false;
         self.found = gamepalate.find_games(&self.text);
         self.selected = None;
         self.backdrop = None;
 
         Task::batch([focus(), self.load_capsules(gamepalate)])
+    }
+
+    /// To the other mode, with the same text.
+    fn switch(&mut self) -> Mode {
+        self.selected = None;
+        self.mode = match self.mode {
+            Mode::Find => Mode::Browse,
+            Mode::Browse => Mode::Find,
+        };
+        self.mode
     }
 
     fn select(&mut self, selected: Option<usize>) -> Task<Message> {
@@ -457,6 +550,7 @@ fn panel_key(event: Event, _: event::Status, _: window::Id) -> Option<Message> {
         Named::ArrowDown => Some(Message::Down),
         Named::ArrowUp => Some(Message::Up),
         Named::Escape => Some(Message::Close),
+        Named::Tab => Some(Message::SwitchMode),
         _ => None,
     }
 }
@@ -620,7 +714,37 @@ mod tests {
         ));
         assert!(matches!(panel_key_of(Named::ArrowUp), Some(Message::Up)));
         assert!(matches!(panel_key_of(Named::Escape), Some(Message::Close)));
+        assert!(matches!(
+            panel_key_of(Named::Tab),
+            Some(Message::SwitchMode)
+        ));
         assert!(panel_key_of(Named::Space).is_none());
+    }
+
+    #[test]
+    fn tab_goes_to_browse_and_back_with_the_same_text() {
+        let mut search = open_with(3);
+        search.selected = Some(1);
+
+        assert_eq!(search.switch(), Mode::Browse);
+        assert_eq!(search.text, "game");
+        assert_eq!(search.selected, None);
+        assert!(search.view(AREA).is_some());
+
+        assert_eq!(search.switch(), Mode::Find);
+        assert_eq!(search.text, "game");
+    }
+
+    #[test]
+    fn escape_closes_browse_and_keeps_its_state() {
+        let mut search = open_with(3);
+        search.switch();
+
+        search.close();
+
+        assert!(!search.is_open());
+        assert_eq!(search.mode, Mode::Browse);
+        assert!(search.view(AREA).is_none());
     }
 
     fn panel_key_of(key: Named) -> Option<Message> {
