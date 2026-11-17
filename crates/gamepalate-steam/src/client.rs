@@ -11,6 +11,7 @@ use gamepalate_core::{
 use keyvalues_parser::Value;
 
 const ACCOUNT_ID_BASE: u64 = 76_561_197_960_265_728;
+const AVATAR_CACHE: [&str; 2] = ["config", "avatarcache"];
 const APPS: [&str; 4] = ["Software", "Valve", "Steam", "apps"];
 
 #[derive(Debug, thiserror::Error)]
@@ -24,6 +25,138 @@ pub enum SteamClientError {
 
     #[error("{} is not a file the Steam app wrote: {reason}", .path.display())]
     Shape { path: PathBuf, reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientAccount {
+    pub steam_id: SteamId,
+    pub persona_name: Option<String>,
+    pub most_recent: bool,
+    pub avatar: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Entry {
+    account: ClientAccount,
+    timestamp: i64,
+}
+
+pub fn steam_client_present() -> bool {
+    steamlocate::locate_all().is_ok_and(|installs| !installs.is_empty())
+}
+
+pub fn login_users_file() -> Option<PathBuf> {
+    first_install().map(|steam| login_users_path(&steam))
+}
+
+pub fn local_config_shown() -> Option<PathBuf> {
+    first_install().map(|steam| {
+        steam
+            .join("userdata")
+            .join("\u{2026}")
+            .join("config")
+            .join("localconfig.vdf")
+    })
+}
+
+pub fn steam_accounts() -> Vec<ClientAccount> {
+    let Ok(installs) = steamlocate::locate_all() else {
+        return Vec::new();
+    };
+    accounts_in(installs.iter().map(|steam| steam.path().to_path_buf()))
+}
+
+fn first_install() -> Option<PathBuf> {
+    steamlocate::locate_all()
+        .ok()?
+        .first()
+        .map(|steam| steam.path().to_path_buf())
+}
+
+fn login_users_path(steam: &Path) -> PathBuf {
+    steam.join("config").join("loginusers.vdf")
+}
+
+fn accounts_in(installs: impl Iterator<Item = PathBuf>) -> Vec<ClientAccount> {
+    let mut entries: Vec<Entry> = installs
+        .flat_map(|steam| {
+            let path = login_users_path(&steam);
+            let entries = read_entries(&path).unwrap_or_else(|error| {
+                log::warn!("could not read the Steam accounts: {error}");
+                Vec::new()
+            });
+            entries.into_iter().map(move |mut entry| {
+                entry.account.avatar = avatar_file(&steam, entry.account.steam_id);
+                entry
+            })
+        })
+        .collect();
+    sort_entries(&mut entries);
+    entries.dedup_by_key(|entry| entry.account.steam_id.0);
+    entries.into_iter().map(|entry| entry.account).collect()
+}
+
+fn avatar_file(steam: &Path, steam_id: SteamId) -> Option<PathBuf> {
+    let path = AVATAR_CACHE
+        .iter()
+        .fold(steam.to_path_buf(), |path, part| path.join(part))
+        .join(format!("{}.png", steam_id.0));
+    path.is_file().then_some(path)
+}
+
+fn read_entries(path: &Path) -> Result<Vec<Entry>, SteamClientError> {
+    let bytes = std::fs::read(path).map_err(|source| SteamClientError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    parse_accounts(&String::from_utf8_lossy(&bytes)).map_err(|reason| SteamClientError::Shape {
+        path: path.to_path_buf(),
+        reason,
+    })
+}
+
+fn sort_entries(entries: &mut [Entry]) {
+    entries.sort_by(|a, b| {
+        b.account
+            .most_recent
+            .cmp(&a.account.most_recent)
+            .then(b.timestamp.cmp(&a.timestamp))
+            .then(a.account.steam_id.0.cmp(&b.account.steam_id.0))
+    });
+}
+
+fn parse_accounts(text: &str) -> Result<Vec<Entry>, String> {
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let vdf = keyvalues_parser::parse(text).map_err(|error| error.to_string())?;
+    let Some(users) = vdf.value.get_obj() else {
+        return Ok(Vec::new());
+    };
+    let mut entries: Vec<Entry> = users
+        .iter()
+        .filter_map(|(id, values)| {
+            let steam_id = SteamId(id.parse().ok()?);
+            let user = values.first()?;
+            let text = |key| child(user, key).and_then(Value::get_str);
+            Some(Entry {
+                account: ClientAccount {
+                    steam_id,
+                    persona_name: text("PersonaName")
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_string),
+                    most_recent: text("MostRecent") == Some("1"),
+                    avatar: None,
+                },
+                timestamp: text("Timestamp")
+                    .and_then(|seconds| seconds.parse().ok())
+                    .unwrap_or(0),
+            })
+        })
+        .collect();
+    sort_entries(&mut entries);
+    Ok(entries)
 }
 
 pub fn steam_client_file(steam_id: SteamId) -> Option<PathBuf> {
@@ -288,6 +421,203 @@ mod tests {
             read_persona_name(&dir.path().join("missing.vdf")).unwrap_err(),
             SteamClientError::Io { .. }
         ));
+    }
+
+    const LOGIN_USERS: &str = r#"
+"users"
+{
+	"76561198000000002"
+	{
+		"AccountName"		"secret_login_two"
+		"PersonaName"		"Second"
+		"RememberPassword"		"1"
+		"MostRecent"		"0"
+		"Timestamp"		"1700000000"
+	}
+	"76561198000000001"
+	{
+		"AccountName"		"secret_login_one"
+		"PersonaName"		"First"
+		"MostRecent"		"1"
+		"Timestamp"		"1600000000"
+	}
+	"76561198000000003"
+	{
+		"AccountName"		"secret_login_three"
+		"PersonaName"		"Third"
+		"MostRecent"		"0"
+		"Timestamp"		"1800000000"
+	}
+}
+"#;
+
+    fn ids(entries: &[Entry]) -> Vec<u64> {
+        entries
+            .iter()
+            .map(|entry| entry.account.steam_id.0)
+            .collect()
+    }
+
+    fn install(login_users: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("config")).unwrap();
+        std::fs::write(
+            dir.path().join("config").join("loginusers.vdf"),
+            login_users,
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn reads_one_account() {
+        let text = r#""users" { "76561198000000001" { "AccountName" "x" "PersonaName" "Player" "MostRecent" "1" "Timestamp" "5" } }"#;
+
+        let entries = parse_accounts(text).unwrap();
+
+        assert_eq!(
+            entries,
+            [Entry {
+                account: ClientAccount {
+                    steam_id: SteamId(76_561_198_000_000_001),
+                    persona_name: Some("Player".to_string()),
+                    most_recent: true,
+                    avatar: None,
+                },
+                timestamp: 5,
+            }]
+        );
+    }
+
+    #[test]
+    fn the_most_recent_account_comes_first_then_the_newest() {
+        let entries = parse_accounts(LOGIN_USERS).unwrap();
+
+        assert_eq!(
+            ids(&entries),
+            [
+                76_561_198_000_000_001,
+                76_561_198_000_000_003,
+                76_561_198_000_000_002
+            ]
+        );
+    }
+
+    #[test]
+    fn without_a_most_recent_the_timestamp_decides() {
+        let text = LOGIN_USERS.replace("\"MostRecent\"\t\t\"1\"", "\"MostRecent\"\t\t\"0\"");
+
+        let entries = parse_accounts(&text).unwrap();
+
+        assert!(entries.iter().all(|entry| !entry.account.most_recent));
+        assert_eq!(
+            ids(&entries),
+            [
+                76_561_198_000_000_003,
+                76_561_198_000_000_002,
+                76_561_198_000_000_001
+            ]
+        );
+    }
+
+    #[test]
+    fn the_steam_id_breaks_a_tie() {
+        let text = r#""users" { "76561198000000009" { "Timestamp" "1" } "76561198000000004" { "Timestamp" "1" } }"#;
+
+        assert_eq!(
+            ids(&parse_accounts(text).unwrap()),
+            [76_561_198_000_000_004, 76_561_198_000_000_009]
+        );
+    }
+
+    #[test]
+    fn an_account_without_a_persona_name_has_none() {
+        let text = r#""users" { "76561198000000001" { "AccountName" "x" "PersonaName" " " } "76561198000000002" { "MostRecent" "1" } }"#;
+
+        let entries = parse_accounts(text).unwrap();
+
+        assert_eq!(entries.len(), 2);
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.account.persona_name.is_none())
+        );
+    }
+
+    #[test]
+    fn an_empty_file_has_no_accounts() {
+        assert_eq!(parse_accounts("").unwrap(), []);
+        assert_eq!(parse_accounts("  \n").unwrap(), []);
+        assert_eq!(parse_accounts(r#""users" { }"#).unwrap(), []);
+    }
+
+    #[test]
+    fn a_broken_file_is_an_error() {
+        assert!(parse_accounts(r#""users" { "76561198000000001" "#).is_err());
+    }
+
+    #[test]
+    fn the_login_name_is_not_kept() {
+        let entries = parse_accounts(LOGIN_USERS).unwrap();
+
+        assert!(!format!("{entries:?}").contains("secret_login"));
+    }
+
+    #[test]
+    fn a_repeated_steam_id_in_two_installs_counts_once() {
+        let first = install(LOGIN_USERS);
+        let second = install(
+            r#""users" { "76561198000000001" { "PersonaName" "Other name" "MostRecent" "1" "Timestamp" "9" } "76561198000000005" { "Timestamp" "1" } }"#,
+        );
+
+        let accounts =
+            accounts_in([first.path().to_path_buf(), second.path().to_path_buf()].into_iter());
+
+        let ids: Vec<u64> = accounts.iter().map(|account| account.steam_id.0).collect();
+        assert_eq!(
+            ids,
+            [
+                76_561_198_000_000_001,
+                76_561_198_000_000_003,
+                76_561_198_000_000_002,
+                76_561_198_000_000_005
+            ]
+        );
+    }
+
+    #[test]
+    fn a_missing_or_broken_file_gives_no_accounts() {
+        let empty = tempfile::tempdir().unwrap();
+        let broken = install(r#""users" { "7656"#);
+
+        assert_eq!(
+            accounts_in([empty.path().to_path_buf(), broken.path().to_path_buf()].into_iter()),
+            []
+        );
+    }
+
+    #[test]
+    fn the_avatar_is_the_cached_picture_when_there_is_one() {
+        let steam = install(LOGIN_USERS);
+        let cache = steam.path().join("config").join("avatarcache");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("76561198000000001.png"), "").unwrap();
+
+        let accounts = accounts_in([steam.path().to_path_buf()].into_iter());
+
+        assert_eq!(
+            accounts[0].avatar.as_deref(),
+            Some(cache.join("76561198000000001.png").as_path())
+        );
+        assert!(accounts[1..].iter().all(|account| account.avatar.is_none()));
+    }
+
+    #[test]
+    fn the_login_users_file_is_in_the_config_folder() {
+        assert_eq!(
+            login_users_path(Path::new("steam")),
+            Path::new("steam").join("config").join("loginusers.vdf")
+        );
     }
 
     #[test]
