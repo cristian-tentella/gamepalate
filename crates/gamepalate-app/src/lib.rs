@@ -17,6 +17,7 @@ pub mod new_version;
 pub mod profile;
 pub mod ready;
 pub mod refresh;
+pub mod region;
 pub mod settings;
 pub mod setup;
 pub mod signals;
