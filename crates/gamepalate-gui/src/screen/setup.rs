@@ -66,44 +66,48 @@ pub(crate) const KEY_DOMAIN_NOTE: &str =
 pub(crate) const PROFILE_PLACEHOLDER: &str = "Steam profile address or Steam ID";
 const FIND_STEAM_ID: &str = "Open your profile on steamcommunity.com and copy the address";
 const DROP_CATALOG: &str = "Have a catalog file? Drop it on this window.";
-const CATALOG_ABOUT: &str =
-    "Tags, reviews and prices of every Steam game, about 20 minutes to download";
-const DROP_ASK: &str = "Have a catalog file from someone else?";
-const DROP_HINT: &str = "Drop catalog.sqlite on this window";
+const CATALOG_ABOUT: &str = "Tags, reviews and prices for every game on Steam";
+const CATALOG_TIME: &str = "The download takes about 20 minutes";
+const DROP_ASK: &str = "Already have a catalog.sqlite?";
+const DROP_HINT: &str = "Drop it on this window to skip the download";
 const ZONE_HEIGHT: f32 = 96.0;
 const IMPORTING: &str = "Importing the catalog…";
 const DROP_TO_IMPORT: &str = "Drop to import";
 const LOGO_BYTES: &[u8] = include_bytes!("../../gamepalate.png");
 const LOGO_SIZE: f32 = 128.0;
 const WELCOME_ABOUT: &str =
-    "Recommends games from the Steam catalog, based on the hours you play and the votes you give";
+    "Recommends games from the Steam catalog, based on the hours you played and the votes you gave";
 const WELCOME_WIDTH: f32 = 480.0;
-const REGION_ABOUT: &str = "The catalog has the prices and discounts of this region";
-const REGION_LATER: &str = "You can change it later in Settings";
+const REGION_ABOUT: &str = "Prices and discounts come from the Steam store of this country";
+const REGION_LATER: &str = "You can change it in Settings at any time";
 pub(crate) const REGION_WIDTH: f32 = 320.0;
 const THEME_ABOUT: &str = "You can change it later in Settings";
-const THIS_PC_ABOUT: &str = "Two files of the Steam app can fill in your account and your hours";
-const THIS_PC_SAFE: &str = "Nothing is sent anywhere and the files are never changed";
-const ACCOUNTS_TITLE: &str = "Your Steam accounts";
-pub(crate) const ACCOUNTS_ABOUT: &str = "Fills in your Steam ID from the accounts signed in here";
-const HOURS_TITLE: &str = "Games you played but don't own";
+const THIS_PC_ABOUT: &str = "gamepalate can read two files the Steam app keeps here";
+const THIS_PC_SAFE: &str = "The files are only read. Nothing in them leaves this PC.";
+const ACCOUNTS_TITLE: &str = "Signed-in accounts";
+pub(crate) const ACCOUNTS_ABOUT: &str = "Pick your account instead of typing your Steam ID";
+const HOURS_TITLE: &str = "Games you don't own";
 const HOURS_ABOUT: &str =
-    "Adds the hours of Family Sharing games, free weekends and free games you removed";
-const ONLINE_TITLE: &str = "What goes online";
-const ONLINE_ABOUT: &str = "Steam, for your library and the catalog · GitHub, for new versions · ProtonDB, for Steam Deck reports";
+    "Counts hours from Family Sharing, free weekends and free games you removed";
+const ONLINE_TITLE: &str = "Online services";
+const ONLINE_ABOUT: &str =
+    "Steam: your games and the catalog · GitHub: new versions · ProtonDB: Steam Deck reports";
 const BODY_WIDTH: f32 = 600.0;
 const VANITY_NOTE: &str = "Checked after the API key";
 pub(crate) const TOGGLER_SIZE: f32 = 24.0;
-const KEY_ABOUT: &str = "gamepalate uses it to read your library from Steam";
+const KEY_ABOUT: &str = "gamepalate needs it to download the catalog and read your Steam games";
 const KEY_STEPS: [&str; 3] = [
-    "Open the key page on Steam ↗",
-    "Type any domain name, like localhost",
-    "Copy the key and paste it below",
+    "Open the Steam Web API
+page and sign in ↗",
+    "For the domain, any
+name works, like localhost",
+    "Copy the key Steam
+shows and paste it below",
 ];
 const KEY_STEP_HEIGHT: f32 = 104.0;
 const KEY_WARNING: &str =
-    "Steam gives keys only to accounts with Steam Guard on and at least $5 spent in the store";
-const KEY_KEYRING_NOTE: &str = "Saved in the system keyring, never in a file";
+    "Only accounts with Steam Guard on and at least $5 spent in the store can get a key";
+const KEY_KEYRING_NOTE: &str = "Saved in the system keyring";
 const WARNING: char = '\u{E002}';
 const KEY_REJECTED: &str = "Steam rejected the key. Check that you copied all of it.";
 const NO_PROFILE: &str = "Steam has no profile at that address. Check the name after /id/.";
@@ -307,8 +311,8 @@ impl RegionChoice {
             return None;
         }
         match self.source {
-            RegionSource::Profile => Some("From your Steam profile"),
-            RegionSource::System => Some("From your system settings"),
+            RegionSource::Profile => Some("Taken from your Steam profile"),
+            RegionSource::System => Some("Taken from your system settings"),
             RegionSource::Default => None,
         }
     }
@@ -1122,7 +1126,7 @@ impl Setup {
             Page::Catalog => ("Steam catalog", Some(CATALOG_ABOUT)),
             Page::Profile => (ready_title(self.ready.as_ref()), None),
             Page::Theme => ("Theme", Some(THEME_ABOUT)),
-            Page::ThisPc => ("Files on this PC", Some(THIS_PC_ABOUT)),
+            Page::ThisPc => ("Steam on this PC", Some(THIS_PC_ABOUT)),
             Page::Region => ("Store region", Some(REGION_ABOUT)),
             Page::Welcome => {
                 return column![].into();
@@ -1201,7 +1205,7 @@ impl Setup {
 
         column![
             field(
-                "Region",
+                "Country",
                 column![menu]
                     .push(region.note().map(note))
                     .push(problem)
@@ -1553,10 +1557,14 @@ impl Setup {
             Some(_) => Some(muted(line).into()),
             None if has_catalog(&self.first_run) => None,
             None => Some(
-                row![
-                    muted(line),
-                    muted("·".to_string()),
-                    link("Change", Message::ChangeRegion)
+                column![
+                    row![
+                        muted(line),
+                        muted("·".to_string()),
+                        link("Change", Message::ChangeRegion)
+                    ]
+                    .spacing(8),
+                    note(CATALOG_TIME),
                 ]
                 .spacing(8)
                 .into(),
@@ -1986,7 +1994,7 @@ fn prices_line(chosen: Region, imported: Option<Region>) -> String {
     let name = |region: Region| Country::of(region).name;
     match imported {
         Some(region) if region != chosen => {
-            format!("Prices from {}, from the imported file", name(region))
+            format!("Prices from {}, as in the imported file", name(region))
         }
         Some(region) => format!("Prices from {}", name(region)),
         None => format!("Prices from {}", name(chosen)),
@@ -2012,7 +2020,7 @@ fn download_status(stage: Stage, left: Option<Duration>, resuming: bool) -> Stri
 
 fn resume_note(resume_within_hours: u32) -> String {
     format!(
-        "If you close gamepalate now, the download picks up from here when you open it again within {resume_within_hours} hours"
+        "You can close gamepalate. The download resumes if you reopen it within {resume_within_hours} hours."
     )
 }
 
@@ -3099,7 +3107,7 @@ mod tests {
         assert!(config.contains("DE"), "{config}");
         assert_eq!(
             prices_line(setup.region.region, Some(country("DE"))),
-            "Prices from Germany, from the imported file"
+            "Prices from Germany, as in the imported file"
         );
         assert!(setup.prices_view().is_some());
     }
@@ -3263,7 +3271,7 @@ mod tests {
         );
         assert_eq!(
             resume_note(24),
-            "If you close gamepalate now, the download picks up from here when you open it again within 24 hours"
+            "You can close gamepalate. The download resumes if you reopen it within 24 hours."
         );
     }
 
@@ -3462,7 +3470,7 @@ mod tests {
 
         setup.update(Message::RegionFound(Some(country("DE"))));
         assert_eq!(setup.region.region, country("DE"));
-        assert_eq!(setup.region.note(), Some("From your Steam profile"));
+        assert_eq!(setup.region.note(), Some("Taken from your Steam profile"));
 
         setup.update(Message::RegionChosen(Country::of(country("US"))));
         assert_eq!(setup.region.region, country("US"));
@@ -3479,12 +3487,12 @@ mod tests {
         setup.region = RegionChoice::new(Some(country("JP")));
 
         assert_eq!(setup.region.region, country("JP"));
-        assert_eq!(setup.region.note(), Some("From your system settings"));
+        assert_eq!(setup.region.note(), Some("Taken from your system settings"));
 
         setup.update(Message::RegionFound(None));
-        assert_eq!(setup.region.note(), Some("From your system settings"));
+        assert_eq!(setup.region.note(), Some("Taken from your system settings"));
         setup.update(Message::RegionFound(Some(country("DE"))));
-        assert_eq!(setup.region.note(), Some("From your Steam profile"));
+        assert_eq!(setup.region.note(), Some("Taken from your Steam profile"));
     }
 
     #[test]
