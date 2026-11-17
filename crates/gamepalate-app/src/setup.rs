@@ -22,6 +22,7 @@ use crate::{
     capsules::classic_capsule,
     data_dir,
     images::{self, ImageCache, LoadImageError},
+    steam_client::{ClientAccount, client_accounts},
     update::pending_update,
 };
 
@@ -73,6 +74,10 @@ impl FirstRun {
         std::fs::create_dir_all(dir)?;
         change_settings(&dir.join(GUI_FILE), change)
     }
+}
+
+pub fn steam_accounts(data_dir: &Path) -> Vec<ClientAccount> {
+    client_accounts(data_dir)
 }
 
 pub fn saved_gui_settings() -> GuiSettings {
@@ -311,6 +316,20 @@ mod tests {
         assert_eq!(first_run.data_dir, None);
         assert!(!first_run.ready());
         assert_eq!(first_run.gui_settings(), GuiSettings::default());
+    }
+
+    #[test]
+    fn without_the_permission_the_setup_gets_no_accounts() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(steam_accounts(dir.path()).is_empty());
+
+        fs::write(
+            dir.path().join("config.toml"),
+            "[signals]\nsteam_client_accounts = false\n",
+        )
+        .unwrap();
+
+        assert!(steam_accounts(dir.path()).is_empty());
     }
 
     #[test]
