@@ -859,29 +859,21 @@ pub fn dot(current: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
 pub fn step(done: bool, current: bool) -> impl Fn(&Theme) -> container::Style {
     move |theme| {
         let palette = theme.extended_palette();
-        let (background, text, border) = if done {
-            (
-                Some(palette.success.base.color),
-                palette.success.base.text,
-                palette.success.base.color,
-            )
+        let accent = palette.primary.base.color;
+        let (background, border, width) = if done {
+            (Some(accent), accent, 0.0)
         } else if current {
-            (
-                Some(palette.primary.base.color),
-                palette.primary.base.text,
-                palette.primary.base.color,
-            )
+            (None, accent, 2.0)
         } else {
-            (None, faded(theme, 0.5), palette.background.strong.color)
+            (None, palette.background.strong.color, 1.5)
         };
 
         container::Style {
             background: background.map(Into::into),
-            text_color: Some(text),
             border: Border {
                 color: border,
-                width: 1.5,
-                radius: 14.0.into(),
+                width,
+                radius: 6.0.into(),
             },
             ..container::Style::default()
         }

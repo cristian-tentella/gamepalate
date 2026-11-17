@@ -14,12 +14,13 @@ use gamepalate_app::{
     update::download_catalog,
 };
 use iced::{
-    Center, ContentFit, Element, Event, Fill, Subscription, Task, event,
+    Center, ContentFit, Element, Event, Fill, Padding, Subscription, Task, event,
     futures::{SinkExt, channel::mpsc},
-    mouse, padding, stream,
+    keyboard::{self, Key, key::Named},
+    padding, stream,
     widget::{
-        button, column, container, image, mouse_area, progress_bar, row, scrollable, space, stack,
-        text, text_input, tooltip,
+        button, column, container, image, progress_bar, row, scrollable, space, stack, text,
+        text_input,
     },
 };
 
@@ -33,13 +34,18 @@ use crate::{
     style,
 };
 
-const CHECK: char = '\u{E668}';
 const REFRESH: char = '\u{E5D5}';
-const WIDTH: f32 = 760.0;
+const SHEET_WIDTH: f32 = 720.0;
+const SHEET_HEIGHT: f32 = 520.0;
+const SHEET_MARGIN: f32 = 32.0;
+const HEAD_HEIGHT: f32 = 56.0;
+const FOOT_HEIGHT: f32 = 64.0;
+const DOT: f32 = 12.0;
+const DOT_CENTER: f32 = 6.0;
+const DOT_LINE: f32 = 48.0;
 const LABEL_WIDTH: f32 = 96.0;
-const STEP_MARK: f32 = 28.0;
 const PLAYED_ASKED: usize = 12;
-const PLAYED_SHOWN: usize = 6;
+const PLAYED_SHOWN: usize = 5;
 const TILE_WIDTH: f32 = 116.0;
 const TILE_HEIGHT: f32 = 174.0;
 const IMAGE_RADIUS: f32 = 6.0;
@@ -61,6 +67,7 @@ const DROP_TO_IMPORT: &str = "Drop to import";
 pub struct Setup {
     first_run: FirstRun,
     error: Option<String>,
+    page: Page,
     account: Account,
     download: Download,
     import: Import,
@@ -85,22 +92,28 @@ enum Cover {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Step {
+enum Page {
+    Welcome,
+    Theme,
+    ThisPc,
     Account,
+    Key,
+    Region,
     Catalog,
     Profile,
 }
 
-impl Step {
-    const ALL: [Step; 3] = [Step::Account, Step::Catalog, Step::Profile];
-
-    fn name(self) -> &'static str {
-        match self {
-            Step::Account => "Account",
-            Step::Catalog => "Catalog",
-            Step::Profile => "Profile",
-        }
-    }
+impl Page {
+    const ALL: [Page; 8] = [
+        Page::Welcome,
+        Page::Theme,
+        Page::ThisPc,
+        Page::Account,
+        Page::Key,
+        Page::Region,
+        Page::Catalog,
+        Page::Profile,
+    ];
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,6 +121,22 @@ enum StepState {
     Done,
     Current,
     Next,
+}
+
+#[derive(Clone, Debug)]
+struct Primary {
+    label: &'static str,
+    message: Option<Message>,
+}
+
+impl Primary {
+    fn new(label: &'static str, message: Option<Message>) -> Primary {
+        Primary { label, message }
+    }
+
+    fn proceed() -> Primary {
+        Primary::new("Continue", Some(Message::Continue))
+    }
 }
 
 #[derive(Debug)]
@@ -142,7 +171,6 @@ enum ImportPlace {
 struct Account {
     steam_id: String,
     key: String,
-    editing: bool,
     connecting: bool,
     error: Option<String>,
 }
@@ -151,6 +179,9 @@ struct Account {
 pub enum Message {
     CheckAgain,
     OpenFolder,
+    Continue,
+    Back,
+    Enter,
     SteamId(String),
     Key(String),
     GetKey,
@@ -225,6 +256,7 @@ impl Setup {
             .and_then(SteamClientQuestion::ask);
 
         Setup {
+            page: first_page(&first_run),
             first_run,
             error,
             account,
@@ -239,7 +271,7 @@ impl Setup {
 
     pub fn begin(&mut self) -> Task<Message> {
         let covers = self.load_covers();
-        if !downloads_at_start(&self.account, &self.first_run) {
+        if !downloads_at_start(&self.first_run) {
             return covers;
         }
 
@@ -283,6 +315,22 @@ impl Setup {
                 }
                 Action::None
             }
+            Message::Continue => {
+                if let Some(page) = next_page(self.page) {
+                    self.page = page;
+                }
+                Action::None
+            }
+            Message::Back => {
+                if let Some(page) = self.back() {
+                    self.page = page;
+                }
+                Action::None
+            }
+            Message::Enter => match self.primary().and_then(|primary| primary.message) {
+                Some(message) => self.update(message),
+                None => Action::None,
+            },
             Message::SteamId(steam_id) => {
                 self.account.steam_id = steam_id;
                 Action::None
@@ -301,8 +349,9 @@ impl Setup {
                 Action::None
             }
             Message::Change => {
-                self.account.editing = true;
-                self.account.key.clear();
+                if !self.download.running {
+                    self.page = Page::Account;
+                }
                 Action::None
             }
             Message::Download => self.download(),
@@ -313,6 +362,7 @@ impl Setup {
             Message::Downloaded(Ok(())) => {
                 self.first_run = FirstRun::check(None);
                 self.download = Download::default();
+                self.page = page_from(self.page, &self.first_run);
                 self.prepare(false)
             }
             Message::Hovering(hovering) => {
@@ -371,6 +421,59 @@ impl Setup {
         }
     }
 
+    fn back(&self) -> Option<Page> {
+        let busy = self.download.running
+            || self.account.connecting
+            || self.import.running
+            || matches!(self.ready, Some(Ready::Preparing));
+        if busy {
+            return None;
+        }
+        previous_page(self.page)
+    }
+
+    fn primary(&self) -> Option<Primary> {
+        let account = &self.account;
+        match self.page {
+            Page::Account if keeps_account(account, &self.first_run) => Some(Primary::proceed()),
+            Page::Account => Some(Primary::new(
+                if account.connecting {
+                    "Connecting…"
+                } else {
+                    "Connect"
+                },
+                (!self.import.running && can_connect(account, &self.first_run))
+                    .then_some(Message::Connect),
+            )),
+            Page::Catalog if self.download.running => None,
+            Page::Catalog if self.first_run.catalog == Part::Present => Some(Primary::proceed()),
+            Page::Catalog => Some(Primary::new(
+                if self.download.error.is_some() {
+                    "Retry"
+                } else {
+                    "Download catalog"
+                },
+                (!self.import.running).then_some(Message::Download),
+            )),
+            Page::Profile => match &self.ready {
+                None => Some(Primary::new(
+                    "Read my library",
+                    Some(Message::Prepare(true)),
+                )),
+                Some(Ready::Preparing) => None,
+                Some(Ready::Failed(_)) => {
+                    Some(Primary::new("Retry", Some(Message::Prepare(false))))
+                }
+                Some(Ready::Empty { .. }) => {
+                    Some(Primary::new("Check again", Some(Message::Prepare(true))))
+                }
+            },
+            Page::Welcome | Page::Theme | Page::ThisPc | Page::Key | Page::Region => {
+                Some(Primary::proceed())
+            }
+        }
+    }
+
     fn prepare(&mut self, read_signals_again: bool) -> Action {
         let Some(dir) = self.first_run.data_dir.clone() else {
             return Action::None;
@@ -391,10 +494,7 @@ impl Setup {
         let Some(dir) = self.first_run.data_dir.clone() else {
             return Action::None;
         };
-        if self.download.running
-            || self.import.running
-            || !account_done(&self.account, &self.first_run)
-        {
+        if self.download.running || self.import.running || !account_done(&self.first_run) {
             return Action::None;
         }
         self.download = Download {
@@ -442,11 +542,7 @@ impl Setup {
     }
 
     fn import_place(&self) -> Option<ImportPlace> {
-        import_place(
-            current_step(&self.account, &self.first_run),
-            &self.first_run,
-            &self.download,
-        )
+        import_place(self.page, &self.first_run, &self.download)
     }
 
     fn import(&mut self, file: PathBuf) -> Action {
@@ -478,7 +574,8 @@ impl Setup {
         }
 
         self.first_run = FirstRun::check(None);
-        if account_done(&self.account, &self.first_run) {
+        self.page = page_from(self.page, &self.first_run);
+        if account_done(&self.first_run) {
             self.prepare(false)
         } else {
             Action::None
@@ -510,47 +607,121 @@ impl Setup {
     }
 
     pub fn subscription() -> Subscription<Message> {
-        event::listen_with(drop_message)
+        event::listen_with(window_message)
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let step = current_step(&self.account, &self.first_run);
-        let card = container(self.step_view(step))
-            .padding(24)
+        let sheet = column![self.head_view(), self.body_view(), self.foot_view()];
+
+        container(
+            container(sheet)
+                .width(Fill)
+                .max_width(SHEET_WIDTH)
+                .height(Fill)
+                .max_height(SHEET_HEIGHT)
+                .style(style::card),
+        )
+        .padding(24)
+        .center(Fill)
+        .into()
+    }
+
+    fn head_view(&self) -> Element<'_, Message> {
+        let content = step_of(self.page).map(|(number, count)| {
+            row![
+                self.dots_view(),
+                space().width(Fill),
+                note(format!("Step {number} of {count}")),
+            ]
+            .align_y(Center)
+        });
+
+        container(column![].push(content))
             .width(Fill)
-            .style(style::card);
+            .height(HEAD_HEIGHT)
+            .padding([0.0, SHEET_MARGIN])
+            .align_y(Center)
+            .into()
+    }
+
+    fn dots_view(&self) -> Element<'_, Message> {
+        let mut dots = row![].spacing(8).align_y(Center);
+        for (index, page) in counted_pages().enumerate() {
+            let state = step_state(page, self.page, page_done(page, &self.first_run));
+            if index > 0 {
+                dots = dots.push(
+                    container(column![])
+                        .width(DOT_LINE)
+                        .height(2)
+                        .style(style::step_line(state != StepState::Next)),
+                );
+            }
+            dots = dots.push(dot(state));
+        }
+        dots.into()
+    }
+
+    fn body_view(&self) -> Element<'_, Message> {
+        let content = column![]
+            .push(
+                self.question
+                    .as_ref()
+                    .filter(|_| self.page == Page::Catalog)
+                    .map(|question| question.view(Message::SteamClient, ElsewhereHint::Text)),
+            )
+            .push(self.page_view())
+            .push(self.most_played_view())
+            .spacing(16);
 
         scrollable(
             container(
                 column![]
                     .push(self.problems_view())
-                    .push(steps_view(
-                        step,
-                        &self.account,
-                        &self.first_run,
-                        &self.download,
-                    ))
-                    .push(
-                        self.question
-                            .as_ref()
-                            .filter(|_| step == Step::Catalog)
-                            .map(|question| {
-                                question.view(Message::SteamClient, ElsewhereHint::Text)
-                            }),
-                    )
-                    .push(card)
-                    .push(
-                        (self.import_place() == Some(ImportPlace::Account))
-                            .then(|| self.import_view()),
-                    )
-                    .push(self.most_played_view(step))
-                    .spacing(28)
-                    .max_width(WIDTH),
+                    .push(self.title_view())
+                    .push(content)
+                    .spacing(24),
             )
-            .padding(40)
-            .center_x(Fill),
+            .width(Fill)
+            .padding(Padding {
+                top: 8.0,
+                right: SHEET_MARGIN,
+                bottom: 24.0,
+                left: SHEET_MARGIN,
+            }),
         )
+        .width(Fill)
         .height(Fill)
+        .into()
+    }
+
+    fn foot_view(&self) -> Element<'_, Message> {
+        let back: Element<'_, Message> = match self.back() {
+            Some(_) => button(text("Back").size(font::BAR_SIZE))
+                .padding([8, 0])
+                .style(style::link)
+                .on_press(Message::Back)
+                .into(),
+            None => space().into(),
+        };
+        let primary = self.primary().map(|primary| {
+            button(text(primary.label).size(font::BAR_SIZE))
+                .style(style::primary)
+                .padding([10, 28])
+                .on_press_maybe(primary.message)
+        });
+
+        column![
+            style::separator(),
+            container(
+                row![back, space().width(Fill)]
+                    .push(primary)
+                    .align_y(Center)
+            )
+            .width(Fill)
+            .height(FOOT_HEIGHT - 1.0)
+            .padding([0.0, SHEET_MARGIN])
+            .align_y(Center),
+        ]
         .into()
     }
 
@@ -559,30 +730,38 @@ impl Setup {
         if problems.is_empty() {
             return None;
         }
-        let actions = row![small_button("Check again", Message::CheckAgain)]
-            .push(
-                self.first_run
-                    .data_dir
-                    .is_some()
-                    .then(|| link("Open data folder", Message::OpenFolder)),
-            )
-            .spacing(16)
-            .align_y(Center);
+        let actions = row![
+            button(text("Check again").size(font::BAR_SIZE))
+                .style(style::secondary)
+                .padding([8, 20])
+                .on_press(Message::CheckAgain)
+        ]
+        .push(
+            self.first_run
+                .data_dir
+                .is_some()
+                .then(|| link("Open data folder", Message::OpenFolder)),
+        )
+        .spacing(16)
+        .align_y(Center);
 
         Some(
             container(
-                column(problems.into_iter().map(|problem| {
-                    text(problem)
-                        .size(font::BAR_SIZE)
-                        .style(text::danger)
-                        .into()
-                }))
+                column![
+                    column(problems.into_iter().map(|problem| {
+                        text(problem)
+                            .size(font::BAR_SIZE)
+                            .style(text::danger)
+                            .into()
+                    }))
+                    .spacing(8)
+                ]
                 .push(
                     (self.import_place() == Some(ImportPlace::Problems))
                         .then(|| self.import_view()),
                 )
                 .push(actions)
-                .spacing(12),
+                .spacing(16),
             )
             .padding(16)
             .width(Fill)
@@ -591,25 +770,42 @@ impl Setup {
         )
     }
 
-    fn step_view(&self, step: Step) -> Element<'_, Message> {
-        let (title, about, body) = match step {
-            Step::Account => ("Steam account", Some(ACCOUNT_ABOUT), self.account_view()),
-            Step::Catalog => return self.catalog_view(),
-            Step::Profile => (ready_title(self.ready.as_ref()), None, self.ready_view()),
+    fn title_view(&self) -> Element<'_, Message> {
+        let (title, about) = match self.page {
+            Page::Account => ("Steam account", Some(ACCOUNT_ABOUT)),
+            Page::Catalog if self.download.running => {
+                return row![container(page_title("Downloading the Steam catalog")).width(Fill)]
+                    .push(self.download.tracker.percent().map(page_title))
+                    .align_y(Center)
+                    .into();
+            }
+            Page::Catalog => ("Steam catalog", None),
+            Page::Profile => (ready_title(self.ready.as_ref()), None),
+            Page::Welcome | Page::Theme | Page::ThisPc | Page::Key | Page::Region => {
+                return column![].into();
+            }
         };
 
-        column![
-            column![text(title).size(font::PRICE_SIZE).font(font::SEMIBOLD)]
-                .push(about.map(|about| text(about).size(font::BAR_SIZE).style(style::muted)))
-                .spacing(6),
-            body,
-        ]
-        .spacing(20)
-        .into()
+        column![page_title(title)]
+            .push(about.map(|about| text(about).size(font::INFO_SIZE).style(style::muted)))
+            .spacing(8)
+            .into()
     }
 
-    fn most_played_view(&self, step: Step) -> Option<Element<'_, Message>> {
-        if step != Step::Catalog {
+    fn page_view(&self) -> Element<'_, Message> {
+        match self.page {
+            Page::Account => self.account_view(),
+            Page::Catalog if self.download.running => self.progress_view(),
+            Page::Catalog => self.start_view(),
+            Page::Profile => self.ready_view(),
+            Page::Welcome | Page::Theme | Page::ThisPc | Page::Key | Page::Region => {
+                column![].into()
+            }
+        }
+    }
+
+    fn most_played_view(&self) -> Option<Element<'_, Message>> {
+        if self.page != Page::Catalog {
             return None;
         }
         let tiles: Vec<Element<'_, Message>> = ready_covers(&self.played)?
@@ -625,10 +821,10 @@ impl Setup {
                         .font(font::SEMIBOLD),
                     note("From your Steam library"),
                 ]
-                .spacing(4),
-                row(tiles).spacing(12),
+                .spacing(8),
+                row(tiles).spacing(16),
             ]
-            .spacing(12)
+            .spacing(16)
             .into(),
         )
     }
@@ -639,7 +835,7 @@ impl Setup {
         let steam_id = text_input(PROFILE_PLACEHOLDER, &account.steam_id)
             .style(style::field)
             .on_input_maybe(editable.then_some(Message::SteamId))
-            .on_submit(Message::Connect)
+            .on_submit(Message::Enter)
             .padding(8)
             .size(font::BAR_SIZE);
         let steam_id_note = match steam_id_note(&account.steam_id) {
@@ -658,7 +854,7 @@ impl Setup {
                 .style(style::field)
                 .secure(true)
                 .on_input_maybe(editable.then_some(Message::Key))
-                .on_submit(Message::Connect)
+                .on_submit(Message::Enter)
                 .padding(8)
                 .size(font::BAR_SIZE),
             link("Get a key ↗", Message::GetKey),
@@ -682,69 +878,39 @@ impl Setup {
             .as_deref()
             .filter(|error| needs_privacy(error))
             .map(|_| note_link("Open privacy settings ↗", Message::OpenPrivacy));
-        let connect = row![
-            container(column![].push(invalid).push(error).push(privacy).spacing(4)).width(Fill),
-            button(
-                text(if account.connecting {
-                    "Connecting…"
-                } else {
-                    "Connect"
-                })
-                .size(font::BAR_SIZE)
-            )
-            .style(style::primary)
-            .padding([8, 20])
-            .on_press_maybe(
-                (!self.import.running && can_connect(account, &self.first_run))
-                    .then_some(Message::Connect),
-            ),
-        ]
-        .spacing(16)
-        .align_y(Center);
+        let problems = (invalid.is_some() || error.is_some())
+            .then(|| column![].push(invalid).push(error).push(privacy).spacing(8));
 
         column![
-            field("Profile", column![steam_id, steam_id_note].spacing(4)),
-            field("API key", column![key, note(KEY_DOMAIN_NOTE)].spacing(4)),
-            connect,
+            field("Profile", column![steam_id, steam_id_note].spacing(8)),
+            field("API key", column![key, note(KEY_DOMAIN_NOTE)].spacing(8)),
         ]
-        .spacing(12)
+        .push(problems)
+        .push((self.import_place() == Some(ImportPlace::Account)).then(|| self.import_view()))
+        .spacing(16)
         .into()
     }
 }
 
 impl Setup {
-    fn catalog_view(&self) -> Element<'_, Message> {
-        if self.download.running {
-            self.progress_view()
-        } else {
-            self.start_view()
-        }
-    }
-
     fn ready_view(&self) -> Element<'_, Message> {
-        let Some(ready) = &self.ready else {
-            return small_button("Read my library", Message::Prepare(true));
-        };
-
-        match ready {
-            Ready::Preparing => note(PREPARING).into(),
-            Ready::Failed(error) => column![
-                text(error.clone()).size(font::BAR_SIZE).style(text::danger),
-                small_button("Retry", Message::Prepare(false)),
-            ]
-            .spacing(8)
-            .into(),
-            Ready::Empty { min_hours } => column![
-                text(empty_profile_text(*min_hours)).size(font::BAR_SIZE),
-                note_link("Wrong account? Change it", Message::Change),
-                row![
-                    button(text("Open Steam library").size(font::BAR_SIZE))
-                        .padding([8, 20])
-                        .style(style::secondary)
-                        .on_press(Message::OpenLibrary),
-                    small_button("Check again", Message::Prepare(true)),
+        match &self.ready {
+            None => column![].into(),
+            Some(Ready::Preparing) => note(PREPARING).into(),
+            Some(Ready::Failed(error)) => text(error.clone())
+                .size(font::BAR_SIZE)
+                .style(text::danger)
+                .into(),
+            Some(Ready::Empty { min_hours }) => column![
+                column![
+                    text(empty_profile_text(*min_hours)).size(font::BAR_SIZE),
+                    note_link("Wrong account? Change it", Message::Change),
                 ]
-                .spacing(12),
+                .spacing(8),
+                button(text("Open Steam library").size(font::BAR_SIZE))
+                    .padding([8, 20])
+                    .style(style::secondary)
+                    .on_press(Message::OpenLibrary),
             ]
             .spacing(16)
             .into(),
@@ -757,31 +923,12 @@ impl Setup {
             .error
             .as_ref()
             .map(|error| text(error.clone()).size(font::BAR_SIZE).style(text::danger));
-        let label = if self.download.error.is_some() {
-            "Retry"
-        } else {
-            "Download catalog"
-        };
 
-        column![
-            text("Steam catalog")
-                .size(font::PRICE_SIZE)
-                .font(font::SEMIBOLD)
-        ]
-        .push(error)
-        .push(
-            row![
-                button(text(label).size(font::BAR_SIZE))
-                    .style(style::primary)
-                    .padding([8, 20])
-                    .on_press_maybe((!self.import.running).then_some(Message::Download)),
-            ]
+        column![]
+            .push(error)
             .push((self.import_place() == Some(ImportPlace::Catalog)).then(|| self.import_view()))
             .spacing(16)
-            .align_y(Center),
-        )
-        .spacing(12)
-        .into()
+            .into()
     }
 
     fn import_view(&self) -> Element<'_, Message> {
@@ -822,27 +969,13 @@ impl Setup {
             None => None,
         };
 
-        column![line].push(result).spacing(4).into()
+        column![line].push(result).spacing(8).into()
     }
 
     fn progress_view(&self) -> Element<'_, Message> {
         let tracker = &self.download.tracker;
 
         column![
-            row![
-                container(
-                    text("Downloading the Steam catalog")
-                        .size(font::PRICE_SIZE)
-                        .font(font::SEMIBOLD)
-                )
-                .width(Fill)
-            ]
-            .push(
-                tracker
-                    .percent()
-                    .map(|percent| { text(percent).size(font::PRICE_SIZE).font(font::SEMIBOLD) })
-            )
-            .align_y(Center),
             progress_bar(0.0..=1.0, tracker.fraction())
                 .girth(10)
                 .length(Fill)
@@ -854,8 +987,28 @@ impl Setup {
                 self.first_run.resume_within_hours
             )),
         ]
-        .spacing(12)
+        .spacing(8)
         .into()
+    }
+}
+
+fn page_title<'a>(line: impl text::IntoFragment<'a>) -> text::Text<'a> {
+    text(line).size(font::PRICE_SIZE).font(font::SEMIBOLD)
+}
+
+fn dot<'a>(state: StepState) -> Element<'a, Message> {
+    let filled = || container(column![]).style(style::step(true, false));
+    match state {
+        StepState::Done => filled().width(DOT).height(DOT).into(),
+        StepState::Current => container(filled().width(DOT_CENTER).height(DOT_CENTER))
+            .center(DOT)
+            .style(style::step(false, true))
+            .into(),
+        StepState::Next => container(column![])
+            .width(DOT)
+            .height(DOT)
+            .style(style::step(false, false))
+            .into(),
     }
 }
 
@@ -882,20 +1035,19 @@ fn open_link(url: &str) -> Action {
     Action::None
 }
 
-fn small_button(label: &str, message: Message) -> Element<'_, Message> {
-    button(text(label).size(font::BAR_SIZE))
-        .style(style::primary)
-        .padding([8, 20])
-        .on_press(message)
-        .into()
-}
-
 fn note<'a>(line: impl text::IntoFragment<'a>) -> text::Text<'a> {
     text(line).size(font::NOTE_SIZE).style(style::muted)
 }
 
-fn account_done(account: &Account, first_run: &FirstRun) -> bool {
-    !account.editing && first_run.steam_id == Part::Present && first_run.api_key
+fn account_done(first_run: &FirstRun) -> bool {
+    first_run.steam_id == Part::Present && first_run.api_key
+}
+
+fn keeps_account(account: &Account, first_run: &FirstRun) -> bool {
+    account_done(first_run)
+        && account.key.trim().is_empty()
+        && first_run.saved_steam_id.map(|id| id.0.to_string())
+            == Some(account.steam_id.trim().to_string())
 }
 
 fn can_connect(account: &Account, first_run: &FirstRun) -> bool {
@@ -943,52 +1095,116 @@ pub(crate) fn connect_error_text(error: &ConnectError) -> String {
     }
 }
 
-fn current_step(account: &Account, first_run: &FirstRun) -> Step {
-    if !account_done(account, first_run) {
-        Step::Account
-    } else if first_run.catalog != Part::Present {
-        Step::Catalog
-    } else {
-        Step::Profile
+fn shown(page: Page) -> bool {
+    matches!(page, Page::Account | Page::Catalog | Page::Profile)
+}
+
+fn page_done(page: Page, first_run: &FirstRun) -> bool {
+    match page {
+        Page::Welcome | Page::Theme => first_run.saved_steam_id.is_some(),
+        Page::ThisPc => true,
+        Page::Account => account_done(first_run),
+        Page::Key => first_run.api_key,
+        Page::Region => first_run.catalog == Part::Present || first_run.pending_update.is_some(),
+        Page::Catalog => first_run.catalog == Part::Present,
+        Page::Profile => false,
     }
 }
 
-fn step_complete(step: Step, account: &Account, first_run: &FirstRun) -> bool {
-    match step {
-        Step::Account => account_done(account, first_run),
-        Step::Catalog => first_run.catalog == Part::Present,
-        Step::Profile => false,
-    }
+fn first_page(first_run: &FirstRun) -> Page {
+    page_from(Page::Welcome, first_run)
 }
 
-fn step_state(step: Step, current: Step, complete: bool) -> StepState {
-    match step.cmp(&current) {
+fn page_from(page: Page, first_run: &FirstRun) -> Page {
+    Page::ALL
+        .into_iter()
+        .filter(|&next| next >= page && shown(next))
+        .find(|&next| !page_done(next, first_run))
+        .unwrap_or(Page::Profile)
+}
+
+fn next_page(page: Page) -> Option<Page> {
+    Page::ALL
+        .into_iter()
+        .find(|&next| next > page && shown(next))
+}
+
+fn previous_page(page: Page) -> Option<Page> {
+    Page::ALL
+        .into_iter()
+        .rev()
+        .find(|&previous| previous < page && shown(previous))
+}
+
+fn counted_pages() -> impl Iterator<Item = Page> {
+    Page::ALL
+        .into_iter()
+        .filter(|&page| page >= Page::ThisPc && shown(page))
+}
+
+fn step_of(page: Page) -> Option<(usize, usize)> {
+    let number = counted_pages().position(|counted| counted == page)?;
+    Some((number + 1, counted_pages().count()))
+}
+
+fn step_state(page: Page, current: Page, done: bool) -> StepState {
+    match page.cmp(&current) {
         Ordering::Less => StepState::Done,
         Ordering::Equal => StepState::Current,
-        Ordering::Greater if complete => StepState::Done,
+        Ordering::Greater if done => StepState::Done,
         Ordering::Greater => StepState::Next,
     }
 }
 
-fn downloads_at_start(account: &Account, first_run: &FirstRun) -> bool {
-    current_step(account, first_run) == Step::Catalog && first_run.catalog == Part::Missing
+fn downloads_at_start(first_run: &FirstRun) -> bool {
+    first_page(first_run) == Page::Catalog && first_run.catalog == Part::Missing
 }
 
 fn prepares_after_connect(first_run: &FirstRun) -> bool {
     first_run.catalog == Part::Present && first_run.steam_id == Part::Present && first_run.api_key
 }
 
-fn import_place(step: Step, first_run: &FirstRun, download: &Download) -> Option<ImportPlace> {
+fn import_place(page: Page, first_run: &FirstRun, download: &Download) -> Option<ImportPlace> {
     if download.running || first_run.data_dir.is_none() {
         return None;
     }
     if matches!(first_run.catalog, Part::Invalid(_)) {
         return Some(ImportPlace::Problems);
     }
-    match step {
-        Step::Account => Some(ImportPlace::Account),
-        Step::Catalog if download.error.is_some() => Some(ImportPlace::Catalog),
-        Step::Catalog | Step::Profile => None,
+    match page {
+        Page::Account => Some(ImportPlace::Account),
+        Page::Catalog if download.error.is_some() => Some(ImportPlace::Catalog),
+        Page::Welcome
+        | Page::Theme
+        | Page::ThisPc
+        | Page::Key
+        | Page::Region
+        | Page::Catalog
+        | Page::Profile => None,
+    }
+}
+
+fn window_message(
+    event: Event,
+    status: event::Status,
+    window: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        Event::Keyboard(event) => key_message(event, status),
+        event => drop_message(event, status, window),
+    }
+}
+
+fn key_message(event: keyboard::Event, status: event::Status) -> Option<Message> {
+    let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+        return None;
+    };
+
+    match key {
+        Key::Named(Named::Enter) if status == event::Status::Ignored => Some(Message::Enter),
+        Key::Named(Named::Escape) => Some(Message::Back),
+        Key::Named(Named::ArrowLeft) if modifiers.alt() => Some(Message::Back),
+        _ => None,
     }
 }
 
@@ -1037,7 +1253,7 @@ fn download_status(
     )
 }
 
-fn shown(played: &[Played]) -> impl Iterator<Item = &Played> {
+fn covered(played: &[Played]) -> impl Iterator<Item = &Played> {
     played
         .iter()
         .filter(|game| !matches!(game.cover, Cover::Missing))
@@ -1045,7 +1261,7 @@ fn shown(played: &[Played]) -> impl Iterator<Item = &Played> {
 }
 
 fn ready_covers(played: &[Played]) -> Option<Vec<(&image::Handle, f64)>> {
-    shown(played)
+    covered(played)
         .map(|game| match &game.cover {
             Cover::Ready(handle) => Some((handle, game.hours)),
             Cover::Loading | Cover::Missing => None,
@@ -1071,10 +1287,6 @@ fn cover_tile<'a>(handle: &image::Handle, played: f64) -> Element<'a, Message> {
         .into()
 }
 
-fn can_change(download: &Download) -> bool {
-    !download.running
-}
-
 fn file_problems(first_run: &FirstRun, error: Option<&str>) -> Vec<String> {
     let mut problems = Vec::new();
     if first_run.data_dir.is_none() {
@@ -1092,87 +1304,6 @@ fn file_problems(first_run: &FirstRun, error: Option<&str>) -> Vec<String> {
         problems.push(format!("gamepalate could not open the data files: {error}"));
     }
     problems
-}
-
-fn steps_view<'a>(
-    current: Step,
-    account: &Account,
-    first_run: &FirstRun,
-    download: &Download,
-) -> Element<'a, Message> {
-    let mut steps = row![].spacing(12).align_y(Center);
-    for (index, step) in Step::ALL.into_iter().enumerate() {
-        let state = step_state(step, current, step_complete(step, account, first_run));
-        if index > 0 {
-            steps = steps.push(
-                container(column![])
-                    .width(Fill)
-                    .height(2)
-                    .style(style::step_line(state != StepState::Next)),
-            );
-        }
-        let label = step_label(index + 1, step, state);
-        steps = steps.push(if changes_account(step, state, download) {
-            change_account(label)
-        } else {
-            label
-        });
-    }
-    steps.into()
-}
-
-fn changes_account(step: Step, state: StepState, download: &Download) -> bool {
-    step == Step::Account && state == StepState::Done && can_change(download)
-}
-
-fn change_account(label: Element<'_, Message>) -> Element<'_, Message> {
-    tooltip(
-        mouse_area(label)
-            .interaction(mouse::Interaction::Pointer)
-            .on_press(Message::Change),
-        container(text("Change account").size(font::NOTE_SIZE))
-            .padding([6, 10])
-            .style(style::popup),
-        tooltip::Position::Bottom,
-    )
-    .into()
-}
-
-fn step_label<'a>(number: usize, step: Step, state: StepState) -> Element<'a, Message> {
-    let mark = match state {
-        StepState::Done => text(CHECK).font(font::ICONS).size(font::icon(12.0)),
-        StepState::Current | StepState::Next => text(number.to_string())
-            .size(font::BAR_SIZE)
-            .font(font::SEMIBOLD),
-    };
-    let name = text(step.name())
-        .size(font::BAR_SIZE)
-        .font(if state == StepState::Current {
-            font::SEMIBOLD
-        } else {
-            font::REGULAR
-        });
-    let name = if state == StepState::Next {
-        name.style(style::muted)
-    } else {
-        name
-    };
-
-    row![
-        container(mark)
-            .width(STEP_MARK)
-            .height(STEP_MARK)
-            .align_x(Center)
-            .align_y(Center)
-            .style(style::step(
-                state == StepState::Done,
-                state == StepState::Current
-            )),
-        name,
-    ]
-    .spacing(8)
-    .align_y(Center)
-    .into()
 }
 
 fn field<'a>(label: &'a str, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
@@ -1198,7 +1329,7 @@ fn link(label: &str, message: Message) -> Element<'_, Message> {
 mod tests {
     use std::path::PathBuf;
 
-    use gamepalate_app::SteamId;
+    use gamepalate_app::{PendingUpdate, SteamId};
 
     use super::*;
 
@@ -1215,6 +1346,13 @@ mod tests {
         }
     }
 
+    fn without_catalog() -> FirstRun {
+        FirstRun {
+            catalog: Part::Missing,
+            ..first_run()
+        }
+    }
+
     fn account(steam_id: &str, key: &str) -> Account {
         Account {
             steam_id: steam_id.to_string(),
@@ -1223,12 +1361,29 @@ mod tests {
         }
     }
 
+    fn primary_of(setup: &Setup) -> Option<(&'static str, bool)> {
+        setup
+            .primary()
+            .map(|primary| (primary.label, primary.message.is_some()))
+    }
+
+    fn pressed(key: Key, modifiers: keyboard::Modifiers) -> keyboard::Event {
+        keyboard::Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            location: keyboard::Location::Standard,
+            modifiers,
+            text: None,
+            repeat: false,
+        }
+    }
+
     #[test]
     fn a_missing_part_opens_the_setup_without_trying_the_files() {
-        let first_run = FirstRun {
-            catalog: Part::Missing,
-            ..first_run()
-        };
+        let first_run = without_catalog();
 
         let Err(setup) = start(first_run.clone()) else {
             panic!("expected the setup");
@@ -1237,6 +1392,7 @@ mod tests {
         assert_eq!(setup.first_run, first_run);
         assert_eq!(setup.error, None);
         assert_eq!(setup.account.steam_id, "76561198000000000");
+        assert_eq!(setup.page, Page::Catalog);
     }
 
     #[test]
@@ -1255,44 +1411,266 @@ mod tests {
     }
 
     #[test]
-    fn the_current_step_is_the_first_missing_one() {
-        let saved = account("76561198000000000", "");
-        let editing = Account {
-            editing: true,
-            ..account("76561198000000000", "")
-        };
-        let without_catalog = FirstRun {
-            catalog: Part::Missing,
-            ..first_run()
-        };
+    fn the_first_page_is_the_first_missing_one() {
         let without_key = FirstRun {
             api_key: false,
             catalog: Part::Missing,
             ..first_run()
         };
+        let without_steam_id = FirstRun {
+            steam_id: Part::Missing,
+            saved_steam_id: None,
+            api_key: false,
+            catalog: Part::Missing,
+            ..first_run()
+        };
+        let invalid = FirstRun {
+            catalog: Part::Invalid("no such table: games".to_string()),
+            ..first_run()
+        };
+        let resuming = FirstRun {
+            pending_update: Some(PendingUpdate {
+                started_at: Timestamp(0),
+                responses: 120,
+            }),
+            ..without_catalog()
+        };
 
-        assert_eq!(current_step(&saved, &without_key), Step::Account);
-        assert_eq!(current_step(&editing, &first_run()), Step::Account);
-        assert_eq!(current_step(&saved, &without_catalog), Step::Catalog);
-        assert_eq!(current_step(&saved, &first_run()), Step::Profile);
+        assert_eq!(first_page(&without_key), Page::Account);
+        assert_eq!(first_page(&without_steam_id), Page::Account);
+        assert_eq!(first_page(&without_catalog()), Page::Catalog);
+        assert_eq!(first_page(&invalid), Page::Catalog);
+        assert_eq!(first_page(&resuming), Page::Catalog);
+        assert_eq!(first_page(&first_run()), Page::Profile);
     }
 
     #[test]
-    fn the_steps_before_the_current_one_are_done() {
+    fn welcome_and_theme_come_only_before_a_steam_id() {
+        let new = FirstRun {
+            steam_id: Part::Missing,
+            saved_steam_id: None,
+            api_key: false,
+            catalog: Part::Missing,
+            ..first_run()
+        };
+
+        for page in [Page::Welcome, Page::Theme] {
+            assert!(!page_done(page, &new));
+            assert!(page_done(page, &without_catalog()));
+            assert!(!shown(page));
+        }
+    }
+
+    #[test]
+    fn the_region_is_done_with_a_catalog_or_a_download_to_resume() {
+        let resuming = FirstRun {
+            pending_update: Some(PendingUpdate {
+                started_at: Timestamp(0),
+                responses: 120,
+            }),
+            ..without_catalog()
+        };
+
+        assert!(page_done(Page::Region, &first_run()));
+        assert!(page_done(Page::Region, &resuming));
+        assert!(!page_done(Page::Region, &without_catalog()));
+    }
+
+    #[test]
+    fn back_and_continue_skip_the_pages_not_shown() {
+        assert_eq!(previous_page(Page::Account), None);
+        assert_eq!(previous_page(Page::Catalog), Some(Page::Account));
+        assert_eq!(previous_page(Page::Profile), Some(Page::Catalog));
+        assert_eq!(next_page(Page::Welcome), Some(Page::Account));
+        assert_eq!(next_page(Page::Account), Some(Page::Catalog));
+        assert_eq!(next_page(Page::Catalog), Some(Page::Profile));
+        assert_eq!(next_page(Page::Profile), None);
+    }
+
+    #[test]
+    fn a_finished_page_moves_to_the_next_missing_one() {
+        let without_account = FirstRun {
+            steam_id: Part::Missing,
+            api_key: false,
+            ..first_run()
+        };
+
+        assert_eq!(page_from(Page::Catalog, &first_run()), Page::Profile);
+        assert_eq!(page_from(Page::Account, &without_account), Page::Account);
+        assert_eq!(page_from(Page::Account, &first_run()), Page::Profile);
+    }
+
+    #[test]
+    fn back_and_continue_move_between_the_pages() {
+        let mut setup = Setup::new(without_catalog(), None);
+        assert_eq!(setup.page, Page::Catalog);
+
+        setup.update(Message::Back);
+        assert_eq!(setup.page, Page::Account);
+        setup.update(Message::Back);
+        assert_eq!(setup.page, Page::Account);
+        setup.update(Message::Continue);
+        assert_eq!(setup.page, Page::Catalog);
+
+        setup.update(Message::Back);
+        setup.update(Message::Enter);
+        assert_eq!(setup.page, Page::Catalog);
+    }
+
+    #[test]
+    fn there_is_no_back_during_the_download_or_connect() {
+        let mut setup = Setup::new(without_catalog(), None);
+        assert_eq!(setup.back(), Some(Page::Account));
+
+        setup.download.running = true;
+        assert_eq!(setup.back(), None);
+        setup.update(Message::Back);
+        setup.update(Message::Change);
+        assert_eq!(setup.page, Page::Catalog);
+
+        setup.download.running = false;
+        setup.account.connecting = true;
+        assert_eq!(setup.back(), None);
+    }
+
+    #[test]
+    fn change_goes_back_to_the_account() {
+        let mut setup = Setup::new(first_run(), None);
+        setup.ready = Some(Ready::Empty { min_hours: 2.0 });
+
+        setup.update(Message::Change);
+
+        assert_eq!(setup.page, Page::Account);
+    }
+
+    #[test]
+    fn the_steps_count_the_pages_shown() {
+        assert_eq!(step_of(Page::Account), Some((1, 3)));
+        assert_eq!(step_of(Page::Catalog), Some((2, 3)));
+        assert_eq!(step_of(Page::Profile), Some((3, 3)));
+        assert_eq!(step_of(Page::Welcome), None);
+        assert_eq!(step_of(Page::Theme), None);
+    }
+
+    #[test]
+    fn the_account_page_connects_or_continues() {
+        let new = FirstRun {
+            steam_id: Part::Missing,
+            saved_steam_id: None,
+            api_key: false,
+            catalog: Part::Missing,
+            ..first_run()
+        };
+        let mut setup = Setup::new(new, None);
+        assert_eq!(primary_of(&setup), Some(("Connect", false)));
+
+        setup.account = account("76561198000000000", "KEY");
+        assert_eq!(primary_of(&setup), Some(("Connect", true)));
+
+        setup.account.connecting = true;
+        assert_eq!(primary_of(&setup), Some(("Connecting…", false)));
+
+        let mut setup = Setup::new(first_run(), None);
+        setup.page = Page::Account;
+        assert_eq!(primary_of(&setup), Some(("Continue", true)));
+
+        setup.account.steam_id = "76561198000000001".to_string();
+        assert_eq!(primary_of(&setup), Some(("Connect", true)));
+    }
+
+    #[test]
+    fn the_catalog_page_downloads_or_continues() {
+        let mut setup = Setup::new(without_catalog(), None);
+        assert_eq!(primary_of(&setup), Some(("Download catalog", true)));
+
+        setup.import.running = true;
+        assert_eq!(primary_of(&setup), Some(("Download catalog", false)));
+
+        setup.import.running = false;
+        setup.download.error = Some("Steam is not responding".to_string());
+        assert_eq!(primary_of(&setup), Some(("Retry", true)));
+
+        setup.download.running = true;
+        assert_eq!(primary_of(&setup), None);
+
+        let mut setup = Setup::new(first_run(), None);
+        setup.page = Page::Catalog;
+        assert_eq!(primary_of(&setup), Some(("Continue", true)));
+    }
+
+    #[test]
+    fn the_profile_page_retries_or_checks_again() {
+        let mut setup = Setup::new(first_run(), None);
+        assert_eq!(primary_of(&setup), Some(("Read my library", true)));
+
+        setup.ready = Some(Ready::Preparing);
+        assert_eq!(primary_of(&setup), None);
+        assert_eq!(setup.back(), None);
+
+        setup.ready = Some(Ready::Failed("Steam is not responding".to_string()));
+        assert_eq!(primary_of(&setup), Some(("Retry", true)));
+
+        setup.ready = Some(Ready::Empty { min_hours: 2.0 });
+        assert_eq!(primary_of(&setup), Some(("Check again", true)));
+    }
+
+    #[test]
+    fn enter_presses_the_main_button_and_escape_goes_back() {
+        let none = keyboard::Modifiers::empty();
+
+        assert!(matches!(
+            key_message(
+                pressed(Key::Named(Named::Enter), none),
+                event::Status::Ignored
+            ),
+            Some(Message::Enter)
+        ));
+        assert!(
+            key_message(
+                pressed(Key::Named(Named::Enter), none),
+                event::Status::Captured
+            )
+            .is_none()
+        );
+        assert!(matches!(
+            key_message(
+                pressed(Key::Named(Named::Escape), none),
+                event::Status::Ignored
+            ),
+            Some(Message::Back)
+        ));
+        assert!(matches!(
+            key_message(
+                pressed(Key::Named(Named::ArrowLeft), keyboard::Modifiers::ALT),
+                event::Status::Ignored
+            ),
+            Some(Message::Back)
+        ));
+        assert!(
+            key_message(
+                pressed(Key::Named(Named::ArrowLeft), none),
+                event::Status::Ignored
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn the_pages_before_the_current_one_are_done() {
         assert_eq!(
-            step_state(Step::Account, Step::Catalog, true),
+            step_state(Page::Account, Page::Catalog, true),
             StepState::Done
         );
         assert_eq!(
-            step_state(Step::Catalog, Step::Catalog, false),
+            step_state(Page::Catalog, Page::Catalog, false),
             StepState::Current
         );
         assert_eq!(
-            step_state(Step::Profile, Step::Catalog, false),
+            step_state(Page::Profile, Page::Catalog, false),
             StepState::Next
         );
         assert_eq!(
-            step_state(Step::Account, Step::Account, false),
+            step_state(Page::Account, Page::Account, false),
             StepState::Current
         );
     }
@@ -1304,55 +1682,44 @@ mod tests {
             api_key: false,
             ..first_run()
         };
-        let account = account("", "");
-        let current = current_step(&account, &without_account);
+        let current = first_page(&without_account);
 
-        assert_eq!(current, Step::Account);
+        assert_eq!(current, Page::Account);
         assert_eq!(
             step_state(
-                Step::Catalog,
+                Page::Catalog,
                 current,
-                step_complete(Step::Catalog, &account, &without_account)
+                page_done(Page::Catalog, &without_account)
             ),
             StepState::Done
         );
         assert_eq!(
             step_state(
-                Step::Profile,
+                Page::Profile,
                 current,
-                step_complete(Step::Profile, &account, &without_account)
+                page_done(Page::Profile, &without_account)
             ),
             StepState::Next
         );
-        assert!(!downloads_at_start(&account, &without_account));
+        assert!(!downloads_at_start(&without_account));
     }
 
     #[test]
     fn only_a_missing_catalog_starts_the_download() {
-        let saved = account("76561198000000000", "");
-        let missing = FirstRun {
-            catalog: Part::Missing,
-            ..first_run()
-        };
         let invalid = FirstRun {
             catalog: Part::Invalid("no such table: games".to_string()),
             ..first_run()
         };
 
-        assert!(downloads_at_start(&saved, &missing));
-        assert!(!downloads_at_start(&saved, &invalid));
-        assert!(!downloads_at_start(&saved, &first_run()));
+        assert!(downloads_at_start(&without_catalog()));
+        assert!(!downloads_at_start(&invalid));
+        assert!(!downloads_at_start(&first_run()));
     }
 
     #[test]
     fn connect_with_a_catalog_prepares_the_profile() {
-        let without_catalog = FirstRun {
-            catalog: Part::Missing,
-            ..first_run()
-        };
-
         assert!(prepares_after_connect(&first_run()));
-        assert!(!prepares_after_connect(&without_catalog));
+        assert!(!prepares_after_connect(&without_catalog()));
         assert!(!prepares_after_connect(&FirstRun {
             api_key: false,
             ..first_run()
@@ -1369,50 +1736,46 @@ mod tests {
             running: true,
             ..Download::default()
         };
-        let without_catalog = FirstRun {
-            catalog: Part::Missing,
-            ..first_run()
-        };
         let invalid = FirstRun {
             catalog: Part::Invalid("no such table: games".to_string()),
             ..first_run()
         };
 
         assert_eq!(
-            import_place(Step::Account, &without_catalog, &Download::default()),
+            import_place(Page::Account, &without_catalog(), &Download::default()),
             Some(ImportPlace::Account)
         );
         assert_eq!(
-            import_place(Step::Catalog, &without_catalog, &failed),
+            import_place(Page::Catalog, &without_catalog(), &failed),
             Some(ImportPlace::Catalog)
         );
         assert_eq!(
-            import_place(Step::Catalog, &without_catalog, &Download::default()),
+            import_place(Page::Catalog, &without_catalog(), &Download::default()),
             None
         );
         assert_eq!(
-            import_place(Step::Catalog, &invalid, &Download::default()),
+            import_place(Page::Catalog, &invalid, &Download::default()),
             Some(ImportPlace::Problems)
         );
         assert_eq!(
-            import_place(Step::Account, &invalid, &Download::default()),
+            import_place(Page::Account, &invalid, &Download::default()),
             Some(ImportPlace::Problems)
         );
         assert_eq!(
-            import_place(Step::Profile, &first_run(), &Download::default()),
+            import_place(Page::Profile, &first_run(), &Download::default()),
             None
         );
         assert_eq!(
-            import_place(Step::Catalog, &without_catalog, &running),
+            import_place(Page::Catalog, &without_catalog(), &running),
             None
         );
-        assert_eq!(import_place(Step::Catalog, &invalid, &running), None);
+        assert_eq!(import_place(Page::Catalog, &invalid, &running), None);
         assert_eq!(
             import_place(
-                Step::Account,
+                Page::Account,
                 &FirstRun {
                     data_dir: None,
-                    ..without_catalog
+                    ..without_catalog()
                 },
                 &Download::default()
             ),
@@ -1440,13 +1803,7 @@ mod tests {
 
     #[test]
     fn a_file_dropped_during_the_download_or_an_import_does_nothing() {
-        let mut setup = Setup::new(
-            FirstRun {
-                catalog: Part::Missing,
-                ..first_run()
-            },
-            None,
-        );
+        let mut setup = Setup::new(without_catalog(), None);
         setup.download.running = true;
 
         assert!(matches!(
@@ -1464,10 +1821,10 @@ mod tests {
     }
 
     #[test]
-    fn only_window_file_events_reach_the_setup() {
+    fn only_window_file_and_key_events_reach_the_setup() {
         let id = iced::window::Id::unique();
         let file = PathBuf::from("catalog.zip");
-        let message = |event| drop_message(Event::Window(event), event::Status::Ignored, id);
+        let message = |event| window_message(Event::Window(event), event::Status::Ignored, id);
 
         assert!(matches!(
             message(iced::window::Event::FileHovered(file.clone())),
@@ -1482,6 +1839,17 @@ mod tests {
             Some(Message::Import(dropped)) if dropped == file
         ));
         assert!(message(iced::window::Event::Focused).is_none());
+        assert!(matches!(
+            window_message(
+                Event::Keyboard(pressed(
+                    Key::Named(Named::Escape),
+                    keyboard::Modifiers::empty()
+                )),
+                event::Status::Ignored,
+                id
+            ),
+            Some(Message::Back)
+        ));
     }
 
     #[test]
@@ -1515,13 +1883,7 @@ mod tests {
 
     #[test]
     fn a_failed_import_keeps_the_setup_where_it_was() {
-        let mut setup = Setup::new(
-            FirstRun {
-                catalog: Part::Missing,
-                ..first_run()
-            },
-            None,
-        );
+        let mut setup = Setup::new(without_catalog(), None);
         setup.import.running = true;
 
         let action = setup.update(Message::Imported(Err(
@@ -1535,6 +1897,7 @@ mod tests {
             Some(Err("This file has no catalog in it".to_string()))
         );
         assert_eq!(setup.first_run.catalog, Part::Missing);
+        assert_eq!(setup.page, Page::Catalog);
     }
 
     #[test]
@@ -1574,9 +1937,9 @@ mod tests {
             })
             .collect();
 
-        let ids: Vec<u32> = shown(&played).map(|game| game.id.0).collect();
+        let ids: Vec<u32> = covered(&played).map(|game| game.id.0).collect();
 
-        assert_eq!(ids, [1, 3, 4, 6, 7, 8]);
+        assert_eq!(ids, [1, 3, 4, 6, 7]);
     }
 
     #[test]
@@ -1597,7 +1960,7 @@ mod tests {
         assert!(ready_covers(&played).is_none());
 
         played[3].cover = Cover::Ready(handle.clone());
-        assert_eq!(ready_covers(&played).map(|covers| covers.len()), Some(6));
+        assert_eq!(ready_covers(&played).map(|covers| covers.len()), Some(5));
 
         for game in &mut played {
             game.cover = Cover::Missing;
@@ -1624,42 +1987,6 @@ mod tests {
         assert!(
             download_status(store_data, None, true, 24).starts_with("Picking up where it left off")
         );
-    }
-
-    #[test]
-    fn only_the_done_account_step_changes_the_account() {
-        let running = Download {
-            running: true,
-            ..Download::default()
-        };
-
-        assert!(changes_account(
-            Step::Account,
-            StepState::Done,
-            &Download::default()
-        ));
-        assert!(!changes_account(Step::Account, StepState::Done, &running));
-        assert!(!changes_account(
-            Step::Account,
-            StepState::Current,
-            &Download::default()
-        ));
-        assert!(!changes_account(
-            Step::Catalog,
-            StepState::Done,
-            &Download::default()
-        ));
-    }
-
-    #[test]
-    fn the_account_does_not_change_during_the_download() {
-        let running = Download {
-            running: true,
-            ..Download::default()
-        };
-
-        assert!(can_change(&Download::default()));
-        assert!(!can_change(&running));
     }
 
     #[test]
@@ -1763,19 +2090,22 @@ mod tests {
     }
 
     #[test]
-    fn the_account_is_done_until_change() {
-        let mut account = account("76561198000000000", "");
+    fn the_account_is_done_with_a_steam_id_and_a_key() {
+        let account = account("76561198000000000", "");
 
-        assert!(account_done(&account, &first_run()));
-        account.editing = true;
-        assert!(!account_done(&account, &first_run()));
-        assert!(!account_done(
-            &Account::default(),
-            &FirstRun {
-                api_key: false,
-                ..first_run()
-            }
+        assert!(account_done(&first_run()));
+        assert!(keeps_account(&account, &first_run()));
+        assert!(!keeps_account(
+            &Account {
+                key: "NEW".to_string(),
+                ..account
+            },
+            &first_run()
         ));
+        assert!(!account_done(&FirstRun {
+            api_key: false,
+            ..first_run()
+        }));
     }
 
     #[test]
