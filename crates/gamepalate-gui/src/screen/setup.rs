@@ -84,6 +84,19 @@ const ONLINE_ABOUT: &str = "Steam, for your library and the catalog · GitHub, t
 const BODY_WIDTH: f32 = 600.0;
 const VANITY_NOTE: &str = "Checked after the API key";
 const TOGGLER_SIZE: f32 = 24.0;
+const KEY_ABOUT: &str = "gamepalate uses it to read your library from Steam";
+const KEY_STEPS: [&str; 3] = [
+    "Open the key page on Steam",
+    "Type any domain name, like localhost",
+    "Copy the key and paste it below",
+];
+const KEY_STEP_HEIGHT: f32 = 128.0;
+const KEY_WARNING: &str =
+    "Steam gives keys only to accounts with Steam Guard on and at least $5 spent in the store";
+const KEY_KEYRING_NOTE: &str = "Saved in the system keyring, never in a file";
+const WARNING: char = '\u{E002}';
+const KEY_REJECTED: &str = "Steam rejected the key. Check that you copied all of it.";
+const NO_PROFILE: &str = "Steam has no profile at that address. Check the name after /id/.";
 const PREVIEW_WIDTH: f32 = 300.0;
 const PREVIEW_HEIGHT: f32 = 180.0;
 const PREVIEW_BAR: f32 = 24.0;
@@ -229,6 +242,8 @@ pub enum Message {
     SteamId(String),
     Key(String),
     GetKey,
+    Paste,
+    Pasted(Option<String>),
     Connect,
     Connected(Result<(), String>),
     Change,
@@ -425,8 +440,19 @@ impl Setup {
             }
             Message::Key(key) => {
                 self.account.key = key;
+                self.account.error = None;
                 Action::None
             }
+            Message::Paste if !self.account.connecting => {
+                Action::Run(iced::clipboard::read().map(Message::Pasted))
+            }
+            Message::Paste => Action::None,
+            Message::Pasted(Some(text)) if !self.account.connecting => {
+                self.account.key = text.trim().to_string();
+                self.account.error = None;
+                Action::None
+            }
+            Message::Pasted(_) => Action::None,
             Message::GetKey => open_link(KEY_PAGE),
             Message::OpenLibrary => open_link(LIBRARY_PAGE),
             Message::OpenPrivacy => open_link(PRIVACY_PAGE),
@@ -503,8 +529,12 @@ impl Setup {
     fn primary(&self) -> Option<Primary> {
         let account = &self.account;
         match self.page {
-            Page::Account if keeps_account(account, &self.first_run) => Some(Primary::proceed()),
             Page::Account => Some(Primary::new(
+                "Continue",
+                (!self.import.running && parse_profile(&account.steam_id).is_ok())
+                    .then_some(Message::Continue),
+            )),
+            Page::Key => Some(Primary::new(
                 if account.connecting {
                     "Connecting…"
                 } else {
@@ -545,7 +575,7 @@ impl Setup {
                 },
                 (!self.this_pc.saving).then_some(Message::Continue),
             )),
-            Page::Theme | Page::Key | Page::Region => Some(Primary::proceed()),
+            Page::Theme | Page::Region => Some(Primary::proceed()),
         }
     }
 
@@ -577,6 +607,12 @@ impl Setup {
     }
 
     fn go_on(&mut self) -> Action {
+        if self.page == Page::Account
+            && account_done(&self.first_run)
+            && changes_account(&self.account, &self.first_run)
+        {
+            self.first_run.steam_id = Part::Missing;
+        }
         if let Some(page) = next_page(self.page, &self.first_run) {
             self.page = page;
         }
@@ -883,6 +919,7 @@ impl Setup {
     fn title_view(&self) -> Element<'_, Message> {
         let (title, about) = match self.page {
             Page::Account => ("Steam account", Some(ACCOUNT_ABOUT)),
+            Page::Key => ("Steam Web API key", Some(KEY_ABOUT)),
             Page::Catalog if self.download.running => {
                 return row![container(page_title("Downloading the Steam catalog")).width(Fill)]
                     .push(self.download.tracker.percent().map(page_title))
@@ -893,7 +930,7 @@ impl Setup {
             Page::Profile => (ready_title(self.ready.as_ref()), None),
             Page::Theme => ("Theme", Some(THEME_ABOUT)),
             Page::ThisPc => ("Files on this PC", Some(THIS_PC_ABOUT)),
-            Page::Welcome | Page::Key | Page::Region => {
+            Page::Welcome | Page::Region => {
                 return column![].into();
             }
         };
@@ -907,12 +944,13 @@ impl Setup {
     fn page_view(&self) -> Element<'_, Message> {
         match self.page {
             Page::Account => self.account_view(),
+            Page::Key => self.key_view(),
             Page::Catalog if self.download.running => self.progress_view(),
             Page::Catalog => self.start_view(),
             Page::Profile => self.ready_view(),
             Page::Theme => self.theme_view(),
             Page::ThisPc => self.this_pc_view(),
-            Page::Welcome | Page::Key | Page::Region => column![].into(),
+            Page::Welcome | Page::Region => column![].into(),
         }
     }
 
@@ -1061,23 +1099,6 @@ impl Setup {
                 .size(font::NOTE_SIZE)
                 .style(style::muted),
         };
-        let key_placeholder = if self.first_run.api_key {
-            "Already saved"
-        } else {
-            "Steam Web API key"
-        };
-        let key = row![
-            text_input(key_placeholder, &account.key)
-                .style(style::field)
-                .secure(true)
-                .on_input_maybe(editable.then_some(Message::Key))
-                .on_submit(Message::Enter)
-                .padding(8)
-                .size(font::BAR_SIZE),
-            link("Get a key ↗", Message::GetKey),
-        ]
-        .spacing(16)
-        .align_y(Center);
         let invalid = match &self.first_run.steam_id {
             Part::Invalid(message) => Some(
                 text(message.clone())
@@ -1086,17 +1107,6 @@ impl Setup {
             ),
             Part::Present | Part::Missing => None,
         };
-        let error = account
-            .error
-            .as_ref()
-            .map(|error| text(error.clone()).size(font::BAR_SIZE).style(text::danger));
-        let privacy = account
-            .error
-            .as_deref()
-            .filter(|error| needs_privacy(error))
-            .map(|_| note_link("Open privacy settings ↗", Message::OpenPrivacy));
-        let problems = (invalid.is_some() || error.is_some())
-            .then(|| column![].push(invalid).push(error).push(privacy).spacing(8));
         let profile: Element<'_, Message> = if self.accounts.listed() {
             self.accounts.view(Message::Accounts)
         } else {
@@ -1110,15 +1120,106 @@ impl Setup {
             )
         };
 
-        column![
-            profile,
-            field("API key", column![key, note(KEY_DOMAIN_NOTE)].spacing(8))
+        column![profile]
+            .push(invalid)
+            .push((self.import_place() == Some(ImportPlace::Account)).then(|| self.import_view()))
+            .spacing(16)
+            .into()
+    }
+
+    fn key_view(&self) -> Element<'_, Message> {
+        let account = &self.account;
+        let editable = !account.connecting;
+        let error = account.error.as_deref();
+        let rejected = error.is_some_and(is_key_rejected);
+        let steps = row(KEY_STEPS.iter().enumerate().map(|(index, line)| {
+            let open = (index == 0).then(|| link("Open page ↗", Message::GetKey));
+            key_step(index + 1, line, open)
+        }))
+        .spacing(16);
+        let warning = container(
+            row![
+                text(WARNING)
+                    .font(font::ICONS)
+                    .size(font::icon(font::BAR_SIZE)),
+                text(KEY_WARNING).size(font::BAR_SIZE),
+            ]
+            .spacing(16)
+            .align_y(Center),
+        )
+        .padding(16)
+        .width(Fill)
+        .style(style::card);
+        let placeholder = if self.first_run.api_key {
+            "Already saved"
+        } else {
+            "Steam Web API key"
+        };
+        let input = row![
+            text_input(placeholder, &account.key)
+                .style(if rejected {
+                    style::wrong_field
+                } else {
+                    style::field
+                })
+                .secure(true)
+                .on_input_maybe(editable.then_some(Message::Key))
+                .on_submit(Message::Enter)
+                .padding(8)
+                .size(font::BAR_SIZE),
+            link("Paste", Message::Paste),
         ]
-        .push(problems)
-        .push((self.import_place() == Some(ImportPlace::Account)).then(|| self.import_view()))
+        .spacing(16)
+        .align_y(Center);
+        let problem = error.map(|error| {
+            column![
+                text(error.to_string())
+                    .size(font::BAR_SIZE)
+                    .style(text::danger)
+            ]
+            .push(is_unknown_profile(error).then(|| note_link("Change account", Message::Change)))
+            .push(
+                needs_privacy(error)
+                    .then(|| note_link("Open privacy settings ↗", Message::OpenPrivacy)),
+            )
+            .spacing(8)
+        });
+
+        column![
+            steps,
+            warning,
+            field(
+                "API key",
+                column![input, note(KEY_KEYRING_NOTE)]
+                    .push(problem)
+                    .spacing(8)
+            ),
+        ]
         .spacing(16)
         .into()
     }
+}
+
+fn key_step<'a>(
+    number: usize,
+    line: &'a str,
+    action: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    container(
+        column![
+            text(number.to_string())
+                .size(font::AMOUNT_SIZE)
+                .style(style::accent),
+            text(line).size(font::BAR_SIZE),
+        ]
+        .push(action)
+        .spacing(8),
+    )
+    .padding(16)
+    .width(Fill)
+    .height(KEY_STEP_HEIGHT)
+    .style(style::card)
+    .into()
 }
 
 impl Setup {
@@ -1397,11 +1498,10 @@ fn account_done(first_run: &FirstRun) -> bool {
     first_run.steam_id == Part::Present && first_run.api_key
 }
 
-fn keeps_account(account: &Account, first_run: &FirstRun) -> bool {
-    account_done(first_run)
-        && account.key.trim().is_empty()
-        && first_run.saved_steam_id.map(|id| id.0.to_string())
-            == Some(account.steam_id.trim().to_string())
+fn changes_account(account: &Account, first_run: &FirstRun) -> bool {
+    first_run
+        .saved_steam_id
+        .is_some_and(|id| id.0.to_string() != account.steam_id.trim())
 }
 
 fn can_connect(account: &Account, first_run: &FirstRun) -> bool {
@@ -1424,6 +1524,14 @@ pub(crate) fn needs_privacy(error: &str) -> bool {
     error == PRIVATE_LIBRARY
 }
 
+fn is_key_rejected(error: &str) -> bool {
+    error == KEY_REJECTED
+}
+
+fn is_unknown_profile(error: &str) -> bool {
+    error == NO_PROFILE
+}
+
 pub(crate) fn note_link<'a, M: Clone + 'a>(label: &'static str, message: M) -> Element<'a, M> {
     button(text(label).size(font::NOTE_SIZE))
         .padding(0)
@@ -1435,16 +1543,12 @@ pub(crate) fn note_link<'a, M: Clone + 'a>(label: &'static str, message: M) -> E
 pub(crate) fn connect_error_text(error: &ConnectError) -> String {
     let down = "Steam is not responding. Try again in a minute.";
     match error.steam_error() {
-        Some(SteamError::KeyRejected { .. }) => {
-            "Steam rejected the key. Check that you copied all of it.".to_string()
-        }
+        Some(SteamError::KeyRejected { .. }) => KEY_REJECTED.to_string(),
         Some(SteamError::LibraryHidden { .. }) => PRIVATE_LIBRARY.to_string(),
         Some(SteamError::MissingKey { .. }) => "Paste the Steam Web API key".to_string(),
         Some(SteamError::SteamDown { .. }) => down.to_string(),
         _ if matches!(error, ConnectError::SteamDown) => down.to_string(),
-        _ if matches!(error, ConnectError::NoProfile(_)) => {
-            "Steam has no profile at that address. Check the name after /id/.".to_string()
-        }
+        _ if matches!(error, ConnectError::NoProfile(_)) => NO_PROFILE.to_string(),
         _ => error_chain(error),
     }
 }
@@ -1454,7 +1558,8 @@ fn shown(page: Page, first_run: &FirstRun) -> bool {
         Page::Welcome | Page::Theme => first_run.saved_steam_id.is_none(),
         Page::ThisPc => first_run.client,
         Page::Account | Page::Catalog | Page::Profile => true,
-        Page::Key | Page::Region => false,
+        Page::Key => !account_done(first_run),
+        Page::Region => false,
     }
 }
 
@@ -1462,8 +1567,8 @@ fn page_done(page: Page, first_run: &FirstRun) -> bool {
     match page {
         Page::Welcome | Page::Theme => first_run.saved_steam_id.is_some(),
         Page::ThisPc => first_run.saved_steam_id.is_some(),
-        Page::Account => account_done(first_run),
-        Page::Key => first_run.api_key,
+        Page::Account => first_run.steam_id == Part::Present,
+        Page::Key => account_done(first_run),
         Page::Region => first_run.catalog == Part::Present || first_run.pending_update.is_some(),
         Page::Catalog => first_run.catalog == Part::Present,
         Page::Profile => false,
@@ -1812,7 +1917,7 @@ mod tests {
             ..without_catalog()
         };
 
-        assert_eq!(first_page(&without_key), Page::Account);
+        assert_eq!(first_page(&without_key), Page::Key);
         assert_eq!(first_page(&without_steam_id), Page::Welcome);
         assert_eq!(page_from(Page::Account, &without_steam_id), Page::Account);
         assert_eq!(first_page(&without_catalog()), Page::Catalog);
@@ -1852,6 +1957,34 @@ mod tests {
         assert!(page_done(Page::Region, &first_run()));
         assert!(page_done(Page::Region, &resuming));
         assert!(!page_done(Page::Region, &without_catalog()));
+    }
+
+    #[test]
+    fn the_key_page_shows_until_the_account_is_connected() {
+        let without_key = FirstRun {
+            api_key: false,
+            ..first_run()
+        };
+        let without_steam_id = FirstRun {
+            steam_id: Part::Missing,
+            saved_steam_id: None,
+            api_key: false,
+            ..first_run()
+        };
+
+        assert!(!shown(Page::Key, &first_run()));
+        assert!(shown(Page::Key, &without_key));
+        assert!(shown(Page::Key, &without_steam_id));
+        assert!(page_done(Page::Key, &first_run()));
+        assert!(!page_done(Page::Key, &without_key));
+        assert!(page_done(Page::Account, &without_key));
+        assert!(!page_done(Page::Account, &without_steam_id));
+        assert_eq!(page_from(Page::Account, &without_key), Page::Key);
+        assert_eq!(next_page(Page::Account, &without_key), Some(Page::Key));
+        assert_eq!(next_page(Page::Account, &first_run()), Some(Page::Catalog));
+        assert_eq!(previous_page(Page::Key, &without_key), Some(Page::Account));
+        assert_eq!(previous_page(Page::Catalog, &without_key), Some(Page::Key));
+        assert_eq!(step_of(Page::Key, &without_key), Some((2, 4)));
     }
 
     #[test]
@@ -2123,7 +2256,7 @@ mod tests {
         assert_eq!(setup.page, Page::Account);
         assert!(!setup.accounts.listed());
         assert_eq!(setup.account.steam_id, "");
-        assert_eq!(primary_of(&setup), Some(("Connect", false)));
+        assert_eq!(primary_of(&setup), Some(("Continue", false)));
     }
 
     #[test]
@@ -2131,12 +2264,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut setup = Setup::new(new_pc(dir.path()), None);
         setup.page = Page::ThisPc;
-        setup.account.key = "KEY".to_string();
         setup.update(Message::ThisPcSaved(Ok(vec![
             client_account(76_561_198_000_000_000, true),
             client_account(76_561_198_000_000_001, false),
         ])));
-        assert_eq!(primary_of(&setup), Some(("Connect", true)));
+        assert_eq!(primary_of(&setup), Some(("Continue", true)));
 
         setup.update(Message::Accounts(accounts::Message::Select(SteamId(
             76_561_198_000_000_001,
@@ -2146,12 +2278,12 @@ mod tests {
         setup.update(Message::Accounts(accounts::Message::UseAnother));
         assert!(!setup.accounts.listed());
         assert_eq!(setup.account.steam_id, "");
-        assert_eq!(primary_of(&setup), Some(("Connect", false)));
+        assert_eq!(primary_of(&setup), Some(("Continue", false)));
 
         setup.update(Message::SteamId("123".to_string()));
-        assert_eq!(primary_of(&setup), Some(("Connect", false)));
+        assert_eq!(primary_of(&setup), Some(("Continue", false)));
         setup.update(Message::SteamId("76561198000000007".to_string()));
-        assert_eq!(primary_of(&setup), Some(("Connect", true)));
+        assert_eq!(primary_of(&setup), Some(("Continue", true)));
 
         setup.update(Message::Accounts(accounts::Message::BackToList));
         assert!(setup.accounts.listed());
@@ -2180,31 +2312,136 @@ mod tests {
         assert!(setup.this_pc.hours);
     }
 
-    #[test]
-    fn the_account_page_connects_or_continues() {
-        let new = FirstRun {
+    fn new_account() -> FirstRun {
+        FirstRun {
             steam_id: Part::Missing,
             saved_steam_id: None,
             api_key: false,
             catalog: Part::Missing,
             ..first_run()
-        };
-        let mut setup = Setup::new(new, None);
+        }
+    }
+
+    #[test]
+    fn the_account_page_only_continues() {
+        let mut setup = Setup::new(new_account(), None);
         setup.page = Page::Account;
+        assert_eq!(primary_of(&setup), Some(("Continue", false)));
+
+        setup.account = account("76561198000000000", "");
+        assert_eq!(primary_of(&setup), Some(("Continue", true)));
+
+        setup.account = account("https://steamcommunity.com/id/someone", "");
+        assert_eq!(primary_of(&setup), Some(("Continue", true)));
+
+        setup.import.running = true;
+        assert_eq!(primary_of(&setup), Some(("Continue", false)));
+    }
+
+    #[test]
+    fn continuing_from_the_account_does_not_connect() {
+        let mut setup = Setup::new(new_account(), None);
+        setup.page = Page::Account;
+        setup.account = account("76561198000000000", "");
+
+        let action = setup.update(Message::Continue);
+
+        assert!(matches!(action, Action::None));
+        assert_eq!(setup.page, Page::Key);
+        assert!(!setup.account.connecting);
+    }
+
+    #[test]
+    fn a_changed_account_goes_through_the_key_page_again() {
+        let mut setup = Setup::new(first_run(), None);
+        setup.page = Page::Account;
+        setup.update(Message::Continue);
+        assert_eq!(setup.page, Page::Catalog);
+
+        setup.page = Page::Account;
+        setup.account.steam_id = "76561198000000001".to_string();
+        setup.update(Message::Continue);
+        assert_eq!(setup.page, Page::Key);
+        assert_eq!(primary_of(&setup), Some(("Connect", true)));
+        assert_eq!(setup.back(), Some(Page::Account));
+    }
+
+    #[test]
+    fn connect_is_on_with_a_typed_or_a_saved_key() {
+        let mut setup = Setup::new(new_account(), None);
+        setup.page = Page::Key;
+        setup.account = account("76561198000000000", "");
         assert_eq!(primary_of(&setup), Some(("Connect", false)));
 
-        setup.account = account("76561198000000000", "KEY");
+        setup.update(Message::Key("KEY".to_string()));
         assert_eq!(primary_of(&setup), Some(("Connect", true)));
 
         setup.account.connecting = true;
         assert_eq!(primary_of(&setup), Some(("Connecting…", false)));
 
-        let mut setup = Setup::new(first_run(), None);
-        setup.page = Page::Account;
-        assert_eq!(primary_of(&setup), Some(("Continue", true)));
-
-        setup.account.steam_id = "76561198000000001".to_string();
+        let mut setup = Setup::new(
+            FirstRun {
+                steam_id: Part::Missing,
+                ..first_run()
+            },
+            None,
+        );
+        setup.page = Page::Key;
         assert_eq!(primary_of(&setup), Some(("Connect", true)));
+    }
+
+    #[test]
+    fn paste_trims_the_clipboard() {
+        let mut setup = Setup::new(new_account(), None);
+        setup.page = Page::Key;
+
+        setup.update(Message::Pasted(Some("  ABC123 \r\n".to_string())));
+        assert_eq!(setup.account.key, "ABC123");
+
+        setup.update(Message::Pasted(None));
+        assert_eq!(setup.account.key, "ABC123");
+
+        setup.account.connecting = true;
+        setup.update(Message::Pasted(Some("OTHER".to_string())));
+        assert_eq!(setup.account.key, "ABC123");
+    }
+
+    #[test]
+    fn an_error_goes_away_when_the_key_changes() {
+        for change in [
+            Message::Key("NEW".to_string()),
+            Message::Pasted(Some(" NEW ".to_string())),
+        ] {
+            let mut setup = Setup::new(new_account(), None);
+            setup.page = Page::Key;
+            setup.update(Message::Connected(Err(KEY_REJECTED.to_string())));
+            assert!(is_key_rejected(setup.account.error.as_deref().unwrap()));
+
+            setup.update(change);
+            assert_eq!(setup.account.error, None);
+        }
+    }
+
+    #[test]
+    fn an_unknown_profile_offers_to_change_the_account() {
+        let mut setup = Setup::new(new_account(), None);
+        setup.page = Page::Key;
+        setup.account = account("https://steamcommunity.com/id/nobody", "KEY");
+        let error = connect_error_text(&ConnectError::NoProfile("nobody".to_string()));
+        assert!(is_unknown_profile(&error));
+        assert!(!is_unknown_profile(KEY_REJECTED));
+        assert!(!is_key_rejected(&error));
+
+        setup.update(Message::Connected(Err(error)));
+        assert_eq!(setup.page, Page::Key);
+        assert!(!setup.account.connecting);
+
+        setup.update(Message::Change);
+        assert_eq!(setup.page, Page::Account);
+        assert_eq!(
+            setup.account.steam_id,
+            "https://steamcommunity.com/id/nobody"
+        );
     }
 
     #[test]
@@ -2720,17 +2957,15 @@ mod tests {
 
     #[test]
     fn the_account_is_done_with_a_steam_id_and_a_key() {
-        let account = account("76561198000000000", "");
+        let same = account("76561198000000000", "");
 
         assert!(account_done(&first_run()));
-        assert!(keeps_account(&account, &first_run()));
-        assert!(!keeps_account(
-            &Account {
-                key: "NEW".to_string(),
-                ..account
-            },
+        assert!(!changes_account(&same, &first_run()));
+        assert!(changes_account(
+            &account("76561198000000001", ""),
             &first_run()
         ));
+        assert!(!changes_account(&same, &new_account()));
         assert!(!account_done(&FirstRun {
             api_key: false,
             ..first_run()
