@@ -1,15 +1,18 @@
 use std::{ops::Range, sync::Arc};
 
 use gamepalate_app::{
-    AppId, BrowseOptions, BrowseOrder, BrowseRow, Currency, Gamepalate, Price, Reviews,
+    AppId, BrowseOptions, BrowseOrder, BrowseRow, Choice, Currency, DiscoverMode, FilterOptions,
+    Gamepalate, Price, Reviews, SearchOptions,
 };
 use iced::{
     Center, ContentFit, Element, Fill, Length, Right, Size, Task, never, padding,
     widget::{
-        Id, button, column, container, image, operation, rich_text, row, scrollable,
+        Id, button, checkbox, column, container, image, mouse_area, opaque, operation, rich_text,
+        row, rule, scrollable,
         scrollable::{AbsoluteOffset, Viewport},
-        space, span, text,
+        sensor, space, span, stack, text,
         text::Wrapping,
+        tooltip,
     },
 };
 use jiff::{civil::Date, tz::TimeZone};
@@ -21,7 +24,9 @@ use super::{
 use crate::{
     font, format,
     screen::{
+        discover::filters::{self, Action, Panel},
         library::handle,
+        sentence,
         showcase::images::{Images, Picture},
     },
     style,
@@ -42,16 +47,46 @@ const PRICE_WIDTH: f32 = 120.0;
 const RATING_WIDTH: f32 = 120.0;
 const ENDS_WIDTH: f32 = 110.0;
 const NO_GAMES: &str = "No games match";
+const SIDE_WIDTH: f32 = 216.0;
+const SIDE_PADDING: f32 = 12.0;
+const GROUP_WIDTH: f32 = 126.0;
+const GROUP_HEIGHT: f32 = 26.0;
+const NAME_MIN_WIDTH: f32 = 260.0;
+const SUMMARY_CHAR_WIDTH: f32 = 6.5;
+/// What the columns after Name take, with the capsule, the gaps, the padding and the scrollbar.
+const COLUMNS_WIDTH: f32 = CAPSULE_WIDTH
+    + DISCOUNT_WIDTH
+    + PRICE_WIDTH
+    + RATING_WIDTH
+    + ENDS_WIDTH
+    + 5.0 * COLUMN_SPACING
+    + 2.0 * ROW_PADDING
+    + SCROLLBAR_GAP;
+const CHOICES: [Choice; 3] = [Choice::Without, Choice::Any, Choice::Only];
+const KINDS: [Kind; 6] = [
+    Kind::Library,
+    Kind::Wishlist,
+    Kind::WouldTry,
+    Kind::Starred,
+    Kind::NotForMe,
+    Kind::Later,
+];
 
 /// The whole catalog in a table, in the search panel. It keeps its state while the app is open,
 /// also with the panel closed or back to Search.
 pub(super) struct Browse {
     options: BrowseOptions,
+    /// The options come from `gui.toml` the first time Browse is entered.
+    loaded: bool,
     rows: Vec<BrowseRow>,
     /// The name the rows were listed for: none before the first list.
     listed: Option<String>,
     currency: Option<Currency>,
+    /// Why the last list could not be made: the options and the rows are those of before.
     error: Option<String>,
+    panel: Option<Panel>,
+    panel_open: bool,
+    tools_height: f32,
     selected: Option<usize>,
     offset: f32,
     height: Option<f32>,
@@ -59,9 +94,71 @@ pub(super) struct Browse {
     capsules: Images<image::Allocation, AppId>,
 }
 
+/// The kinds of game the three-state filters are about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Library,
+    Wishlist,
+    WouldTry,
+    Starred,
+    NotForMe,
+    Later,
+}
+
+impl Kind {
+    fn label(self) -> &'static str {
+        match self {
+            Kind::Library => "Library",
+            Kind::Wishlist => "Wishlist",
+            Kind::WouldTry => "Would try",
+            Kind::Starred => "Starred",
+            Kind::NotForMe => "Not for me",
+            Kind::Later => "Later",
+        }
+    }
+
+    fn tip(self) -> Option<&'static str> {
+        match self {
+            Kind::Library => Some("Owned, borrowed and played elsewhere"),
+            Kind::Wishlist => Some("Wishlist and followed"),
+            _ => None,
+        }
+    }
+
+    fn choice(self, options: &BrowseOptions) -> Choice {
+        match self {
+            Kind::Library => options.library,
+            Kind::Wishlist => options.wished,
+            Kind::WouldTry => options.would_try,
+            Kind::Starred => options.starred,
+            Kind::NotForMe => options.not_for_me,
+            Kind::Later => options.later,
+        }
+    }
+
+    fn set(self, options: &mut BrowseOptions, choice: Choice) {
+        let place = match self {
+            Kind::Library => &mut options.library,
+            Kind::Wishlist => &mut options.wished,
+            Kind::WouldTry => &mut options.would_try,
+            Kind::Starred => &mut options.starred,
+            Kind::NotForMe => &mut options.not_for_me,
+            Kind::Later => &mut options.later,
+        };
+        *place = choice;
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Message {
     Sort(BrowseOrder),
+    OnSale(bool),
+    Show(Kind, Choice),
+    ResetAll,
+    ToggleFilters,
+    CloseFilters,
+    Filters(filters::Message),
+    Measured(Size),
     Scrolled(Viewport),
     CapsuleLoaded(AppId, Option<image::Handle>),
     CapsuleAllocated(AppId, Option<image::Allocation>),
@@ -71,10 +168,14 @@ impl Default for Browse {
     fn default() -> Browse {
         Browse {
             options: BrowseOptions::default(),
+            loaded: false,
             rows: Vec::new(),
             listed: None,
             currency: None,
             error: None,
+            panel: None,
+            panel_open: false,
+            tools_height: 0.0,
             selected: None,
             offset: 0.0,
             height: None,
@@ -92,9 +193,26 @@ impl Browse {
         name: &str,
     ) -> Task<SearchMessage> {
         match message {
-            Message::Sort(order) => {
-                sort_by(&mut self.options, order);
-                Task::batch([self.relist(gamepalate, name), operation::focus(FIELD)])
+            Message::Sort(_) | Message::OnSale(_) | Message::Show(..) | Message::ResetAll => {
+                let next = changed(&self.options, &message);
+                Task::batch([self.change(gamepalate, name, next), operation::focus(FIELD)])
+            }
+            Message::ToggleFilters if self.panel_open => {
+                self.panel_open = false;
+                Task::none()
+            }
+            Message::ToggleFilters => {
+                self.open_filters();
+                Task::none()
+            }
+            Message::CloseFilters => {
+                self.panel_open = false;
+                Task::none()
+            }
+            Message::Filters(message) => self.change_filters(gamepalate, name, message),
+            Message::Measured(size) => {
+                self.tools_height = size.height;
+                Task::none()
             }
             Message::Scrolled(viewport) => {
                 let offset = viewport.absolute_offset().y;
@@ -122,38 +240,171 @@ impl Browse {
     }
 
     /// Into Browse with `name` in the field: the list is made again only if the name has changed
-    /// since, otherwise it comes back where it was.
+    /// since, otherwise it comes back where it was. The first time, the options are those of
+    /// `gui.toml`. The panel of the filters is made again each time, for the tags of the catalog.
     pub(super) fn enter(
         &mut self,
         gamepalate: &Arc<Gamepalate>,
         name: &str,
     ) -> Task<SearchMessage> {
+        if !self.loaded {
+            self.loaded = true;
+            self.options = gamepalate.gui_settings().browse;
+        }
+        self.panel = Some(
+            Panel::new(
+                gamepalate.tag_names(),
+                &FilterOptions::default(),
+                format::currency_symbol(gamepalate.currency()),
+                &search_options(&self.options.filters),
+            )
+            .without_bets(),
+        );
+        self.panel_open = false;
+
         if self.listed.as_deref() != Some(name) {
             return self.relist(gamepalate, name);
         }
         Task::batch([scroll_to(self.offset), self.load_capsules(gamepalate)])
     }
 
-    /// The list made again from the top. An error takes the table's place and keeps the rows of
-    /// before.
+    /// The list made again from the top, with the options of now.
     pub(super) fn relist(
         &mut self,
         gamepalate: &Arc<Gamepalate>,
         name: &str,
     ) -> Task<SearchMessage> {
-        match gamepalate.browse(&self.options, name) {
-            Ok(rows) => {
-                self.rows = rows;
-                self.error = None;
-            }
-            Err(error) => self.error = Some(error.to_string()),
+        self.apply(gamepalate, self.options.clone(), name)
+    }
+
+    /// The list of `options`, and saved if they are new. With an error nothing changes.
+    fn change(
+        &mut self,
+        gamepalate: &Arc<Gamepalate>,
+        name: &str,
+        options: BrowseOptions,
+    ) -> Task<SearchMessage> {
+        if options == self.options {
+            return Task::none();
         }
-        self.listed = Some(name.to_string());
+        let listed = self.apply(gamepalate, options, name);
+        if self.error.is_some() {
+            return listed;
+        }
+        let gamepalate = Arc::clone(gamepalate);
+        let options = self.options.clone();
+        let saved = Task::future(async move {
+            gamepalate.change_gui_settings(|settings| settings.browse = options)
+        })
+        .discard();
+
+        Task::batch([listed, saved])
+    }
+
+    fn apply(
+        &mut self,
+        gamepalate: &Arc<Gamepalate>,
+        options: BrowseOptions,
+        name: &str,
+    ) -> Task<SearchMessage> {
+        let rows = gamepalate
+            .browse(&options, name)
+            .map_err(|error| sentence(&error.to_string()));
         self.currency = Some(gamepalate.currency().clone());
-        self.selected = None;
-        self.offset = 0.0;
+        if !self.accept(options, name, rows) {
+            return Task::none();
+        }
 
         Task::batch([scroll_to(0.0), self.load_capsules(gamepalate)])
+    }
+
+    /// Takes a list made from the top. An error keeps the options, the rows and the position of
+    /// before, and shows in the line of the filters.
+    fn accept(
+        &mut self,
+        options: BrowseOptions,
+        name: &str,
+        rows: Result<Vec<BrowseRow>, String>,
+    ) -> bool {
+        match rows {
+            Ok(rows) => {
+                self.options = options;
+                self.rows = rows;
+                self.error = None;
+                self.listed = Some(name.to_string());
+                self.selected = None;
+                self.offset = 0.0;
+                true
+            }
+            Err(error) => {
+                self.error = Some(error);
+                false
+            }
+        }
+    }
+
+    /// Browse with its panel of filters open, for the tests of the panel that holds it.
+    #[cfg(test)]
+    pub(super) fn with_filters_open() -> Browse {
+        let mut browse = Browse {
+            panel: Some(
+                Panel::new(
+                    vec!["Roguelike".to_string()],
+                    &FilterOptions::default(),
+                    "€".to_string(),
+                    &SearchOptions::default(),
+                )
+                .without_bets(),
+            ),
+            ..Browse::default()
+        };
+        browse.open_filters();
+        browse
+    }
+
+    fn open_filters(&mut self) {
+        if let Some(panel) = &mut self.panel {
+            panel.show(&search_options(&self.options.filters));
+            self.panel_open = true;
+        }
+    }
+
+    pub(super) fn filters_open(&self) -> bool {
+        self.panel_open
+    }
+
+    pub(super) fn close_filters(&mut self) {
+        self.panel_open = false;
+    }
+
+    fn change_filters(
+        &mut self,
+        gamepalate: &Arc<Gamepalate>,
+        name: &str,
+        message: filters::Message,
+    ) -> Task<SearchMessage> {
+        let Some(panel) = &mut self.panel else {
+            return Task::none();
+        };
+        let current = search_options(&self.options.filters);
+        match panel.update(&current, message) {
+            Action::Stay => Task::none(),
+            Action::Close => {
+                self.panel_open = false;
+                Task::none()
+            }
+            Action::Search(chosen) => {
+                self.panel_open = false;
+                let options = BrowseOptions {
+                    filters: chosen.filters,
+                    ..self.options.clone()
+                };
+                Task::batch([
+                    self.change(gamepalate, name, options),
+                    operation::focus(FIELD),
+                ])
+            }
+        }
     }
 
     pub(super) fn down(&mut self) -> Task<SearchMessage> {
@@ -166,9 +417,6 @@ impl Browse {
 
     /// The row Enter opens: the selected one, or the first.
     pub(super) fn chosen(&self) -> Option<AppId> {
-        if self.error.is_some() {
-            return None;
-        }
         let index = self.selected.unwrap_or(0);
         self.rows.get(index).map(|row| row.id)
     }
@@ -176,7 +424,7 @@ impl Browse {
     /// The list follows the selection only when the row leaves the sight, so holding ↓ scrolls
     /// one row at a time. The offset is the list's at once: the next keys count from there.
     fn select(&mut self, selected: Option<usize>) -> Task<SearchMessage> {
-        if self.rows.is_empty() || self.error.is_some() {
+        if self.rows.is_empty() {
             return Task::none();
         }
         self.selected = selected;
@@ -226,41 +474,246 @@ impl Browse {
         self.capsules.want(wanted)
     }
 
-    /// The panel below the field: the count, the head of the columns and the table.
+    /// The panel below the field: the toolbar, the filters and the table, with the popup of the
+    /// filters over it.
     pub(super) fn view<'a>(
         &'a self,
         field: Element<'a, SearchMessage>,
         size: Size,
     ) -> Element<'a, SearchMessage> {
-        let body: Element<'a, SearchMessage> = if let Some(error) = &self.error {
-            note(error.clone())
-        } else if self.rows.is_empty() {
-            column![self.count(), note(NO_GAMES.to_string())].into()
+        let table: Element<'a, SearchMessage> = if self.rows.is_empty() {
+            if self.error.is_none() {
+                note(NO_GAMES.to_string())
+            } else {
+                space().into()
+            }
         } else {
             let zone = TimeZone::system();
             let today = jiff::Zoned::now().date();
             column![
-                self.count(),
                 self.head(),
                 style::separator(),
                 self.list(|index| self.row(index, &zone, today)),
             ]
+            .width(Fill)
+            .height(Fill)
             .into()
         };
-
-        container(column![field, style::separator(), body])
-            .width(size.width)
-            .height(size.height)
+        let body: Element<'a, SearchMessage> = if side_beside(size.width) {
+            row![
+                table,
+                rule::vertical(1).style(rule::weak),
+                self.side().width(SIDE_WIDTH)
+            ]
+            .height(Fill)
             .into()
+        } else {
+            column![self.chips(), style::separator(), table]
+                .height(Fill)
+                .into()
+        };
+        let top = sensor(column![field, style::separator(), self.toolbar()])
+            .on_show(|size| SearchMessage::Browse(Message::Measured(size)))
+            .on_resize(|size| SearchMessage::Browse(Message::Measured(size)));
+        let content = container(
+            column![top]
+                .push(self.active(size.width))
+                .push(body)
+                .height(Fill),
+        )
+        .width(size.width)
+        .height(size.height);
+
+        stack![content].push(self.popup(size.height)).into()
     }
 
-    fn count(&self) -> Element<'_, SearchMessage> {
-        container(
+    /// The count, and the two controls that change the list the most.
+    fn toolbar(&self) -> Element<'_, SearchMessage> {
+        let arrow = if self.panel_open { '▴' } else { '▾' };
+
+        row![
             text(games_count(self.rows.len()))
                 .size(font::NOTE_SIZE)
                 .style(style::muted),
+            space().width(Fill),
+            checkbox(self.options.filters.only_discounted)
+                .label("On sale")
+                .text_size(font::NOTE_SIZE)
+                .on_toggle(|on| SearchMessage::Browse(Message::OnSale(on))),
+            button(text!("Filters {arrow}").size(font::NOTE_SIZE))
+                .padding([4, 8])
+                .style(style::text_button)
+                .on_press(SearchMessage::Browse(Message::ToggleFilters)),
+        ]
+        .spacing(12)
+        .align_y(Center)
+        .padding(padding::top(6).bottom(6).left(16).right(16))
+        .into()
+    }
+
+    /// The filters that are on, or why the last ones were not applied.
+    fn active(&self, width: f32) -> Option<Element<'_, SearchMessage>> {
+        let line = |line: String| {
+            text(line)
+                .size(font::NOTE_SIZE)
+                .style(style::muted)
+                .wrapping(Wrapping::None)
+        };
+        let line: Element<'_, SearchMessage> = if let Some(error) = &self.error {
+            text(error)
+                .size(font::NOTE_SIZE)
+                .style(text::danger)
+                .wrapping(Wrapping::None)
+                .into()
+        } else {
+            let summary = format::filters(
+                &search_options(&self.options.filters),
+                self.currency.as_ref()?,
+            )?;
+            match format::short_filters(&summary, summary_chars(width)) {
+                Some(short) => tooltip(
+                    line(short),
+                    container(text(summary).size(font::NOTE_SIZE))
+                        .padding([6, 10])
+                        .max_width(width - 32.0)
+                        .style(style::popup),
+                    tooltip::Position::Bottom,
+                )
+                .into(),
+                None => line(summary).into(),
+            }
+        };
+
+        Some(
+            container(line)
+                .width(Fill)
+                .padding(padding::left(16).right(16).bottom(6))
+                .clip(true)
+                .into(),
         )
-        .padding(padding::top(10).bottom(4).left(16))
+    }
+
+    /// The filters of the panel, in a popup under the toolbar and over the table.
+    fn popup(&self, height: f32) -> Option<Element<'_, SearchMessage>> {
+        let panel = self.panel.as_ref().filter(|_| self.panel_open)?;
+        let panel = container(
+            scrollable(
+                panel
+                    .view(DiscoverMode::New)
+                    .map(|message| SearchMessage::Browse(Message::Filters(message))),
+            )
+            .spacing(8),
+        )
+        .padding(20)
+        .max_height((height - self.tools_height - 16.0).max(0.0))
+        .style(style::popup);
+
+        Some(
+            stack![
+                opaque(
+                    mouse_area(space().width(Fill).height(Fill))
+                        .on_press(SearchMessage::Browse(Message::CloseFilters))
+                ),
+                container(opaque(panel))
+                    .width(Fill)
+                    .align_x(Right)
+                    .padding(padding::top(self.tools_height + 4.0).right(16)),
+            ]
+            .into(),
+        )
+    }
+
+    /// The three-state filters in a column right of the table.
+    fn side(&self) -> iced::widget::Column<'_, SearchMessage> {
+        column![text("Show").size(font::NOTE_SIZE).style(style::muted)]
+            .extend(KINDS.map(|kind| {
+                row![
+                    container(self.kind_label(kind)).width(Fill),
+                    self.choices(kind)
+                ]
+                .align_y(Center)
+                .into()
+            }))
+            .push(
+                button(text("Reset").size(font::NOTE_SIZE))
+                    .padding([4, 8])
+                    .style(style::text_button)
+                    .on_press(SearchMessage::Browse(Message::ResetAll)),
+            )
+            .spacing(10)
+            .padding(SIDE_PADDING)
+    }
+
+    /// The same filters in a row that wraps, when the table needs the room.
+    fn chips(&self) -> Element<'_, SearchMessage> {
+        container(
+            row(KINDS.map(|kind| {
+                row![self.kind_label(kind), self.choices(kind)]
+                    .spacing(8)
+                    .align_y(Center)
+                    .into()
+            }))
+            .push(
+                button(text("Reset").size(font::NOTE_SIZE))
+                    .padding([4, 8])
+                    .style(style::text_button)
+                    .on_press(SearchMessage::Browse(Message::ResetAll)),
+            )
+            .spacing(16)
+            .wrap()
+            .vertical_spacing(8),
+        )
+        .padding([8, 16])
+        .into()
+    }
+
+    fn kind_label(&self, kind: Kind) -> Element<'_, SearchMessage> {
+        let label = text(kind.label()).size(font::NOTE_SIZE);
+        match kind.tip() {
+            Some(tip) => tooltip(
+                label,
+                container(text(tip).size(font::NOTE_SIZE))
+                    .padding([6, 10])
+                    .style(style::popup),
+                tooltip::Position::Bottom,
+            )
+            .into(),
+            None => label.into(),
+        }
+    }
+
+    /// Hide, Any or Only, as one button in three parts.
+    fn choices(&self, kind: Kind) -> Element<'_, SearchMessage> {
+        let current = kind.choice(&self.options);
+        let part = |index: usize| {
+            let choice = CHOICES[index];
+            let place = match index {
+                0 => style::Segment::First,
+                1 => style::Segment::Middle,
+                _ => style::Segment::Last,
+            };
+            button(container(text(choice_label(choice)).size(font::NOTE_SIZE)).center(Fill))
+                .width(Fill)
+                .height(Fill)
+                .padding([0, 4])
+                .style(style::segment(choice == current, place))
+                .on_press(SearchMessage::Browse(Message::Show(kind, choice)))
+        };
+
+        container(
+            row![
+                part(0),
+                rule::vertical(1).style(style::vote_seam),
+                part(1),
+                rule::vertical(1).style(style::vote_seam),
+                part(2),
+            ]
+            .height(Fill),
+        )
+        .width(GROUP_WIDTH)
+        .height(GROUP_HEIGHT)
+        .padding(1)
+        .style(style::vote_group)
         .into()
     }
 
@@ -432,6 +885,50 @@ impl Browse {
         .on_press(SearchMessage::Pick(game.id))
         .into()
     }
+}
+
+/// The options the panel of the filters works on: the filters, and nothing else.
+fn search_options(filters: &FilterOptions) -> SearchOptions {
+    SearchOptions {
+        filters: filters.clone(),
+        ..SearchOptions::default()
+    }
+}
+
+/// The options a message asks for; the same options for a message that does not change them.
+fn changed(options: &BrowseOptions, message: &Message) -> BrowseOptions {
+    let mut next = options.clone();
+    match message {
+        Message::Sort(order) => sort_by(&mut next, *order),
+        Message::OnSale(on) => {
+            next.filters.only_discounted = *on;
+            if !on {
+                next.filters.min_discount_percent = None;
+            }
+        }
+        Message::Show(kind, choice) => kind.set(&mut next, *choice),
+        Message::ResetAll => next = BrowseOptions::default(),
+        _ => {}
+    }
+    next
+}
+
+fn choice_label(choice: Choice) -> &'static str {
+    match choice {
+        Choice::Without => "Hide",
+        Choice::Any => "Any",
+        Choice::Only => "Only",
+    }
+}
+
+/// Whether the three-state filters have a column of their own, and Name still has its room.
+fn side_beside(width: f32) -> bool {
+    width >= COLUMNS_WIDTH + 1.0 + SIDE_WIDTH + NAME_MIN_WIDTH
+}
+
+/// How many characters of the filters' line fit in `width`.
+fn summary_chars(width: f32) -> usize {
+    ((width - 32.0).max(0.0) / SUMMARY_CHAR_WIDTH) as usize
 }
 
 fn note<'a>(line: String) -> Element<'a, SearchMessage> {
@@ -760,9 +1257,177 @@ mod tests {
         browse.selected = Some(2);
         assert_eq!(browse.chosen(), Some(AppId(3)));
         assert_eq!(browse_with(0).chosen(), None);
+    }
 
-        browse.error = Some("Unknown tag".to_string());
-        assert_eq!(browse.chosen(), None);
+    #[test]
+    fn a_click_on_only_asks_for_that_choice_and_nothing_else() {
+        let options = BrowseOptions::default();
+
+        let next = changed(&options, &Message::Show(Kind::WouldTry, Choice::Only));
+
+        assert_eq!(next.would_try, Choice::Only);
+        assert_eq!(
+            BrowseOptions {
+                would_try: options.would_try,
+                ..next
+            },
+            options
+        );
+    }
+
+    #[test]
+    fn each_kind_has_its_own_choice() {
+        for kind in KINDS {
+            for choice in CHOICES {
+                let mut options = BrowseOptions::default();
+                kind.set(&mut options, choice);
+
+                assert_eq!(kind.choice(&options), choice, "{kind:?}");
+                for other in KINDS.into_iter().filter(|other| *other != kind) {
+                    assert_eq!(
+                        other.choice(&options),
+                        other.choice(&BrowseOptions::default()),
+                        "{kind:?} changed {other:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn on_sale_off_drops_the_minimum_discount() {
+        let mut options = BrowseOptions::default();
+        options.filters.min_discount_percent = Some(50);
+        options.filters.max_price_cents = Some(1500);
+
+        let off = changed(&options, &Message::OnSale(false));
+
+        assert!(!off.filters.only_discounted);
+        assert_eq!(off.filters.min_discount_percent, None);
+        assert_eq!(off.filters.max_price_cents, Some(1500));
+        let on = changed(&off, &Message::OnSale(true));
+        assert!(on.filters.only_discounted);
+    }
+
+    #[test]
+    fn reset_gives_the_defaults_filters_and_order_included() {
+        let mut options = BrowseOptions::default();
+        options.filters.tags = vec!["Roguelike".to_string()];
+        options.library = Choice::Only;
+        options.order = BrowseOrder::Price;
+        options.descending = true;
+
+        assert_eq!(
+            changed(&options, &Message::ResetAll),
+            BrowseOptions::default()
+        );
+    }
+
+    #[test]
+    fn a_message_that_does_not_change_the_list_keeps_the_options() {
+        let options = BrowseOptions::default();
+
+        assert_eq!(changed(&options, &Message::ToggleFilters), options);
+        assert_eq!(changed(&options, &Message::CloseFilters), options);
+    }
+
+    #[test]
+    fn a_list_that_fails_keeps_the_filters_and_the_rows_of_before() {
+        let mut browse = browse_with(3);
+        browse.selected = Some(1);
+        browse.offset = 120.0;
+        let before = browse.options.clone();
+        let mut wrong = before.clone();
+        wrong.filters.tags = vec!["Nothing".to_string()];
+
+        let taken = browse.accept(wrong, "", Err("Unknown tag: Nothing".to_string()));
+
+        assert!(!taken);
+        assert_eq!(browse.options, before);
+        assert_eq!(browse.rows.len(), 3);
+        assert_eq!((browse.selected, browse.offset), (Some(1), 120.0));
+        assert_eq!(browse.error.as_deref(), Some("Unknown tag: Nothing"));
+        assert_eq!(browse.chosen(), Some(AppId(2)));
+    }
+
+    #[test]
+    fn a_list_that_works_takes_the_options_and_clears_the_error() {
+        let mut browse = browse_with(3);
+        browse.error = Some("Unknown tag: Nothing".to_string());
+        browse.selected = Some(1);
+        browse.offset = 120.0;
+        let options = BrowseOptions {
+            library: Choice::Only,
+            ..BrowseOptions::default()
+        };
+
+        let taken = browse.accept(options.clone(), "hades", Ok(rows(5)));
+
+        assert!(taken);
+        assert_eq!(browse.options, options);
+        assert_eq!(browse.rows.len(), 5);
+        assert_eq!(browse.error, None);
+        assert_eq!(browse.listed.as_deref(), Some("hades"));
+        assert_eq!((browse.selected, browse.offset), (None, 0.0));
+    }
+
+    #[test]
+    fn the_filters_open_and_close() {
+        let mut browse = Browse::with_filters_open();
+        assert!(browse.filters_open());
+
+        browse.close_filters();
+        assert!(!browse.filters_open());
+
+        browse.open_filters();
+        assert!(browse.filters_open());
+    }
+
+    #[test]
+    fn without_a_panel_the_filters_stay_closed() {
+        let mut browse = Browse::default();
+
+        browse.open_filters();
+
+        assert!(!browse.filters_open());
+    }
+
+    #[test]
+    fn the_three_states_sit_beside_the_table_only_when_name_keeps_its_room() {
+        // The narrowest window is 960 wide, and the panel takes 90% of it.
+        assert!(!side_beside(960.0 * 0.9));
+        assert!(side_beside(1_200.0));
+        let least = COLUMNS_WIDTH + 1.0 + SIDE_WIDTH + NAME_MIN_WIDTH;
+        assert!(side_beside(least));
+        assert!(!side_beside(least - 1.0));
+    }
+
+    #[test]
+    fn the_summary_takes_the_characters_that_fit() {
+        assert_eq!(summary_chars(0.0), 0);
+        assert!(summary_chars(864.0) > 100);
+    }
+
+    #[test]
+    fn the_choices_have_their_words() {
+        assert_eq!(CHOICES.map(choice_label), ["Hide", "Any", "Only"]);
+        assert_eq!(
+            KINDS.map(Kind::label),
+            [
+                "Library",
+                "Wishlist",
+                "Would try",
+                "Starred",
+                "Not for me",
+                "Later"
+            ]
+        );
+        assert_eq!(
+            Kind::Library.tip(),
+            Some("Owned, borrowed and played elsewhere")
+        );
+        assert_eq!(Kind::Wishlist.tip(), Some("Wishlist and followed"));
+        assert_eq!(Kind::Later.tip(), None);
     }
 
     #[test]

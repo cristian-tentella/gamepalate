@@ -192,6 +192,9 @@ impl Search {
                     self.load_capsules(gamepalate),
                 ]));
             }
+            // The popup of the filters has the keys while it is open.
+            Message::Down | Message::Up | Message::Submit | Message::SwitchMode
+                if self.filters_open() => {}
             Message::Down if self.mode == Mode::Browse => return Action::Run(self.browse.down()),
             Message::Up if self.mode == Mode::Browse => return Action::Run(self.browse.up()),
             Message::Down => {
@@ -220,10 +223,11 @@ impl Search {
                 };
                 return Action::Run(Task::batch([task, operation::focus(FIELD)]));
             }
+            Message::Browse(browse::Message::ToggleFilters) if !self.browsing() => {}
             Message::Browse(message) => {
                 return Action::Run(self.browse.update(message, gamepalate, &self.text));
             }
-            Message::Close => self.close(),
+            Message::Close => self.escape(),
             Message::Pick(id) => return self.pick(id),
             Message::CapsuleLoaded(id, None) => {
                 self.capsules.loaded(id, None);
@@ -252,6 +256,24 @@ impl Search {
         self.state = State::Closed;
         self.selected = None;
         self.backdrop = None;
+        self.browse.close_filters();
+    }
+
+    /// Esc closes the popup of the filters first, and only then the panel.
+    fn escape(&mut self) {
+        if self.filters_open() {
+            self.browse.close_filters();
+        } else {
+            self.close();
+        }
+    }
+
+    fn browsing(&self) -> bool {
+        matches!(self.state, State::Open) && self.mode == Mode::Browse
+    }
+
+    fn filters_open(&self) -> bool {
+        self.browsing() && self.browse.filters_open()
     }
 
     /// The picture of the page no longer fits the window: the veil stays alone.
@@ -465,6 +487,7 @@ impl Search {
     /// To the other mode, with the same text.
     fn switch(&mut self) -> Mode {
         self.selected = None;
+        self.browse.close_filters();
         self.mode = match self.mode {
             Mode::Find => Mode::Browse,
             Mode::Browse => Mode::Find,
@@ -538,19 +561,19 @@ fn panel_place(area: Size) -> (f32, f32) {
 }
 
 fn panel_key(event: Event, _: event::Status, _: window::Id) -> Option<Message> {
-    let Event::Keyboard(keyboard::Event::KeyPressed {
-        key: Key::Named(key),
-        ..
-    }) = event
-    else {
+    let Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event else {
         return None;
     };
 
-    match key {
-        Named::ArrowDown => Some(Message::Down),
-        Named::ArrowUp => Some(Message::Up),
-        Named::Escape => Some(Message::Close),
-        Named::Tab => Some(Message::SwitchMode),
+    match key.as_ref() {
+        Key::Named(Named::ArrowDown) => Some(Message::Down),
+        Key::Named(Named::ArrowUp) => Some(Message::Up),
+        Key::Named(Named::Escape) => Some(Message::Close),
+        Key::Named(Named::Tab) => Some(Message::SwitchMode),
+        // F alone is for the field
+        Key::Character("f" | "F") if modifiers.command() => {
+            Some(Message::Browse(browse::Message::ToggleFilters))
+        }
         _ => None,
     }
 }
@@ -745,6 +768,68 @@ mod tests {
         assert!(!search.is_open());
         assert_eq!(search.mode, Mode::Browse);
         assert!(search.view(AREA).is_none());
+    }
+
+    #[test]
+    fn escape_closes_the_popup_of_the_filters_before_the_panel() {
+        let mut search = open_with(3);
+        search.switch();
+        search.browse = Browse::with_filters_open();
+        assert!(search.filters_open());
+
+        search.escape();
+
+        assert!(search.is_open());
+        assert!(!search.filters_open());
+        search.escape();
+        assert!(!search.is_open());
+    }
+
+    #[test]
+    fn closing_the_panel_closes_the_popup_too() {
+        let mut search = open_with(3);
+        search.switch();
+        search.browse = Browse::with_filters_open();
+
+        search.close();
+
+        assert!(!search.browse.filters_open());
+    }
+
+    #[test]
+    fn search_has_no_popup_of_filters() {
+        let mut search = open_with(3);
+        search.browse = Browse::with_filters_open();
+
+        assert!(!search.browsing());
+        assert!(!search.filters_open());
+        search.escape();
+        assert!(!search.is_open());
+    }
+
+    #[test]
+    fn control_f_opens_the_filters_and_f_alone_does_not() {
+        let heard = |modifiers| {
+            let key = Key::Character("f".into());
+            let event = Event::Keyboard(keyboard::Event::KeyPressed {
+                key: key.clone(),
+                modified_key: key,
+                physical_key: keyboard::key::Physical::Unidentified(
+                    keyboard::key::NativeCode::Unidentified,
+                ),
+                location: keyboard::Location::Standard,
+                modifiers,
+                text: None,
+                repeat: false,
+            });
+            panel_key(event, event::Status::Ignored, window::Id::unique())
+        };
+
+        assert!(matches!(
+            heard(keyboard::Modifiers::COMMAND),
+            Some(Message::Browse(browse::Message::ToggleFilters))
+        ));
+        assert!(heard(keyboard::Modifiers::empty()).is_none());
     }
 
     fn panel_key_of(key: Named) -> Option<Message> {
