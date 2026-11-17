@@ -6,11 +6,15 @@ use std::{
 };
 
 use gamepalate_app::{
-    AppId, Gamepalate, Region, SteamError, ThemeChoice, Timestamp,
+    AppId, Gamepalate, Region, SteamError, SteamId, ThemeChoice, Timestamp,
     account::{ConnectError, connect, parse_profile},
     catalog_file::{CatalogFileError, ImportedCatalog, import_catalog},
     ready::{ReadyCheck, check_ready},
-    setup::{Covers, FirstRun, Part, error_chain, most_played},
+    setup::{Covers, FirstRun, Part, error_chain, most_played, steam_accounts},
+    steam_client::{
+        ClientAccount, answer_steam_accounts, answer_steam_client, local_config_shown,
+        login_users_file, steam_accounts_answer, steam_client_hours_answer,
+    },
     update::download_catalog,
 };
 use iced::{
@@ -20,14 +24,12 @@ use iced::{
     padding, stream,
     widget::{
         button, column, container, image, progress_bar, radio, row, scrollable, space, stack, text,
-        text_input,
+        text_input, toggler,
     },
 };
 
-use super::{
-    library::hours,
-    steam_client::{ElsewhereHint, SteamClientQuestion},
-};
+use self::accounts::Accounts;
+use super::library::hours;
 use crate::{
     app::theme::theme,
     font, format,
@@ -70,22 +72,37 @@ const WELCOME_ABOUT: &str =
     "Recommends games from the Steam catalog, based on the hours you play and the votes you give";
 const WELCOME_WIDTH: f32 = 480.0;
 const THEME_ABOUT: &str = "You can change it later in Settings";
+const THIS_PC_ABOUT: &str = "Two files of the Steam app can fill in your account and your hours";
+const THIS_PC_SAFE: &str = "Nothing is sent anywhere and the files are never changed";
+const ACCOUNTS_TITLE: &str = "Your Steam accounts";
+const ACCOUNTS_ABOUT: &str = "Fills in your Steam ID from the accounts signed in here";
+const HOURS_TITLE: &str = "Games you played but don't own";
+const HOURS_ABOUT: &str =
+    "Adds the hours of Family Sharing games, free weekends and free games you removed";
+const ONLINE_TITLE: &str = "What goes online";
+const ONLINE_ABOUT: &str = "Steam, for your library and the catalog · GitHub, to check for new versions · ProtonDB, for Steam Deck reports";
+const BODY_WIDTH: f32 = 600.0;
+const VANITY_NOTE: &str = "Checked after the API key";
+const TOGGLER_SIZE: f32 = 24.0;
 const PREVIEW_WIDTH: f32 = 300.0;
 const PREVIEW_HEIGHT: f32 = 180.0;
 const PREVIEW_BAR: f32 = 24.0;
 const PREVIEW_RADIUS: f32 = 6.0;
+
+mod accounts;
 
 pub struct Setup {
     first_run: FirstRun,
     error: Option<String>,
     page: Page,
     account: Account,
+    accounts: Accounts,
+    this_pc: ThisPc,
     download: Download,
     import: Import,
     ready: Option<Ready>,
     covers: Option<Arc<Covers>>,
     played: Vec<Played>,
-    question: Option<SteamClientQuestion>,
     theme: ThemeChoice,
 }
 
@@ -180,6 +197,16 @@ enum ImportPlace {
 }
 
 #[derive(Debug, Default)]
+struct ThisPc {
+    accounts: bool,
+    hours: bool,
+    saving: bool,
+    error: Option<String>,
+    accounts_file: Option<PathBuf>,
+    hours_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Default)]
 struct Account {
     steam_id: String,
     key: String,
@@ -195,6 +222,10 @@ pub enum Message {
     Back,
     Enter,
     Theme(ThemeChoice),
+    ThisPcAccounts(bool),
+    ThisPcHours(bool),
+    ThisPcSaved(Result<Vec<ClientAccount>, String>),
+    Accounts(accounts::Message),
     SteamId(String),
     Key(String),
     GetKey,
@@ -212,8 +243,6 @@ pub enum Message {
     OpenLibrary,
     OpenPrivacy,
     Cover(AppId, Option<image::Handle>),
-    SteamClient(bool),
-    SteamClientAnswered(Result<(), String>),
 }
 
 pub enum Action {
@@ -264,23 +293,35 @@ impl Setup {
                 cover: Cover::Loading,
             })
             .collect();
-        let question = first_run
-            .data_dir
-            .as_deref()
-            .and_then(SteamClientQuestion::ask);
         let theme = first_run.gui_settings().theme;
+        let this_pc = this_pc(&first_run);
+        let accounts = Accounts::new(
+            first_run
+                .data_dir
+                .as_deref()
+                .map(steam_accounts)
+                .unwrap_or_default(),
+            first_run.saved_steam_id,
+        );
+        let account = Account {
+            steam_id: accounts
+                .selected()
+                .map_or(account.steam_id, |id| id.0.to_string()),
+            ..account
+        };
 
         Setup {
             page: first_page(&first_run),
             first_run,
             error,
             account,
+            accounts,
+            this_pc,
             download: Download::default(),
             import: Import::default(),
             ready: None,
             covers: Covers::new().ok().map(Arc::new),
             played,
-            question,
             theme,
         }
     }
@@ -331,12 +372,8 @@ impl Setup {
                 }
                 Action::None
             }
-            Message::Continue => {
-                if let Some(page) = next_page(self.page, &self.first_run) {
-                    self.page = page;
-                }
-                Action::None
-            }
+            Message::Continue if self.page == Page::ThisPc => self.save_this_pc(),
+            Message::Continue => self.go_on(),
             Message::Back => {
                 if let Some(page) = self.back() {
                     self.page = page;
@@ -355,6 +392,33 @@ impl Setup {
                 Some(message) => self.update(message),
                 None => Action::None,
             },
+            Message::ThisPcAccounts(read) => {
+                self.this_pc.accounts = read;
+                Action::None
+            }
+            Message::ThisPcHours(read) => {
+                self.this_pc.hours = read;
+                Action::None
+            }
+            Message::ThisPcSaved(Ok(list)) => self.this_pc_saved(list),
+            Message::ThisPcSaved(Err(error)) => {
+                self.this_pc.saving = false;
+                self.this_pc.error = Some(error);
+                Action::None
+            }
+            Message::Accounts(message) => {
+                self.accounts.update(message);
+                self.account.error = None;
+                match message {
+                    accounts::Message::UseAnother => self.account.steam_id.clear(),
+                    accounts::Message::Select(_) | accounts::Message::BackToList => {
+                        if let Some(id) = self.accounts.selected() {
+                            self.account.steam_id = id.0.to_string();
+                        }
+                    }
+                }
+                Action::None
+            }
             Message::SteamId(steam_id) => {
                 self.account.steam_id = steam_id;
                 Action::None
@@ -415,27 +479,6 @@ impl Setup {
                 }
                 Action::None
             }
-            Message::SteamClient(read) => {
-                let (Some(question), Some(dir)) = (&mut self.question, &self.first_run.data_dir)
-                else {
-                    return Action::None;
-                };
-                Action::Run(
-                    question
-                        .answer(dir.clone(), read)
-                        .map(Message::SteamClientAnswered),
-                )
-            }
-            Message::SteamClientAnswered(Ok(())) => {
-                self.question = None;
-                Action::None
-            }
-            Message::SteamClientAnswered(Err(error)) => {
-                if let Some(question) = &mut self.question {
-                    question.failed(error);
-                }
-                Action::None
-            }
             Message::Downloaded(Err(error)) => {
                 self.first_run = FirstRun::check(None);
                 self.download.running = false;
@@ -447,6 +490,7 @@ impl Setup {
 
     fn back(&self) -> Option<Page> {
         let busy = self.download.running
+            || self.this_pc.saving
             || self.account.connecting
             || self.import.running
             || matches!(self.ready, Some(Ready::Preparing));
@@ -493,8 +537,50 @@ impl Setup {
                 }
             },
             Page::Welcome => Some(Primary::new("Get started", Some(Message::Continue))),
-            Page::Theme | Page::ThisPc | Page::Key | Page::Region => Some(Primary::proceed()),
+            Page::ThisPc => Some(Primary::new(
+                if self.this_pc.saving {
+                    "Saving…"
+                } else {
+                    "Continue"
+                },
+                (!self.this_pc.saving).then_some(Message::Continue),
+            )),
+            Page::Theme | Page::Key | Page::Region => Some(Primary::proceed()),
         }
+    }
+
+    fn save_this_pc(&mut self) -> Action {
+        if self.this_pc.saving {
+            return Action::None;
+        }
+        let Some(dir) = self.first_run.data_dir.clone() else {
+            return self.go_on();
+        };
+        self.this_pc.saving = true;
+        self.this_pc.error = None;
+        let (accounts, hours) = (self.this_pc.accounts, self.this_pc.hours);
+
+        Action::Run(Task::perform(
+            async move { save_this_pc(&dir, accounts, hours) },
+            Message::ThisPcSaved,
+        ))
+    }
+
+    fn this_pc_saved(&mut self, list: Vec<ClientAccount>) -> Action {
+        self.this_pc.saving = false;
+        let typed = self.account.steam_id.trim().parse().ok().map(SteamId);
+        self.accounts = Accounts::new(list, typed);
+        if let Some(id) = self.accounts.selected() {
+            self.account.steam_id = id.0.to_string();
+        }
+        self.go_on()
+    }
+
+    fn go_on(&mut self) -> Action {
+        if let Some(page) = next_page(self.page, &self.first_run) {
+            self.page = page;
+        }
+        Action::None
     }
 
     fn prepare(&mut self, read_signals_again: bool) -> Action {
@@ -689,12 +775,6 @@ impl Setup {
             return self.welcome_view();
         }
         let content = column![]
-            .push(
-                self.question
-                    .as_ref()
-                    .filter(|_| self.page == Page::Catalog)
-                    .map(|question| question.view(Message::SteamClient, ElsewhereHint::Text)),
-            )
             .push(self.page_view())
             .push(self.most_played_view())
             .spacing(16);
@@ -812,7 +892,8 @@ impl Setup {
             Page::Catalog => ("Steam catalog", None),
             Page::Profile => (ready_title(self.ready.as_ref()), None),
             Page::Theme => ("Theme", Some(THEME_ABOUT)),
-            Page::Welcome | Page::ThisPc | Page::Key | Page::Region => {
+            Page::ThisPc => ("Files on this PC", Some(THIS_PC_ABOUT)),
+            Page::Welcome | Page::Key | Page::Region => {
                 return column![].into();
             }
         };
@@ -830,7 +911,8 @@ impl Setup {
             Page::Catalog => self.start_view(),
             Page::Profile => self.ready_view(),
             Page::Theme => self.theme_view(),
-            Page::Welcome | Page::ThisPc | Page::Key | Page::Region => column![].into(),
+            Page::ThisPc => self.this_pc_view(),
+            Page::Welcome | Page::Key | Page::Region => column![].into(),
         }
     }
 
@@ -917,6 +999,49 @@ impl Setup {
         )
     }
 
+    fn this_pc_view(&self) -> Element<'_, Message> {
+        let pc = &self.this_pc;
+        let group = container(
+            column![
+                permission(
+                    ACCOUNTS_TITLE,
+                    ACCOUNTS_ABOUT,
+                    pc.accounts_file.as_deref(),
+                    pc.accounts,
+                    Message::ThisPcAccounts,
+                ),
+                style::separator(),
+                permission(
+                    HOURS_TITLE,
+                    HOURS_ABOUT,
+                    pc.hours_file.as_deref(),
+                    pc.hours,
+                    Message::ThisPcHours,
+                ),
+            ]
+            .spacing(16),
+        )
+        .padding(16)
+        .width(Fill)
+        .style(style::card);
+        let error = pc
+            .error
+            .as_ref()
+            .map(|error| text(error.clone()).size(font::BAR_SIZE).style(text::danger));
+
+        column![
+            column![group, note(THIS_PC_SAFE)].spacing(8),
+            column![
+                text(ONLINE_TITLE).size(font::BAR_SIZE).font(font::SEMIBOLD),
+                container(note(ONLINE_ABOUT)).max_width(BODY_WIDTH),
+            ]
+            .spacing(8),
+        ]
+        .push(error)
+        .spacing(16)
+        .into()
+    }
+
     fn account_view(&self) -> Element<'_, Message> {
         let account = &self.account;
         let editable = !account.connecting;
@@ -926,9 +1051,13 @@ impl Setup {
             .on_submit(Message::Enter)
             .padding(8)
             .size(font::BAR_SIZE);
-        let steam_id_note = match steam_id_note(&account.steam_id) {
-            Some(note) => text(note).size(font::NOTE_SIZE).style(text::danger),
-            None => text(FIND_STEAM_ID)
+        let steam_id_note = match (
+            steam_id_note(&account.steam_id),
+            is_vanity(&account.steam_id),
+        ) {
+            (Some(note), _) => text(note).size(font::NOTE_SIZE).style(text::danger),
+            (None, true) => text(VANITY_NOTE).size(font::NOTE_SIZE).style(style::muted),
+            (None, false) => text(FIND_STEAM_ID)
                 .size(font::NOTE_SIZE)
                 .style(style::muted),
         };
@@ -968,10 +1097,22 @@ impl Setup {
             .map(|_| note_link("Open privacy settings ↗", Message::OpenPrivacy));
         let problems = (invalid.is_some() || error.is_some())
             .then(|| column![].push(invalid).push(error).push(privacy).spacing(8));
+        let profile: Element<'_, Message> = if self.accounts.listed() {
+            self.accounts.view(Message::Accounts)
+        } else {
+            field(
+                "Profile",
+                column![steam_id, steam_id_note]
+                    .push(
+                        (!self.accounts.is_empty()).then(|| Accounts::back_link(Message::Accounts)),
+                    )
+                    .spacing(8),
+            )
+        };
 
         column![
-            field("Profile", column![steam_id, steam_id_note].spacing(8)),
-            field("API key", column![key, note(KEY_DOMAIN_NOTE)].spacing(8)),
+            profile,
+            field("API key", column![key, note(KEY_DOMAIN_NOTE)].spacing(8))
         ]
         .push(problems)
         .push((self.import_place() == Some(ImportPlace::Account)).then(|| self.import_view()))
@@ -1193,6 +1334,65 @@ fn note<'a>(line: impl text::IntoFragment<'a>) -> text::Text<'a> {
     text(line).size(font::NOTE_SIZE).style(style::muted)
 }
 
+fn permission<'a>(
+    title: &'a str,
+    about: &'a str,
+    file: Option<&std::path::Path>,
+    on: bool,
+    message: fn(bool) -> Message,
+) -> Element<'a, Message> {
+    let path = file.map(|file| note(file.display().to_string()));
+
+    row![
+        column![
+            text(title).size(font::BAR_SIZE).font(font::SEMIBOLD),
+            text(about).size(font::BAR_SIZE),
+        ]
+        .push(path)
+        .spacing(8)
+        .width(Fill),
+        toggler(on)
+            .on_toggle(message)
+            .size(TOGGLER_SIZE)
+            .style(style::switch),
+    ]
+    .spacing(16)
+    .align_y(Center)
+    .into()
+}
+
+fn this_pc(first_run: &FirstRun) -> ThisPc {
+    let dir = first_run.data_dir.as_deref();
+    ThisPc {
+        accounts: dir.is_some_and(|dir| steam_accounts_answer(dir) == Some(true)),
+        hours: dir.is_some_and(|dir| steam_client_hours_answer(dir) == Some(true)),
+        accounts_file: first_run.client.then(login_users_file).flatten(),
+        hours_file: first_run.client.then(local_config_shown).flatten(),
+        ..ThisPc::default()
+    }
+}
+
+fn answered(dir: &std::path::Path, accounts: bool, hours: bool) -> Result<(), String> {
+    answer_steam_accounts(dir, accounts).map_err(|error| error_chain(&error))?;
+    answer_steam_client(dir, hours).map_err(|error| error_chain(&error))
+}
+
+fn save_this_pc(
+    dir: &std::path::Path,
+    accounts: bool,
+    hours: bool,
+) -> Result<Vec<ClientAccount>, String> {
+    answered(dir, accounts, hours)?;
+    Ok(steam_accounts(dir))
+}
+
+fn is_vanity(text: &str) -> bool {
+    matches!(
+        parse_profile(text),
+        Ok(gamepalate_app::account::Profile::CustomName(_))
+    )
+}
+
 fn account_done(first_run: &FirstRun) -> bool {
     first_run.steam_id == Part::Present && first_run.api_key
 }
@@ -1252,15 +1452,16 @@ pub(crate) fn connect_error_text(error: &ConnectError) -> String {
 fn shown(page: Page, first_run: &FirstRun) -> bool {
     match page {
         Page::Welcome | Page::Theme => first_run.saved_steam_id.is_none(),
+        Page::ThisPc => first_run.client,
         Page::Account | Page::Catalog | Page::Profile => true,
-        Page::ThisPc | Page::Key | Page::Region => false,
+        Page::Key | Page::Region => false,
     }
 }
 
 fn page_done(page: Page, first_run: &FirstRun) -> bool {
     match page {
         Page::Welcome | Page::Theme => first_run.saved_steam_id.is_some(),
-        Page::ThisPc => true,
+        Page::ThisPc => first_run.saved_steam_id.is_some(),
         Page::Account => account_done(first_run),
         Page::Key => first_run.api_key,
         Page::Region => first_run.catalog == Part::Present || first_run.pending_update.is_some(),
@@ -1501,6 +1702,23 @@ mod tests {
             pending_update: None,
             resume_within_hours: 24,
             signals: Part::Present,
+            client: false,
+        }
+    }
+
+    fn with_client() -> FirstRun {
+        FirstRun {
+            client: true,
+            ..first_run()
+        }
+    }
+
+    fn client_account(id: u64, most_recent: bool) -> ClientAccount {
+        ClientAccount {
+            steam_id: SteamId(id),
+            persona_name: None,
+            most_recent,
+            avatar: None,
         }
     }
 
@@ -1800,6 +2018,166 @@ mod tests {
         let setup = setup_in(dir.path(), false);
 
         assert_eq!(setup.theme, ThemeChoice::Dark);
+    }
+
+    fn new_pc(dir: &std::path::Path) -> FirstRun {
+        FirstRun {
+            data_dir: Some(dir.to_path_buf()),
+            saved_steam_id: None,
+            steam_id: Part::Missing,
+            api_key: false,
+            catalog: Part::Missing,
+            ..with_client()
+        }
+    }
+
+    #[test]
+    fn this_pc_shows_only_with_the_steam_client() {
+        let without = FirstRun {
+            saved_steam_id: None,
+            ..first_run()
+        };
+        let with = FirstRun {
+            saved_steam_id: None,
+            ..with_client()
+        };
+
+        assert!(!shown(Page::ThisPc, &without));
+        assert!(shown(Page::ThisPc, &with));
+        assert_eq!(next_page(Page::Theme, &without), Some(Page::Account));
+        assert_eq!(next_page(Page::Theme, &with), Some(Page::ThisPc));
+        assert_eq!(previous_page(Page::Account, &with), Some(Page::ThisPc));
+        assert_eq!(step_of(Page::ThisPc, &with), Some((1, 4)));
+        assert_eq!(step_of(Page::Account, &with), Some((2, 4)));
+        assert_eq!(step_of(Page::Account, &without), Some((1, 3)));
+    }
+
+    #[test]
+    fn the_togglers_start_off_or_from_the_saved_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let setup = Setup::new(new_pc(dir.path()), None);
+        assert!(!setup.this_pc.accounts);
+        assert!(!setup.this_pc.hours);
+
+        answer_steam_accounts(dir.path(), true).unwrap();
+        answer_steam_client(dir.path(), false).unwrap();
+        let setup = Setup::new(new_pc(dir.path()), None);
+        assert!(setup.this_pc.accounts);
+        assert!(!setup.this_pc.hours);
+    }
+
+    #[test]
+    fn continue_on_this_pc_saves_both_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut setup = Setup::new(new_pc(dir.path()), None);
+        setup.page = Page::ThisPc;
+        assert_eq!(primary_of(&setup), Some(("Continue", true)));
+
+        setup.update(Message::ThisPcAccounts(true));
+        setup.update(Message::ThisPcHours(true));
+        assert!(matches!(setup.update(Message::Continue), Action::Run(_)));
+        assert!(setup.this_pc.saving);
+        assert_eq!(primary_of(&setup), Some(("Saving…", false)));
+        assert_eq!(setup.back(), None);
+        assert_eq!(setup.page, Page::ThisPc);
+
+        answered(dir.path(), true, true).unwrap();
+        assert_eq!(steam_accounts_answer(dir.path()), Some(true));
+        assert_eq!(steam_client_hours_answer(dir.path()), Some(true));
+        assert!(matches!(
+            setup.update(Message::ThisPcSaved(Ok(vec![
+                client_account(76_561_198_000_000_000, true),
+                client_account(76_561_198_000_000_001, false),
+            ]))),
+            Action::None
+        ));
+        assert_eq!(setup.page, Page::Account);
+        assert!(!setup.this_pc.saving);
+        assert!(setup.accounts.listed());
+        assert_eq!(setup.account.steam_id, "76561198000000000");
+    }
+
+    #[test]
+    fn a_failed_save_stays_on_this_pc() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut setup = Setup::new(new_pc(dir.path()), None);
+        setup.page = Page::ThisPc;
+        setup.this_pc.saving = true;
+
+        setup.update(Message::ThisPcSaved(Err("Access denied".to_string())));
+
+        assert_eq!(setup.page, Page::ThisPc);
+        assert!(!setup.this_pc.saving);
+        assert_eq!(setup.this_pc.error.as_deref(), Some("Access denied"));
+        assert_eq!(primary_of(&setup), Some(("Continue", true)));
+    }
+
+    #[test]
+    fn without_a_list_the_account_page_keeps_the_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut setup = Setup::new(new_pc(dir.path()), None);
+        setup.page = Page::ThisPc;
+
+        setup.update(Message::ThisPcSaved(Ok(Vec::new())));
+
+        assert_eq!(setup.page, Page::Account);
+        assert!(!setup.accounts.listed());
+        assert_eq!(setup.account.steam_id, "");
+        assert_eq!(primary_of(&setup), Some(("Connect", false)));
+    }
+
+    #[test]
+    fn the_account_list_chooses_the_profile_to_connect() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut setup = Setup::new(new_pc(dir.path()), None);
+        setup.page = Page::ThisPc;
+        setup.account.key = "KEY".to_string();
+        setup.update(Message::ThisPcSaved(Ok(vec![
+            client_account(76_561_198_000_000_000, true),
+            client_account(76_561_198_000_000_001, false),
+        ])));
+        assert_eq!(primary_of(&setup), Some(("Connect", true)));
+
+        setup.update(Message::Accounts(accounts::Message::Select(SteamId(
+            76_561_198_000_000_001,
+        ))));
+        assert_eq!(setup.account.steam_id, "76561198000000001");
+
+        setup.update(Message::Accounts(accounts::Message::UseAnother));
+        assert!(!setup.accounts.listed());
+        assert_eq!(setup.account.steam_id, "");
+        assert_eq!(primary_of(&setup), Some(("Connect", false)));
+
+        setup.update(Message::SteamId("123".to_string()));
+        assert_eq!(primary_of(&setup), Some(("Connect", false)));
+        setup.update(Message::SteamId("76561198000000007".to_string()));
+        assert_eq!(primary_of(&setup), Some(("Connect", true)));
+
+        setup.update(Message::Accounts(accounts::Message::BackToList));
+        assert!(setup.accounts.listed());
+        assert_eq!(setup.account.steam_id, "76561198000000001");
+    }
+
+    #[test]
+    fn a_vanity_address_is_checked_after_the_key() {
+        assert!(is_vanity("https://steamcommunity.com/id/someone"));
+        assert!(!is_vanity("76561198000000000"));
+        assert!(!is_vanity(""));
+    }
+
+    #[test]
+    fn the_catalog_page_has_no_question_about_the_hours() {
+        let dir = tempfile::tempdir().unwrap();
+        answer_steam_client(dir.path(), true).unwrap();
+        let first_run = FirstRun {
+            data_dir: Some(dir.path().to_path_buf()),
+            catalog: Part::Missing,
+            ..first_run()
+        };
+        let setup = Setup::new(first_run, None);
+
+        assert_eq!(setup.page, Page::Catalog);
+        assert!(setup.this_pc.hours);
     }
 
     #[test]

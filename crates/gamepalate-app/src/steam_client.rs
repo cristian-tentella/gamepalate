@@ -8,8 +8,8 @@ use gamepalate_steam::client::{
 };
 use gamepalate_store::{
     config::{
-        ConfigError, load_config, load_steam_client_accounts, save_steam_client_accounts,
-        save_steam_client_hours,
+        ConfigError, load_config, load_steam_client_accounts, load_steam_client_hours,
+        save_steam_client_accounts, save_steam_client_hours,
     },
     signals::{SignalsError, load_reading, save_reading},
 };
@@ -51,6 +51,10 @@ pub fn answer_steam_client(data_dir: &Path, read: bool) -> Result<(), SteamClien
 
 pub fn steam_accounts_answer(data_dir: &Path) -> Option<bool> {
     load_steam_client_accounts(&data_dir.join(CONFIG_FILE))
+}
+
+pub fn steam_client_hours_answer(data_dir: &Path) -> Option<bool> {
+    load_steam_client_hours(&data_dir.join(CONFIG_FILE))
 }
 
 pub fn answer_steam_accounts(data_dir: &Path, read: bool) -> Result<(), ConfigError> {

@@ -134,6 +134,13 @@ pub fn load_steam_client_accounts(path: &Path) -> Option<bool> {
     file.signals.steam_client_accounts
 }
 
+pub fn load_steam_client_hours(path: &Path) -> Option<bool> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let file: ConfigFile = toml::from_str(&text).ok()?;
+
+    file.signals.steam_client_hours
+}
+
 pub fn save_steam_id(path: &Path, steam_id: SteamId) -> Result<(), ConfigError> {
     save_value(
         path,
@@ -663,6 +670,18 @@ steam_client_accounts = true
             load_steam_client_accounts(&dir.path().join("none.toml")),
             None
         );
+    }
+
+    #[test]
+    fn the_hours_answer_can_come_before_the_steam_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        assert_eq!(load_steam_client_hours(&path), None);
+
+        save_steam_client_hours(&path, false).unwrap();
+
+        assert_eq!(load_steam_client_hours(&path), Some(false));
+        assert_eq!(load_steam_client_accounts(&path), None);
     }
 
     const WITH_COMMENTS: &str = "# my settings

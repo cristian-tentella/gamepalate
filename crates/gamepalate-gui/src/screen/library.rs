@@ -22,7 +22,7 @@ use iced::{
 use super::{
     Toasts, sentence,
     showcase::{SCROLL_STEP, images::Images, scroll_sheet, sheet, tags_body},
-    steam_client::{ElsewhereHint, SteamClientQuestion},
+    steam_client::SteamClientQuestion,
 };
 use crate::{font, format, style};
 pub use filter::{Filter, Sort};
@@ -689,7 +689,7 @@ impl Library {
         let toast = self.toasts.view(Message::Undo);
 
         let question = self.question.as_ref().map(|question| {
-            container(question.view(Message::SteamClient, ElsewhereHint::None))
+            container(question.view(Message::SteamClient))
                 .padding([16, GRID_PADDING as u16])
                 .center_x(Fill)
                 .max_width(800)

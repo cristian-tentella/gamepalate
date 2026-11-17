@@ -22,7 +22,7 @@ use crate::{
     capsules::classic_capsule,
     data_dir,
     images::{self, ImageCache, LoadImageError},
-    steam_client::{ClientAccount, client_accounts},
+    steam_client::{ClientAccount, client_accounts, steam_client_present},
     update::pending_update,
 };
 
@@ -43,6 +43,7 @@ pub struct FirstRun {
     pub pending_update: Option<PendingUpdate>,
     pub resume_within_hours: u32,
     pub signals: Part,
+    pub client: bool,
 }
 
 impl FirstRun {
@@ -140,6 +141,7 @@ fn first_run(data_dir: Option<PathBuf>, api_key: bool) -> FirstRun {
             pending_update: None,
             resume_within_hours: Config::default().prices_max_age_hours,
             signals: Part::Missing,
+            client: steam_client_present(),
         };
     };
 
@@ -161,6 +163,7 @@ fn first_run(data_dir: Option<PathBuf>, api_key: bool) -> FirstRun {
         pending_update: pending_update(&dir, &settings),
         resume_within_hours: settings.prices_max_age_hours,
         signals: signals(&dir),
+        client: steam_client_present(),
         data_dir: Some(dir),
     }
 }

@@ -3,7 +3,7 @@ use iced::{
     overlay::menu,
     padding,
     theme::palette,
-    widget::{button, container, pick_list, progress_bar, rule, slider, text, text_input},
+    widget::{button, container, pick_list, progress_bar, rule, slider, text, text_input, toggler},
 };
 
 const BADGE_TINT: f32 = 0.14;
@@ -1029,6 +1029,46 @@ fn rounded(style: button::Style) -> button::Style {
             ..style.border
         },
         ..style
+    }
+}
+
+/// A switch that is tinted with the accent when it is on, like a chip of Browse.
+pub fn switch(theme: &Theme, status: toggler::Status) -> toggler::Style {
+    let palette = theme.extended_palette();
+    let (on, hovered) = match status {
+        toggler::Status::Active { is_toggled } | toggler::Status::Disabled { is_toggled } => {
+            (is_toggled, false)
+        }
+        toggler::Status::Hovered { is_toggled } => (is_toggled, true),
+    };
+    let (background, border, knob) = if on {
+        (
+            palette.primary.weak.color,
+            palette.primary.base.color,
+            palette.primary.base.color,
+        )
+    } else {
+        (
+            if hovered {
+                palette.background.weak.color
+            } else {
+                palette.background.base.color
+            },
+            palette.background.strong.color,
+            palette.background.strong.color,
+        )
+    };
+
+    toggler::Style {
+        background: background.into(),
+        background_border_width: 1.0,
+        background_border_color: border,
+        foreground: knob.into(),
+        foreground_border_width: 0.0,
+        foreground_border_color: Color::TRANSPARENT,
+        text_color: None,
+        border_radius: None,
+        padding_ratio: 0.25,
     }
 }
 
