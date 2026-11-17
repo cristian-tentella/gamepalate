@@ -10,6 +10,8 @@ use gamepalate_app::{
     account::{ConnectError, connect, parse_profile},
     catalog_file::{CatalogFileError, ImportedCatalog, import_catalog},
     ready::{ReadyCheck, check_ready},
+    region::{RegionSource, profile_country, starting_region, system_country},
+    settings::change_region,
     setup::{Covers, FirstRun, Part, error_chain, most_played, steam_accounts},
     steam_client::{
         ClientAccount, answer_steam_accounts, answer_steam_client, local_config_shown,
@@ -23,8 +25,8 @@ use iced::{
     keyboard::{self, Key, key::Named},
     padding, stream,
     widget::{
-        button, column, container, image, progress_bar, radio, row, scrollable, space, stack, text,
-        text_input, toggler,
+        button, column, container, image, pick_list, progress_bar, radio, row, scrollable, space,
+        stack, text, text_input, toggler,
     },
 };
 
@@ -71,6 +73,9 @@ const LOGO_SIZE: f32 = 96.0;
 const WELCOME_ABOUT: &str =
     "Recommends games from the Steam catalog, based on the hours you play and the votes you give";
 const WELCOME_WIDTH: f32 = 480.0;
+const REGION_ABOUT: &str = "The catalog has the prices and discounts of this region";
+const REGION_LATER: &str = "You can change it later in Settings";
+const REGION_WIDTH: f32 = 320.0;
 const THEME_ABOUT: &str = "You can change it later in Settings";
 const THIS_PC_ABOUT: &str = "Two files of the Steam app can fill in your account and your hours";
 const THIS_PC_SAFE: &str = "Nothing is sent anywhere and the files are never changed";
@@ -111,6 +116,7 @@ pub struct Setup {
     account: Account,
     accounts: Accounts,
     this_pc: ThisPc,
+    region: RegionChoice,
     download: Download,
     import: Import,
     ready: Option<Ready>,
@@ -219,6 +225,79 @@ struct ThisPc {
     hours_file: Option<PathBuf>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Country {
+    region: Region,
+    name: String,
+}
+
+impl Country {
+    fn of(region: Region) -> Country {
+        Country {
+            region,
+            name: region.country_name().unwrap_or(region.as_str()).to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for Country {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.name)
+    }
+}
+
+#[derive(Debug)]
+struct RegionChoice {
+    countries: Vec<Country>,
+    system: Option<Region>,
+    region: Region,
+    source: RegionSource,
+    touched: bool,
+    error: Option<String>,
+}
+
+impl RegionChoice {
+    fn new(system: Option<Region>) -> RegionChoice {
+        let start = starting_region(None, system);
+        RegionChoice {
+            countries: gamepalate_app::region::countries()
+                .map(|(region, _)| Country::of(region))
+                .collect(),
+            system,
+            region: start.region,
+            source: start.source,
+            touched: false,
+            error: None,
+        }
+    }
+
+    fn found(&mut self, profile: Option<Region>) {
+        if self.touched {
+            return;
+        }
+        let start = starting_region(profile, self.system);
+        self.region = start.region;
+        self.source = start.source;
+    }
+
+    fn choose(&mut self, region: Region) {
+        self.region = region;
+        self.touched = true;
+        self.error = None;
+    }
+
+    fn note(&self) -> Option<&'static str> {
+        if self.touched {
+            return None;
+        }
+        match self.source {
+            RegionSource::Profile => Some("From your Steam profile"),
+            RegionSource::System => Some("From your system settings"),
+            RegionSource::Default => None,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct Account {
     steam_id: String,
@@ -238,6 +317,8 @@ pub enum Message {
     ThisPcAccounts(bool),
     ThisPcHours(bool),
     ThisPcSaved(Result<Vec<ClientAccount>, String>),
+    RegionChosen(Country),
+    RegionFound(Option<Region>),
     Accounts(accounts::Message),
     SteamId(String),
     Key(String),
@@ -332,6 +413,7 @@ impl Setup {
             account,
             accounts,
             this_pc,
+            region: RegionChoice::new(system_country()),
             download: Download::default(),
             import: Import::default(),
             ready: None,
@@ -342,7 +424,7 @@ impl Setup {
     }
 
     pub fn begin(&mut self) -> Task<Message> {
-        let covers = self.load_covers();
+        let covers = Task::batch([self.load_covers(), self.find_region()]);
         if !downloads_at_start(&self.first_run) {
             return covers;
         }
@@ -351,6 +433,20 @@ impl Setup {
             Action::Run(download) => Task::batch([covers, download]),
             Action::None | Action::Open(_) | Action::Theme(_) => covers,
         }
+    }
+
+    fn find_region(&self) -> Task<Message> {
+        let Some(dir) = self.first_run.data_dir.clone() else {
+            return Task::none();
+        };
+        if self.page != Page::Region {
+            return Task::none();
+        }
+
+        Task::perform(
+            async move { profile_country(&dir).await },
+            Message::RegionFound,
+        )
     }
 
     fn load_covers(&self) -> Task<Message> {
@@ -388,6 +484,15 @@ impl Setup {
                 Action::None
             }
             Message::Continue if self.page == Page::ThisPc => self.save_this_pc(),
+            Message::Continue if self.page == Page::Region => self.save_region(),
+            Message::RegionChosen(country) => {
+                self.region.choose(country.region);
+                Action::None
+            }
+            Message::RegionFound(country) => {
+                self.region.found(country);
+                Action::None
+            }
             Message::Continue => self.go_on(),
             Message::Back => {
                 if let Some(page) = self.back() {
@@ -594,6 +699,16 @@ impl Setup {
             async move { save_this_pc(&dir, accounts, hours) },
             Message::ThisPcSaved,
         ))
+    }
+
+    fn save_region(&mut self) -> Action {
+        if let Some(dir) = &self.first_run.data_dir
+            && let Err(error) = change_region(dir, self.region.region)
+        {
+            self.region.error = Some(error_chain(&error));
+            return Action::None;
+        }
+        self.go_on()
     }
 
     fn this_pc_saved(&mut self, list: Vec<ClientAccount>) -> Action {
@@ -930,7 +1045,8 @@ impl Setup {
             Page::Profile => (ready_title(self.ready.as_ref()), None),
             Page::Theme => ("Theme", Some(THEME_ABOUT)),
             Page::ThisPc => ("Files on this PC", Some(THIS_PC_ABOUT)),
-            Page::Welcome | Page::Region => {
+            Page::Region => ("Store region", Some(REGION_ABOUT)),
+            Page::Welcome => {
                 return column![].into();
             }
         };
@@ -950,7 +1066,8 @@ impl Setup {
             Page::Profile => self.ready_view(),
             Page::Theme => self.theme_view(),
             Page::ThisPc => self.this_pc_view(),
-            Page::Welcome | Page::Region => column![].into(),
+            Page::Region => self.region_view(),
+            Page::Welcome => column![].into(),
         }
     }
 
@@ -983,6 +1100,38 @@ impl Setup {
         )
         .padding(SHEET_MARGIN)
         .center(Fill)
+        .into()
+    }
+
+    fn region_view(&self) -> Element<'_, Message> {
+        let region = &self.region;
+        let menu = pick_list(
+            region.countries.as_slice(),
+            Some(Country::of(region.region)),
+            Message::RegionChosen,
+        )
+        .width(REGION_WIDTH)
+        .padding(8)
+        .text_size(font::BAR_SIZE)
+        .style(style::dropdown)
+        .menu_style(style::menu);
+        let problem = region.error.as_deref().map(|error| {
+            text(error.to_string())
+                .size(font::BAR_SIZE)
+                .style(text::danger)
+        });
+
+        column![
+            field(
+                "Region",
+                column![menu]
+                    .push(region.note().map(note))
+                    .push(problem)
+                    .spacing(8)
+            ),
+            note(REGION_LATER),
+        ]
+        .spacing(16)
         .into()
     }
 
@@ -1559,8 +1708,12 @@ fn shown(page: Page, first_run: &FirstRun) -> bool {
         Page::ThisPc => first_run.client,
         Page::Account | Page::Catalog | Page::Profile => true,
         Page::Key => !account_done(first_run),
-        Page::Region => false,
+        Page::Region => !has_catalog(first_run),
     }
+}
+
+fn has_catalog(first_run: &FirstRun) -> bool {
+    first_run.catalog == Part::Present || first_run.pending_update.is_some()
 }
 
 fn page_done(page: Page, first_run: &FirstRun) -> bool {
@@ -1569,7 +1722,7 @@ fn page_done(page: Page, first_run: &FirstRun) -> bool {
         Page::ThisPc => first_run.saved_steam_id.is_some(),
         Page::Account => first_run.steam_id == Part::Present,
         Page::Key => account_done(first_run),
-        Page::Region => first_run.catalog == Part::Present || first_run.pending_update.is_some(),
+        Page::Region => has_catalog(first_run),
         Page::Catalog => first_run.catalog == Part::Present,
         Page::Profile => false,
     }
@@ -1873,7 +2026,7 @@ mod tests {
         assert_eq!(setup.first_run, first_run);
         assert_eq!(setup.error, None);
         assert_eq!(setup.account.steam_id, "76561198000000000");
-        assert_eq!(setup.page, Page::Catalog);
+        assert_eq!(setup.page, Page::Region);
     }
 
     #[test]
@@ -1920,8 +2073,8 @@ mod tests {
         assert_eq!(first_page(&without_key), Page::Key);
         assert_eq!(first_page(&without_steam_id), Page::Welcome);
         assert_eq!(page_from(Page::Account, &without_steam_id), Page::Account);
-        assert_eq!(first_page(&without_catalog()), Page::Catalog);
-        assert_eq!(first_page(&invalid), Page::Catalog);
+        assert_eq!(first_page(&without_catalog()), Page::Region);
+        assert_eq!(first_page(&invalid), Page::Region);
         assert_eq!(first_page(&resuming), Page::Catalog);
         assert_eq!(first_page(&first_run()), Page::Profile);
     }
@@ -2025,17 +2178,21 @@ mod tests {
 
     #[test]
     fn back_and_continue_move_between_the_pages() {
-        let mut setup = Setup::new(without_catalog(), None);
-        assert_eq!(setup.page, Page::Catalog);
+        let dir = tempfile::tempdir().unwrap();
+        let mut setup = region_setup(dir.path());
+        assert_eq!(setup.page, Page::Region);
 
         setup.update(Message::Back);
         assert_eq!(setup.page, Page::Account);
         setup.update(Message::Back);
         assert_eq!(setup.page, Page::Account);
         setup.update(Message::Continue);
+        assert_eq!(setup.page, Page::Region);
+        setup.update(Message::Continue);
         assert_eq!(setup.page, Page::Catalog);
 
         setup.update(Message::Back);
+        assert_eq!(setup.page, Page::Region);
         setup.update(Message::Enter);
         assert_eq!(setup.page, Page::Catalog);
     }
@@ -2043,7 +2200,8 @@ mod tests {
     #[test]
     fn there_is_no_back_during_the_download_or_connect() {
         let mut setup = Setup::new(without_catalog(), None);
-        assert_eq!(setup.back(), Some(Page::Account));
+        setup.page = Page::Catalog;
+        assert_eq!(setup.back(), Some(Page::Region));
 
         setup.download.running = true;
         assert_eq!(setup.back(), None);
@@ -2308,7 +2466,7 @@ mod tests {
         };
         let setup = Setup::new(first_run, None);
 
-        assert_eq!(setup.page, Page::Catalog);
+        assert_eq!(setup.page, Page::Region);
         assert!(setup.this_pc.hours);
     }
 
@@ -2447,6 +2605,7 @@ mod tests {
     #[test]
     fn the_catalog_page_downloads_or_continues() {
         let mut setup = Setup::new(without_catalog(), None);
+        setup.page = Page::Catalog;
         assert_eq!(primary_of(&setup), Some(("Download catalog", true)));
 
         setup.import.running = true;
@@ -2577,7 +2736,16 @@ mod tests {
             ..first_run()
         };
 
-        assert!(downloads_at_start(&without_catalog()));
+        let resuming = FirstRun {
+            pending_update: Some(PendingUpdate {
+                started_at: Timestamp(0),
+                responses: 120,
+            }),
+            ..without_catalog()
+        };
+
+        assert!(downloads_at_start(&resuming));
+        assert!(!downloads_at_start(&without_catalog()));
         assert!(!downloads_at_start(&invalid));
         assert!(!downloads_at_start(&first_run()));
     }
@@ -2750,6 +2918,7 @@ mod tests {
     #[test]
     fn a_failed_import_keeps_the_setup_where_it_was() {
         let mut setup = Setup::new(without_catalog(), None);
+        setup.page = Page::Catalog;
         setup.import.running = true;
 
         let action = setup.update(Message::Imported(Err(
@@ -3006,5 +3175,99 @@ mod tests {
             connect_error_text(&ConnectError::SteamDown).starts_with("Steam is not responding")
         );
         assert_eq!(connect_error_text(&missing), "Paste the Steam Web API key");
+    }
+    fn region_setup(dir: &std::path::Path) -> Setup {
+        let mut setup = Setup::new(
+            FirstRun {
+                data_dir: Some(dir.to_path_buf()),
+                catalog: Part::Missing,
+                ..first_run()
+            },
+            None,
+        );
+        setup.region = RegionChoice::new(None);
+        setup
+    }
+
+    fn country(code: &str) -> Region {
+        Region::new(code).unwrap()
+    }
+
+    #[test]
+    fn the_region_page_is_skipped_with_a_catalog_or_a_download_to_resume() {
+        let resuming = FirstRun {
+            pending_update: Some(PendingUpdate {
+                started_at: Timestamp(0),
+                responses: 120,
+            }),
+            ..without_catalog()
+        };
+
+        assert!(shown(Page::Region, &without_catalog()));
+        assert!(!shown(Page::Region, &first_run()));
+        assert!(!shown(Page::Region, &resuming));
+        assert_eq!(next_page(Page::Key, &without_catalog()), Some(Page::Region));
+        assert_eq!(next_page(Page::Key, &resuming), Some(Page::Catalog));
+    }
+
+    #[test]
+    fn the_region_starts_from_the_profile_and_says_so_until_it_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut setup = region_setup(dir.path());
+        assert_eq!(setup.region.region, Region::ITALY);
+        assert_eq!(setup.region.note(), None);
+
+        setup.update(Message::RegionFound(Some(country("DE"))));
+        assert_eq!(setup.region.region, country("DE"));
+        assert_eq!(setup.region.note(), Some("From your Steam profile"));
+
+        setup.update(Message::RegionChosen(Country::of(country("US"))));
+        assert_eq!(setup.region.region, country("US"));
+        assert_eq!(setup.region.note(), None);
+
+        setup.update(Message::RegionFound(Some(country("FR"))));
+        assert_eq!(setup.region.region, country("US"));
+    }
+
+    #[test]
+    fn the_region_falls_back_to_the_system_country() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut setup = region_setup(dir.path());
+        setup.region = RegionChoice::new(Some(country("JP")));
+
+        assert_eq!(setup.region.region, country("JP"));
+        assert_eq!(setup.region.note(), Some("From your system settings"));
+
+        setup.update(Message::RegionFound(None));
+        assert_eq!(setup.region.note(), Some("From your system settings"));
+        setup.update(Message::RegionFound(Some(country("DE"))));
+        assert_eq!(setup.region.note(), Some("From your Steam profile"));
+    }
+
+    #[test]
+    fn continue_saves_the_region_and_goes_to_the_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "steam_id = \"76561198000000000\"
+",
+        )
+        .unwrap();
+        let mut setup = region_setup(dir.path());
+        setup.page = Page::Region;
+        assert_eq!(primary_of(&setup), Some(("Continue", true)));
+
+        setup.update(Message::RegionChosen(Country::of(country("US"))));
+        setup.update(Message::Continue);
+
+        assert_eq!(setup.page, Page::Catalog);
+        let config = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(config.contains("US"), "{config}");
+    }
+
+    #[test]
+    fn a_region_that_is_not_in_the_table_shows_as_its_code() {
+        assert_eq!(Country::of(country("ZZ")).to_string(), "ZZ");
+        assert_eq!(Country::of(country("IT")).to_string(), "Italy");
     }
 }
