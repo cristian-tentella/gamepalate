@@ -113,6 +113,11 @@ impl GamePage {
         self.game.id
     }
 
+    /// The blurred picture of the page under the sheet, if the window is still the same size.
+    pub fn backdrop(&self) -> Option<image::Handle> {
+        self.backdrop.clone()
+    }
+
     /// The blurred page no longer fits the window: the veil stays alone.
     pub fn resized(&mut self) {
         self.backdrop = None;

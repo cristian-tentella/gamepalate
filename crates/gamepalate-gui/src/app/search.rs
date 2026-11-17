@@ -64,8 +64,6 @@ pub struct Search {
     capsules: Images<image::Allocation, AppId>,
     mode: Mode,
     browse: Browse,
-    /// Back from a game's page: the panel opens on Browse as it was left.
-    returning: bool,
 }
 
 /// The panel finds a game by name, or browses the whole catalog in a table. Tab goes from one to
@@ -92,6 +90,14 @@ struct Backdrop {
     shown: Option<Instant>,
 }
 
+/// A picture that is already there: no fade is left at `now`.
+fn faded_in_already(handle: image::Handle, now: Instant) -> Backdrop {
+    Backdrop {
+        handle,
+        shown: Some(now.checked_sub(backdrop::FADE).unwrap_or(now)),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Message {
     Toggle,
@@ -107,8 +113,6 @@ pub enum Message {
     CapsuleLoaded(AppId, Option<image::Handle>),
     CapsuleAllocated(AppId, Option<image::Allocation>),
     SwitchMode,
-    /// The panel opens again on Browse, after the page of a game that came from it.
-    Reopen,
     PageDown,
     PageUp,
     First,
@@ -146,17 +150,6 @@ impl Search {
         match message {
             Message::Toggle if self.is_open() => self.close(),
             Message::Toggle => {
-                return Action::Run(match window {
-                    Some(window) => {
-                        self.state = State::Opening;
-                        window::screenshot(window).map(Message::Screenshot)
-                    }
-                    None => self.show(gamepalate),
-                });
-            }
-            Message::Reopen if self.is_open() || self.mode != Mode::Browse => {}
-            Message::Reopen => {
-                self.returning = true;
                 return Action::Run(match window {
                     Some(window) => {
                         self.state = State::Opening;
@@ -308,7 +301,6 @@ impl Search {
 
     pub fn close(&mut self) {
         self.state = State::Closed;
-        self.returning = false;
         self.selected = None;
         self.backdrop = None;
         self.browse.close_filters();
@@ -535,18 +527,34 @@ impl Search {
     /// The panel opens on Search with the last text selected, so typing replaces it. Browse
     /// keeps its state for Tab, and for the way back from a game's page.
     fn show(&mut self, gamepalate: &Arc<Gamepalate>) -> Task<Message> {
-        if self.open_state() {
-            return Task::batch([focus(), self.browse.come_back(gamepalate)]);
-        }
+        self.open_state(false);
         self.found = gamepalate.find_games(&self.text);
 
         Task::batch([focus(), self.load_capsules(gamepalate)])
     }
 
-    /// Open, on Search or, coming back, on Browse with its list as it was: the list is not made
-    /// again. Says whether it was the way back.
-    fn open_state(&mut self) -> bool {
-        let returning = std::mem::take(&mut self.returning);
+    /// The panel opens again on Browse with its list as it was, after the page of a game that
+    /// came from it. The page already holds the blurred picture of what is under the panel, and
+    /// it shows at once: nothing but the table and that picture is seen in between. A screenshot
+    /// would catch the page under before it is drawn without the sheet.
+    pub fn reopen(
+        &mut self,
+        gamepalate: &Arc<Gamepalate>,
+        blurred: Option<image::Handle>,
+    ) -> Task<Message> {
+        if self.is_open() || self.mode != Mode::Browse {
+            return Task::none();
+        }
+        let now = Instant::now();
+        self.open_state(true);
+        self.backdrop = blurred.map(|handle| faded_in_already(handle, now));
+        self.now = Some(now);
+
+        Task::batch([focus(), self.browse.come_back(gamepalate)])
+    }
+
+    /// Open, on Search or, coming back, on Browse: its list is not made again.
+    fn open_state(&mut self, returning: bool) {
         self.state = State::Open;
         self.typed = false;
         self.selected = None;
@@ -554,8 +562,6 @@ impl Search {
         if !returning {
             self.mode = Mode::Find;
         }
-
-        returning
     }
 
     /// To the other mode, with the same text.
@@ -833,13 +839,21 @@ mod tests {
         let _ = search.pick(AppId(50));
         let before = search.browse.state();
 
-        search.returning = true;
-        assert!(search.open_state());
+        search.open_state(true);
 
         assert!(search.is_open());
         assert_eq!(search.mode, Mode::Browse);
         assert_eq!(search.browse.state(), before, "the list was not made again");
-        assert!(!search.returning);
+    }
+
+    #[test]
+    fn the_picture_kept_by_the_page_is_there_at_once() {
+        let now = Instant::now();
+        let handle = image::Handle::from_rgba(1, 1, vec![0; 4]);
+
+        let backdrop = faded_in_already(handle, now);
+
+        assert_eq!(faded_in(backdrop.shown.expect("it was shown"), now), 1.0);
     }
 
     #[test]
@@ -848,7 +862,7 @@ mod tests {
         let _ = search.pick(AppId(5));
         let before = search.browse.state();
 
-        assert!(!search.open_state());
+        search.open_state(false);
 
         assert_eq!(search.mode, Mode::Find);
         assert_eq!(
@@ -856,16 +870,6 @@ mod tests {
             before,
             "Browse keeps its state for Tab"
         );
-    }
-
-    #[test]
-    fn closing_the_panel_cancels_the_way_back() {
-        let mut search = browsing_with(5);
-        search.returning = true;
-
-        search.close();
-
-        assert!(!search.open_state());
     }
 
     #[test]

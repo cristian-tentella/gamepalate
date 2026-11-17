@@ -62,9 +62,6 @@ const GEAR: char = '\u{E8B8}';
 const ACCOUNT_SIZE: f32 = 22.0;
 const DOT_SIZE: f32 = 7.0;
 const NOTICE_DURATION: Duration = Duration::from_secs(12);
-/// From closing a game's page to the screenshot of the page under it: a frame or two, so the
-/// sheet is no longer drawn.
-const REDRAW_PAUSE: Duration = Duration::from_millis(50);
 
 pub struct App {
     gamepalate: Option<Arc<Gamepalate>>,
@@ -415,10 +412,10 @@ impl App {
                 let Some(page) = &mut self.game_page else {
                     return Task::none();
                 };
-                let id = page.id();
+                let (id, backdrop) = (page.id(), page.backdrop());
                 match page.update(message) {
                     game_page::Action::Run(task) => task.map(Message::GamePage),
-                    game_page::Action::Close { changed } => self.leave_game(id, changed),
+                    game_page::Action::Close { changed } => self.leave_game(id, changed, backdrop),
                 }
             }
             Message::Setup(message) => {
@@ -848,22 +845,25 @@ impl App {
     }
 
     /// The page of a game closes. If the game was picked in Browse, its row takes the new
-    /// standing and the panel opens again on the table. It waits for the page under to be drawn
-    /// without the sheet, so the blurred picture behind it is the page and not the sheet.
-    fn leave_game(&mut self, id: AppId, changed: bool) -> Task<Message> {
+    /// standing and the panel opens again on the table, in the same update, over the blurred
+    /// picture the sheet was holding: the page under is never seen sharp in between.
+    fn leave_game(
+        &mut self,
+        id: AppId,
+        changed: bool,
+        backdrop: Option<image::Handle>,
+    ) -> Task<Message> {
         let from_browse = std::mem::take(&mut self.game_from_browse);
         let closed = self.close_game_page(changed);
-        if !from_browse {
+        let Some(gamepalate) = self.gamepalate.as_ref().filter(|_| from_browse) else {
             return closed;
-        }
-        if changed && let Some(gamepalate) = &self.gamepalate {
+        };
+        if changed {
             self.search.game_changed(gamepalate, id);
         }
-        let reopened = Task::perform(tokio::time::sleep(REDRAW_PAUSE), |()| {
-            Message::Search(search::Message::Reopen)
-        });
+        let reopened = self.search.reopen(gamepalate, backdrop);
 
-        Task::batch([closed, reopened])
+        Task::batch([closed, reopened.map(Message::Search)])
     }
 
     /// The page of a game saves on the new facade, and finds its place in Discover again. The
