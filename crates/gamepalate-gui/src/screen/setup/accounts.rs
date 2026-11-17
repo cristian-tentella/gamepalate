@@ -162,6 +162,7 @@ fn row_view<'a, M: Clone + 'a>(
         ]
         .push(check)
         .spacing(16)
+        .height(Fill)
         .align_y(Center),
     )
     .width(Fill)

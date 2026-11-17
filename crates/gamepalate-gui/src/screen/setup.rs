@@ -70,11 +70,11 @@ const CATALOG_ABOUT: &str =
     "Tags, reviews and prices of every Steam game, about 20 minutes to download";
 const DROP_ASK: &str = "Have a catalog file from someone else?";
 const DROP_HINT: &str = "Drop catalog.sqlite on this window";
-const ZONE_HEIGHT: f32 = 120.0;
+const ZONE_HEIGHT: f32 = 96.0;
 const IMPORTING: &str = "Importing the catalog…";
 const DROP_TO_IMPORT: &str = "Drop to import";
 const LOGO_BYTES: &[u8] = include_bytes!("../../gamepalate.png");
-const LOGO_SIZE: f32 = 96.0;
+const LOGO_SIZE: f32 = 128.0;
 const WELCOME_ABOUT: &str =
     "Recommends games from the Steam catalog, based on the hours you play and the votes you give";
 const WELCOME_WIDTH: f32 = 480.0;
@@ -90,17 +90,17 @@ const HOURS_TITLE: &str = "Games you played but don't own";
 const HOURS_ABOUT: &str =
     "Adds the hours of Family Sharing games, free weekends and free games you removed";
 const ONLINE_TITLE: &str = "What goes online";
-const ONLINE_ABOUT: &str = "Steam, for your library and the catalog · GitHub, to check for new versions · ProtonDB, for Steam Deck reports";
+const ONLINE_ABOUT: &str = "Steam, for your library and the catalog · GitHub, for new versions · ProtonDB, for Steam Deck reports";
 const BODY_WIDTH: f32 = 600.0;
 const VANITY_NOTE: &str = "Checked after the API key";
 pub(crate) const TOGGLER_SIZE: f32 = 24.0;
 const KEY_ABOUT: &str = "gamepalate uses it to read your library from Steam";
 const KEY_STEPS: [&str; 3] = [
-    "Open the key page on Steam",
+    "Open the key page on Steam ↗",
     "Type any domain name, like localhost",
     "Copy the key and paste it below",
 ];
-const KEY_STEP_HEIGHT: f32 = 128.0;
+const KEY_STEP_HEIGHT: f32 = 104.0;
 const KEY_WARNING: &str =
     "Steam gives keys only to accounts with Steam Guard on and at least $5 spent in the store";
 const KEY_KEYRING_NOTE: &str = "Saved in the system keyring, never in a file";
@@ -111,6 +111,7 @@ const PREVIEW_WIDTH: f32 = 300.0;
 const PREVIEW_HEIGHT: f32 = 180.0;
 const PREVIEW_BAR: f32 = 24.0;
 const PREVIEW_RADIUS: f32 = 6.0;
+const PREVIEW_BORDER: f32 = 2.0;
 
 pub(crate) mod accounts;
 
@@ -128,6 +129,7 @@ pub struct Setup {
     covers: Option<Arc<Covers>>,
     played: Vec<Played>,
     theme: ThemeChoice,
+    seen: Vec<Page>,
 }
 
 #[derive(Debug)]
@@ -435,6 +437,19 @@ impl Setup {
             covers: Covers::new().ok().map(Arc::new),
             played,
             theme,
+            seen: Vec::new(),
+        }
+        .seeing()
+    }
+
+    fn seeing(mut self) -> Setup {
+        self.see();
+        self
+    }
+
+    fn see(&mut self) {
+        if !self.seen.contains(&self.page) {
+            self.seen.push(self.page);
         }
     }
 
@@ -488,6 +503,12 @@ impl Setup {
     }
 
     pub fn update(&mut self, message: Message) -> Action {
+        let action = self.handle(message);
+        self.see();
+        action
+    }
+
+    fn handle(&mut self, message: Message) -> Action {
         match message {
             Message::CheckAgain => self.check_again(),
             Message::Connected(Ok(())) => self.connected(),
@@ -806,7 +827,13 @@ impl Setup {
         match start(FirstRun::check(None)) {
             Ok(gamepalate) => Action::Open(Box::new(gamepalate)),
             Err(setup) => {
+                let seen = std::mem::take(&mut self.seen);
                 *self = *setup;
+                for page in seen {
+                    if !self.seen.contains(&page) {
+                        self.seen.push(page);
+                    }
+                }
                 Action::Run(self.begin())
             }
         }
@@ -927,7 +954,7 @@ impl Setup {
     }
 
     fn head_view(&self) -> Element<'_, Message> {
-        let content = step_of(self.page, &self.first_run).map(|(number, count)| {
+        let content = step_of(self.page, &self.first_run, &self.seen).map(|(number, count)| {
             row![
                 self.dots_view(),
                 space().width(Fill),
@@ -946,7 +973,7 @@ impl Setup {
 
     fn dots_view(&self) -> Element<'_, Message> {
         let mut dots = row![].spacing(8).align_y(Center);
-        for (index, page) in counted_pages(&self.first_run).enumerate() {
+        for (index, page) in counted_pages(&self.first_run, &self.seen).enumerate() {
             let state = step_state(page, self.page, page_done(page, &self.first_run));
             if index > 0 {
                 dots = dots.push(
@@ -1002,6 +1029,17 @@ impl Setup {
                 .size(font::BAR_SIZE)
                 .style(style::muted)
                 .into(),
+            None if self.page == Page::Catalog && self.download.running => {
+                let tracker = &self.download.tracker;
+                text(download_status(
+                    tracker.stage(),
+                    tracker.time_left(),
+                    tracker.resuming(),
+                ))
+                .size(font::BAR_SIZE)
+                .style(style::muted)
+                .into()
+            }
             None => space().into(),
         };
         let primary = self.primary().map(|primary| {
@@ -1115,7 +1153,7 @@ impl Setup {
         let logo = image(image::Handle::from_bytes(LOGO_BYTES))
             .width(LOGO_SIZE)
             .height(LOGO_SIZE)
-            .filter_method(image::FilterMethod::Linear);
+            .filter_method(image::FilterMethod::Nearest);
 
         container(
             column![
@@ -1190,9 +1228,9 @@ impl Setup {
 
     fn theme_choice(&self, label: &'static str, choice: ThemeChoice) -> Element<'_, Message> {
         column![
-            button(preview(choice))
+            button(preview(choice, self.theme == choice))
                 .padding(0)
-                .style(preview_button(self.theme == choice))
+                .style(|_, _| button::Style::default())
                 .on_press(Message::Theme(choice)),
             radio(label, choice, Some(self.theme), Message::Theme).size(16),
         ]
@@ -1202,7 +1240,7 @@ impl Setup {
     }
 
     fn most_played_view(&self) -> Option<Element<'_, Message>> {
-        if self.page != Page::Catalog {
+        if self.page != Page::Catalog || !self.download.running {
             return None;
         }
         let tiles: Vec<Element<'_, Message>> = ready_covers(&self.played)?
@@ -1246,7 +1284,7 @@ impl Setup {
                     Message::ThisPcHours,
                 ),
             ]
-            .spacing(16),
+            .spacing(8),
         )
         .padding(16)
         .width(Fill)
@@ -1317,9 +1355,13 @@ impl Setup {
         let editable = !account.connecting;
         let error = account.error.as_deref();
         let rejected = error.is_some_and(is_key_rejected);
-        let steps = row(KEY_STEPS.iter().enumerate().map(|(index, line)| {
-            let open = (index == 0).then(|| link("Open page ↗", Message::GetKey));
-            key_step(index + 1, line, open)
+        let steps = row(KEY_STEPS.iter().enumerate().map(|(index, &line)| {
+            let line = if index == 0 {
+                link(line, Message::GetKey)
+            } else {
+                text(line).size(font::BAR_SIZE).into()
+            };
+            key_step(index + 1, line)
         }))
         .spacing(16);
         let warning = container(
@@ -1332,7 +1374,7 @@ impl Setup {
             .spacing(16)
             .align_y(Center),
         )
-        .padding(16)
+        .padding([8, 16])
         .width(Fill)
         .style(style::card);
         let placeholder = if self.first_run.api_key {
@@ -1385,19 +1427,14 @@ impl Setup {
     }
 }
 
-fn key_step<'a>(
-    number: usize,
-    line: &'a str,
-    action: Option<Element<'a, Message>>,
-) -> Element<'a, Message> {
+fn key_step(number: usize, line: Element<'_, Message>) -> Element<'_, Message> {
     container(
         column![
             text(number.to_string())
                 .size(font::AMOUNT_SIZE)
-                .style(style::accent),
-            text(line).size(font::BAR_SIZE),
+                .font(font::SEMIBOLD),
+            line,
         ]
-        .push(action)
         .spacing(8),
     )
     .padding(16)
@@ -1558,9 +1595,8 @@ impl Setup {
         };
 
         container(content)
-            .width(Fill)
-            .height(ZONE_HEIGHT)
-            .center(Fill)
+            .center_x(Fill)
+            .center_y(ZONE_HEIGHT)
             .style(style::drop_zone(hovering))
             .into()
     }
@@ -1573,19 +1609,14 @@ impl Setup {
                 .girth(10)
                 .length(Fill)
                 .style(style::meter),
-            note(download_status(
-                tracker.stage(),
-                tracker.time_left(),
-                tracker.resuming(),
-                self.first_run.resume_within_hours
-            )),
+            note(resume_note(self.first_run.resume_within_hours)),
         ]
         .spacing(8)
         .into()
     }
 }
 
-fn preview<'a>(choice: ThemeChoice) -> Element<'a, Message> {
+fn preview<'a>(choice: ThemeChoice, selected: bool) -> Element<'a, Message> {
     let sample = theme(choice);
     let block = |width: iced::Length, height: f32| {
         let sample = sample.clone();
@@ -1621,34 +1652,24 @@ fn preview<'a>(choice: ThemeChoice) -> Element<'a, Message> {
     container(column![bar, container(page).padding(16)])
         .width(PREVIEW_WIDTH)
         .height(PREVIEW_HEIGHT)
-        .style(move |_: &Theme| container::Style {
-            border: iced::Border {
-                radius: PREVIEW_RADIUS.into(),
-                ..iced::Border::default()
-            },
-            ..style::card(&sample)
+        .padding(PREVIEW_BORDER)
+        .style(move |current: &Theme| {
+            let palette = current.extended_palette();
+            let (color, width) = if selected {
+                (palette.primary.base.color, PREVIEW_BORDER)
+            } else {
+                (palette.background.strong.color, 1.0)
+            };
+            container::Style {
+                border: iced::Border {
+                    color,
+                    width,
+                    radius: (PREVIEW_RADIUS + PREVIEW_BORDER).into(),
+                },
+                ..style::card(&sample)
+            }
         })
         .into()
-}
-
-fn preview_button(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |theme, _| {
-        let palette = theme.extended_palette();
-        let (color, width) = if selected {
-            (palette.primary.base.color, 2.0)
-        } else {
-            (palette.background.strong.color, 1.0)
-        };
-
-        button::Style {
-            border: iced::Border {
-                color,
-                width,
-                radius: 8.0.into(),
-            },
-            ..button::Style::default()
-        }
-    }
 }
 
 fn page_title<'a>(line: impl text::IntoFragment<'a>) -> text::Text<'a> {
@@ -1867,15 +1888,15 @@ fn previous_page(page: Page, first_run: &FirstRun) -> Option<Page> {
         .find(|&previous| previous < page && shown(previous, first_run))
 }
 
-fn counted_pages(first_run: &FirstRun) -> impl Iterator<Item = Page> {
-    Page::ALL
-        .into_iter()
-        .filter(|&page| page >= Page::ThisPc && shown(page, first_run))
+fn counted_pages<'a>(first_run: &'a FirstRun, seen: &'a [Page]) -> impl Iterator<Item = Page> + 'a {
+    Page::ALL.into_iter().filter(move |&page| {
+        page >= Page::ThisPc && (shown(page, first_run) || seen.contains(&page))
+    })
 }
 
-fn step_of(page: Page, first_run: &FirstRun) -> Option<(usize, usize)> {
-    let number = counted_pages(first_run).position(|counted| counted == page)?;
-    Some((number + 1, counted_pages(first_run).count()))
+fn step_of(page: Page, first_run: &FirstRun, seen: &[Page]) -> Option<(usize, usize)> {
+    let number = counted_pages(first_run, seen).position(|counted| counted == page)?;
+    Some((number + 1, counted_pages(first_run, seen).count()))
 }
 
 fn step_state(page: Page, current: Page, done: bool) -> StepState {
@@ -1979,21 +2000,19 @@ fn imported_note(day: &str, region: Region) -> (String, &'static str) {
     )
 }
 
-fn download_status(
-    stage: Stage,
-    left: Option<Duration>,
-    resuming: bool,
-    resume_within_hours: u32,
-) -> String {
-    let status = match (stage, left) {
+fn download_status(stage: Stage, left: Option<Duration>, resuming: bool) -> String {
+    match (stage, left) {
         _ if resuming => "Picking up where it left off".to_string(),
         (Stage::Starting | Stage::Reading, _) => "Reading the list of Steam games".to_string(),
         (Stage::StoreData { .. }, Some(left)) => format::time_left(left),
         (Stage::StoreData { .. }, None) => "Working out the time left".to_string(),
         (Stage::Writing, _) => "Saving the catalog".to_string(),
-    };
+    }
+}
+
+fn resume_note(resume_within_hours: u32) -> String {
     format!(
-        "{status}. If you close gamepalate now, the download picks up from here when you open it again within {resume_within_hours} hours."
+        "If you close gamepalate now, the download picks up from here when you open it again within {resume_within_hours} hours"
     )
 }
 
@@ -2264,7 +2283,7 @@ mod tests {
         assert_eq!(next_page(Page::Account, &first_run()), Some(Page::Catalog));
         assert_eq!(previous_page(Page::Key, &without_key), Some(Page::Account));
         assert_eq!(previous_page(Page::Catalog, &without_key), Some(Page::Key));
-        assert_eq!(step_of(Page::Key, &without_key), Some((2, 4)));
+        assert_eq!(step_of(Page::Key, &without_key, &[]), Some((2, 4)));
     }
 
     #[test]
@@ -2360,12 +2379,33 @@ mod tests {
         };
 
         for first_run in [&known, &new] {
-            assert_eq!(step_of(Page::Account, first_run), Some((1, 3)));
-            assert_eq!(step_of(Page::Catalog, first_run), Some((2, 3)));
-            assert_eq!(step_of(Page::Profile, first_run), Some((3, 3)));
-            assert_eq!(step_of(Page::Welcome, first_run), None);
-            assert_eq!(step_of(Page::Theme, first_run), None);
+            assert_eq!(step_of(Page::Account, first_run, &[]), Some((1, 3)));
+            assert_eq!(step_of(Page::Catalog, first_run, &[]), Some((2, 3)));
+            assert_eq!(step_of(Page::Profile, first_run, &[]), Some((3, 3)));
+            assert_eq!(step_of(Page::Welcome, first_run, &[]), None);
+            assert_eq!(step_of(Page::Theme, first_run, &[]), None);
         }
+    }
+
+    #[test]
+    fn a_page_seen_once_stays_in_the_steps() {
+        let without_key = FirstRun {
+            api_key: false,
+            ..first_run()
+        };
+        let setup = Setup::new(without_key, None);
+
+        assert_eq!(setup.page, Page::Key);
+        assert_eq!(setup.seen, [Page::Key]);
+        assert_eq!(step_of(Page::Catalog, &first_run(), &[]), Some((2, 3)));
+        assert_eq!(
+            step_of(Page::Catalog, &first_run(), &setup.seen),
+            Some((3, 4))
+        );
+        assert_eq!(
+            step_of(Page::Catalog, &first_run(), &[Page::Key, Page::Region]),
+            Some((4, 5))
+        );
     }
 
     fn setup_in(dir: &std::path::Path, steam_id: bool) -> Setup {
@@ -2465,9 +2505,9 @@ mod tests {
         assert_eq!(next_page(Page::Theme, &without), Some(Page::Account));
         assert_eq!(next_page(Page::Theme, &with), Some(Page::ThisPc));
         assert_eq!(previous_page(Page::Account, &with), Some(Page::ThisPc));
-        assert_eq!(step_of(Page::ThisPc, &with), Some((1, 4)));
-        assert_eq!(step_of(Page::Account, &with), Some((2, 4)));
-        assert_eq!(step_of(Page::Account, &without), Some((1, 3)));
+        assert_eq!(step_of(Page::ThisPc, &with, &[]), Some((1, 4)));
+        assert_eq!(step_of(Page::Account, &with, &[]), Some((2, 4)));
+        assert_eq!(step_of(Page::Account, &without, &[]), Some((1, 3)));
     }
 
     #[test]
@@ -3202,16 +3242,28 @@ mod tests {
         };
 
         assert_eq!(
-            download_status(store_data, Some(Duration::from_secs(720)), false, 24),
-            "About 12 minutes left. If you close gamepalate now, the download picks up from here when you open it again within 24 hours."
+            download_status(store_data, Some(Duration::from_secs(720)), false),
+            "About 12 minutes left"
         );
-        assert!(
-            download_status(store_data, None, false, 24).starts_with("Working out the time left")
+        assert_eq!(
+            download_status(store_data, None, false),
+            "Working out the time left"
         );
-        assert!(download_status(Stage::Reading, None, false, 24).starts_with("Reading the list"));
-        assert!(download_status(Stage::Writing, None, false, 24).starts_with("Saving the catalog"));
-        assert!(
-            download_status(store_data, None, true, 24).starts_with("Picking up where it left off")
+        assert_eq!(
+            download_status(Stage::Reading, None, false),
+            "Reading the list of Steam games"
+        );
+        assert_eq!(
+            download_status(Stage::Writing, None, false),
+            "Saving the catalog"
+        );
+        assert_eq!(
+            download_status(store_data, None, true),
+            "Picking up where it left off"
+        );
+        assert_eq!(
+            resume_note(24),
+            "If you close gamepalate now, the download picks up from here when you open it again within 24 hours"
         );
     }
 

@@ -1062,11 +1062,12 @@ pub fn switch(theme: &Theme, status: toggler::Status) -> toggler::Style {
         toggler::Status::Hovered { is_toggled } => (is_toggled, true),
     };
     let (background, border, knob) = if on {
-        (
-            palette.primary.weak.color,
-            palette.primary.base.color,
-            palette.primary.base.color,
-        )
+        let track = if hovered {
+            palette.primary.strong.color
+        } else {
+            palette.primary.base.color
+        };
+        (track, track, Color::WHITE)
     } else {
         (
             if hovered {

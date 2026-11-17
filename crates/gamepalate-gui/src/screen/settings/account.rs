@@ -392,7 +392,7 @@ impl Settings {
             .map(|pending| confirmation(pending, region.saving));
 
         setting(
-            "Prices from",
+            "Region",
             column![menu]
                 .push(error)
                 .push(confirmation)

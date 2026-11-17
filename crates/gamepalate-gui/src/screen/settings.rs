@@ -369,7 +369,7 @@ impl Settings {
             ]
             .spacing(12),
         );
-        let country = group("Country", self.region_line());
+        let region = group("Store region", self.region_line());
         let appearance = group(
             "Appearance",
             setting(
@@ -446,7 +446,7 @@ impl Settings {
                     column![
                         about(new_versions),
                         account,
-                        country,
+                        region,
                         appearance,
                         taste,
                         discover,
