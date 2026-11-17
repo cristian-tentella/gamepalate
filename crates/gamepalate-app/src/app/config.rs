@@ -1,7 +1,7 @@
 use gamepalate_core::{
     currency::Currency, filters::FilterOptions, region::Region, timestamp::Timestamp,
 };
-use gamepalate_steam::archive::PendingUpdate;
+use gamepalate_steam::{archive::PendingUpdate, client::steam_client_present};
 use gamepalate_store::gui::{GuiSettings, load_gui_settings};
 
 use super::{GUI_FILE, Gamepalate, change_settings};
@@ -38,6 +38,8 @@ impl Gamepalate {
             data_dir: self.data_dir.clone(),
             image_cache_max_bytes: MAX_CACHE_BYTES,
             steam_client_hours: self.files.config.signals.steam_client_hours,
+            steam_client_accounts: self.files.config.signals.steam_client_accounts,
+            steam_client_present: steam_client_present(),
             steam_client_file: steam_client_file_of(&self.data_dir),
             catalog_games: self.files.catalog.games().len(),
             tags_updated_at: self.files.catalog.freshness.tags_updated_at,

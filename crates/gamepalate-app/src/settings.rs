@@ -25,6 +25,8 @@ pub struct Settings {
     pub data_dir: PathBuf,
     pub image_cache_max_bytes: u64,
     pub steam_client_hours: Option<bool>,
+    pub steam_client_accounts: Option<bool>,
+    pub steam_client_present: bool,
     pub steam_client_file: Option<PathBuf>,
     pub catalog_games: usize,
     pub tags_updated_at: Timestamp,

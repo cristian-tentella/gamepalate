@@ -80,12 +80,12 @@ const WELCOME_ABOUT: &str =
 const WELCOME_WIDTH: f32 = 480.0;
 const REGION_ABOUT: &str = "The catalog has the prices and discounts of this region";
 const REGION_LATER: &str = "You can change it later in Settings";
-const REGION_WIDTH: f32 = 320.0;
+pub(crate) const REGION_WIDTH: f32 = 320.0;
 const THEME_ABOUT: &str = "You can change it later in Settings";
 const THIS_PC_ABOUT: &str = "Two files of the Steam app can fill in your account and your hours";
 const THIS_PC_SAFE: &str = "Nothing is sent anywhere and the files are never changed";
 const ACCOUNTS_TITLE: &str = "Your Steam accounts";
-const ACCOUNTS_ABOUT: &str = "Fills in your Steam ID from the accounts signed in here";
+pub(crate) const ACCOUNTS_ABOUT: &str = "Fills in your Steam ID from the accounts signed in here";
 const HOURS_TITLE: &str = "Games you played but don't own";
 const HOURS_ABOUT: &str =
     "Adds the hours of Family Sharing games, free weekends and free games you removed";
@@ -93,7 +93,7 @@ const ONLINE_TITLE: &str = "What goes online";
 const ONLINE_ABOUT: &str = "Steam, for your library and the catalog · GitHub, to check for new versions · ProtonDB, for Steam Deck reports";
 const BODY_WIDTH: f32 = 600.0;
 const VANITY_NOTE: &str = "Checked after the API key";
-const TOGGLER_SIZE: f32 = 24.0;
+pub(crate) const TOGGLER_SIZE: f32 = 24.0;
 const KEY_ABOUT: &str = "gamepalate uses it to read your library from Steam";
 const KEY_STEPS: [&str; 3] = [
     "Open the key page on Steam",
@@ -112,7 +112,7 @@ const PREVIEW_HEIGHT: f32 = 180.0;
 const PREVIEW_BAR: f32 = 24.0;
 const PREVIEW_RADIUS: f32 = 6.0;
 
-mod accounts;
+pub(crate) mod accounts;
 
 pub struct Setup {
     first_run: FirstRun,
@@ -236,11 +236,23 @@ pub struct Country {
 }
 
 impl Country {
-    fn of(region: Region) -> Country {
+    pub(crate) fn of(region: Region) -> Country {
         Country {
             region,
             name: region.country_name().unwrap_or(region.as_str()).to_string(),
         }
+    }
+}
+
+impl Country {
+    pub(crate) fn region(&self) -> Region {
+        self.region
+    }
+
+    pub(crate) fn all() -> Vec<Country> {
+        gamepalate_app::region::countries()
+            .map(|(region, _)| Country::of(region))
+            .collect()
     }
 }
 
@@ -264,9 +276,7 @@ impl RegionChoice {
     fn new(system: Option<Region>) -> RegionChoice {
         let start = starting_region(None, system);
         RegionChoice {
-            countries: gamepalate_app::region::countries()
-                .map(|(region, _)| Country::of(region))
-                .collect(),
+            countries: Country::all(),
             system,
             region: start.region,
             source: start.source,
