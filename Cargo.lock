@@ -1892,7 +1892,7 @@ dependencies = [
 
 [[package]]
 name = "gamepalate-app"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "avif-decode",
  "dbus-secret-service-keyring-store",
@@ -1920,7 +1920,7 @@ dependencies = [
 
 [[package]]
 name = "gamepalate-cli"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1944,7 +1944,7 @@ dependencies = [
 
 [[package]]
 name = "gamepalate-core"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "rayon",
  "serde",
@@ -1952,7 +1952,7 @@ dependencies = [
 
 [[package]]
 name = "gamepalate-gui"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "anyhow",
  "gamepalate-app",
@@ -1969,7 +1969,7 @@ dependencies = [
 
 [[package]]
 name = "gamepalate-steam"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "flate2",
  "futures",
@@ -1990,7 +1990,7 @@ dependencies = [
 
 [[package]]
 name = "gamepalate-store"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "gamepalate-core",
  "postcard",
