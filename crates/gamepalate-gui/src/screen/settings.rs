@@ -25,10 +25,16 @@ use crate::{
     app::Page,
     font, format,
     new_version::{NewVersions, Offer},
-    screen::{Toasts, open, setup::PRIVACY_PAGE},
+    screen::{
+        Toasts, open,
+        setup::{
+            Country, PRIVACY_PAGE,
+            accounts::{self, Accounts},
+        },
+    },
     style,
 };
-use account::{Account, saved_text};
+use account::{Account, RegionMenu, listed_accounts, saved_text, steam_id_text};
 use config::{CONFIG_NOTE, CORRECTIONS, DISCOVER, TASTE, Value, parse_value, value_input};
 
 const BACK: char = '\u{E5CB}';
@@ -45,6 +51,7 @@ pub struct Settings {
     fields: Fields,
     confirming: Option<Region>,
     steam_client: Answer,
+    steam_accounts: Answer,
     export: Export,
     toasts: Toasts,
     error: Option<String>,
@@ -62,8 +69,9 @@ enum Export {
 struct Fields {
     values: Vec<(ConfigKey, Value)>,
     steam_id: Account,
+    accounts: Accounts,
     key: Account,
-    region: Account,
+    region: RegionMenu,
 }
 
 #[derive(Debug, Default)]
@@ -76,7 +84,6 @@ struct Answer {
 pub enum Field {
     SteamId,
     Key,
-    Region,
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +91,8 @@ pub enum Message {
     Input(Field, String),
     Save(Field),
     Saved(Field, Result<(), String>),
+    Accounts(accounts::Message),
+    RegionChosen(Country),
     ConfirmRegion,
     CancelRegion,
     OpenPrivacy,
@@ -95,6 +104,8 @@ pub enum Message {
     CacheMeasured(u64),
     SteamClient(bool),
     SteamClientSaved(Result<(), String>),
+    SteamAccounts(bool),
+    SteamAccountsSaved(Result<(), String>),
     ConfigInput(ConfigKey, String),
     SaveConfig(ConfigKey),
     ResetConfig(ConfigKey),
@@ -120,6 +131,7 @@ impl Message {
             Message::Saved(_, Ok(()))
                 | Message::RegionSaved(Ok(()))
                 | Message::SteamClientSaved(Ok(()))
+                | Message::SteamAccountsSaved(Ok(()))
                 | Message::ConfigSaved(_, Ok(()))
                 | Message::Flushed(true)
         )
@@ -149,6 +161,7 @@ impl Settings {
             cache_bytes: None,
             confirming: None,
             steam_client: Answer::default(),
+            steam_accounts: Answer::default(),
             export: Export::default(),
             toasts: Toasts::default(),
             error: None,
@@ -168,7 +181,13 @@ impl Settings {
 
     pub fn reopened(&mut self, gamepalate: &Arc<Gamepalate>) {
         self.gamepalate = Arc::clone(gamepalate);
+        let before = (self.settings.steam_id, self.settings.steam_client_accounts);
         self.settings = gamepalate.settings();
+        if before != (self.settings.steam_id, self.settings.steam_client_accounts) {
+            self.fields.accounts = listed_accounts(&self.settings);
+            self.fields.steam_id =
+                Account::showing(steam_id_text(&self.fields.accounts, &self.settings));
+        }
         self.fields.refresh(&self.settings);
         self.error = None;
     }
@@ -207,6 +226,10 @@ impl Settings {
             Message::Input(..)
             | Message::Save(_)
             | Message::Saved(..)
+            | Message::Accounts(_)
+            | Message::RegionChosen(_)
+            | Message::SteamAccounts(_)
+            | Message::SteamAccountsSaved(_)
             | Message::ConfirmRegion
             | Message::CancelRegion
             | Message::RegionSaved(_) => self.update_account(message),
@@ -346,7 +369,7 @@ impl Settings {
             ]
             .spacing(12),
         );
-        let country = group("Country", self.account_line(Field::Region));
+        let region = group("Store region", self.region_line());
         let appearance = group(
             "Appearance",
             setting(
@@ -386,6 +409,7 @@ impl Settings {
                         .then(|| link("Clear", Message::ClearCache)),
                 ),
                 self.steam_client_line(),
+                column![].push(self.steam_accounts_line()),
                 setting(
                     "Catalog",
                     value(catalog_text(
@@ -422,7 +446,7 @@ impl Settings {
                     column![
                         about(new_versions),
                         account,
-                        country,
+                        region,
                         appearance,
                         taste,
                         discover,
@@ -498,11 +522,14 @@ impl Fields {
             })
             .collect();
 
+        let accounts = listed_accounts(settings);
+
         Fields {
             values,
-            steam_id: Account::showing(saved_text(Field::SteamId, settings)),
+            steam_id: Account::showing(steam_id_text(&accounts, settings)),
+            accounts,
             key: Account::default(),
-            region: Account::showing(saved_text(Field::Region, settings)),
+            region: RegionMenu::default(),
         }
     }
 
@@ -517,12 +544,13 @@ impl Fields {
                 value.text = value_input(current);
             }
         }
-        for field in [Field::SteamId, Field::Key, Field::Region] {
+        for field in [Field::SteamId, Field::Key] {
             let account = self.account_mut(field);
             if account.saving {
                 *account = Account::showing(saved_text(field, settings));
             }
         }
+        self.region.saving = false;
     }
 }
 

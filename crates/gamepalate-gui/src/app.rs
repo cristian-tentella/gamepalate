@@ -5,7 +5,7 @@ mod game_page;
 mod install;
 mod refresh;
 mod search;
-mod theme;
+pub(crate) mod theme;
 
 use std::{
     sync::{Arc, Mutex},
@@ -426,6 +426,10 @@ impl App {
                     setup::Action::None => Task::none(),
                     setup::Action::Run(task) => task.map(Message::Setup),
                     setup::Action::Open(gamepalate) => self.opened(*gamepalate),
+                    setup::Action::Theme(choice) => {
+                        self.theme = theme(choice);
+                        Task::none()
+                    }
                 }
             }
             Message::WindowFound(_)

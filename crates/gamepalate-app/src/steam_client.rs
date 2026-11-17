@@ -1,8 +1,16 @@
 use std::path::{Path, PathBuf};
 
-use gamepalate_steam::client::{SteamClientError, read_played_hours, steam_client_file};
+pub use gamepalate_steam::client::{
+    ClientAccount, local_config_shown, login_users_file, steam_client_present,
+};
+use gamepalate_steam::client::{
+    SteamClientError, read_played_hours, steam_accounts, steam_client_file,
+};
 use gamepalate_store::{
-    config::{ConfigError, load_config, save_steam_client_hours},
+    config::{
+        ConfigError, load_config, load_steam_client_accounts, load_steam_client_hours,
+        save_steam_client_accounts, save_steam_client_hours,
+    },
     signals::{SignalsError, load_reading, save_reading},
 };
 
@@ -41,6 +49,34 @@ pub fn answer_steam_client(data_dir: &Path, read: bool) -> Result<(), SteamClien
         .inspect_err(failed("could not save the Steam app answer"))
 }
 
+pub fn steam_accounts_answer(data_dir: &Path) -> Option<bool> {
+    load_steam_client_accounts(&data_dir.join(CONFIG_FILE))
+}
+
+pub fn steam_client_hours_answer(data_dir: &Path) -> Option<bool> {
+    load_steam_client_hours(&data_dir.join(CONFIG_FILE))
+}
+
+pub fn answer_steam_accounts(data_dir: &Path, read: bool) -> Result<(), ConfigError> {
+    save_steam_client_accounts(&data_dir.join(CONFIG_FILE), read)
+        .inspect_err(failed("could not save the Steam accounts answer"))
+}
+
+pub(crate) fn accounts_if_allowed(
+    data_dir: &Path,
+    read: impl FnOnce() -> Vec<ClientAccount>,
+) -> Vec<ClientAccount> {
+    if steam_accounts_answer(data_dir) == Some(true) {
+        read()
+    } else {
+        Vec::new()
+    }
+}
+
+pub(crate) fn client_accounts(data_dir: &Path) -> Vec<ClientAccount> {
+    accounts_if_allowed(data_dir, steam_accounts)
+}
+
 fn answer_with(
     data_dir: &Path,
     read: bool,
@@ -67,7 +103,10 @@ fn answer_with(
 mod tests {
     use std::fs;
 
-    use gamepalate_core::{ids::AppId, signals::LibraryGame};
+    use gamepalate_core::{
+        ids::{AppId, SteamId},
+        signals::LibraryGame,
+    };
 
     use super::*;
 
@@ -139,6 +178,60 @@ mod tests {
 
         assert!(matches!(error, SteamClientAnswerError::SteamClient(_)));
         assert_eq!(answer(dir.path()), None);
+    }
+
+    fn account() -> ClientAccount {
+        ClientAccount {
+            steam_id: SteamId(76_561_198_000_000_000),
+            persona_name: None,
+            most_recent: true,
+            avatar: None,
+        }
+    }
+
+    #[test]
+    fn the_accounts_answer_is_saved_and_read_back() {
+        let dir = folder();
+        assert_eq!(steam_accounts_answer(dir.path()), None);
+
+        answer_steam_accounts(dir.path(), true).unwrap();
+
+        assert_eq!(steam_accounts_answer(dir.path()), Some(true));
+        assert_eq!(answer(dir.path()), None);
+        answer_steam_accounts(dir.path(), false).unwrap();
+        assert_eq!(steam_accounts_answer(dir.path()), Some(false));
+    }
+
+    #[test]
+    fn the_accounts_answer_is_saved_before_the_steam_id() {
+        let dir = tempfile::tempdir().unwrap();
+
+        answer_steam_accounts(dir.path(), true).unwrap();
+
+        assert_eq!(steam_accounts_answer(dir.path()), Some(true));
+    }
+
+    #[test]
+    fn without_the_answer_or_with_a_no_the_accounts_are_not_read() {
+        let dir = folder();
+        let read = || vec![account()];
+
+        assert!(accounts_if_allowed(dir.path(), read).is_empty());
+        answer_steam_accounts(dir.path(), false).unwrap();
+        assert!(accounts_if_allowed(dir.path(), read).is_empty());
+        let nothing = tempfile::tempdir().unwrap();
+        assert!(accounts_if_allowed(nothing.path(), read).is_empty());
+    }
+
+    #[test]
+    fn with_a_yes_the_accounts_are_read() {
+        let dir = folder();
+        answer_steam_accounts(dir.path(), true).unwrap();
+
+        assert_eq!(
+            accounts_if_allowed(dir.path(), || vec![account()]),
+            [account()]
+        );
     }
 
     #[test]

@@ -52,7 +52,7 @@ pub(super) fn toggled(theme: &Theme) -> Theme {
     if is_dark(theme) { light() } else { dark() }
 }
 
-pub(super) fn theme(choice: ThemeChoice) -> Theme {
+pub(crate) fn theme(choice: ThemeChoice) -> Theme {
     match choice {
         ThemeChoice::Light => light(),
         ThemeChoice::Dark => dark(),

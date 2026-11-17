@@ -1,12 +1,15 @@
+use std::path::Path;
+
 use gamepalate_app::{
     Region, SteamId,
     account::{Profile, connect, parse_profile},
     settings::{self, KeySource, change_region},
-    setup::error_chain,
+    setup::{error_chain, steam_accounts},
+    steam_client::answer_steam_accounts,
 };
 use iced::{
     Center, Element, Fill, Task,
-    widget::{button, column, row, text, text_input},
+    widget::{button, column, pick_list, row, text, text_input, toggler},
 };
 
 use super::{Action, Field, Fields, Message, Settings, link, setting};
@@ -14,16 +17,15 @@ use crate::{
     font,
     format::key_text,
     screen::setup::{
-        KEY_DOMAIN_NOTE, PROFILE_PLACEHOLDER, connect_error_text, needs_privacy, note_link,
-        steam_id_note,
+        ACCOUNTS_ABOUT, Country, KEY_DOMAIN_NOTE, PROFILE_PLACEHOLDER, REGION_WIDTH, TOGGLER_SIZE,
+        accounts::{self, Accounts},
+        connect_error_text, needs_privacy, note_link, steam_id_note,
     },
     style,
 };
 
 const KEY_FROM_ENVIRONMENT: &str =
     "Set by the STEAM_API_KEY environment variable, change it there to replace it";
-
-const REGION_WIDTH: f32 = 64.0;
 
 #[derive(Debug, Default)]
 pub(super) struct Account {
@@ -53,6 +55,23 @@ impl Account {
     }
 }
 
+#[derive(Debug)]
+pub(super) struct RegionMenu {
+    countries: Vec<Country>,
+    pub(super) saving: bool,
+    pub(super) error: Option<String>,
+}
+
+impl Default for RegionMenu {
+    fn default() -> RegionMenu {
+        RegionMenu {
+            countries: Country::all(),
+            saving: false,
+            error: None,
+        }
+    }
+}
+
 pub(super) fn saved_text(field: Field, settings: &settings::Settings) -> String {
     match field {
         Field::SteamId => settings
@@ -60,7 +79,6 @@ pub(super) fn saved_text(field: Field, settings: &settings::Settings) -> String 
             .map(|id| id.0.to_string())
             .unwrap_or_default(),
         Field::Key => String::new(),
-        Field::Region => settings.region.to_string(),
     }
 }
 
@@ -69,20 +87,31 @@ fn account_edited(field: Field, text: &str, saved: &str) -> bool {
     match field {
         Field::SteamId => text != saved,
         Field::Key => !text.is_empty(),
-        Field::Region => !text.eq_ignore_ascii_case(saved),
     }
 }
 
-fn parse_region(text: &str) -> Option<Region> {
-    Region::new(&text.trim().to_ascii_uppercase())
+pub(super) fn listed_accounts(settings: &settings::Settings) -> Accounts {
+    let list = if settings.steam_client_accounts == Some(true) {
+        steam_accounts(&settings.data_dir)
+    } else {
+        Vec::new()
+    };
+    Accounts::new(list, settings.steam_id)
 }
 
-fn region_change(text: &str, saved: Region) -> Option<Region> {
-    parse_region(text).filter(|region| *region != saved)
+pub(super) fn steam_id_text(accounts: &Accounts, settings: &settings::Settings) -> String {
+    match accounts.selected() {
+        Some(id) => id.0.to_string(),
+        None => saved_text(Field::SteamId, settings),
+    }
 }
 
-fn region_note(text: &str) -> Option<&'static str> {
-    (!text.trim().is_empty() && parse_region(text).is_none()).then_some("Two letters, such as IT")
+fn region_change(chosen: Region, saved: Region) -> Option<Region> {
+    (chosen != saved).then_some(chosen)
+}
+
+pub(super) fn save_accounts_answer(dir: &Path, read: bool) -> Result<(), String> {
+    answer_steam_accounts(dir, read).map_err(|error| error_chain(&error))
 }
 
 fn region_confirmation(region: Region) -> String {
@@ -127,7 +156,6 @@ fn account_change(
             .ok()
             .filter(|profile| !matches!(profile, Profile::Id(id) if Some(*id) == saved))
             .map(|profile| (profile, None)),
-        Field::Region => None,
         Field::Key => {
             let key = text.trim();
             (!key.is_empty())
@@ -142,14 +170,26 @@ impl Settings {
     pub(super) fn update_account(&mut self, message: Message) -> Action {
         match message {
             Message::Input(field, input) => {
-                if field == Field::Region {
-                    self.confirming = None;
-                }
                 self.fields.account_mut(field).typed(input);
                 Action::None
             }
-            Message::Save(Field::Region) => {
-                self.confirming = region_change(&self.fields.region.text, self.settings.region);
+            Message::Accounts(message) => {
+                if self.fields.steam_id.saving {
+                    return Action::None;
+                }
+                self.fields.accounts.update(message);
+                self.fields.steam_id.error = None;
+                self.fields.steam_id.text = match message {
+                    accounts::Message::UseAnother => String::new(),
+                    _ => steam_id_text(&self.fields.accounts, &self.settings),
+                };
+                Action::None
+            }
+            Message::RegionChosen(country) => {
+                if !self.fields.region.saving {
+                    self.confirming = region_change(country.region(), self.settings.region);
+                    self.fields.region.error = None;
+                }
                 Action::None
             }
             Message::Save(field) => self.save_account(field),
@@ -161,16 +201,38 @@ impl Settings {
             Message::ConfirmRegion => self.save_region(),
             Message::CancelRegion => {
                 self.confirming = None;
-                self.fields.region.text = self.settings.region.to_string();
                 Action::None
             }
             Message::RegionSaved(Ok(())) => {
                 self.confirming = None;
+                self.fields.region.saving = false;
                 Action::RegionChanged
             }
             Message::RegionSaved(Err(error)) => {
                 self.confirming = None;
-                self.fields.region.failed(error);
+                self.fields.region.saving = false;
+                self.fields.region.error = Some(error);
+                Action::None
+            }
+            Message::SteamAccounts(read) => {
+                if self.steam_accounts.saving || self.settings.steam_client_accounts == Some(read) {
+                    return Action::None;
+                }
+                self.steam_accounts.saving = true;
+                self.steam_accounts.error = None;
+                let dir = self.settings.data_dir.clone();
+                Action::Run(Task::perform(
+                    async move { save_accounts_answer(&dir, read) },
+                    Message::SteamAccountsSaved,
+                ))
+            }
+            Message::SteamAccountsSaved(Ok(())) => {
+                self.steam_accounts.saving = false;
+                Action::Reopen
+            }
+            Message::SteamAccountsSaved(Err(error)) => {
+                self.steam_accounts.saving = false;
+                self.steam_accounts.error = Some(error);
                 Action::None
             }
             _ => Action::None,
@@ -221,14 +283,12 @@ impl Settings {
         let label = match field {
             Field::SteamId => "Steam ID",
             Field::Key => "API key",
-            Field::Region => "Prices from",
         };
         let account = self.fields.account(field);
         let locked = field == Field::Key && self.settings.key == KeySource::Environment;
         let placeholder = match field {
             Field::SteamId => PROFILE_PLACEHOLDER,
             Field::Key => key_text(self.settings.key),
-            Field::Region => "IT",
         };
         let input = text_input(placeholder, &account.text)
             .style(if account.error.is_some() {
@@ -241,36 +301,25 @@ impl Settings {
                 (!account.saving && !locked).then_some(move |input| Message::Input(field, input)),
             )
             .on_submit(Message::Save(field))
-            .width(if field == Field::Region {
-                REGION_WIDTH.into()
-            } else {
-                Fill
-            })
+            .width(Fill)
             .padding(8)
             .size(font::BAR_SIZE);
         let edited = account_edited(field, &account.text, &saved_text(field, &self.settings));
         let can_save = !account.saving
-            && match field {
-                Field::Region => region_change(&account.text, self.settings.region).is_some(),
-                Field::SteamId | Field::Key => {
-                    account_change(field, &account.text, self.settings.steam_id).is_some()
-                }
-            };
-        let save = ((edited && self.confirming.is_none())
-            || (account.saving && field != Field::Region))
-            .then(|| {
-                button(
-                    text(if account.saving {
-                        "Checking with Steam…"
-                    } else {
-                        "Save"
-                    })
-                    .size(font::BAR_SIZE),
-                )
-                .style(style::primary)
-                .padding([8, 20])
-                .on_press_maybe(can_save.then_some(Message::Save(field)))
-            });
+            && account_change(field, &account.text, self.settings.steam_id).is_some();
+        let save = (edited || account.saving).then(|| {
+            button(
+                text(if account.saving {
+                    "Checking with Steam…"
+                } else {
+                    "Save"
+                })
+                .size(font::BAR_SIZE),
+            )
+            .style(style::primary)
+            .padding([8, 20])
+            .on_press_maybe(can_save.then_some(Message::Save(field)))
+        });
         let note = match (field, &account.error) {
             (_, Some(error)) => Some(
                 text(error.clone())
@@ -278,8 +327,6 @@ impl Settings {
                     .style(text::danger),
             ),
             (Field::SteamId, None) => steam_id_note(&account.text)
-                .map(|note| text(note).size(font::NOTE_SIZE).style(text::danger)),
-            (Field::Region, None) => region_note(&account.text)
                 .map(|note| text(note).size(font::NOTE_SIZE).style(text::danger)),
             (Field::Key, None) => Some(
                 text(if locked {
@@ -296,21 +343,96 @@ impl Settings {
             .as_deref()
             .filter(|error| needs_privacy(error))
             .map(|_| note_link("Open privacy settings ↗", Message::OpenPrivacy));
-        let confirmation = self
-            .confirming
-            .filter(|_| field == Field::Region)
-            .map(|region| confirmation(region, account.saving));
+        let listed = field == Field::SteamId && self.fields.accounts.listed();
+        let entry: Element<'_, Message> = if listed {
+            self.fields.accounts.view(Message::Accounts)
+        } else {
+            input.into()
+        };
+        let back = (field == Field::SteamId && !listed && !self.fields.accounts.is_empty())
+            .then(|| Accounts::back_link(Message::Accounts));
+        let entry: Element<'_, Message> = if listed {
+            column![entry].push(save).spacing(16).into()
+        } else {
+            row![entry].push(save).spacing(12).align_y(Center).into()
+        };
 
         setting(
             label,
-            column![row![input].push(save).spacing(12).align_y(Center)]
+            column![entry]
                 .push(note)
+                .push(back)
                 .push(privacy)
+                .spacing(8)
+                .into(),
+            None,
+        )
+    }
+
+    pub(super) fn region_line(&self) -> Element<'_, Message> {
+        let region = &self.fields.region;
+        let shown = self.confirming.unwrap_or(self.settings.region);
+        let menu = pick_list(
+            region.countries.as_slice(),
+            Some(Country::of(shown)),
+            Message::RegionChosen,
+        )
+        .width(REGION_WIDTH)
+        .padding(8)
+        .text_size(font::BAR_SIZE)
+        .style(style::dropdown)
+        .menu_style(style::menu);
+        let error = region.error.as_ref().map(|error| {
+            text(error.clone())
+                .size(font::NOTE_SIZE)
+                .style(text::danger)
+        });
+        let confirmation = self
+            .confirming
+            .map(|pending| confirmation(pending, region.saving));
+
+        setting(
+            "Country",
+            column![menu]
+                .push(error)
                 .push(confirmation)
                 .spacing(8)
                 .into(),
             None,
         )
+    }
+
+    pub(super) fn steam_accounts_line(&self) -> Option<Element<'_, Message>> {
+        if !self.settings.steam_client_present && self.settings.steam_client_file.is_none() {
+            return None;
+        }
+        let on = self.settings.steam_client_accounts == Some(true);
+        let error = self.steam_accounts.error.as_ref().map(|error| {
+            text(error.clone())
+                .size(font::NOTE_SIZE)
+                .style(text::danger)
+        });
+
+        Some(setting(
+            "Steam accounts",
+            column![
+                row![
+                    text(ACCOUNTS_ABOUT).size(font::BAR_SIZE).width(Fill),
+                    toggler(on)
+                        .on_toggle_maybe(
+                            (!self.steam_accounts.saving).then_some(Message::SteamAccounts)
+                        )
+                        .size(TOGGLER_SIZE)
+                        .style(style::switch),
+                ]
+                .spacing(16)
+                .align_y(Center),
+            ]
+            .push(error)
+            .spacing(4)
+            .into(),
+            None,
+        ))
     }
 }
 
@@ -319,7 +441,6 @@ impl Fields {
         match field {
             Field::SteamId => &self.steam_id,
             Field::Key => &self.key,
-            Field::Region => &self.region,
         }
     }
 
@@ -327,13 +448,14 @@ impl Fields {
         match field {
             Field::SteamId => &mut self.steam_id,
             Field::Key => &mut self.key,
-            Field::Region => &mut self.region,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use gamepalate_app::steam_client::{ClientAccount, steam_accounts_answer};
+
     use super::super::fixtures::*;
     use super::*;
 
@@ -349,8 +471,6 @@ mod tests {
         assert!(account_edited(Field::SteamId, "76561198000000001", &saved));
         assert!(!account_edited(Field::Key, "  ", ""));
         assert!(account_edited(Field::Key, "KEY", ""));
-        assert!(!account_edited(Field::Region, "it", "IT"));
-        assert!(account_edited(Field::Region, "US", "IT"));
     }
 
     #[test]
@@ -389,15 +509,61 @@ mod tests {
     }
 
     #[test]
-    fn a_region_is_two_letters_different_from_the_saved_one() {
+    fn a_region_is_a_change_only_when_it_differs_from_the_saved_one() {
         let us = Region::new("US").unwrap();
 
-        assert_eq!(region_change(" us ", Region::ITALY), Some(us));
-        assert_eq!(region_change("IT", Region::ITALY), None);
-        assert_eq!(region_change("USA", Region::ITALY), None);
-        assert_eq!(region_note("USA"), Some("Two letters, such as IT"));
-        assert_eq!(region_note(""), None);
-        assert_eq!(region_note("us"), None);
+        assert_eq!(region_change(us, Region::ITALY), Some(us));
+        assert_eq!(region_change(Region::ITALY, Region::ITALY), None);
+    }
+
+    #[test]
+    fn the_menu_shows_a_saved_country_by_name_and_another_code_as_it_is() {
+        let outside = Country::of(Region::new("ZZ").unwrap());
+
+        assert_eq!(Country::of(Region::ITALY).to_string(), "Italy");
+        assert_eq!(outside.to_string(), "ZZ");
+        assert!(Country::all().contains(&Country::of(Region::ITALY)));
+        assert!(!Country::all().contains(&outside));
+    }
+
+    #[test]
+    fn the_accounts_answer_is_saved_in_the_data_folder() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert_eq!(steam_accounts_answer(dir.path()), None);
+        save_accounts_answer(dir.path(), true).unwrap();
+        assert_eq!(steam_accounts_answer(dir.path()), Some(true));
+        save_accounts_answer(dir.path(), false).unwrap();
+        assert_eq!(steam_accounts_answer(dir.path()), Some(false));
+    }
+
+    fn client_account(id: SteamId) -> ClientAccount {
+        ClientAccount {
+            steam_id: id,
+            persona_name: None,
+            most_recent: false,
+            avatar: None,
+        }
+    }
+
+    #[test]
+    fn the_saved_account_is_selected_in_the_list() {
+        let other = SteamId(ID.0 + 1);
+        let accounts = Accounts::new(vec![client_account(other), client_account(ID)], Some(ID));
+
+        assert!(accounts.listed());
+        assert_eq!(accounts.selected(), Some(ID));
+    }
+
+    #[test]
+    fn a_saved_account_outside_the_list_or_no_list_leaves_the_field() {
+        let none = Accounts::new(Vec::new(), Some(ID));
+        let outside = Accounts::new(vec![client_account(SteamId(ID.0 + 1))], Some(ID));
+
+        assert!(!none.listed());
+        assert!(!outside.listed());
+        assert_eq!(none.selected(), None);
+        assert_eq!(outside.selected(), None);
     }
 
     #[test]

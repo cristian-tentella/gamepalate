@@ -448,8 +448,13 @@ impl Fields {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Field, account::Account, fixtures::*};
+    use super::super::{
+        Field,
+        account::{Account, RegionMenu},
+        fixtures::*,
+    };
     use super::*;
+    use crate::screen::setup::accounts::Accounts;
 
     fn fields() -> Fields {
         Fields {
@@ -471,7 +476,8 @@ mod tests {
             ],
             steam_id: Account::showing(ID.0.to_string()),
             key: Account::default(),
-            region: Account::showing("IT".to_string()),
+            accounts: Accounts::default(),
+            region: RegionMenu::default(),
         }
     }
 
@@ -642,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn the_steam_id_and_the_country_never_save_by_themselves() {
+    fn the_steam_id_never_saves_by_itself() {
         let config = Config::default();
         let start = Instant::now();
         let mut fields = fields();
@@ -650,7 +656,6 @@ mod tests {
         fields
             .account_mut(Field::SteamId)
             .typed("76561198000000001".to_string());
-        fields.account_mut(Field::Region).typed("US".to_string());
 
         assert!(!fields.waiting());
         assert!(

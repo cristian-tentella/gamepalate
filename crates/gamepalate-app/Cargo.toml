@@ -10,6 +10,7 @@ gamepalate-core = { version = "0.27.0", path = "../gamepalate-core" }
 gamepalate-steam = { version = "0.27.0", path = "../gamepalate-steam" }
 gamepalate-store = { version = "0.27.0", path = "../gamepalate-store" }
 dirs = "7.0.0"
+sys-locale = "0.3.2"
 futures = "0.3.34"
 reqwest = "0.13.5"
 serde_json = "1.0.154"

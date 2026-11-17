@@ -44,6 +44,7 @@ pub struct SignalsConfig {
     pub would_try_hours: f64,
     pub elsewhere_hours: f64,
     pub steam_client_hours: Option<bool>,
+    pub steam_client_accounts: Option<bool>,
 }
 
 impl Default for SignalsConfig {
@@ -58,6 +59,7 @@ impl Default for SignalsConfig {
             would_try_hours: 5.0,
             elsewhere_hours: 20.0,
             steam_client_hours: None,
+            steam_client_accounts: None,
         }
     }
 }

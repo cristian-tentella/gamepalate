@@ -3,7 +3,7 @@ use iced::{
     overlay::menu,
     padding,
     theme::palette,
-    widget::{button, container, pick_list, progress_bar, rule, slider, text, text_input},
+    widget::{button, container, pick_list, progress_bar, rule, slider, text, text_input, toggler},
 };
 
 const BADGE_TINT: f32 = 0.14;
@@ -811,6 +811,26 @@ pub fn card(theme: &Theme) -> container::Style {
     }
 }
 
+pub fn drop_zone(hovering: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let palette = theme.extended_palette();
+        let (color, width) = if hovering {
+            (palette.primary.base.color, 2.0)
+        } else {
+            (palette.background.strong.color, 1.0)
+        };
+
+        container::Style {
+            border: Border {
+                color,
+                width,
+                radius: 8.0.into(),
+            },
+            ..container::Style::default()
+        }
+    }
+}
+
 pub fn zoom(theme: &Theme) -> container::Style {
     let background = theme.extended_palette().background.base;
 
@@ -859,29 +879,21 @@ pub fn dot(current: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
 pub fn step(done: bool, current: bool) -> impl Fn(&Theme) -> container::Style {
     move |theme| {
         let palette = theme.extended_palette();
-        let (background, text, border) = if done {
-            (
-                Some(palette.success.base.color),
-                palette.success.base.text,
-                palette.success.base.color,
-            )
+        let accent = palette.primary.base.color;
+        let (background, border, width) = if done {
+            (Some(accent), accent, 0.0)
         } else if current {
-            (
-                Some(palette.primary.base.color),
-                palette.primary.base.text,
-                palette.primary.base.color,
-            )
+            (None, accent, 2.0)
         } else {
-            (None, faded(theme, 0.5), palette.background.strong.color)
+            (None, palette.background.strong.color, 1.5)
         };
 
         container::Style {
             background: background.map(Into::into),
-            text_color: Some(text),
             border: Border {
                 color: border,
-                width: 1.5,
-                radius: 14.0.into(),
+                width,
+                radius: 6.0.into(),
             },
             ..container::Style::default()
         }
@@ -1037,6 +1049,47 @@ fn rounded(style: button::Style) -> button::Style {
             ..style.border
         },
         ..style
+    }
+}
+
+/// A switch that is tinted with the accent when it is on, like a chip of Browse.
+pub fn switch(theme: &Theme, status: toggler::Status) -> toggler::Style {
+    let palette = theme.extended_palette();
+    let (on, hovered) = match status {
+        toggler::Status::Active { is_toggled } | toggler::Status::Disabled { is_toggled } => {
+            (is_toggled, false)
+        }
+        toggler::Status::Hovered { is_toggled } => (is_toggled, true),
+    };
+    let (background, border, knob) = if on {
+        let track = if hovered {
+            palette.primary.strong.color
+        } else {
+            palette.primary.base.color
+        };
+        (track, track, Color::WHITE)
+    } else {
+        (
+            if hovered {
+                palette.background.weak.color
+            } else {
+                palette.background.base.color
+            },
+            palette.background.strong.color,
+            palette.background.strong.color,
+        )
+    };
+
+    toggler::Style {
+        background: background.into(),
+        background_border_width: 1.0,
+        background_border_color: border,
+        foreground: knob.into(),
+        foreground_border_width: 0.0,
+        foreground_border_color: Color::TRANSPARENT,
+        text_color: None,
+        border_radius: None,
+        padding_ratio: 0.25,
     }
 }
 

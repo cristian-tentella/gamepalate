@@ -15,14 +15,6 @@ const TITLE: &str = "Games you played but don't own";
 const WHY: &str = "Steam leaves out of your library the games borrowed through Family Sharing, free weekends and free games you removed. Their hours are in a file the Steam app keeps on this PC:";
 const WHAT: &str = "gamepalate can read it at every update and keep only the hours of each game. Nothing is sent anywhere and the file is never changed.";
 
-const ELSEWHERE: &str = "Played games outside Steam? Add them from ";
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum ElsewhereHint {
-    Text,
-    None,
-}
-
 #[derive(Debug)]
 pub(crate) struct SteamClientQuestion {
     file: PathBuf,
@@ -60,11 +52,7 @@ impl SteamClientQuestion {
         self.error = Some(error);
     }
 
-    pub(crate) fn view<'a, M: Clone + 'a>(
-        &'a self,
-        answer: fn(bool) -> M,
-        hint: ElsewhereHint,
-    ) -> Element<'a, M> {
+    pub(crate) fn view<'a, M: Clone + 'a>(&'a self, answer: fn(bool) -> M) -> Element<'a, M> {
         let buttons = row![
             space().width(Fill),
             button(text("Don't read it").size(font::BAR_SIZE))
@@ -101,43 +89,11 @@ impl SteamClientQuestion {
             ]
             .push(error)
             .push(buttons)
-            .push(hint_view(hint))
             .spacing(10),
         )
         .padding(20)
         .width(Fill)
         .style(style::card)
         .into()
-    }
-}
-
-fn hint_view<'a, M: 'a>(hint: ElsewhereHint) -> Option<Element<'a, M>> {
-    if hint == ElsewhereHint::None {
-        return None;
-    }
-
-    Some(
-        row![
-            text(ELSEWHERE).size(font::NOTE_SIZE).style(style::muted),
-            text("Library").size(font::NOTE_SIZE),
-            text(".").size(font::NOTE_SIZE).style(style::muted),
-        ]
-        .align_y(Center)
-        .into(),
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_hint_about_games_played_elsewhere_shows_only_when_asked() {
-        assert!(hint_view::<()>(ElsewhereHint::None).is_none());
-        assert!(hint_view::<()>(ElsewhereHint::Text).is_some());
-        assert_eq!(
-            format!("{ELSEWHERE}Library."),
-            "Played games outside Steam? Add them from Library."
-        );
     }
 }

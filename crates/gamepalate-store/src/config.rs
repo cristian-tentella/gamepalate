@@ -75,6 +75,7 @@ struct SignalsSection {
     would_try_hours: Option<f64>,
     elsewhere_hours: Option<f64>,
     steam_client_hours: Option<bool>,
+    steam_client_accounts: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -126,6 +127,20 @@ pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
     parse_config(&text)
 }
 
+pub fn load_steam_client_accounts(path: &Path) -> Option<bool> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let file: ConfigFile = toml::from_str(&text).ok()?;
+
+    file.signals.steam_client_accounts
+}
+
+pub fn load_steam_client_hours(path: &Path) -> Option<bool> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let file: ConfigFile = toml::from_str(&text).ok()?;
+
+    file.signals.steam_client_hours
+}
+
 pub fn save_steam_id(path: &Path, steam_id: SteamId) -> Result<(), ConfigError> {
     save_value(
         path,
@@ -142,6 +157,14 @@ pub fn save_steam_client_hours(path: &Path, read: bool) -> Result<(), ConfigErro
     save_value(
         path,
         &["signals", "steam_client_hours"],
+        toml_edit::value(read),
+    )
+}
+
+pub fn save_steam_client_accounts(path: &Path, read: bool) -> Result<(), ConfigError> {
+    save_value(
+        path,
+        &["signals", "steam_client_accounts"],
         toml_edit::value(read),
     )
 }
@@ -283,6 +306,7 @@ fn parse_config(text: &str) -> Result<Config, ConfigError> {
             Range::AtLeast(0.0),
         )?,
         steam_client_hours: file.signals.steam_client_hours,
+        steam_client_accounts: file.signals.steam_client_accounts,
     };
 
     let relevance = RelevanceConfig {
@@ -598,6 +622,66 @@ steam_client_hours = true
         let config = load_config(&path).unwrap();
         assert_eq!(config.signals.steam_client_hours, Some(false));
         assert_eq!(config.signals.min_hours, 3.0);
+    }
+
+    #[test]
+    fn the_accounts_answer_is_saved_and_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "steam_id = \"76561198000000000\"
+",
+        )
+        .unwrap();
+        assert_eq!(
+            load_config(&path).unwrap().signals.steam_client_accounts,
+            None
+        );
+
+        save_steam_client_accounts(&path, true).unwrap();
+
+        let signals = load_config(&path).unwrap().signals;
+        assert_eq!(signals.steam_client_accounts, Some(true));
+        assert_eq!(signals.steam_client_hours, None);
+        save_steam_client_accounts(&path, false).unwrap();
+        assert_eq!(
+            load_config(&path).unwrap().signals.steam_client_accounts,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn the_accounts_answer_can_come_before_the_steam_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        save_steam_client_accounts(&path, true).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[signals]
+steam_client_accounts = true
+"
+        );
+        assert_eq!(load_steam_client_accounts(&path), Some(true));
+        assert!(load_config(&path).is_err());
+        assert_eq!(
+            load_steam_client_accounts(&dir.path().join("none.toml")),
+            None
+        );
+    }
+
+    #[test]
+    fn the_hours_answer_can_come_before_the_steam_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        assert_eq!(load_steam_client_hours(&path), None);
+
+        save_steam_client_hours(&path, false).unwrap();
+
+        assert_eq!(load_steam_client_hours(&path), Some(false));
+        assert_eq!(load_steam_client_accounts(&path), None);
     }
 
     const WITH_COMMENTS: &str = "# my settings
