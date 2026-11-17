@@ -2,7 +2,7 @@ use std::{ops::Range, sync::Arc};
 
 use gamepalate_app::{
     AppId, BrowseOptions, BrowseOrder, BrowseRow, Choice, Currency, DiscoverMode, FilterOptions,
-    Gamepalate, Price, Reviews, SearchOptions,
+    GameStanding, Gamepalate, Price, Reviews, SearchOptions,
 };
 use iced::{
     Center, ContentFit, Element, Fill, Length, Right, Size, Task, never, padding,
@@ -81,6 +81,10 @@ pub(super) struct Browse {
     rows: Vec<BrowseRow>,
     /// The name the rows were listed for: none before the first list.
     listed: Option<String>,
+    /// The revision of the facade the rows were listed on, or last agreed with.
+    revision: Option<u64>,
+    /// The facade is another one since: the list is made again the next time Browse is entered.
+    stale: bool,
     currency: Option<Currency>,
     /// Why the last list could not be made: the options and the rows are those of before.
     error: Option<String>,
@@ -171,6 +175,8 @@ impl Default for Browse {
             loaded: false,
             rows: Vec::new(),
             listed: None,
+            revision: None,
+            stale: false,
             currency: None,
             error: None,
             panel: None,
@@ -240,7 +246,9 @@ impl Browse {
     }
 
     /// Into Browse with `name` in the field: the list is made again only if the name has changed
-    /// since, otherwise it comes back where it was. The first time, the options are those of
+    /// since, otherwise it comes back where it was. If the votes, the corrections or the families
+    /// have changed since, or the facade is another one, the list is made again too, with the
+    /// same game selected if it is still there. The first time, the options are those of
     /// `gui.toml`. The panel of the filters is made again each time, for the tags of the catalog.
     pub(super) fn enter(
         &mut self,
@@ -265,7 +273,54 @@ impl Browse {
         if self.listed.as_deref() != Some(name) {
             return self.relist(gamepalate, name);
         }
+        if self.outdated(gamepalate) {
+            return self.apply(gamepalate, self.options.clone(), name, true);
+        }
+        self.come_back(gamepalate)
+    }
+
+    /// Back from a game's page: the table where it was, with the same row selected. The list is
+    /// not made again.
+    pub(super) fn come_back(&mut self, gamepalate: &Arc<Gamepalate>) -> Task<SearchMessage> {
+        self.panel_open = false;
         Task::batch([scroll_to(self.offset), self.load_capsules(gamepalate)])
+    }
+
+    /// The game opened from the table: its row stays the selected one.
+    pub(super) fn picked(&mut self, id: AppId) {
+        if let Some(index) = self.rows.iter().position(|row| row.id == id) {
+            self.selected = Some(index);
+        }
+    }
+
+    /// The votes, the corrections or the families are not what the rows were made from.
+    fn outdated(&self, gamepalate: &Gamepalate) -> bool {
+        self.outdated_by(gamepalate.revision())
+    }
+
+    fn outdated_by(&self, revision: u64) -> bool {
+        self.stale || self.revision != Some(revision)
+    }
+
+    pub(super) fn mark_stale(&mut self) {
+        self.stale = true;
+    }
+
+    /// A game opened from the table was changed in its page: only its row takes the new standing,
+    /// and keeps its place even if the filters would now leave it out. The next list will not.
+    pub(super) fn game_changed(&mut self, gamepalate: &Gamepalate, id: AppId) {
+        self.revision = Some(gamepalate.revision());
+        if let Some(view) = gamepalate.game_view(id) {
+            let starred = view.vote.as_ref().is_some_and(|vote| vote.starred);
+            self.update_row(id, view.standing, starred);
+        }
+    }
+
+    fn update_row(&mut self, id: AppId, standing: Option<GameStanding>, starred: bool) {
+        if let Some(row) = self.rows.iter_mut().find(|row| row.id == id) {
+            row.standing = standing;
+            row.starred = starred;
+        }
     }
 
     /// The list made again from the top, with the options of now.
@@ -274,7 +329,7 @@ impl Browse {
         gamepalate: &Arc<Gamepalate>,
         name: &str,
     ) -> Task<SearchMessage> {
-        self.apply(gamepalate, self.options.clone(), name)
+        self.apply(gamepalate, self.options.clone(), name, false)
     }
 
     /// The list of `options`, and saved if they are new. With an error nothing changes.
@@ -287,7 +342,7 @@ impl Browse {
         if options == self.options {
             return Task::none();
         }
-        let listed = self.apply(gamepalate, options, name);
+        let listed = self.apply(gamepalate, options, name, false);
         if self.error.is_some() {
             return listed;
         }
@@ -301,12 +356,18 @@ impl Browse {
         Task::batch([listed, saved])
     }
 
+    /// The list of `options`: from the top, or with `keeping` around the game that was selected,
+    /// if it is still there, at the same height in the window.
     fn apply(
         &mut self,
         gamepalate: &Arc<Gamepalate>,
         options: BrowseOptions,
         name: &str,
+        keeping: bool,
     ) -> Task<SearchMessage> {
+        // Read before the list: a change in between only makes the next entry list again
+        let revision = gamepalate.revision();
+        let before = if keeping { self.place() } else { None };
         let rows = gamepalate
             .browse(&options, name)
             .map_err(|error| sentence(&error.to_string()));
@@ -314,8 +375,37 @@ impl Browse {
         if !self.accept(options, name, rows) {
             return Task::none();
         }
+        self.revision = Some(revision);
+        if let Some(place) = before {
+            self.keep(place);
+        }
 
-        Task::batch([scroll_to(0.0), self.load_capsules(gamepalate)])
+        Task::batch([scroll_to(self.offset), self.load_capsules(gamepalate)])
+    }
+
+    /// The selected game, and how far below the top of the window its row is.
+    fn place(&self) -> Option<(AppId, f64)> {
+        let index = self.selected?;
+        let row = self.rows.get(index)?;
+
+        Some((
+            row.id,
+            f64::from(ROW_HEIGHT) * index as f64 - f64::from(self.offset),
+        ))
+    }
+
+    /// In a list just made, selects the game of `place` if it is there, and puts it as far below
+    /// the top as before, as far as the list allows.
+    fn keep(&mut self, (id, below): (AppId, f64)) {
+        let Some(index) = self.rows.iter().position(|row| row.id == id) else {
+            return;
+        };
+        let top = f64::from(ROW_HEIGHT) * index as f64;
+        let end =
+            (f64::from(ROW_HEIGHT) * self.rows.len() as f64 - f64::from(self.height())).max(0.0);
+
+        self.selected = Some(index);
+        self.offset = (top - below).clamp(0.0, end) as f32;
     }
 
     /// Takes a list made from the top. An error keeps the options, the rows and the position of
@@ -331,6 +421,7 @@ impl Browse {
                 self.options = options;
                 self.rows = rows;
                 self.error = None;
+                self.stale = false;
                 self.listed = Some(name.to_string());
                 self.selected = None;
                 self.offset = 0.0;
@@ -360,6 +451,28 @@ impl Browse {
         };
         browse.open_filters();
         browse
+    }
+
+    /// Browse with a list of `count` rows, for the tests of the panel that holds it.
+    #[cfg(test)]
+    pub(super) fn with_rows(count: u32) -> Browse {
+        Browse {
+            rows: tests::rows(count),
+            listed: Some(String::new()),
+            height: Some(tests::HEIGHT),
+            ..Browse::default()
+        }
+    }
+
+    /// Where the list stands: the address of its rows, how many, the selected row and the offset.
+    #[cfg(test)]
+    pub(super) fn state(&self) -> (usize, usize, Option<usize>, f32) {
+        (
+            self.rows.as_ptr() as usize,
+            self.rows.len(),
+            self.selected,
+            self.offset,
+        )
     }
 
     fn open_filters(&mut self) {
@@ -413,6 +526,28 @@ impl Browse {
 
     pub(super) fn up(&mut self) -> Task<SearchMessage> {
         self.select(super::above(self.selected))
+    }
+
+    /// A screen down: the rows that fit in the window, as far as the last.
+    pub(super) fn page_down(&mut self) -> Task<SearchMessage> {
+        let page = page_rows(self.height());
+        let last = self.rows.len().checked_sub(1);
+
+        self.select(last.map(|last| (self.selected.unwrap_or(0) + page).min(last)))
+    }
+
+    pub(super) fn page_up(&mut self) -> Task<SearchMessage> {
+        let page = page_rows(self.height());
+
+        self.select(Some(self.selected.unwrap_or(0).saturating_sub(page)))
+    }
+
+    pub(super) fn first(&mut self) -> Task<SearchMessage> {
+        self.select(Some(0))
+    }
+
+    pub(super) fn last(&mut self) -> Task<SearchMessage> {
+        self.select(self.rows.len().checked_sub(1))
     }
 
     /// The row Enter opens: the selected one, or the first.
@@ -1011,6 +1146,11 @@ fn visible(offset: f32, height: f32, count: usize) -> Range<usize> {
     start.min(count)..end.min(count)
 }
 
+/// The rows a screen moves: those that fit in the window whole, and at least one.
+fn page_rows(height: f32) -> usize {
+    ((f64::from(height.max(0.0)) / f64::from(ROW_HEIGHT)).floor() as usize).max(1)
+}
+
 fn screen_rows(height: f32) -> usize {
     (f64::from(height.max(0.0)) / f64::from(ROW_HEIGHT)).ceil() as usize
 }
@@ -1067,9 +1207,9 @@ mod tests {
     use crate::screen::showcase::images::MAX_LOADS;
 
     const SALES: usize = 118_780;
-    const HEIGHT: f32 = 700.0;
+    pub(super) const HEIGHT: f32 = 700.0;
 
-    fn rows(count: u32) -> Vec<BrowseRow> {
+    pub(super) fn rows(count: u32) -> Vec<BrowseRow> {
         (1..=count)
             .map(|id| BrowseRow {
                 id: AppId(id),
@@ -1482,5 +1622,155 @@ mod tests {
             }),
             ("90%".to_string(), Some("1,200".to_string()))
         );
+    }
+
+    fn in_sight(browse: &Browse, index: usize) -> bool {
+        visible(browse.offset, HEIGHT, browse.rows.len()).contains(&index)
+    }
+
+    #[test]
+    fn a_page_moves_the_rows_that_fit_and_the_list_follows() {
+        let mut browse = browse_with(100);
+        let page = page_rows(HEIGHT);
+        assert_eq!(page, 12);
+
+        let _ = browse.page_down();
+        assert_eq!(browse.selected, Some(page));
+        let _ = browse.page_down();
+        assert_eq!(browse.selected, Some(2 * page));
+        assert!(in_sight(&browse, 2 * page));
+
+        let _ = browse.page_up();
+        assert_eq!(browse.selected, Some(page));
+        assert!(in_sight(&browse, page));
+    }
+
+    #[test]
+    fn the_pages_stop_at_the_first_and_the_last_row() {
+        let mut browse = browse_with(30);
+
+        for _ in 0..5 {
+            let _ = browse.page_down();
+        }
+        assert_eq!(browse.selected, Some(29));
+        assert!(in_sight(&browse, 29));
+
+        for _ in 0..5 {
+            let _ = browse.page_up();
+        }
+        assert_eq!(browse.selected, Some(0));
+        assert_eq!(browse.offset, 0.0);
+    }
+
+    #[test]
+    fn the_ends_of_a_list_of_the_whole_catalog() {
+        let mut browse = browse_with(120_000);
+
+        let _ = browse.last();
+        assert_eq!(browse.selected, Some(119_999));
+        assert!(in_sight(&browse, 119_999));
+        assert_eq!(browse.offset, rows_height(120_000) - HEIGHT);
+
+        let _ = browse.first();
+        assert_eq!(browse.selected, Some(0));
+        assert_eq!(browse.offset, 0.0);
+    }
+
+    #[test]
+    fn the_keys_of_an_empty_list_do_nothing() {
+        let mut browse = browse_with(0);
+
+        let _ = browse.page_down();
+        let _ = browse.page_up();
+        let _ = browse.first();
+        let _ = browse.last();
+
+        assert_eq!(browse.selected, None);
+    }
+
+    #[test]
+    fn a_game_picked_stays_the_selected_row() {
+        let mut browse = browse_with(50);
+
+        browse.picked(AppId(7));
+        assert_eq!(browse.selected, Some(6));
+
+        browse.picked(AppId(9_999));
+        assert_eq!(browse.selected, Some(6));
+    }
+
+    #[test]
+    fn a_row_after_a_vote_has_the_new_standing_and_the_same_place() {
+        let mut browse = browse_with(10);
+        browse.selected = Some(3);
+        let ids: Vec<AppId> = browse.rows.iter().map(|row| row.id).collect();
+
+        browse.update_row(AppId(4), Some(GameStanding::WouldTry), true);
+
+        assert_eq!(browse.rows[3].standing, Some(GameStanding::WouldTry));
+        assert!(browse.rows[3].starred);
+        assert!(browse.rows[2].standing.is_none() && !browse.rows[4].starred);
+        assert_eq!(
+            browse.rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(browse.selected, Some(3));
+
+        browse.update_row(AppId(4), None, false);
+        assert!(browse.rows[3].standing.is_none() && !browse.rows[3].starred);
+    }
+
+    #[test]
+    fn a_list_made_again_keeps_the_game_at_the_same_height() {
+        let mut browse = browse_with(100);
+        browse.selected = Some(30);
+        browse.offset = 25.0 * ROW_HEIGHT;
+        let place = browse.place().expect("a row is selected");
+        assert_eq!(place, (AppId(31), 5.0 * f64::from(ROW_HEIGHT)));
+
+        // The first five games are gone: game 31 is now the 26th.
+        let rows = rows(100).split_off(5);
+        assert!(browse.accept(BrowseOptions::default(), "", Ok(rows)));
+        assert_eq!((browse.selected, browse.offset), (None, 0.0));
+        browse.keep(place);
+
+        assert_eq!(browse.selected, Some(25));
+        assert_eq!(browse.offset, 20.0 * ROW_HEIGHT);
+    }
+
+    #[test]
+    fn a_game_that_is_gone_leaves_the_list_on_top_and_the_end_stops_the_offset() {
+        let mut browse = browse_with(100);
+        browse.selected = Some(30);
+        browse.offset = 25.0 * ROW_HEIGHT;
+        let place = browse.place().expect("a row is selected");
+
+        assert!(browse.accept(BrowseOptions::default(), "", Ok(rows(20).split_off(10))));
+        browse.keep(place);
+        assert_eq!((browse.selected, browse.offset), (None, 0.0));
+
+        // Near the end, the list cannot scroll past its last row
+        browse.selected = Some(8);
+        browse.offset = 0.0;
+        let place = (AppId(20), -2_000.0);
+        browse.keep(place);
+        assert_eq!(browse.selected, Some(9));
+        assert_eq!(browse.offset, 0.0);
+    }
+
+    #[test]
+    fn a_list_is_outdated_by_a_new_revision_or_a_new_facade() {
+        let mut browse = browse_with(3);
+        assert!(browse.outdated_by(4), "nothing was listed on a revision");
+
+        browse.revision = Some(4);
+        assert!(!browse.outdated_by(4));
+        assert!(browse.outdated_by(5));
+
+        browse.mark_stale();
+        assert!(browse.outdated_by(4));
+
+        assert!(browse.accept(BrowseOptions::default(), "", Ok(rows(3))));
+        assert!(!browse.outdated_by(4));
     }
 }

@@ -149,6 +149,11 @@ impl NameIndex {
     }
 }
 
+/// The game of the catalog that an appid or a store link in `text` names, if there is one.
+pub(crate) fn game_in(text: &str, catalog: &Catalog) -> Option<AppId> {
+    catalog.game(appid_in(text)?).map(|game| game.id)
+}
+
 /// The appid in a text that is only digits (`10`) or has `/app/<digits>` in it, like the
 /// link of a game in the store or in the community.
 fn appid_in(text: &str) -> Option<AppId> {
@@ -337,6 +342,25 @@ mod tests {
 
         assert!(find(games.clone(), "store.steampowered.com/app/620/Portal_2/").is_empty());
         assert!(find(games, "620").is_empty());
+    }
+
+    #[test]
+    fn only_an_appid_or_a_link_names_a_game_in_the_catalog() {
+        let catalog = catalog(vec![
+            game(1145360, "Hades", 10),
+            game(10, "Counter-Strike", 10),
+        ]);
+
+        assert_eq!(game_in("10", &catalog), Some(AppId(10)));
+        assert_eq!(
+            game_in(
+                "https://store.steampowered.com/app/1145360/Hades/",
+                &catalog
+            ),
+            Some(AppId(1145360))
+        );
+        assert_eq!(game_in("hades", &catalog), None);
+        assert_eq!(game_in("620", &catalog), None);
     }
 
     #[test]

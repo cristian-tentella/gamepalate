@@ -34,6 +34,7 @@ const PLACEHOLDER: &str = "Search games";
 const BROWSE_PLACEHOLDER: &str = "Filter by name";
 const HINT: &str = "Type at least 3 letters, an appid or a store link";
 const NO_GAMES: &str = "No games found";
+const BROWSE_KEYS: &str = "PgUp PgDn · Ctrl+Home Ctrl+End";
 pub const TIP: &str = "Search games (Ctrl+K)";
 pub const LENS: char = '\u{E8B6}';
 /// The panel's top edge, as a share of the height below the top bar.
@@ -63,6 +64,8 @@ pub struct Search {
     capsules: Images<image::Allocation, AppId>,
     mode: Mode,
     browse: Browse,
+    /// Back from a game's page: the panel opens on Browse as it was left.
+    returning: bool,
 }
 
 /// The panel finds a game by name, or browses the whole catalog in a table. Tab goes from one to
@@ -104,13 +107,24 @@ pub enum Message {
     CapsuleLoaded(AppId, Option<image::Handle>),
     CapsuleAllocated(AppId, Option<image::Allocation>),
     SwitchMode,
+    /// The panel opens again on Browse, after the page of a game that came from it.
+    Reopen,
+    PageDown,
+    PageUp,
+    First,
+    Last,
     Browse(browse::Message),
 }
 
 pub enum Action {
     Run(Task<Message>),
     /// A game to open, with the blurred page when it has come: the game's sheet lies on it.
-    Open(AppId, Option<image::Handle>),
+    /// `from_browse` says the game was picked in Browse, which the sheet goes back to.
+    Open {
+        id: AppId,
+        backdrop: Option<image::Handle>,
+        from_browse: bool,
+    },
 }
 
 impl std::fmt::Debug for Blurred {
@@ -132,6 +146,17 @@ impl Search {
         match message {
             Message::Toggle if self.is_open() => self.close(),
             Message::Toggle => {
+                return Action::Run(match window {
+                    Some(window) => {
+                        self.state = State::Opening;
+                        window::screenshot(window).map(Message::Screenshot)
+                    }
+                    None => self.show(gamepalate),
+                });
+            }
+            Message::Reopen if self.is_open() || self.mode != Mode::Browse => {}
+            Message::Reopen => {
+                self.returning = true;
                 return Action::Run(match window {
                     Some(window) => {
                         self.state = State::Opening;
@@ -193,8 +218,22 @@ impl Search {
                 ]));
             }
             // The popup of the filters has the keys while it is open.
-            Message::Down | Message::Up | Message::Submit | Message::SwitchMode
+            Message::Down
+            | Message::Up
+            | Message::PageDown
+            | Message::PageUp
+            | Message::First
+            | Message::Last
+            | Message::Submit
+            | Message::SwitchMode
                 if self.filters_open() => {}
+            // The pages and the ends of the list are Browse's
+            Message::PageDown | Message::PageUp | Message::First | Message::Last
+                if !self.browsing() => {}
+            Message::PageDown => return Action::Run(self.browse.page_down()),
+            Message::PageUp => return Action::Run(self.browse.page_up()),
+            Message::First => return Action::Run(self.browse.first()),
+            Message::Last => return Action::Run(self.browse.last()),
             Message::Down if self.mode == Mode::Browse => return Action::Run(self.browse.down()),
             Message::Up if self.mode == Mode::Browse => return Action::Run(self.browse.up()),
             Message::Down => {
@@ -202,9 +241,13 @@ impl Search {
             }
             Message::Up => return Action::Run(self.select(above(self.selected))),
             Message::Submit => {
+                // With no row, Enter takes the text for an appid or a store link, as Search does
                 let chosen = match self.mode {
                     Mode::Find => self.chosen(),
-                    Mode::Browse => self.browse.chosen(),
+                    Mode::Browse => self
+                        .browse
+                        .chosen()
+                        .or_else(|| gamepalate.game_in(&self.text)),
                 };
                 if let Some(id) = chosen {
                     return self.pick(id);
@@ -252,8 +295,20 @@ impl Search {
         !matches!(self.state, State::Closed)
     }
 
+    /// A game picked in Browse changed: its row has the new standing, and the list is still the
+    /// one of the facade now.
+    pub fn game_changed(&mut self, gamepalate: &Gamepalate, id: AppId) {
+        self.browse.game_changed(gamepalate, id);
+    }
+
+    /// The facade is another one: the list of Browse is made again the next time it opens.
+    pub fn use_gamepalate(&mut self) {
+        self.browse.mark_stale();
+    }
+
     pub fn close(&mut self) {
         self.state = State::Closed;
+        self.returning = false;
         self.selected = None;
         self.backdrop = None;
         self.browse.close_filters();
@@ -365,6 +420,8 @@ impl Search {
             Mode::Find => (PLACEHOLDER, "Browse", "Browse the catalog (Tab)"),
             Mode::Browse => (BROWSE_PLACEHOLDER, "Search", "Search by name (Tab)"),
         };
+        let keys = (self.mode == Mode::Browse)
+            .then(|| text(BROWSE_KEYS).size(font::NOTE_SIZE).style(style::muted));
         let switch = button(
             row![text(other).size(font::NOTE_SIZE), keycap("Tab")]
                 .spacing(6)
@@ -389,9 +446,13 @@ impl Search {
                 .width(Fill),
             tooltip(
                 switch,
-                container(text(tip).size(font::NOTE_SIZE))
-                    .padding([6, 10])
-                    .style(style::popup),
+                container(
+                    column![text(tip).size(font::NOTE_SIZE)]
+                        .push(keys)
+                        .spacing(2)
+                )
+                .padding([6, 10])
+                .style(style::popup),
                 tooltip::Position::Bottom,
             ),
             keycap("Esc"),
@@ -472,16 +533,29 @@ impl Search {
     }
 
     /// The panel opens on Search with the last text selected, so typing replaces it. Browse
-    /// keeps its state for Tab.
+    /// keeps its state for Tab, and for the way back from a game's page.
     fn show(&mut self, gamepalate: &Arc<Gamepalate>) -> Task<Message> {
-        self.state = State::Open;
-        self.mode = Mode::Find;
-        self.typed = false;
+        if self.open_state() {
+            return Task::batch([focus(), self.browse.come_back(gamepalate)]);
+        }
         self.found = gamepalate.find_games(&self.text);
-        self.selected = None;
-        self.backdrop = None;
 
         Task::batch([focus(), self.load_capsules(gamepalate)])
+    }
+
+    /// Open, on Search or, coming back, on Browse with its list as it was: the list is not made
+    /// again. Says whether it was the way back.
+    fn open_state(&mut self) -> bool {
+        let returning = std::mem::take(&mut self.returning);
+        self.state = State::Open;
+        self.typed = false;
+        self.selected = None;
+        self.backdrop = None;
+        if !returning {
+            self.mode = Mode::Find;
+        }
+
+        returning
     }
 
     /// To the other mode, with the same text.
@@ -518,12 +592,22 @@ impl Search {
         self.found.get(index).map(|game| game.id)
     }
 
+    /// Search empties its field. Browse keeps everything, to come back to it.
     fn pick(&mut self, id: AppId) -> Action {
+        let from_browse = self.browsing();
         let backdrop = self.backdrop.take().map(|backdrop| backdrop.handle);
         self.close();
-        self.text.clear();
-        self.found.clear();
-        Action::Open(id, backdrop)
+        if from_browse {
+            self.browse.picked(id);
+        } else {
+            self.text.clear();
+            self.found.clear();
+        }
+        Action::Open {
+            id,
+            backdrop,
+            from_browse,
+        }
     }
 
     fn load_capsules(&mut self, gamepalate: &Arc<Gamepalate>) -> Task<Message> {
@@ -570,6 +654,11 @@ fn panel_key(event: Event, _: event::Status, _: window::Id) -> Option<Message> {
         Key::Named(Named::ArrowUp) => Some(Message::Up),
         Key::Named(Named::Escape) => Some(Message::Close),
         Key::Named(Named::Tab) => Some(Message::SwitchMode),
+        Key::Named(Named::PageDown) => Some(Message::PageDown),
+        Key::Named(Named::PageUp) => Some(Message::PageUp),
+        // Home and End alone are for the field
+        Key::Named(Named::Home) if modifiers.command() => Some(Message::First),
+        Key::Named(Named::End) if modifiers.command() => Some(Message::Last),
         // F alone is for the field
         Key::Character("f" | "F") if modifiers.command() => {
             Some(Message::Browse(browse::Message::ToggleFilters))
@@ -636,6 +725,10 @@ mod tests {
     }
 
     fn pressed(key: Named) -> Event {
+        pressed_with(key, keyboard::Modifiers::empty())
+    }
+
+    fn pressed_with(key: Named, modifiers: keyboard::Modifiers) -> Event {
         let key = Key::Named(key);
         Event::Keyboard(keyboard::Event::KeyPressed {
             key: key.clone(),
@@ -644,7 +737,7 @@ mod tests {
                 keyboard::key::NativeCode::Unidentified,
             ),
             location: keyboard::Location::Standard,
-            modifiers: keyboard::Modifiers::empty(),
+            modifiers,
             text: None,
             repeat: false,
         })
@@ -688,14 +781,116 @@ mod tests {
         let mut search = open_with(3);
         search.selected = Some(1);
 
-        let Action::Open(id, _) = search.pick(AppId(2)) else {
+        let Action::Open {
+            id, from_browse, ..
+        } = search.pick(AppId(2))
+        else {
             panic!("picking a game should open it");
         };
 
         assert_eq!(id, AppId(2));
+        assert!(!from_browse);
         assert!(!search.is_open());
         assert!(search.text.is_empty());
         assert_eq!(search.selected, None);
+    }
+
+    fn browsing_with(count: u32) -> Search {
+        let mut search = open_with(3);
+        search.switch();
+        search.browse = Browse::with_rows(count);
+        search
+    }
+
+    #[test]
+    fn opening_a_game_in_browse_keeps_the_text_the_rows_and_the_place() {
+        let mut search = browsing_with(50);
+        search.text = "dark".to_string();
+        let _ = search.browse.page_down();
+        let before = search.browse.state();
+
+        let Action::Open {
+            id, from_browse, ..
+        } = search.pick(AppId(9))
+        else {
+            panic!("picking a game should open it");
+        };
+
+        assert_eq!(id, AppId(9));
+        assert!(from_browse);
+        assert!(!search.is_open());
+        assert_eq!(search.mode, Mode::Browse);
+        assert_eq!(search.text, "dark");
+        let (rows, len, selected, offset) = search.browse.state();
+        assert_eq!((rows, len, offset), (before.0, before.1, before.3));
+        assert_eq!(selected, Some(8), "the row of the game is the selected one");
+    }
+
+    #[test]
+    fn coming_back_opens_on_browse_with_the_list_as_it_was() {
+        let mut search = browsing_with(50);
+        let _ = search.browse.last();
+        let _ = search.pick(AppId(50));
+        let before = search.browse.state();
+
+        search.returning = true;
+        assert!(search.open_state());
+
+        assert!(search.is_open());
+        assert_eq!(search.mode, Mode::Browse);
+        assert_eq!(search.browse.state(), before, "the list was not made again");
+        assert!(!search.returning);
+    }
+
+    #[test]
+    fn ctrl_k_opens_on_search_even_after_browse() {
+        let mut search = browsing_with(50);
+        let _ = search.pick(AppId(5));
+        let before = search.browse.state();
+
+        assert!(!search.open_state());
+
+        assert_eq!(search.mode, Mode::Find);
+        assert_eq!(
+            search.browse.state(),
+            before,
+            "Browse keeps its state for Tab"
+        );
+    }
+
+    #[test]
+    fn closing_the_panel_cancels_the_way_back() {
+        let mut search = browsing_with(5);
+        search.returning = true;
+
+        search.close();
+
+        assert!(!search.open_state());
+    }
+
+    #[test]
+    fn the_pages_and_the_ends_belong_to_the_panel_and_home_alone_to_the_field() {
+        let command = keyboard::Modifiers::COMMAND;
+        let heard = |key, modifiers| {
+            panel_key(
+                pressed_with(key, modifiers),
+                event::Status::Ignored,
+                window::Id::unique(),
+            )
+        };
+
+        assert!(matches!(
+            heard(Named::PageDown, keyboard::Modifiers::empty()),
+            Some(Message::PageDown)
+        ));
+        assert!(matches!(
+            heard(Named::PageUp, keyboard::Modifiers::empty()),
+            Some(Message::PageUp)
+        ));
+        assert!(matches!(heard(Named::Home, command), Some(Message::First)));
+        assert!(matches!(heard(Named::End, command), Some(Message::Last)));
+        assert!(heard(Named::Home, keyboard::Modifiers::empty()).is_none());
+        assert!(heard(Named::End, keyboard::Modifiers::empty()).is_none());
     }
 
     #[test]

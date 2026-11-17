@@ -109,6 +109,10 @@ impl GamePage {
         self.changed
     }
 
+    pub fn id(&self) -> AppId {
+        self.game.id
+    }
+
     /// The blurred page no longer fits the window: the veil stays alone.
     pub fn resized(&mut self) {
         self.backdrop = None;
