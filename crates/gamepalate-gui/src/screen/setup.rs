@@ -66,6 +66,11 @@ pub(crate) const KEY_DOMAIN_NOTE: &str =
 pub(crate) const PROFILE_PLACEHOLDER: &str = "Steam profile address or Steam ID";
 const FIND_STEAM_ID: &str = "Open your profile on steamcommunity.com and copy the address";
 const DROP_CATALOG: &str = "Have a catalog file? Drop it on this window.";
+const CATALOG_ABOUT: &str =
+    "Tags, reviews and prices of every Steam game, about 20 minutes to download";
+const DROP_ASK: &str = "Have a catalog file from someone else?";
+const DROP_HINT: &str = "Drop catalog.sqlite on this window";
+const ZONE_HEIGHT: f32 = 120.0;
 const IMPORTING: &str = "Importing the catalog…";
 const DROP_TO_IMPORT: &str = "Drop to import";
 const LOGO_BYTES: &[u8] = include_bytes!("../../gamepalate.png");
@@ -210,7 +215,6 @@ struct Import {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ImportPlace {
-    Account,
     Catalog,
     Problems,
 }
@@ -328,6 +332,7 @@ pub enum Message {
     Connect,
     Connected(Result<(), String>),
     Change,
+    ChangeRegion,
     Download,
     Progress(gamepalate_app::update::Progress),
     Downloaded(Result<(), String>),
@@ -493,6 +498,10 @@ impl Setup {
                 self.region.found(country);
                 Action::None
             }
+            Message::Continue if self.page == Page::Catalog => {
+                self.go_on();
+                self.prepare(false)
+            }
             Message::Continue => self.go_on(),
             Message::Back => {
                 if let Some(page) = self.back() {
@@ -570,6 +579,12 @@ impl Setup {
             Message::Change => {
                 if !self.download.running {
                     self.page = Page::Account;
+                }
+                Action::None
+            }
+            Message::ChangeRegion => {
+                if !self.download.running && !self.import.running {
+                    self.page = Page::Region;
                 }
                 Action::None
             }
@@ -809,7 +824,7 @@ impl Setup {
         let Some(dir) = self.first_run.data_dir.clone() else {
             return Action::None;
         };
-        if !can_import(self.import_place(), &self.import, &self.account) {
+        if !can_import(self.import_place(), &self.import) {
             return Action::None;
         }
         self.import = Import {
@@ -823,10 +838,22 @@ impl Setup {
         ))
     }
 
+    fn keep_imported_region(
+        &self,
+        result: Result<ImportedCatalog, String>,
+    ) -> Result<ImportedCatalog, String> {
+        let (Ok(imported), Some(dir)) = (&result, &self.first_run.data_dir) else {
+            return result;
+        };
+        change_region(dir, imported.region)
+            .map_err(|error| format!("Could not save the region. {}", error_chain(&error)))?;
+        result
+    }
+
     fn imported(&mut self, result: Result<ImportedCatalog, String>) -> Action {
         let succeeded = result.is_ok();
         self.import = Import {
-            result: Some(result),
+            result: Some(self.keep_imported_region(result)),
             ..Import::default()
         };
         if !succeeded {
@@ -834,6 +861,9 @@ impl Setup {
         }
 
         self.first_run = FirstRun::check(None);
+        if self.page == Page::Catalog {
+            return Action::None;
+        }
         self.page = page_from(self.page, &self.first_run);
         if account_done(&self.first_run) {
             self.prepare(false)
@@ -1041,7 +1071,7 @@ impl Setup {
                     .align_y(Center)
                     .into();
             }
-            Page::Catalog => ("Steam catalog", None),
+            Page::Catalog => ("Steam catalog", Some(CATALOG_ABOUT)),
             Page::Profile => (ready_title(self.ready.as_ref()), None),
             Page::Theme => ("Theme", Some(THEME_ABOUT)),
             Page::ThisPc => ("Files on this PC", Some(THIS_PC_ABOUT)),
@@ -1269,11 +1299,7 @@ impl Setup {
             )
         };
 
-        column![profile]
-            .push(invalid)
-            .push((self.import_place() == Some(ImportPlace::Account)).then(|| self.import_view()))
-            .spacing(16)
-            .into()
+        column![profile].push(invalid).spacing(16).into()
     }
 
     fn key_view(&self) -> Element<'_, Message> {
@@ -1403,9 +1429,26 @@ impl Setup {
             .as_ref()
             .map(|error| text(error.clone()).size(font::BAR_SIZE).style(text::danger));
 
+        let place = self.import_place();
+        let imported =
+            matches!(self.import.result, Some(Ok(_))) && self.first_run.catalog == Part::Present;
+        let import_error = match &self.import.result {
+            Some(Err(error)) => Some(
+                text(error.clone())
+                    .size(font::NOTE_SIZE)
+                    .style(text::danger),
+            ),
+            _ => None,
+        };
+
         column![]
+            .push(self.prices_view())
             .push(error)
-            .push((self.import_place() == Some(ImportPlace::Catalog)).then(|| self.import_view()))
+            .push(
+                (place == Some(ImportPlace::Catalog) || imported)
+                    .then(|| self.zone_view(place.is_some())),
+            )
+            .push(import_error.filter(|_| place == Some(ImportPlace::Catalog)))
             .spacing(16)
             .into()
     }
@@ -1449,6 +1492,67 @@ impl Setup {
         };
 
         column![line].push(result).spacing(8).into()
+    }
+
+    fn prices_view(&self) -> Option<Element<'_, Message>> {
+        let imported = match &self.import.result {
+            Some(Ok(imported)) => Some(imported.region),
+            _ => None,
+        };
+        let line = prices_line(self.region.region, imported);
+        let muted = |line: String| text(line).size(font::BAR_SIZE).style(style::muted);
+
+        match imported {
+            Some(_) => Some(muted(line).into()),
+            None if has_catalog(&self.first_run) => None,
+            None => Some(
+                row![
+                    muted(line),
+                    muted("·".to_string()),
+                    link("Change", Message::ChangeRegion)
+                ]
+                .spacing(8)
+                .into(),
+            ),
+        }
+    }
+
+    fn zone_view(&self, accepting: bool) -> Element<'_, Message> {
+        let hovering = accepting && self.import.hovering && !self.import.running;
+        let content: Element<'_, Message> = match &self.import.result {
+            _ if self.import.running => note(IMPORTING).into(),
+            _ if hovering => text(DROP_TO_IMPORT)
+                .size(font::BAR_SIZE)
+                .style(style::accent)
+                .into(),
+            Some(Ok(imported)) => {
+                let now = Timestamp(jiff::Timestamp::now().as_millisecond());
+                let (before, after) =
+                    imported_note(&format::day(imported.prices_at, now), imported.region);
+                row![
+                    note(before),
+                    text(REFRESH)
+                        .font(font::ICONS)
+                        .size(font::icon(font::NOTE_SIZE))
+                        .style(style::muted),
+                    note(after),
+                ]
+                .spacing(4)
+                .align_y(Center)
+                .into()
+            }
+            _ => column![text(DROP_ASK).size(font::BAR_SIZE), note(DROP_HINT)]
+                .spacing(8)
+                .align_x(Center)
+                .into(),
+        };
+
+        container(content)
+            .width(Fill)
+            .height(ZONE_HEIGHT)
+            .center(Fill)
+            .style(style::drop_zone(hovering))
+            .into()
     }
 
     fn progress_view(&self) -> Element<'_, Message> {
@@ -1774,7 +1878,9 @@ fn step_state(page: Page, current: Page, done: bool) -> StepState {
 }
 
 fn downloads_at_start(first_run: &FirstRun) -> bool {
-    first_page(first_run) == Page::Catalog && first_run.catalog == Part::Missing
+    first_page(first_run) == Page::Catalog
+        && first_run.catalog == Part::Missing
+        && first_run.pending_update.is_some()
 }
 
 fn prepares_after_connect(first_run: &FirstRun) -> bool {
@@ -1789,11 +1895,11 @@ fn import_place(page: Page, first_run: &FirstRun, download: &Download) -> Option
         return Some(ImportPlace::Problems);
     }
     match page {
-        Page::Account => Some(ImportPlace::Account),
-        Page::Catalog if download.error.is_some() => Some(ImportPlace::Catalog),
+        Page::Catalog if first_run.catalog == Part::Missing => Some(ImportPlace::Catalog),
         Page::Welcome
         | Page::Theme
         | Page::ThisPc
+        | Page::Account
         | Page::Key
         | Page::Region
         | Page::Catalog
@@ -1834,14 +1940,25 @@ fn drop_message(event: Event, _: event::Status, _: iced::window::Id) -> Option<M
     }
 }
 
-fn can_import(place: Option<ImportPlace>, import: &Import, account: &Account) -> bool {
-    place.is_some() && !import.running && !account.connecting
+fn can_import(place: Option<ImportPlace>, import: &Import) -> bool {
+    place.is_some() && !import.running
 }
 
 fn import_error_text(error: &CatalogFileError) -> String {
     match error {
         CatalogFileError::NotACatalog(_) => error.to_string(),
         _ => error_chain(error),
+    }
+}
+
+fn prices_line(chosen: Region, imported: Option<Region>) -> String {
+    let name = |region: Region| Country::of(region).name;
+    match imported {
+        Some(region) if region != chosen => {
+            format!("Prices from {}, from the imported file", name(region))
+        }
+        Some(region) => format!("Prices from {}", name(region)),
+        None => format!("Prices from {}", name(chosen)),
     }
 }
 
@@ -2761,7 +2878,7 @@ mod tests {
     }
 
     #[test]
-    fn the_import_line_shows_where_a_catalog_can_go() {
+    fn the_import_zone_is_only_on_the_catalog_page() {
         let failed = Download {
             error: Some("Steam is not responding".to_string()),
             ..Download::default()
@@ -2776,15 +2893,15 @@ mod tests {
         };
 
         assert_eq!(
-            import_place(Page::Account, &without_catalog(), &Download::default()),
-            Some(ImportPlace::Account)
+            import_place(Page::Catalog, &without_catalog(), &Download::default()),
+            Some(ImportPlace::Catalog)
         );
         assert_eq!(
             import_place(Page::Catalog, &without_catalog(), &failed),
             Some(ImportPlace::Catalog)
         );
         assert_eq!(
-            import_place(Page::Catalog, &without_catalog(), &Download::default()),
+            import_place(Page::Account, &without_catalog(), &Download::default()),
             None
         );
         assert_eq!(
@@ -2794,6 +2911,10 @@ mod tests {
         assert_eq!(
             import_place(Page::Account, &invalid, &Download::default()),
             Some(ImportPlace::Problems)
+        );
+        assert_eq!(
+            import_place(Page::Catalog, &first_run(), &Download::default()),
+            None
         );
         assert_eq!(
             import_place(Page::Profile, &first_run(), &Download::default()),
@@ -2806,7 +2927,7 @@ mod tests {
         assert_eq!(import_place(Page::Catalog, &invalid, &running), None);
         assert_eq!(
             import_place(
-                Page::Account,
+                Page::Catalog,
                 &FirstRun {
                     data_dir: None,
                     ..without_catalog()
@@ -2818,21 +2939,16 @@ mod tests {
     }
 
     #[test]
-    fn an_import_waits_for_the_one_running_and_for_connect() {
+    fn an_import_waits_for_the_one_running() {
         let running = Import {
             running: true,
             ..Import::default()
         };
-        let connecting = Account {
-            connecting: true,
-            ..Account::default()
-        };
-        let place = Some(ImportPlace::Account);
+        let place = Some(ImportPlace::Catalog);
 
-        assert!(can_import(place, &Import::default(), &Account::default()));
-        assert!(!can_import(None, &Import::default(), &Account::default()));
-        assert!(!can_import(place, &running, &Account::default()));
-        assert!(!can_import(place, &Import::default(), &connecting));
+        assert!(can_import(place, &Import::default()));
+        assert!(!can_import(None, &Import::default()));
+        assert!(!can_import(place, &running));
     }
 
     #[test]
@@ -2887,15 +3003,9 @@ mod tests {
     }
 
     #[test]
-    fn a_dropped_file_imports_only_where_the_line_shows() {
-        let mut setup = Setup::new(
-            FirstRun {
-                steam_id: Part::Missing,
-                catalog: Part::Missing,
-                ..first_run()
-            },
-            None,
-        );
+    fn a_dropped_file_imports_only_where_the_zone_shows() {
+        let mut setup = Setup::new(without_catalog(), None);
+        setup.page = Page::Catalog;
         setup.update(Message::Hovering(true));
         assert!(setup.import.hovering);
 
@@ -2906,13 +3016,84 @@ mod tests {
         assert!(setup.import.running);
         assert!(!setup.import.hovering);
 
-        let mut setup = Setup::new(first_run(), None);
+        let mut setup = Setup::new(without_catalog(), None);
+        setup.page = Page::Account;
         assert!(setup.import_place().is_none());
         assert!(matches!(
             setup.update(Message::Import(PathBuf::from("catalog.zip"))),
             Action::None
         ));
         assert!(!setup.import.running);
+    }
+
+    fn imported_from(code: &str) -> ImportedCatalog {
+        ImportedCatalog {
+            games: 10,
+            prices_at: Timestamp(0),
+            region: country(code),
+        }
+    }
+
+    #[test]
+    fn an_imported_catalog_brings_its_region() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "region = \"IT\"\n").unwrap();
+        let mut setup = region_setup(dir.path());
+        setup.page = Page::Catalog;
+        setup.region.choose(country("IT"));
+
+        let result = setup.keep_imported_region(Ok(imported_from("DE")));
+        setup.import.result = Some(result);
+
+        let config = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(config.contains("DE"), "{config}");
+        assert_eq!(
+            prices_line(setup.region.region, Some(country("DE"))),
+            "Prices from Germany, from the imported file"
+        );
+        assert!(setup.prices_view().is_some());
+    }
+
+    #[test]
+    fn the_prices_line_names_the_chosen_region_or_the_imported_one() {
+        assert_eq!(prices_line(country("IT"), None), "Prices from Italy");
+        assert_eq!(
+            prices_line(country("IT"), Some(country("IT"))),
+            "Prices from Italy"
+        );
+        assert_eq!(prices_line(country("ZZ"), None), "Prices from ZZ");
+    }
+
+    #[test]
+    fn change_goes_back_to_the_region_but_not_during_a_download() {
+        let mut setup = Setup::new(without_catalog(), None);
+        setup.page = Page::Catalog;
+
+        setup.download.running = true;
+        setup.update(Message::ChangeRegion);
+        assert_eq!(setup.page, Page::Catalog);
+
+        setup.download.running = false;
+        setup.update(Message::ChangeRegion);
+        assert_eq!(setup.page, Page::Region);
+    }
+
+    #[test]
+    fn the_prices_row_is_hidden_when_the_region_was_not_asked() {
+        let resuming = FirstRun {
+            pending_update: Some(PendingUpdate {
+                started_at: Timestamp(0),
+                responses: 120,
+            }),
+            ..without_catalog()
+        };
+        let mut setup = Setup::new(resuming, None);
+        setup.page = Page::Catalog;
+        assert!(setup.prices_view().is_none());
+
+        let mut setup = Setup::new(without_catalog(), None);
+        setup.page = Page::Catalog;
+        assert!(setup.prices_view().is_some());
     }
 
     #[test]

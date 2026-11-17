@@ -811,6 +811,26 @@ pub fn card(theme: &Theme) -> container::Style {
     }
 }
 
+pub fn drop_zone(hovering: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let palette = theme.extended_palette();
+        let (color, width) = if hovering {
+            (palette.primary.base.color, 2.0)
+        } else {
+            (palette.background.strong.color, 1.0)
+        };
+
+        container::Style {
+            border: Border {
+                color,
+                width,
+                radius: 8.0.into(),
+            },
+            ..container::Style::default()
+        }
+    }
+}
+
 pub fn zoom(theme: &Theme) -> container::Style {
     let background = theme.extended_palette().background.base;
 
