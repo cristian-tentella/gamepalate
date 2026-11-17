@@ -5,7 +5,7 @@ use gamepalate_app::{
     GameStanding, Gamepalate, Price, Reviews, SearchOptions,
 };
 use iced::{
-    Center, ContentFit, Element, Fill, Length, Right, Size, Task, never, padding,
+    Center, Color, ContentFit, Element, Fill, Length, Right, Size, Task, never, padding,
     widget::{
         Id, button, column, container, image, mouse_area, opaque, operation, rich_text, row,
         scrollable,
@@ -155,7 +155,6 @@ pub enum Message {
     Sort(BrowseOrder),
     OnSale(bool),
     Show(Kind, Choice),
-    ResetAll,
     ToggleFilters,
     CloseFilters,
     Filters(filters::Message),
@@ -196,7 +195,7 @@ impl Browse {
         name: &str,
     ) -> Task<SearchMessage> {
         match message {
-            Message::Sort(_) | Message::OnSale(_) | Message::Show(..) | Message::ResetAll => {
+            Message::Sort(_) | Message::OnSale(_) | Message::Show(..) => {
                 let next = changed(&self.options, &message);
                 Task::batch([self.change(gamepalate, name, next), operation::focus(FIELD)])
             }
@@ -754,17 +753,12 @@ impl Browse {
                         Message::Show(kind, next_choice(choice)),
                     )
                 }))
-                .push(
-                    button(text("Reset").size(font::NOTE_SIZE))
-                        .padding([4, 8])
-                        .style(style::text_button)
-                        .on_press(SearchMessage::Browse(Message::ResetAll)),
-                )
                 .spacing(8)
                 .wrap()
                 .vertical_spacing(6),
         )
         .width(Fill)
+        .center_x(Fill)
         .into()
     }
 
@@ -777,19 +771,27 @@ impl Browse {
         tip: [String; 2],
         message: Message,
     ) -> Element<'a, SearchMessage> {
-        let icon = match state {
-            Chip::Off => None,
-            Chip::Only => Some(font::CHECK),
-            Chip::Hide => Some(font::BLOCK),
+        // The icon is always there, and only shows when the chip does something: the chip keeps its
+        // size from one state to the other.
+        let glyph = if state == Chip::Hide {
+            font::BLOCK
+        } else {
+            font::CHECK
         };
-        let mut content = row![].spacing(4).align_y(Center);
-        if let Some(icon) = icon {
-            content = content.push(text(icon).font(font::ICONS).size(font::icon(11.0)));
-        }
-        let chip = button(content.push(text(label).size(font::NOTE_SIZE)))
-            .padding([3, 10])
-            .style(style::filter_chip(state))
-            .on_press(SearchMessage::Browse(message));
+        let icon = text(glyph).font(font::ICONS).size(font::icon(11.0));
+        let icon = if state == Chip::Off {
+            icon.color(Color::TRANSPARENT)
+        } else {
+            icon
+        };
+        let chip = button(
+            row![icon, text(label).size(font::NOTE_SIZE)]
+                .spacing(3)
+                .align_y(Center),
+        )
+        .padding([2, 8])
+        .style(style::filter_chip(state))
+        .on_press(SearchMessage::Browse(message));
         let lines: Vec<String> = tip.into_iter().filter(|line| !line.is_empty()).collect();
         let several = lines.len() > 1;
 
@@ -999,7 +1001,6 @@ fn changed(options: &BrowseOptions, message: &Message) -> BrowseOptions {
             }
         }
         Message::Show(kind, choice) => kind.set(&mut next, *choice),
-        Message::ResetAll => next = BrowseOptions::default(),
         _ => {}
     }
     next
@@ -1421,20 +1422,6 @@ mod tests {
         assert_eq!(off.filters.max_price_cents, Some(1500));
         let on = changed(&off, &Message::OnSale(true));
         assert!(on.filters.only_discounted);
-    }
-
-    #[test]
-    fn reset_gives_the_defaults_filters_and_order_included() {
-        let mut options = BrowseOptions::default();
-        options.filters.tags = vec!["Roguelike".to_string()];
-        options.library = Choice::Only;
-        options.order = BrowseOrder::Price;
-        options.descending = true;
-
-        assert_eq!(
-            changed(&options, &Message::ResetAll),
-            BrowseOptions::default()
-        );
     }
 
     #[test]
