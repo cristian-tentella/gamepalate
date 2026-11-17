@@ -6,7 +6,7 @@ use std::{
 };
 
 use gamepalate_app::{
-    AppId, Gamepalate, Region, SteamError, Timestamp,
+    AppId, Gamepalate, Region, SteamError, ThemeChoice, Timestamp,
     account::{ConnectError, connect, parse_profile},
     catalog_file::{CatalogFileError, ImportedCatalog, import_catalog},
     ready::{ReadyCheck, check_ready},
@@ -14,12 +14,12 @@ use gamepalate_app::{
     update::download_catalog,
 };
 use iced::{
-    Center, ContentFit, Element, Event, Fill, Padding, Subscription, Task, event,
+    Center, ContentFit, Element, Event, Fill, Padding, Subscription, Task, Theme, border, event,
     futures::{SinkExt, channel::mpsc},
     keyboard::{self, Key, key::Named},
     padding, stream,
     widget::{
-        button, column, container, image, progress_bar, row, scrollable, space, stack, text,
+        button, column, container, image, progress_bar, radio, row, scrollable, space, stack, text,
         text_input,
     },
 };
@@ -29,6 +29,7 @@ use super::{
     steam_client::{ElsewhereHint, SteamClientQuestion},
 };
 use crate::{
+    app::theme::theme,
     font, format,
     progress::{Stage, Tracker, update_error_text},
     style,
@@ -63,6 +64,16 @@ const FIND_STEAM_ID: &str = "Open your profile on steamcommunity.com and copy th
 const DROP_CATALOG: &str = "Have a catalog file? Drop it on this window.";
 const IMPORTING: &str = "Importing the catalog…";
 const DROP_TO_IMPORT: &str = "Drop to import";
+const LOGO_BYTES: &[u8] = include_bytes!("../../gamepalate.png");
+const LOGO_SIZE: f32 = 96.0;
+const WELCOME_ABOUT: &str =
+    "Recommends games from the Steam catalog, based on the hours you play and the votes you give";
+const WELCOME_WIDTH: f32 = 480.0;
+const THEME_ABOUT: &str = "You can change it later in Settings";
+const PREVIEW_WIDTH: f32 = 300.0;
+const PREVIEW_HEIGHT: f32 = 180.0;
+const PREVIEW_BAR: f32 = 24.0;
+const PREVIEW_RADIUS: f32 = 6.0;
 
 pub struct Setup {
     first_run: FirstRun,
@@ -75,6 +86,7 @@ pub struct Setup {
     covers: Option<Arc<Covers>>,
     played: Vec<Played>,
     question: Option<SteamClientQuestion>,
+    theme: ThemeChoice,
 }
 
 #[derive(Debug)]
@@ -182,6 +194,7 @@ pub enum Message {
     Continue,
     Back,
     Enter,
+    Theme(ThemeChoice),
     SteamId(String),
     Key(String),
     GetKey,
@@ -207,6 +220,7 @@ pub enum Action {
     None,
     Run(Task<Message>),
     Open(Box<Gamepalate>),
+    Theme(ThemeChoice),
 }
 
 pub fn start(first_run: FirstRun) -> Result<Gamepalate, Box<Setup>> {
@@ -254,6 +268,7 @@ impl Setup {
             .data_dir
             .as_deref()
             .and_then(SteamClientQuestion::ask);
+        let theme = first_run.gui_settings().theme;
 
         Setup {
             page: first_page(&first_run),
@@ -266,6 +281,7 @@ impl Setup {
             covers: Covers::new().ok().map(Arc::new),
             played,
             question,
+            theme,
         }
     }
 
@@ -277,7 +293,7 @@ impl Setup {
 
         match self.download() {
             Action::Run(download) => Task::batch([covers, download]),
-            Action::None | Action::Open(_) => covers,
+            Action::None | Action::Open(_) | Action::Theme(_) => covers,
         }
     }
 
@@ -316,7 +332,7 @@ impl Setup {
                 Action::None
             }
             Message::Continue => {
-                if let Some(page) = next_page(self.page) {
+                if let Some(page) = next_page(self.page, &self.first_run) {
                     self.page = page;
                 }
                 Action::None
@@ -326,6 +342,14 @@ impl Setup {
                     self.page = page;
                 }
                 Action::None
+            }
+            Message::Theme(choice) if choice == self.theme => Action::None,
+            Message::Theme(choice) => {
+                self.theme = choice;
+                let _ = self
+                    .first_run
+                    .change_gui_settings(move |settings| settings.theme = choice);
+                Action::Theme(choice)
             }
             Message::Enter => match self.primary().and_then(|primary| primary.message) {
                 Some(message) => self.update(message),
@@ -429,7 +453,7 @@ impl Setup {
         if busy {
             return None;
         }
-        previous_page(self.page)
+        previous_page(self.page, &self.first_run)
     }
 
     fn primary(&self) -> Option<Primary> {
@@ -468,9 +492,8 @@ impl Setup {
                     Some(Primary::new("Check again", Some(Message::Prepare(true))))
                 }
             },
-            Page::Welcome | Page::Theme | Page::ThisPc | Page::Key | Page::Region => {
-                Some(Primary::proceed())
-            }
+            Page::Welcome => Some(Primary::new("Get started", Some(Message::Continue))),
+            Page::Theme | Page::ThisPc | Page::Key | Page::Region => Some(Primary::proceed()),
         }
     }
 
@@ -537,7 +560,7 @@ impl Setup {
         let covers = self.begin();
         match self.prepare(false) {
             Action::Run(prepare) => Action::Run(Task::batch([covers, prepare])),
-            Action::None | Action::Open(_) => Action::Run(covers),
+            Action::None | Action::Open(_) | Action::Theme(_) => Action::Run(covers),
         }
     }
 
@@ -627,7 +650,7 @@ impl Setup {
     }
 
     fn head_view(&self) -> Element<'_, Message> {
-        let content = step_of(self.page).map(|(number, count)| {
+        let content = step_of(self.page, &self.first_run).map(|(number, count)| {
             row![
                 self.dots_view(),
                 space().width(Fill),
@@ -646,7 +669,7 @@ impl Setup {
 
     fn dots_view(&self) -> Element<'_, Message> {
         let mut dots = row![].spacing(8).align_y(Center);
-        for (index, page) in counted_pages().enumerate() {
+        for (index, page) in counted_pages(&self.first_run).enumerate() {
             let state = step_state(page, self.page, page_done(page, &self.first_run));
             if index > 0 {
                 dots = dots.push(
@@ -662,6 +685,9 @@ impl Setup {
     }
 
     fn body_view(&self) -> Element<'_, Message> {
+        if self.page == Page::Welcome {
+            return self.welcome_view();
+        }
         let content = column![]
             .push(
                 self.question
@@ -700,6 +726,10 @@ impl Setup {
                 .padding([8, 0])
                 .style(style::link)
                 .on_press(Message::Back)
+                .into(),
+            None if self.page == Page::Welcome => text(format!("v{}", env!("CARGO_PKG_VERSION")))
+                .size(font::BAR_SIZE)
+                .style(style::muted)
                 .into(),
             None => space().into(),
         };
@@ -781,7 +811,8 @@ impl Setup {
             }
             Page::Catalog => ("Steam catalog", None),
             Page::Profile => (ready_title(self.ready.as_ref()), None),
-            Page::Welcome | Page::Theme | Page::ThisPc | Page::Key | Page::Region => {
+            Page::Theme => ("Theme", Some(THEME_ABOUT)),
+            Page::Welcome | Page::ThisPc | Page::Key | Page::Region => {
                 return column![].into();
             }
         };
@@ -798,10 +829,67 @@ impl Setup {
             Page::Catalog if self.download.running => self.progress_view(),
             Page::Catalog => self.start_view(),
             Page::Profile => self.ready_view(),
-            Page::Welcome | Page::Theme | Page::ThisPc | Page::Key | Page::Region => {
-                column![].into()
-            }
+            Page::Theme => self.theme_view(),
+            Page::Welcome | Page::ThisPc | Page::Key | Page::Region => column![].into(),
         }
+    }
+
+    fn welcome_view(&self) -> Element<'_, Message> {
+        let logo = image(image::Handle::from_bytes(LOGO_BYTES))
+            .width(LOGO_SIZE)
+            .height(LOGO_SIZE)
+            .filter_method(image::FilterMethod::Linear);
+
+        container(
+            column![
+                logo,
+                column![
+                    text("gamepalate")
+                        .size(font::TITLE_SIZE)
+                        .font(font::SEMIBOLD),
+                    container(
+                        text(WELCOME_ABOUT)
+                            .size(font::INFO_SIZE)
+                            .style(style::muted)
+                            .align_x(Center),
+                    )
+                    .max_width(WELCOME_WIDTH),
+                ]
+                .spacing(8)
+                .align_x(Center),
+            ]
+            .spacing(24)
+            .align_x(Center),
+        )
+        .padding(SHEET_MARGIN)
+        .center(Fill)
+        .into()
+    }
+
+    fn theme_view(&self) -> Element<'_, Message> {
+        container(
+            row![
+                self.theme_choice("Light", ThemeChoice::Light),
+                self.theme_choice("Dark", ThemeChoice::Dark),
+            ]
+            .spacing(SHEET_MARGIN),
+        )
+        .width(Fill)
+        .center_x(Fill)
+        .into()
+    }
+
+    fn theme_choice(&self, label: &'static str, choice: ThemeChoice) -> Element<'_, Message> {
+        column![
+            button(preview(choice))
+                .padding(0)
+                .style(preview_button(self.theme == choice))
+                .on_press(Message::Theme(choice)),
+            radio(label, choice, Some(self.theme), Message::Theme).size(16),
+        ]
+        .spacing(16)
+        .align_x(Center)
+        .into()
     }
 
     fn most_played_view(&self) -> Option<Element<'_, Message>> {
@@ -992,6 +1080,72 @@ impl Setup {
     }
 }
 
+fn preview<'a>(choice: ThemeChoice) -> Element<'a, Message> {
+    let sample = theme(choice);
+    let block = |width: iced::Length, height: f32| {
+        let sample = sample.clone();
+        container(column![])
+            .width(width)
+            .height(height)
+            .style(move |_: &Theme| style::skeleton(&sample))
+    };
+    let bar = {
+        let sample = sample.clone();
+        container(column![])
+            .width(Fill)
+            .height(PREVIEW_BAR)
+            .style(move |_: &Theme| container::Style {
+                border: iced::Border {
+                    radius: border::top(PREVIEW_RADIUS),
+                    ..iced::Border::default()
+                },
+                ..style::top_bar(&sample)
+            })
+    };
+    let page = row![
+        block(80.into(), 124.0),
+        column![
+            block(120.into(), 16.0),
+            block(Fill, 8.0),
+            block(160.into(), 8.0),
+        ]
+        .spacing(8),
+    ]
+    .spacing(16);
+
+    container(column![bar, container(page).padding(16)])
+        .width(PREVIEW_WIDTH)
+        .height(PREVIEW_HEIGHT)
+        .style(move |_: &Theme| container::Style {
+            border: iced::Border {
+                radius: PREVIEW_RADIUS.into(),
+                ..iced::Border::default()
+            },
+            ..style::card(&sample)
+        })
+        .into()
+}
+
+fn preview_button(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, _| {
+        let palette = theme.extended_palette();
+        let (color, width) = if selected {
+            (palette.primary.base.color, 2.0)
+        } else {
+            (palette.background.strong.color, 1.0)
+        };
+
+        button::Style {
+            border: iced::Border {
+                color,
+                width,
+                radius: 8.0.into(),
+            },
+            ..button::Style::default()
+        }
+    }
+}
+
 fn page_title<'a>(line: impl text::IntoFragment<'a>) -> text::Text<'a> {
     text(line).size(font::PRICE_SIZE).font(font::SEMIBOLD)
 }
@@ -1095,8 +1249,12 @@ pub(crate) fn connect_error_text(error: &ConnectError) -> String {
     }
 }
 
-fn shown(page: Page) -> bool {
-    matches!(page, Page::Account | Page::Catalog | Page::Profile)
+fn shown(page: Page, first_run: &FirstRun) -> bool {
+    match page {
+        Page::Welcome | Page::Theme => first_run.saved_steam_id.is_none(),
+        Page::Account | Page::Catalog | Page::Profile => true,
+        Page::ThisPc | Page::Key | Page::Region => false,
+    }
 }
 
 fn page_done(page: Page, first_run: &FirstRun) -> bool {
@@ -1118,33 +1276,33 @@ fn first_page(first_run: &FirstRun) -> Page {
 fn page_from(page: Page, first_run: &FirstRun) -> Page {
     Page::ALL
         .into_iter()
-        .filter(|&next| next >= page && shown(next))
+        .filter(|&next| next >= page && shown(next, first_run))
         .find(|&next| !page_done(next, first_run))
         .unwrap_or(Page::Profile)
 }
 
-fn next_page(page: Page) -> Option<Page> {
+fn next_page(page: Page, first_run: &FirstRun) -> Option<Page> {
     Page::ALL
         .into_iter()
-        .find(|&next| next > page && shown(next))
+        .find(|&next| next > page && shown(next, first_run))
 }
 
-fn previous_page(page: Page) -> Option<Page> {
+fn previous_page(page: Page, first_run: &FirstRun) -> Option<Page> {
     Page::ALL
         .into_iter()
         .rev()
-        .find(|&previous| previous < page && shown(previous))
+        .find(|&previous| previous < page && shown(previous, first_run))
 }
 
-fn counted_pages() -> impl Iterator<Item = Page> {
+fn counted_pages(first_run: &FirstRun) -> impl Iterator<Item = Page> {
     Page::ALL
         .into_iter()
-        .filter(|&page| page >= Page::ThisPc && shown(page))
+        .filter(|&page| page >= Page::ThisPc && shown(page, first_run))
 }
 
-fn step_of(page: Page) -> Option<(usize, usize)> {
-    let number = counted_pages().position(|counted| counted == page)?;
-    Some((number + 1, counted_pages().count()))
+fn step_of(page: Page, first_run: &FirstRun) -> Option<(usize, usize)> {
+    let number = counted_pages(first_run).position(|counted| counted == page)?;
+    Some((number + 1, counted_pages(first_run).count()))
 }
 
 fn step_state(page: Page, current: Page, done: bool) -> StepState {
@@ -1437,7 +1595,8 @@ mod tests {
         };
 
         assert_eq!(first_page(&without_key), Page::Account);
-        assert_eq!(first_page(&without_steam_id), Page::Account);
+        assert_eq!(first_page(&without_steam_id), Page::Welcome);
+        assert_eq!(page_from(Page::Account, &without_steam_id), Page::Account);
         assert_eq!(first_page(&without_catalog()), Page::Catalog);
         assert_eq!(first_page(&invalid), Page::Catalog);
         assert_eq!(first_page(&resuming), Page::Catalog);
@@ -1457,7 +1616,8 @@ mod tests {
         for page in [Page::Welcome, Page::Theme] {
             assert!(!page_done(page, &new));
             assert!(page_done(page, &without_catalog()));
-            assert!(!shown(page));
+            assert!(shown(page, &new));
+            assert!(!shown(page, &without_catalog()));
         }
     }
 
@@ -1478,13 +1638,25 @@ mod tests {
 
     #[test]
     fn back_and_continue_skip_the_pages_not_shown() {
-        assert_eq!(previous_page(Page::Account), None);
-        assert_eq!(previous_page(Page::Catalog), Some(Page::Account));
-        assert_eq!(previous_page(Page::Profile), Some(Page::Catalog));
-        assert_eq!(next_page(Page::Welcome), Some(Page::Account));
-        assert_eq!(next_page(Page::Account), Some(Page::Catalog));
-        assert_eq!(next_page(Page::Catalog), Some(Page::Profile));
-        assert_eq!(next_page(Page::Profile), None);
+        let known = first_run();
+        let new = FirstRun {
+            saved_steam_id: None,
+            ..first_run()
+        };
+
+        assert_eq!(previous_page(Page::Account, &known), None);
+        assert_eq!(previous_page(Page::Catalog, &known), Some(Page::Account));
+        assert_eq!(previous_page(Page::Profile, &known), Some(Page::Catalog));
+        assert_eq!(next_page(Page::Welcome, &known), Some(Page::Account));
+        assert_eq!(next_page(Page::Account, &known), Some(Page::Catalog));
+        assert_eq!(next_page(Page::Catalog, &known), Some(Page::Profile));
+        assert_eq!(next_page(Page::Profile, &known), None);
+
+        assert_eq!(previous_page(Page::Account, &new), Some(Page::Theme));
+        assert_eq!(previous_page(Page::Theme, &new), Some(Page::Welcome));
+        assert_eq!(previous_page(Page::Welcome, &new), None);
+        assert_eq!(next_page(Page::Welcome, &new), Some(Page::Theme));
+        assert_eq!(next_page(Page::Theme, &new), Some(Page::Account));
     }
 
     #[test]
@@ -1545,11 +1717,89 @@ mod tests {
 
     #[test]
     fn the_steps_count_the_pages_shown() {
-        assert_eq!(step_of(Page::Account), Some((1, 3)));
-        assert_eq!(step_of(Page::Catalog), Some((2, 3)));
-        assert_eq!(step_of(Page::Profile), Some((3, 3)));
-        assert_eq!(step_of(Page::Welcome), None);
-        assert_eq!(step_of(Page::Theme), None);
+        let known = first_run();
+        let new = FirstRun {
+            saved_steam_id: None,
+            ..first_run()
+        };
+
+        for first_run in [&known, &new] {
+            assert_eq!(step_of(Page::Account, first_run), Some((1, 3)));
+            assert_eq!(step_of(Page::Catalog, first_run), Some((2, 3)));
+            assert_eq!(step_of(Page::Profile, first_run), Some((3, 3)));
+            assert_eq!(step_of(Page::Welcome, first_run), None);
+            assert_eq!(step_of(Page::Theme, first_run), None);
+        }
+    }
+
+    fn setup_in(dir: &std::path::Path, steam_id: bool) -> Setup {
+        Setup::new(
+            FirstRun {
+                data_dir: Some(dir.to_path_buf()),
+                saved_steam_id: steam_id.then_some(SteamId(76_561_198_000_000_000)),
+                ..first_run()
+            },
+            None,
+        )
+    }
+
+    #[test]
+    fn the_welcome_and_theme_pages_lead_to_the_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut setup = setup_in(dir.path(), false);
+
+        assert_eq!(setup.page, Page::Welcome);
+        assert_eq!(primary_of(&setup), Some(("Get started", true)));
+        assert_eq!(setup.back(), None);
+
+        setup.update(Message::Enter);
+        assert_eq!(setup.page, Page::Theme);
+        assert_eq!(primary_of(&setup), Some(("Continue", true)));
+        assert_eq!(setup.back(), Some(Page::Welcome));
+
+        setup.update(Message::Continue);
+        assert_eq!(setup.page, Page::Account);
+        setup.update(Message::Back);
+        assert_eq!(setup.page, Page::Theme);
+    }
+
+    #[test]
+    fn a_click_on_dark_applies_and_saves_the_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut setup = setup_in(dir.path(), false);
+        assert_eq!(setup.theme, ThemeChoice::Light);
+
+        assert!(matches!(
+            setup.update(Message::Theme(ThemeChoice::Dark)),
+            Action::Theme(ThemeChoice::Dark)
+        ));
+        assert_eq!(setup.theme, ThemeChoice::Dark);
+        assert_eq!(setup.first_run().gui_settings().theme, ThemeChoice::Dark);
+    }
+
+    #[test]
+    fn a_click_on_the_chosen_theme_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut setup = setup_in(dir.path(), false);
+
+        assert!(matches!(
+            setup.update(Message::Theme(ThemeChoice::Light)),
+            Action::None
+        ));
+        assert!(!dir.path().join("gui.toml").exists());
+    }
+
+    #[test]
+    fn the_setup_opens_in_the_saved_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_in(dir.path(), false)
+            .first_run()
+            .change_gui_settings(|settings| settings.theme = ThemeChoice::Dark)
+            .unwrap();
+
+        let setup = setup_in(dir.path(), false);
+
+        assert_eq!(setup.theme, ThemeChoice::Dark);
     }
 
     #[test]
@@ -1562,6 +1812,7 @@ mod tests {
             ..first_run()
         };
         let mut setup = Setup::new(new, None);
+        setup.page = Page::Account;
         assert_eq!(primary_of(&setup), Some(("Connect", false)));
 
         setup.account = account("76561198000000000", "KEY");
