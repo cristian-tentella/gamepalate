@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    cell::OnceCell,
+    collections::{BTreeMap, HashSet},
+    path::Path,
+};
 
 use gamepalate_core::{
     corrections::Corrections,
@@ -270,22 +274,26 @@ fn in_library(id: AppId, inputs: &SearchInputs) -> bool {
     signals.played().any(|played| played == id) || signals.recent.iter().any(|game| game.id == id)
 }
 
-pub(crate) fn game_standing(
+type Hours = BTreeMap<AppId, (f64, HoursSource)>;
+
+fn library_hours(inputs: &SearchInputs) -> Hours {
+    hours_by_source(
+        inputs.signals,
+        inputs.votes,
+        &inputs.corrections.played_elsewhere,
+        &inputs.config.signals,
+    )
+}
+
+fn standing_with(
     id: AppId,
     inputs: &SearchInputs,
     now: Timestamp,
+    in_library: bool,
+    hours: impl FnOnce() -> f64,
 ) -> Option<GameStanding> {
-    let signals = inputs.signals;
-    if in_library(id, inputs) {
-        let hours = hours_by_source(
-            signals,
-            inputs.votes,
-            &inputs.corrections.played_elsewhere,
-            &inputs.config.signals,
-        )
-        .get(&id)
-        .map_or(0.0, |&(hours, _)| hours);
-        return Some(GameStanding::InLibrary { hours });
+    if in_library {
+        return Some(GameStanding::InLibrary { hours: hours() });
     }
     if inputs.corrections.played_elsewhere.contains(&id) {
         return Some(GameStanding::PlayedElsewhere);
@@ -300,13 +308,58 @@ pub(crate) fn game_standing(
     })
 }
 
+/// The standing of one game. For many games, `Standings` makes the hours once.
+pub(crate) fn game_standing(
+    id: AppId,
+    inputs: &SearchInputs,
+    now: Timestamp,
+) -> Option<GameStanding> {
+    standing_with(id, inputs, now, in_library(id, inputs), || {
+        library_hours(inputs)
+            .get(&id)
+            .map_or(0.0, |&(hours, _)| hours)
+    })
+}
+
+/// `game_standing` for many games: the games of the Library and the hours are worked out once,
+/// the hours only when a game of the Library asks.
+pub(crate) struct Standings<'a> {
+    inputs: &'a SearchInputs<'a>,
+    in_library: HashSet<AppId>,
+    hours: OnceCell<Hours>,
+}
+
+impl<'a> Standings<'a> {
+    pub(crate) fn new(inputs: &'a SearchInputs<'a>) -> Standings<'a> {
+        let signals = inputs.signals;
+        Standings {
+            inputs,
+            in_library: signals
+                .played()
+                .chain(signals.recent.iter().map(|game| game.id))
+                .collect(),
+            hours: OnceCell::new(),
+        }
+    }
+
+    pub(crate) fn of(&self, id: AppId, now: Timestamp) -> Option<GameStanding> {
+        standing_with(id, self.inputs, now, self.in_library.contains(&id), || {
+            self.hours
+                .get_or_init(|| library_hours(self.inputs))
+                .get(&id)
+                .map_or(0.0, |&(hours, _)| hours)
+        })
+    }
+}
+
 pub(crate) fn found_games(ids: &[AppId], inputs: &SearchInputs, now: Timestamp) -> Vec<FoundGame> {
+    let standings = Standings::new(inputs);
     ids.iter()
         .filter_map(|&id| {
             inputs.catalog.game(id).map(|game| FoundGame {
                 id,
                 name: game.name.clone(),
-                standing: game_standing(id, inputs, now),
+                standing: standings.of(id, now),
             })
         })
         .collect()
@@ -784,6 +837,39 @@ mod tests {
         fixture.votes.clear();
 
         assert_eq!(standing_of(&fixture, 6), None);
+    }
+
+    #[test]
+    fn the_standings_of_many_games_are_those_of_each_game_alone() {
+        let mut fixture = Fixture::new();
+        fixture.corrections.played_elsewhere.insert(AppId(6));
+        fixture.corrections.played_elsewhere.insert(AppId(7));
+        fixture
+            .votes
+            .insert(AppId(7), Vote::new(VoteKind::WouldTry, "2026-10-01"));
+        fixture.votes.insert(AppId(8), later_since(0, 0));
+        fixture.votes.insert(AppId(9), later_since(LATER_DAYS, 0));
+        fixture
+            .votes
+            .insert(AppId(1), Vote::new(VoteKind::NotForMe, "2026-10-01"));
+        let inputs = fixture.inputs();
+        let standings = Standings::new(&inputs);
+
+        for id in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 80, 90] {
+            let id = AppId(id);
+            assert_eq!(
+                standings.of(id, NOW),
+                game_standing(id, &inputs, NOW),
+                "{id:?}"
+            );
+        }
+        assert_eq!(
+            standings.of(AppId(8), NOW),
+            Some(GameStanding::Later {
+                days_left: LATER_DAYS
+            })
+        );
+        assert_eq!(standings.of(AppId(9), NOW), None);
     }
 
     #[test]
