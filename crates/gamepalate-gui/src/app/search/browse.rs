@@ -631,14 +631,9 @@ impl Browse {
             .height(Fill)
             .into()
         };
-        let top = sensor(column![
-            field,
-            style::separator(),
-            self.toolbar(),
-            self.chips()
-        ])
-        .on_show(|size| SearchMessage::Browse(Message::Measured(size)))
-        .on_resize(|size| SearchMessage::Browse(Message::Measured(size)));
+        let top = sensor(column![field, style::separator(), self.toolbar()])
+            .on_show(|size| SearchMessage::Browse(Message::Measured(size)))
+            .on_resize(|size| SearchMessage::Browse(Message::Measured(size)));
         let content = container(
             column![top]
                 .push(self.problem())
@@ -652,7 +647,7 @@ impl Browse {
         stack![content].push(self.popup(size.height)).into()
     }
 
-    /// The count, and the button of the other filters.
+    /// The count, the chips and the button of the other filters, on one line while they fit.
     fn toolbar(&self) -> Element<'_, SearchMessage> {
         let arrow = if self.panel_open { '▴' } else { '▾' };
         let others = others_on(&self.options.filters);
@@ -666,7 +661,7 @@ impl Browse {
             text(games_count(self.rows.len()))
                 .size(font::NOTE_SIZE)
                 .style(style::muted),
-            space().width(Fill),
+            self.chips(),
             button(text(label).size(font::NOTE_SIZE))
                 .padding([4, 8])
                 .style(style::text_button)
@@ -726,7 +721,7 @@ impl Browse {
         )
     }
 
-    /// The filters on the kind of game, one chip each, in a row that wraps if the window is
+    /// The filters on the kind of game, one chip each, in a row that wraps if the line is
     /// narrow. A chip goes from not filtering to showing only those games, to hiding them.
     fn chips(&self) -> Element<'_, SearchMessage> {
         let on_sale = if self.options.filters.only_discounted {
@@ -769,7 +764,7 @@ impl Browse {
                 .wrap()
                 .vertical_spacing(6),
         )
-        .padding(padding::left(16).right(16).bottom(8))
+        .width(Fill)
         .into()
     }
 
