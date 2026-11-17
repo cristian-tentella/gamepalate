@@ -836,7 +836,7 @@ impl Browse {
             button(label)
                 .padding([4, 0])
                 .width(width)
-                .style(style::text_button)
+                .style(style::column_heading)
                 .on_press(SearchMessage::Browse(Message::Sort(order)))
         };
 

@@ -1014,6 +1014,14 @@ pub fn text_button(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+/// A column heading of a table: the hover fills the whole cell, square.
+pub fn column_heading(theme: &Theme, status: button::Status) -> button::Style {
+    button::Style {
+        border: Border::default(),
+        ..text_button(theme, status)
+    }
+}
+
 pub fn primary(theme: &Theme, status: button::Status) -> button::Style {
     rounded(button::primary(theme, status))
 }
