@@ -35,6 +35,8 @@ const LEFT: char = '\u{E5CB}';
 const RIGHT: char = '\u{E5CC}';
 const ARROW_INSET: f32 = 12.0;
 const BLURRED_WIDTH: u32 = 320;
+/// Twice the default screenshot width: sharp on a 4K screen at 200%.
+const MAX_LOADED_WIDTH: u32 = 1640;
 const BLUR_SIGMA: f32 = 5.0;
 
 fn framed<'a>(
@@ -100,6 +102,27 @@ fn blurred(bytes: &[u8]) -> Option<image::Handle> {
         blurred.width(),
         blurred.height(),
         blurred.into_raw(),
+    ))
+}
+
+/// The screenshot shrunk to `MAX_LOADED_WIDTH` before it goes to the GPU, never enlarged.
+fn shrunk(bytes: &[u8]) -> Option<image::Handle> {
+    let screenshot = ::image::load_from_memory(bytes).ok()?;
+    let rgba = if screenshot.width() > MAX_LOADED_WIDTH {
+        let height = (u64::from(MAX_LOADED_WIDTH) * u64::from(screenshot.height())
+            / u64::from(screenshot.width()))
+        .max(1) as u32;
+        screenshot
+            .resize_exact(MAX_LOADED_WIDTH, height, FilterType::Lanczos3)
+            .into_rgba8()
+    } else {
+        screenshot.into_rgba8()
+    };
+
+    Some(image::Handle::from_rgba(
+        rgba.width(),
+        rgba.height(),
+        rgba.into_raw(),
     ))
 }
 
@@ -390,11 +413,11 @@ impl Showcase {
             };
             Task::perform(
                 async move {
-                    let handle = gamepalate
-                        .image(&url, kind)
-                        .await
-                        .ok()
-                        .map(image::Handle::from_bytes);
+                    let handle = match gamepalate.image(&url, kind).await {
+                        Ok(bytes) if kind == ImageKind::Screenshot => shrunk(&bytes),
+                        Ok(bytes) => Some(image::Handle::from_bytes(bytes)),
+                        Err(_) => None,
+                    };
                     (url, handle)
                 },
                 |(url, handle)| Message::ImageLoaded(url, handle),
@@ -836,6 +859,31 @@ mod tests {
 
         assert_eq!((width, height), (BLURRED_WIDTH, 179));
         assert!(blurred(b"not an image").is_none());
+    }
+
+    #[test]
+    fn the_screenshot_is_shrunk_but_never_enlarged() {
+        let encode = |width, height| {
+            let mut bytes = Vec::new();
+            ::image::RgbImage::from_fn(width, height, |x, _| ::image::Rgb([(x % 256) as u8, 0, 0]))
+                .write_to(
+                    &mut std::io::Cursor::new(&mut bytes),
+                    ::image::ImageFormat::Jpeg,
+                )
+                .unwrap();
+            bytes
+        };
+
+        let Some(image::Handle::Rgba { width, height, .. }) = shrunk(&encode(1920, 1080)) else {
+            panic!("the screenshot is not an image");
+        };
+        assert_eq!((width, height), (MAX_LOADED_WIDTH, 922));
+
+        let Some(image::Handle::Rgba { width, height, .. }) = shrunk(&encode(600, 338)) else {
+            panic!("the screenshot is not an image");
+        };
+        assert_eq!((width, height), (600, 338));
+        assert!(shrunk(b"not an image").is_none());
     }
 
     #[test]
