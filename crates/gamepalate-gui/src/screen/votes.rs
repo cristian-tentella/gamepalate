@@ -808,6 +808,7 @@ impl Votes {
     fn restart(&mut self) -> Task<Message> {
         self.rows = self.shown_rows();
         self.selected = 0;
+        self.viewport = Some(scrolled_to(self.viewport, 0.0));
 
         operation::scroll_to(
             LIST,
@@ -904,19 +905,22 @@ impl Votes {
         })
     }
 
-    fn reveal(&self) -> Task<Message> {
+    fn reveal(&mut self) -> Task<Message> {
         let Some((offset, height)) = self.viewport else {
             return Task::none();
         };
 
         match scroll_target(self.selected, offset, height) {
-            Some(y) => operation::scroll_to(
-                LIST,
-                AbsoluteOffset {
-                    x: None,
-                    y: Some(y),
-                },
-            ),
+            Some(y) => {
+                self.viewport = Some(scrolled_to(self.viewport, y));
+                operation::scroll_to(
+                    LIST,
+                    AbsoluteOffset {
+                        x: None,
+                        y: Some(y),
+                    },
+                )
+            }
             None => Task::none(),
         }
     }
@@ -1286,6 +1290,12 @@ fn shown(offset: f32, height: f32, count: usize) -> Range<usize> {
     let screen = (height.max(0.0) / ROW_HEIGHT).ceil() as usize;
 
     visible.start.saturating_sub(screen)..(visible.end + screen).min(count)
+}
+
+/// The viewport once the list is sent to `offset`: iced reports it only later, and until then
+/// the rows built are those of the new place.
+fn scrolled_to(viewport: Option<(f32, f32)>, offset: f32) -> (f32, f32) {
+    (offset, viewport.map_or(FIRST_HEIGHT, |(_, height)| height))
 }
 
 fn rows_height(rows: usize) -> f32 {
@@ -2134,6 +2144,14 @@ mod tests {
         assert_eq!(shown(rows_height(689) - 320.0, 320.0, 689), 669..689);
         assert_eq!(shown(0.0, 320.0, 4), 0..4);
         assert_eq!(shown(0.0, 320.0, 0), 0..0);
+    }
+
+    #[test]
+    fn a_list_sent_to_the_top_builds_the_top_rows_at_once() {
+        let (offset, height) = scrolled_to(Some((3_216.0, 320.0)), 0.0);
+        assert_eq!((offset, height), (0.0, 320.0));
+        assert_eq!(shown(offset, height, 689).start, 0);
+        assert_eq!(scrolled_to(None, 64.0), (64.0, FIRST_HEIGHT));
     }
 
     #[test]
