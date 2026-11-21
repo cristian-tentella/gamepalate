@@ -108,6 +108,8 @@ impl<F: Fetch> ImageDownloader<F> {
             }
             bytes.extend_from_slice(&chunk);
         }
+        // The image keeps this Vec as it is: without this, up to half of it is spare room
+        bytes.shrink_to_fit();
 
         Ok(bytes)
     }
@@ -215,6 +217,15 @@ mod tests {
         let downloader = downloader(200, Some("image/jpeg"), vec![1, 2, 3]);
 
         assert_eq!(downloader.download(URL).await.unwrap(), vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn an_image_keeps_no_spare_capacity() {
+        let downloader = downloader(200, Some("image/jpeg"), vec![1, 2, 3, 4, 5]);
+
+        let bytes = downloader.download(URL).await.unwrap();
+
+        assert_eq!(bytes.capacity(), bytes.len());
     }
 
     #[tokio::test]

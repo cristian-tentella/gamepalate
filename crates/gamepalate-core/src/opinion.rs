@@ -29,17 +29,6 @@ pub struct Standardization {
     pub deviations: Vec<f64>,
 }
 
-impl Standardization {
-    pub fn apply(&self, features: &[f64]) -> Vec<f64> {
-        features
-            .iter()
-            .zip(&self.means)
-            .zip(&self.deviations)
-            .map(|((x, mean), deviation)| (x - mean) / deviation)
-            .collect()
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct OpinionModel {
     pub tags: Vec<TagId>,
@@ -50,10 +39,28 @@ pub struct OpinionModel {
 
 impl OpinionModel {
     pub fn opinion(&self, game: &Game) -> f64 {
-        let features = features(game, &self.tags, &self.liked);
-        let standardized_features = self.standardization.apply(&features);
+        self.opinion_with(game, &mut Vec::new())
+    }
 
-        dot(&standardized_features, &self.weights)
+    // The terms of the standardized row times the weights, place by place, with 0 where the
+    // game has no feature: the sum of the dense row, in its order, without writing it.
+    fn opinion_with(&self, game: &Game, features: &mut Vec<(usize, f64)>) -> f64 {
+        features_into(game, &self.tags, &self.liked, features);
+        let Standardization { means, deviations } = &self.standardization;
+        let mut present = features.iter().peekable();
+
+        means
+            .iter()
+            .zip(deviations)
+            .zip(&self.weights)
+            .enumerate()
+            .map(|(j, ((mean, deviation), w))| {
+                let x = present
+                    .next_if(|&&(place, _)| place == j)
+                    .map_or(0.0, |&(_, x)| x);
+                (x - mean) / deviation * w
+            })
+            .sum()
     }
 }
 
@@ -83,51 +90,92 @@ fn used_tags(training_rows: &[TrainingRow]) -> Vec<TagId> {
         .collect()
 }
 
-fn features(game: &Game, tag_ids: &[TagId], liked: &LikedCreators) -> Vec<f64> {
+fn columns(tag_ids: &[TagId]) -> usize {
+    5 + tag_ids.len()
+}
+
+// The features of a game without its zeros, as (place, value) in the order of the places:
+// a game has few of the tags.
+fn features(game: &Game, tag_ids: &[TagId], liked: &LikedCreators) -> Vec<(usize, f64)> {
+    let mut features = Vec::new();
+    features_into(game, tag_ids, liked, &mut features);
+    features
+}
+
+fn features_into(
+    game: &Game,
+    tag_ids: &[TagId],
+    liked: &LikedCreators,
+    features: &mut Vec<(usize, f64)>,
+) {
     let positive_share = if game.reviews.total == 0 {
         0.0
     } else {
         game.reviews.positive as f64 / game.reviews.total as f64
     };
+    let first = [
+        (1.0 + game.reviews.total as f64).log10(),
+        positive_share,
+        (1.0 + game.price.original_cents as f64).log10(),
+        if liked.has_liked_developer(game) {
+            1.0
+        } else {
+            0.0
+        },
+        if liked.has_liked_franchise(game) {
+            1.0
+        } else {
+            0.0
+        },
+    ];
 
-    let mut features = vec![0.0; 5 + tag_ids.len()];
-    features[0] = (1.0 + game.reviews.total as f64).log10();
-    features[1] = positive_share;
-    features[2] = (1.0 + game.price.original_cents as f64).log10();
-    if liked.has_liked_developer(game) {
-        features[3] = 1.0;
-    }
-    if liked.has_liked_franchise(game) {
-        features[4] = 1.0;
-    }
-
-    for tag in &game.tags {
-        if let Ok(i) = tag_ids.binary_search(&tag.id) {
-            features[5 + i] = tag.weight;
+    features.clear();
+    features.extend(first.into_iter().enumerate().filter(|&(_, x)| x != 0.0));
+    let tags_start = features.len();
+    // From the last tag back, so a repeated tag keeps its last weight, even a 0
+    for tag in game.tags.iter().rev() {
+        if let Ok(i) = tag_ids.binary_search(&tag.id)
+            && !features[tags_start..]
+                .iter()
+                .any(|&(place, _)| place == 5 + i)
+        {
+            features.push((5 + i, tag.weight));
         }
     }
-
-    features
+    features.retain(|&(_, x)| x != 0.0);
+    features[tags_start..].sort_unstable_by_key(|&(place, _)| place);
 }
 
-fn standardization(features: &[Vec<f64>]) -> Standardization {
-    let mut means: Vec<f64> = Vec::new();
-    let mut deviations: Vec<f64> = Vec::new();
+// The sums of the dense rows, in their order: the zeros add nothing to the means, but every
+// row gives its (x - mean)² to every deviation, with x = 0 where it has no feature.
+fn standardization(rows: &[Vec<(usize, f64)>], columns: usize) -> Standardization {
+    let n = rows.len() as f64;
 
-    let n = features.len() as f64;
-
-    for j in 0..features[0].len() {
-        let mean = features.iter().map(|row| row[j]).sum::<f64>() / n;
-        means.push(mean);
-
-        let deviation = (features
-            .iter()
-            .map(|row| (row[j] - mean).powi(2))
-            .sum::<f64>()
-            / n)
-            .sqrt();
-        deviations.push(if deviation == 0.0 { 1.0 } else { deviation });
+    let mut sums = vec![0.0; columns];
+    for row in rows {
+        for &(j, x) in row {
+            sums[j] += x;
+        }
     }
+    let means: Vec<f64> = sums.iter().map(|sum| sum / n).collect();
+
+    let mut squares = vec![0.0; columns];
+    for row in rows {
+        let mut present = row.iter().peekable();
+        for (j, (square, mean)) in squares.iter_mut().zip(&means).enumerate() {
+            let x = present
+                .next_if(|&&(place, _)| place == j)
+                .map_or(0.0, |&(_, x)| x);
+            *square += (x - mean).powi(2);
+        }
+    }
+    let deviations = squares
+        .iter()
+        .map(|square| {
+            let deviation = (square / n).sqrt();
+            if deviation == 0.0 { 1.0 } else { deviation }
+        })
+        .collect();
 
     Standardization { means, deviations }
 }
@@ -138,16 +186,6 @@ fn sigmoid(x: f64) -> f64 {
 
 fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(a, b)| a * b).sum()
-}
-
-// The features of a row without its zeros, as (place, value): a game has few of the tags.
-fn sparse(features: &[f64]) -> Vec<(usize, f64)> {
-    features
-        .iter()
-        .enumerate()
-        .filter(|&(_, &x)| x != 0.0)
-        .map(|(j, &x)| (j, x))
-        .collect()
 }
 
 // Gradient descent on the standardized features, (x - mean) / deviation, without
@@ -277,12 +315,11 @@ fn model(training_rows: &[TrainingRow], liked: &LikedCreators) -> Option<Opinion
     }
 
     let tags = used_tags(training_rows);
-    let features = training_rows
+    let rows = training_rows
         .iter()
         .map(|row| features(row.game, &tags, liked))
         .collect::<Vec<_>>();
-    let standardization = standardization(&features);
-    let rows = features.iter().map(|row| sparse(row)).collect::<Vec<_>>();
+    let standardization = standardization(&rows, columns(&tags));
     let labels = training_rows
         .iter()
         .map(|row| row.label)
@@ -302,7 +339,9 @@ pub fn opinions(opinion_model: &OpinionModel, catalog: &Catalog) -> Vec<f64> {
     catalog
         .games()
         .par_iter()
-        .map(|game| opinion_model.opinion(game))
+        .map_init(Vec::new, |features, game| {
+            opinion_model.opinion_with(game, features)
+        })
         .collect()
 }
 
@@ -584,6 +623,329 @@ mod tests {
             );
             assert!((model.opinion(game) - old_opinion).abs() < 1e-12);
         }
+    }
+
+    // The features as they were, every place written out, and what read them: the reference
+    // for the opinion on pairs
+    fn features(game: &Game, tag_ids: &[TagId], liked: &LikedCreators) -> Vec<f64> {
+        let positive_share = if game.reviews.total == 0 {
+            0.0
+        } else {
+            game.reviews.positive as f64 / game.reviews.total as f64
+        };
+
+        let mut features = vec![0.0; 5 + tag_ids.len()];
+        features[0] = (1.0 + game.reviews.total as f64).log10();
+        features[1] = positive_share;
+        features[2] = (1.0 + game.price.original_cents as f64).log10();
+        if liked.has_liked_developer(game) {
+            features[3] = 1.0;
+        }
+        if liked.has_liked_franchise(game) {
+            features[4] = 1.0;
+        }
+
+        for tag in &game.tags {
+            if let Ok(i) = tag_ids.binary_search(&tag.id) {
+                features[5 + i] = tag.weight;
+            }
+        }
+
+        features
+    }
+
+    fn standardization(features: &[Vec<f64>]) -> Standardization {
+        let mut means: Vec<f64> = Vec::new();
+        let mut deviations: Vec<f64> = Vec::new();
+
+        let n = features.len() as f64;
+
+        for j in 0..features[0].len() {
+            let mean = features.iter().map(|row| row[j]).sum::<f64>() / n;
+            means.push(mean);
+
+            let deviation = (features
+                .iter()
+                .map(|row| (row[j] - mean).powi(2))
+                .sum::<f64>()
+                / n)
+                .sqrt();
+            deviations.push(if deviation == 0.0 { 1.0 } else { deviation });
+        }
+
+        Standardization { means, deviations }
+    }
+
+    fn sparse(features: &[f64]) -> Vec<(usize, f64)> {
+        features
+            .iter()
+            .enumerate()
+            .filter(|&(_, &x)| x != 0.0)
+            .map(|(j, &x)| (j, x))
+            .collect()
+    }
+
+    impl Standardization {
+        fn apply(&self, features: &[f64]) -> Vec<f64> {
+            features
+                .iter()
+                .zip(&self.means)
+                .zip(&self.deviations)
+                .map(|((x, mean), deviation)| (x - mean) / deviation)
+                .collect()
+        }
+    }
+
+    fn dense_model(training_rows: &[TrainingRow], liked: &LikedCreators) -> Option<OpinionModel> {
+        let positive_labels = training_rows.iter().filter(|row| row.label == 1.0).count();
+        if positive_labels < MIN_LABELS || training_rows.len() - positive_labels < MIN_LABELS {
+            return None;
+        }
+        let tags = used_tags(training_rows);
+        let features: Vec<Vec<f64>> = training_rows
+            .iter()
+            .map(|row| features(row.game, &tags, liked))
+            .collect();
+        let standardization = standardization(&features);
+        let rows: Vec<_> = features.iter().map(|row| sparse(row)).collect();
+        let labels: Vec<f64> = training_rows.iter().map(|row| row.label).collect();
+        let weights = train(&rows, &standardization, &labels);
+
+        Some(OpinionModel {
+            tags,
+            liked: liked.clone(),
+            standardization,
+            weights,
+        })
+    }
+
+    fn dense_opinion(model: &OpinionModel, game: &Game) -> f64 {
+        let features = features(game, &model.tags, &model.liked);
+        dot(&model.standardization.apply(&features), &model.weights)
+    }
+
+    fn dense_held_out_opinions(
+        votes: &Votes,
+        catalog: &Catalog,
+        liked: &LikedCreators,
+    ) -> HashMap<AppId, f64> {
+        let training_rows = training_rows(votes, catalog);
+        let Some(full_model) = dense_model(&training_rows, liked) else {
+            return HashMap::new();
+        };
+        let mut opinions: HashMap<AppId, f64> = votes
+            .keys()
+            .filter_map(|&id| catalog.game(id))
+            .map(|game| (game.id, dense_opinion(&full_model, game)))
+            .collect();
+        for fold in 0..FOLDS {
+            let kept: Vec<TrainingRow> = training_rows
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| i % FOLDS != fold)
+                .map(|(_, row)| row.clone())
+                .collect();
+            let fold_model = dense_model(&kept, liked);
+            for (_, row) in training_rows
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| i % FOLDS == fold)
+            {
+                match &fold_model {
+                    Some(model) => opinions.insert(row.game.id, dense_opinion(model, row.game)),
+                    None => opinions.remove(&row.game.id),
+                };
+            }
+        }
+        opinions
+    }
+
+    fn bits(values: &[f64]) -> Vec<u64> {
+        values.iter().map(|x| x.to_bits()).collect()
+    }
+
+    fn bits_by_id(opinions: &HashMap<AppId, f64>) -> BTreeMap<AppId, u64> {
+        opinions.iter().map(|(id, x)| (*id, x.to_bits())).collect()
+    }
+
+    // Zeros in the first five places, tags out of order, a repeated tag (once with a last
+    // weight of 0), tags of fewer than MIN_TAG_GAMES games, liked developers and franchises,
+    // and games out of the training without any used tag
+    fn uneven_catalog() -> Catalog {
+        let tag = |id: u32, weight: f64| GameTag {
+            id: TagId(id),
+            weight,
+        };
+        let games = (1..=50)
+            .map(|id| {
+                let mut tags = vec![
+                    tag(9, f64::from(id % 7) / 7.0 + 0.1),
+                    tag(
+                        2,
+                        if id % 6 == 0 {
+                            0.0
+                        } else {
+                            1.0 / f64::from(id)
+                        },
+                    ),
+                ];
+                if id % 4 == 0 {
+                    tags.push(tag(5, 0.3));
+                }
+                if id % 5 == 0 {
+                    tags.push(tag(9, 0.77));
+                }
+                if id % 10 == 0 {
+                    tags.push(tag(2, 0.0));
+                }
+                tags.push(tag(100 + id, 0.5));
+                if id == 45 {
+                    tags.clear();
+                }
+                if id == 46 {
+                    tags = vec![tag(300, 1.0)];
+                }
+                Game {
+                    tags,
+                    reviews: if id % 8 == 0 {
+                        Reviews {
+                            total: 0,
+                            positive: 0,
+                        }
+                    } else {
+                        Reviews {
+                            total: 37 * id,
+                            positive: 30 * id - id % 11,
+                        }
+                    },
+                    price: Price {
+                        original_cents: if id % 9 == 0 { 0 } else { 499 + 100 * id },
+                        discount: None,
+                    },
+                    developers: vec![
+                        if id % 3 == 0 { "Liked Studio" } else { "Other" }.to_string(),
+                    ],
+                    franchises: if id % 4 == 1 {
+                        vec!["Liked Saga".to_string()]
+                    } else {
+                        Vec::new()
+                    },
+                    ..game(id)
+                }
+            })
+            .collect();
+
+        Catalog::new(
+            games,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            Freshness {
+                prices_updated_at: Timestamp(0),
+                tags_updated_at: Timestamp(0),
+                region: Region::ITALY,
+            },
+            Currency::italian(),
+        )
+    }
+
+    fn liked_creators() -> LikedCreators {
+        LikedCreators {
+            games: [AppId(1000)].into_iter().collect(),
+            developers: BTreeMap::from([("liked studio".to_string(), 3)]),
+            franchises: BTreeMap::from([("liked saga".to_string(), 3)]),
+        }
+    }
+
+    #[test]
+    fn the_features_on_pairs_are_the_dense_ones_without_zeros() {
+        let catalog = uneven_catalog();
+        let liked = liked_creators();
+        let tags = used_tags(&training_rows(&alternate_votes(40), &catalog));
+
+        for game in catalog.games() {
+            assert_eq!(
+                super::features(game, &tags, &liked),
+                sparse(&features(game, &tags, &liked)),
+                "{:?}",
+                game.id
+            );
+        }
+        assert!(tags.contains(&TagId(2)) && tags.contains(&TagId(5)) && tags.contains(&TagId(9)));
+        assert!(!tags.contains(&TagId(101)));
+    }
+
+    #[test]
+    fn the_opinion_on_pairs_is_the_dense_one_to_the_bit() {
+        let catalog = uneven_catalog();
+        let votes = alternate_votes(40);
+
+        for liked in [liked_creators(), LikedCreators::default()] {
+            let model = opinion_model(&votes, &catalog, &liked).unwrap();
+            let dense = dense_model(&training_rows(&votes, &catalog), &liked).unwrap();
+
+            assert_eq!(
+                bits(&model.standardization.means),
+                bits(&dense.standardization.means)
+            );
+            assert_eq!(
+                bits(&model.standardization.deviations),
+                bits(&dense.standardization.deviations)
+            );
+            assert_eq!(bits(&model.weights), bits(&dense.weights));
+            let dense_opinions: Vec<f64> = catalog
+                .games()
+                .iter()
+                .map(|game| dense_opinion(&dense, game))
+                .collect();
+            assert_eq!(bits(&opinions(&model, &catalog)), bits(&dense_opinions));
+            for game in catalog.games() {
+                assert_eq!(
+                    model.opinion(game).to_bits(),
+                    dense_opinion(&dense, game).to_bits()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_held_out_opinions_on_pairs_are_the_dense_ones_to_the_bit() {
+        let catalog = uneven_catalog();
+        let mut votes = alternate_votes(40);
+        votes.insert(AppId(45), vote(VoteKind::Later));
+        votes.insert(AppId(46), vote(VoteKind::Later));
+        let liked = liked_creators();
+
+        let opinions = held_out_opinions(&votes, &catalog, &liked);
+
+        assert_eq!(opinions.len(), 42);
+        assert_eq!(
+            bits_by_id(&opinions),
+            bits_by_id(&dense_held_out_opinions(&votes, &catalog, &liked))
+        );
+    }
+
+    #[test]
+    fn with_too_few_labels_in_a_fold_the_held_out_opinions_are_still_the_dense_ones() {
+        let catalog = uneven_catalog();
+        let votes: Votes = (1..=22)
+            .map(|id| {
+                let kind = if id <= 11 {
+                    VoteKind::WouldTry
+                } else {
+                    VoteKind::NotForMe
+                };
+                (AppId(id), vote(kind))
+            })
+            .collect();
+        let liked = liked_creators();
+
+        let opinions = held_out_opinions(&votes, &catalog, &liked);
+
+        assert_eq!(opinions.len(), 22 - 6);
+        assert_eq!(
+            bits_by_id(&opinions),
+            bits_by_id(&dense_held_out_opinions(&votes, &catalog, &liked))
+        );
     }
 
     // The training as it was, on the standardized rows written out

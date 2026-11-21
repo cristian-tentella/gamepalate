@@ -7,7 +7,7 @@ mod media;
 mod votes;
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, MutexGuard,
@@ -61,6 +61,7 @@ pub struct Gamepalate {
     corrections: Mutex<Corrections>,
     families: Mutex<Families>,
     revision: AtomicU64,
+    best_matches: Mutex<Option<(u64, HashMap<AppId, f64>)>>,
     created_families: Option<CreatedFamilies>,
     gui_saving: Mutex<()>,
     vectors: Vec<GameVector>,
@@ -111,6 +112,7 @@ impl Gamepalate {
             corrections: Mutex::new(files.corrections.clone()),
             families: Mutex::new(files.families.clone()),
             revision: AtomicU64::new(0),
+            best_matches: Mutex::new(None),
             created_families,
             gui_saving: Mutex::new(()),
             files,
@@ -157,20 +159,24 @@ impl Gamepalate {
         self.revision.load(Ordering::SeqCst)
     }
 
-    // The revision goes up before the change, so whoever reads it during the change sees it too
+    // The revision goes up before the change, so whoever reads it during the change sees it
+    // too, and with the lock taken, so whoever holds the lock reads the revision of what it sees
     fn write_votes(&self) -> MutexGuard<'_, Votes> {
+        let votes = self.lock_votes();
         self.revision.fetch_add(1, Ordering::SeqCst);
-        self.lock_votes()
+        votes
     }
 
     fn write_corrections(&self) -> MutexGuard<'_, Corrections> {
+        let corrections = self.lock_corrections();
         self.revision.fetch_add(1, Ordering::SeqCst);
-        self.lock_corrections()
+        corrections
     }
 
     fn write_families(&self) -> MutexGuard<'_, Families> {
+        let families = self.lock_families();
         self.revision.fetch_add(1, Ordering::SeqCst);
-        self.lock_families()
+        families
     }
 
     fn lock_votes(&self) -> MutexGuard<'_, Votes> {
