@@ -2,6 +2,7 @@ use std::{
     cmp::Reverse,
     collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
+    sync::{Mutex, PoisonError},
 };
 
 use gamepalate_core::{
@@ -284,9 +285,30 @@ impl Gamepalate {
         .inspect_err(failed("could not filter the votes"))
     }
 
+    /// Kept until the revision changes: reopening Votes does not compute them again.
     pub fn best_matches(&self) -> HashMap<AppId, f64> {
-        self.with_inputs(best_matches)
+        self.with_inputs(|inputs| {
+            // Read with the inputs locked: a change takes their lock before its revision goes up
+            let revision = self.revision();
+            kept(&self.best_matches, revision, || best_matches(inputs))
+        })
     }
+}
+
+fn kept(
+    cache: &Mutex<Option<(u64, HashMap<AppId, f64>)>>,
+    revision: u64,
+    compute: impl FnOnce() -> HashMap<AppId, f64>,
+) -> HashMap<AppId, f64> {
+    let lock = || cache.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((kept_revision, matches)) = &*lock()
+        && *kept_revision == revision
+    {
+        return matches.clone();
+    }
+    let matches = compute();
+    *lock() = Some((revision, matches.clone()));
+    matches
 }
 
 #[cfg(test)]
@@ -336,6 +358,40 @@ mod tests {
         assert!(std::fs::read_to_string(&path).unwrap().contains(
             "620 = { vote = \"would_try\", date = \"2026-10-30\", at = 1762500000000, bet = true } # Portal 2"
         ));
+    }
+
+    fn matches(score: f64) -> HashMap<AppId, f64> {
+        HashMap::from([(AppId(620), score)])
+    }
+
+    #[test]
+    fn the_best_matches_are_kept_while_the_revision_stays() {
+        let cache = Mutex::new(None);
+        let mut computed = 0;
+
+        let first = kept(&cache, 0, || {
+            computed += 1;
+            matches(1.0)
+        });
+        let second = kept(&cache, 0, || {
+            computed += 1;
+            matches(2.0)
+        });
+
+        assert_eq!(computed, 1);
+        assert_eq!(first, matches(1.0));
+        assert_eq!(second, matches(1.0));
+    }
+
+    #[test]
+    fn the_best_matches_are_computed_again_after_a_vote() {
+        let cache = Mutex::new(None);
+        kept(&cache, 0, || matches(1.0));
+
+        let after_vote = kept(&cache, 1, || matches(2.0));
+
+        assert_eq!(after_vote, matches(2.0));
+        assert_eq!(kept(&cache, 1, || matches(3.0)), matches(2.0));
     }
 
     const NOW: i64 = 1_794_835_200_000;
