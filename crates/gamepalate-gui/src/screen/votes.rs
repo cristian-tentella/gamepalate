@@ -2,6 +2,7 @@ use std::{
     cmp::Reverse,
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
+    ops::Range,
     sync::Arc,
 };
 
@@ -56,6 +57,8 @@ const LIST_PADDING: f32 = 12.0;
 const SUMMARY_CHARS: usize = 46;
 const ROW_HEIGHT: f32 = 32.0;
 const SCROLLBAR_GAP: f32 = 12.0;
+/// The height of the window before the first `Scrolled` tells the real one.
+const FIRST_HEIGHT: f32 = 1_500.0;
 const SIGN_SIZE: f32 = 11.0;
 const SIGN_WIDTH: f32 = 18.0;
 const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–3.";
@@ -195,6 +198,7 @@ impl Votes {
         votes.filter = filter;
         votes.rows = votes.shown_rows();
         votes.selected = votes.rows.iter().position(|&row| row == id).unwrap_or(0);
+        votes.viewport = Some((votes.selected as f32 * ROW_HEIGHT, FIRST_HEIGHT));
         let scroll = operation::scroll_to(
             LIST,
             AbsoluteOffset {
@@ -566,10 +570,22 @@ impl Votes {
             .padding(16)
             .into()
         } else {
+            let (offset, height) = self.viewport.unwrap_or((0.0, FIRST_HEIGHT));
+            let count = self.rows.len();
+            let range = shown(offset, height, count);
+            let above = rows_height(range.start);
+            let below = rows_height(count - range.end);
+            let built = range.clone().filter_map(|index| {
+                self.games
+                    .get(&self.rows[index])
+                    .map(|game| self.list_row(index, game))
+            });
             scrollable(
-                container(column(self.rows.iter().enumerate().filter_map(
-                    |(index, id)| self.games.get(id).map(|game| self.list_row(index, game)),
-                )))
+                container(
+                    column![space().height(above)]
+                        .extend(built)
+                        .push(space().height(below)),
+                )
                 .padding(padding::right(SCROLLBAR_GAP)),
             )
             .id(LIST)
@@ -1254,6 +1270,26 @@ fn empty_text(
     } else {
         format!("No {} votes", filter_label(filter))
     }
+}
+
+/// The rows from the first in sight to the last, both cut at `count`.
+fn visible(offset: f32, height: f32, count: usize) -> Range<usize> {
+    let start = (offset.max(0.0) / ROW_HEIGHT).floor() as usize;
+    let end = ((offset.max(0.0) + height.max(0.0)) / ROW_HEIGHT).ceil() as usize;
+
+    start.min(count)..end.min(count)
+}
+
+/// The rows a view builds: those in sight, and a screen more above and below.
+fn shown(offset: f32, height: f32, count: usize) -> Range<usize> {
+    let visible = visible(offset, height, count);
+    let screen = (height.max(0.0) / ROW_HEIGHT).ceil() as usize;
+
+    visible.start.saturating_sub(screen)..(visible.end + screen).min(count)
+}
+
+fn rows_height(rows: usize) -> f32 {
+    rows as f32 * ROW_HEIGHT
 }
 
 fn scroll_target(index: usize, offset: f32, height: f32) -> Option<f32> {
@@ -2087,6 +2123,30 @@ mod tests {
         assert_eq!(scroll_target(2, 0.0, 320.0), None);
         assert_eq!(scroll_target(2, 100.0, 320.0), Some(64.0));
         assert_eq!(scroll_target(12, 0.0, 320.0), Some(96.0));
+    }
+
+    #[test]
+    fn builds_only_the_rows_near_the_window() {
+        // 320 px is ten rows: a screen of ten more above and below.
+        assert_eq!(shown(0.0, 320.0, 689), 0..20);
+        assert_eq!(shown(3_200.0, 320.0, 689), 90..120);
+        assert_eq!(shown(3_216.0, 320.0, 689), 90..121);
+        assert_eq!(shown(rows_height(689) - 320.0, 320.0, 689), 669..689);
+        assert_eq!(shown(0.0, 320.0, 4), 0..4);
+        assert_eq!(shown(0.0, 320.0, 0), 0..0);
+    }
+
+    #[test]
+    fn the_spaces_and_the_rows_make_the_whole_list() {
+        for (offset, count) in [(0.0, 689), (3_216.0, 689), (21_728.0, 689), (0.0, 4)] {
+            let range = shown(offset, 320.0, count);
+            let total = rows_height(range.start)
+                + rows_height(range.len())
+                + rows_height(count - range.end);
+
+            assert_eq!(total, rows_height(count));
+        }
+        assert_eq!(rows_height(689), 689.0 * ROW_HEIGHT);
     }
 
     #[test]
