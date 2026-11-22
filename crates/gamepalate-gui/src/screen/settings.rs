@@ -61,8 +61,8 @@ pub struct Settings {
 enum Export {
     #[default]
     Idle,
-    Running,
-    Failed(String),
+    Running(bool),
+    Failed(bool, String),
 }
 
 #[derive(Debug, Default)]
@@ -117,8 +117,8 @@ pub enum Message {
     CheckNow,
     CheckAtStartup(bool),
     OpenRelease(String),
-    ExportCatalog,
-    CatalogExported(Result<PathBuf, String>),
+    ExportCatalog { with_archive: bool },
+    CatalogExported(bool, Result<(PathBuf, u64), String>),
     HideToast(u64),
     Back,
     Escape,
@@ -300,34 +300,36 @@ impl Settings {
                 open(page);
                 Action::None
             }
-            Message::ExportCatalog => {
-                if self.export == Export::Running {
+            Message::ExportCatalog { with_archive } => {
+                if matches!(self.export, Export::Running(_)) {
                     return Action::None;
                 }
-                self.export = Export::Running;
+                self.export = Export::Running(with_archive);
                 let dir = self.settings.data_dir.clone();
                 Action::Run(Task::perform(
                     async move {
-                        export_catalog(&dir, &export_folder(&dir), false)
+                        let file = export_catalog(&dir, &export_folder(&dir), with_archive)
                             .await
-                            .map_err(|error| error_chain(&error))
+                            .map_err(|error| error_chain(&error))?;
+                        let bytes = std::fs::metadata(&file).map_or(0, |meta| meta.len());
+                        Ok((file, bytes))
                     },
-                    Message::CatalogExported,
+                    move |result| Message::CatalogExported(with_archive, result),
                 ))
             }
-            Message::CatalogExported(Ok(file)) => {
+            Message::CatalogExported(with_archive, Ok((file, bytes))) => {
                 self.export = Export::Idle;
                 if let Some(folder) = file.parent() {
                     open(folder);
                 }
                 Action::Run(self.toasts.show(
-                    "Catalog exported".to_string(),
+                    exported_text(with_archive, bytes),
                     false,
                     Message::HideToast,
                 ))
             }
-            Message::CatalogExported(Err(error)) => {
-                self.export = Export::Failed(error);
+            Message::CatalogExported(with_archive, Err(error)) => {
+                self.export = Export::Failed(with_archive, error);
                 Action::None
             }
             Message::HideToast(id) => {
@@ -420,7 +422,7 @@ impl Settings {
                             Timestamp(jiff::Timestamp::now().as_millisecond()),
                         ),
                     )),
-                    export_link(&self.export, updating),
+                    export_links(&self.export, updating),
                 ),
                 setting(
                     "Advanced",
@@ -710,26 +712,46 @@ fn catalog_text(games: usize, tags_updated: &str) -> String {
     )
 }
 
-fn export_link(export: &Export, updating: bool) -> Option<Element<'_, Message>> {
+fn exported_text(with_archive: bool, bytes: u64) -> String {
+    if with_archive {
+        format!(
+            "Catalog and archive exported · {} MB",
+            bytes.div_ceil(MEGABYTE)
+        )
+    } else {
+        "Catalog exported".to_string()
+    }
+}
+
+fn export_links(export: &Export, updating: bool) -> Option<Element<'_, Message>> {
     if updating {
         return None;
     }
-    Some(match export {
-        Export::Idle => link("Export", Message::ExportCatalog),
-        Export::Running => text("Exporting…")
-            .size(font::BAR_SIZE)
-            .style(style::muted)
-            .into(),
-        Export::Failed(error) => button(
-            text(error.as_str())
+    let slot = |with_archive: bool, label: &'static str| -> Element<'_, Message> {
+        let message = Message::ExportCatalog { with_archive };
+        match export {
+            Export::Running(running) if *running == with_archive => text("Exporting…")
                 .size(font::BAR_SIZE)
-                .style(text::danger),
-        )
-        .padding(0)
-        .style(style::link)
-        .on_press(Message::ExportCatalog)
-        .into(),
-    })
+                .style(style::muted)
+                .into(),
+            Export::Failed(failed, error) if *failed == with_archive => button(
+                text(error.as_str())
+                    .size(font::BAR_SIZE)
+                    .style(text::danger),
+            )
+            .padding(0)
+            .style(style::link)
+            .on_press(message)
+            .into(),
+            _ => link(label, message),
+        }
+    };
+    Some(
+        row![slot(false, "Export"), slot(true, "Export with archive")]
+            .spacing(16)
+            .align_y(Center)
+            .into(),
+    )
 }
 
 fn value<'a>(shown: String) -> Element<'a, Message> {
@@ -765,11 +787,26 @@ mod tests {
 
     #[test]
     fn export_is_offered_at_rest_and_not_during_an_update() {
-        assert!(export_link(&Export::Idle, false).is_some());
-        assert!(export_link(&Export::Running, false).is_some());
-        assert!(export_link(&Export::Failed("Disk full".to_string()), false).is_some());
-        assert!(export_link(&Export::Idle, true).is_none());
-        assert!(export_link(&Export::Running, true).is_none());
+        let failed = |with_archive| Export::Failed(with_archive, "Disk full".to_string());
+        for export in [
+            Export::Idle,
+            Export::Running(false),
+            Export::Running(true),
+            failed(false),
+            failed(true),
+        ] {
+            assert!(export_links(&export, false).is_some());
+            assert!(export_links(&export, true).is_none());
+        }
+    }
+
+    #[test]
+    fn the_toast_has_the_weight_only_with_the_archive() {
+        assert_eq!(exported_text(false, 27 * MEGABYTE), "Catalog exported");
+        assert_eq!(
+            exported_text(true, 169 * MEGABYTE + 1),
+            "Catalog and archive exported · 170 MB"
+        );
     }
 
     #[test]
