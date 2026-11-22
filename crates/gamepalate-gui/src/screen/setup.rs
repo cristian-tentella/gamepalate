@@ -8,7 +8,7 @@ use std::{
 use gamepalate_app::{
     AppId, Gamepalate, Region, SteamError, SteamId, ThemeChoice, Timestamp,
     account::{ConnectError, connect, parse_profile},
-    catalog_file::{CatalogFileError, ImportedCatalog, import_catalog},
+    catalog_file::{ArchiveImport, CatalogFileError, ImportedCatalog, import_catalog},
     ready::{ReadyCheck, check_ready},
     region::{RegionSource, profile_country, starting_region, system_country},
     settings::change_region,
@@ -874,7 +874,11 @@ impl Setup {
         };
 
         Action::Run(Task::perform(
-            async move { import_catalog(&dir, &file).map_err(|error| import_error_text(&error)) },
+            async move {
+                import_catalog(&dir, &file, false)
+                    .await
+                    .map_err(|error| import_error_text(&error))
+            },
             Message::Imported,
         ))
     }
@@ -1515,24 +1519,7 @@ impl Setup {
             note(DROP_CATALOG)
         };
         let result: Option<Element<'_, Message>> = match &self.import.result {
-            Some(Ok(imported)) => {
-                let now = Timestamp(jiff::Timestamp::now().as_millisecond());
-                let (before, after) =
-                    imported_note(&format::day(imported.prices_at, now), imported.region);
-                Some(
-                    row![
-                        note(before),
-                        text(REFRESH)
-                            .font(font::ICONS)
-                            .size(font::icon(font::NOTE_SIZE))
-                            .style(style::muted),
-                        note(after),
-                    ]
-                    .spacing(4)
-                    .align_y(Center)
-                    .into(),
-                )
-            }
+            Some(Ok(imported)) => Some(imported_view(imported)),
             Some(Err(error)) => Some(
                 text(error.clone())
                     .size(font::NOTE_SIZE)
@@ -1580,22 +1567,7 @@ impl Setup {
                 .size(font::BAR_SIZE)
                 .style(style::accent)
                 .into(),
-            Some(Ok(imported)) => {
-                let now = Timestamp(jiff::Timestamp::now().as_millisecond());
-                let (before, after) =
-                    imported_note(&format::day(imported.prices_at, now), imported.region);
-                row![
-                    note(before),
-                    text(REFRESH)
-                        .font(font::ICONS)
-                        .size(font::icon(font::NOTE_SIZE))
-                        .style(style::muted),
-                    note(after),
-                ]
-                .spacing(4)
-                .align_y(Center)
-                .into()
-            }
+            Some(Ok(imported)) => imported_view(imported),
             _ => column![text(DROP_ASK).size(font::BAR_SIZE), note(DROP_HINT)]
                 .spacing(8)
                 .align_x(Center)
@@ -2001,11 +1973,49 @@ fn prices_line(chosen: Region, imported: Option<Region>) -> String {
     }
 }
 
-fn imported_note(day: &str, region: Region) -> (String, &'static str) {
-    (
-        format!("Catalog from {day}, prices for {region}. Press"),
-        "later to download your own.",
-    )
+fn imported_view<'a>(imported: &ImportedCatalog) -> Element<'a, Message> {
+    let now = Timestamp(jiff::Timestamp::now().as_millisecond());
+    let (before, after) = imported_note(
+        &format::day(imported.prices_at, now),
+        imported.region,
+        imported.archive,
+    );
+    let Some(after) = after else {
+        return note(before).into();
+    };
+
+    row![
+        note(before),
+        text(REFRESH)
+            .font(font::ICONS)
+            .size(font::icon(font::NOTE_SIZE))
+            .style(style::muted),
+        note(after),
+    ]
+    .spacing(4)
+    .align_y(Center)
+    .into()
+}
+
+fn imported_note(
+    day: &str,
+    region: Region,
+    archive: ArchiveImport,
+) -> (String, Option<&'static str>) {
+    let catalog = format!("Catalog from {day}, prices for {region}.");
+    match archive {
+        ArchiveImport::Imported { .. } => {
+            (format!("{catalog} Updates from here on are small."), None)
+        }
+        ArchiveImport::Absent => (
+            format!("{catalog} Press"),
+            Some("later to download your own."),
+        ),
+        ArchiveImport::Discarded(_) => (
+            format!("{catalog} The archive in this file couldn't be used, so"),
+            Some("downloads everything."),
+        ),
+    }
 }
 
 fn download_status(stage: Stage, left: Option<Duration>, resuming: bool) -> String {
@@ -3089,6 +3099,7 @@ mod tests {
             games: 10,
             prices_at: Timestamp(0),
             region: country(code),
+            archive: ArchiveImport::Absent,
         }
     }
 
@@ -3176,12 +3187,40 @@ mod tests {
 
     #[test]
     fn the_import_note_says_where_the_prices_come_from() {
-        let (before, after) = imported_note("13 Nov", Region::ITALY);
+        let (before, after) = imported_note("13 Nov", Region::ITALY, ArchiveImport::Absent);
 
         assert_eq!(
-            format!("{before} ⟳ {after}"),
+            format!("{before} ⟳ {}", after.unwrap()),
             "Catalog from 13 Nov, prices for IT. Press ⟳ later to download your own."
         );
+    }
+
+    #[test]
+    fn an_imported_archive_makes_the_next_update_small() {
+        let (before, after) = imported_note(
+            "13 Nov",
+            Region::ITALY,
+            ArchiveImport::Imported { updates: 79 },
+        );
+
+        assert_eq!(
+            before,
+            "Catalog from 13 Nov, prices for IT. Updates from here on are small."
+        );
+        assert_eq!(after, None);
+    }
+
+    #[test]
+    fn a_discarded_archive_is_one_sentence_for_every_reason() {
+        let note =
+            |reason| imported_note("13 Nov", Region::ITALY, ArchiveImport::Discarded(reason));
+        let (before, after) = note("it's for another region");
+
+        assert_eq!(
+            format!("{before} ⟳ {}", after.unwrap()),
+            "Catalog from 13 Nov, prices for IT. The archive in this file couldn't be used, so ⟳ downloads everything."
+        );
+        assert_eq!(note("it's larger than 2 GB"), note("it couldn't be read"));
     }
 
     #[test]
