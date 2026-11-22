@@ -445,6 +445,30 @@ fn file_endpoint(endpoint: &str) -> String {
     endpoint.replace('/', "_")
 }
 
+pub fn is_update_folder(name: &str) -> bool {
+    name.len() == FOLDER_DIGITS && name.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+pub fn is_update_file(name: &str) -> bool {
+    if name == MANIFEST_FILE {
+        return true;
+    }
+    let Some((endpoint, hash)) = name
+        .strip_suffix(RESPONSE_SUFFIX)
+        .and_then(|stem| stem.rsplit_once('-'))
+    else {
+        return false;
+    };
+    !endpoint.is_empty()
+        && endpoint
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        && hash.len() == HASH_LENGTH
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn read_record(path: &Path) -> io::Result<ArchivedRecord> {
     let mut text = String::new();
     GzDecoder::new(fs::File::open(path)?).read_to_string(&mut text)?;
@@ -1494,5 +1518,28 @@ mod tests {
         let files = archived_files(latest.dir());
         assert_eq!(files.len(), 1);
         assert!(files[0].starts_with("IStoreService_GetAppList_v1-"));
+    }
+
+    #[test]
+    fn the_names_the_archive_writes_are_recognised() {
+        let written = response_file(TAG_LIST, &canonical(&[("language", "english")]));
+
+        assert!(is_update_file(&written));
+        assert!(is_update_file(MANIFEST_FILE));
+        assert!(is_update_folder("000042"));
+        for wrong in [
+            "update.json.tmp",
+            &format!("{written}.tmp"),
+            "-0123456789abcdef0123.json.gz",
+            "IStoreService_GetTagList_v1-0123456789ABCDEF0123.json.gz",
+            "IStoreService_GetTagList_v1-0123456789abcdef012.json.gz",
+            "..-0123456789abcdef0123.json.gz",
+            "a/b-0123456789abcdef0123.json.gz",
+        ] {
+            assert!(!is_update_file(wrong), "{wrong}");
+        }
+        for wrong in ["00042", "0000042", "+00042", "00004a", ".."] {
+            assert!(!is_update_folder(wrong), "{wrong}");
+        }
     }
 }

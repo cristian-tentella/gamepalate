@@ -308,7 +308,8 @@ impl Settings {
                 let dir = self.settings.data_dir.clone();
                 Action::Run(Task::perform(
                     async move {
-                        export_catalog(&dir, &export_folder(&dir))
+                        export_catalog(&dir, &export_folder(&dir), false)
+                            .await
                             .map_err(|error| error_chain(&error))
                     },
                     Message::CatalogExported,

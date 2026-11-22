@@ -874,7 +874,11 @@ impl Setup {
         };
 
         Action::Run(Task::perform(
-            async move { import_catalog(&dir, &file).map_err(|error| import_error_text(&error)) },
+            async move {
+                import_catalog(&dir, &file, false)
+                    .await
+                    .map_err(|error| import_error_text(&error))
+            },
             Message::Imported,
         ))
     }
@@ -2100,7 +2104,7 @@ fn link(label: &str, message: Message) -> Element<'_, Message> {
 mod tests {
     use std::path::PathBuf;
 
-    use gamepalate_app::{PendingUpdate, SteamId};
+    use gamepalate_app::{PendingUpdate, SteamId, catalog_file::ArchiveImport};
 
     use super::*;
 
@@ -3089,6 +3093,7 @@ mod tests {
             games: 10,
             prices_at: Timestamp(0),
             region: country(code),
+            archive: ArchiveImport::Absent,
         }
     }
 
