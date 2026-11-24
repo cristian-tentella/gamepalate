@@ -13,7 +13,7 @@ use iced::widget::image;
 
 use self::audio::{AudioBuffer, Clock};
 
-pub use self::view::{Surface, probe};
+pub use self::view::{Surface, probe, spinner};
 
 const FRAME_CAPACITY: usize = 30;
 const FRAME_TOLERANCE: f64 = 0.0005;

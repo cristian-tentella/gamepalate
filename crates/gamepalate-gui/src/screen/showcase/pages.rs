@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, hash_map::Entry},
     sync::Arc,
+    time::Instant,
 };
 
 use gamepalate_app::{AppId, GameDetails};
@@ -8,7 +9,8 @@ use gamepalate_app::{AppId, GameDetails};
 const MAX_PAGES: usize = 50;
 
 pub enum Page {
-    Loading,
+    /// Since when: the gallery shows the spinner after a moment.
+    Loading(Instant),
     Ready(Arc<GameDetails>),
     Missing,
     Failed(String),
@@ -27,7 +29,7 @@ impl Pages {
     pub fn details(&self, id: AppId) -> Option<&GameDetails> {
         match self.pages.get(&id) {
             Some(Page::Ready(details)) => Some(details),
-            Some(Page::Loading | Page::Missing | Page::Failed(_)) | None => None,
+            Some(Page::Loading(_) | Page::Missing | Page::Failed(_)) | None => None,
         }
     }
 
@@ -42,7 +44,7 @@ impl Pages {
         let mut started = Vec::new();
         for &id in ids {
             if let Entry::Vacant(entry) = self.pages.entry(id) {
-                entry.insert(Page::Loading);
+                entry.insert(Page::Loading(Instant::now()));
                 started.push(id);
             }
         }
@@ -70,7 +72,7 @@ impl Pages {
             return;
         }
         self.pages
-            .retain(|id, page| matches!(page, Page::Loading) || nearby.contains(id));
+            .retain(|id, page| matches!(page, Page::Loading(_)) || nearby.contains(id));
     }
 }
 
@@ -114,7 +116,7 @@ mod tests {
             [AppId(1), AppId(2)]
         );
         assert!(pages.want(&[AppId(1), AppId(2)]).is_empty());
-        assert!(matches!(pages.get(AppId(1)), Some(Page::Loading)));
+        assert!(matches!(pages.get(AppId(1)), Some(Page::Loading(_))));
     }
 
     #[test]

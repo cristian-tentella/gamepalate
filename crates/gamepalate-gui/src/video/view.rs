@@ -367,7 +367,7 @@ fn failed<'a>() -> Element<'a, Message> {
 
 /// The circular indicator of Material, in the accent: it shows only after [`SPINNER_DELAY`],
 /// so a trailer that starts at once does not flash it.
-fn spinner<'a>(since: Instant) -> Element<'a, Message> {
+pub fn spinner<'a, M: 'a>(since: Instant) -> Element<'a, M> {
     Element::new(Spinner { since })
 }
 

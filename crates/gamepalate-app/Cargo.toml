@@ -19,7 +19,7 @@ thiserror = "2.0.21"
 keyring-core = "1.0.1"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 tokio = { version = "1", features = ["sync", "time"] }
-tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "tracing-log"] }
 tracing = "0.1.44"
 avif-parse = "2.1.0"
 dav1d = { package = "re_rav1d", version = "0.1.3" }

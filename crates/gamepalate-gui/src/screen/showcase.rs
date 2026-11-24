@@ -406,7 +406,7 @@ impl Showcase {
                 .map_or(Due::Never, |trailer| {
                     Due::Play(trailer.manifest_url.clone())
                 }),
-            Some(Page::Loading) | None if self.shown.is_some() => Due::Wait,
+            Some(Page::Loading(_)) | None if self.shown.is_some() => Due::Wait,
             _ => Due::Never,
         };
         self.trailers.autoplay(due);

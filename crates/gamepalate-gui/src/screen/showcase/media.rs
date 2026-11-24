@@ -187,7 +187,7 @@ fn is_loaded<T>(
 ) -> bool {
     let done =
         |picture: Option<&Picture<T>>| matches!(picture, Some(Picture::Ready(_) | Picture::Failed));
-    !matches!(page, Some(Page::Loading) | None) && done(header) && screenshot.is_none_or(done)
+    !matches!(page, Some(Page::Loading(_)) | None) && done(header) && screenshot.is_none_or(done)
 }
 
 fn download_order(
@@ -624,7 +624,8 @@ impl Showcase {
             .spacing(8)
             .align_x(Center)
             .into(),
-            Some(Page::Loading) | None => space().into(),
+            Some(Page::Loading(since)) => container(video::spinner(*since)).center(Fill).into(),
+            None => space().into(),
         };
 
         container(content)
@@ -906,7 +907,11 @@ mod tests {
         assert!(is_loaded(Some(&Page::Failed(String::new())), failed, None));
         assert!(is_loaded(Some(&Page::Missing), ready, Some(failed)));
         assert!(!is_loaded(None, ready, None));
-        assert!(!is_loaded(Some(&Page::Loading), ready, None));
+        assert!(!is_loaded(
+            Some(&Page::Loading(std::time::Instant::now())),
+            ready,
+            None
+        ));
         assert!(!is_loaded(Some(&Page::Missing), loading, None));
         assert!(!is_loaded::<u8>(Some(&Page::Missing), None, None));
         assert!(!is_loaded(Some(&Page::Missing), ready, Some(loading)));
