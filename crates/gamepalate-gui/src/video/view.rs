@@ -8,7 +8,7 @@ use iced::advanced::widget::{Tree, Widget, tree};
 use iced::advanced::{Clipboard, Shell, mouse};
 use iced::widget::shader::{self, Pipeline, Primitive, Viewport};
 use iced::widget::{
-    Shader, button, column, container, mouse_area, row, slider, space, stack, text,
+    Shader, button, column, container, mouse_area, row, slider, space, stack, text, tooltip,
 };
 use iced::window::{self, RedrawRequest};
 use iced::{Center, Color, Element, Event, Fill, Length, Point, Rectangle, Size, Theme, wgpu};
@@ -20,6 +20,12 @@ const SOFTWARE_MAX_HEIGHT: u32 = 360;
 const BAR_INSET: f32 = 12.0;
 const BAR_SPACING: f32 = 8.0;
 const POSITION_STEP: f64 = 0.1;
+const BAR_ICON: f32 = 12.0;
+const PLAY: char = '\u{E037}';
+const PAUSE: char = '\u{E034}';
+const VOLUME_UP: char = '\u{E050}';
+const VOLUME_OFF: char = '\u{E04F}';
+const REPLAY: char = '\u{E042}';
 
 const SHADER: &str = r#"
 @group(0) @binding(0) var plane_y: texture_2d<f32>;
@@ -255,12 +261,12 @@ impl Player {
             .unwrap_or_else(|| self.position().as_secs_f64())
             .min(duration);
         let toggle = match state {
-            State::Paused => "Play",
-            _ => "Pause",
+            State::Paused => (PLAY, "Play"),
+            _ => (PAUSE, "Pause"),
         };
         let mute = match self.is_muted() {
-            true => "Unmute",
-            false => "Mute",
+            true => (VOLUME_OFF, "Unmute"),
+            false => (VOLUME_UP, "Mute"),
         };
 
         container(
@@ -291,20 +297,33 @@ impl Player {
     }
 }
 
-fn bar_button(label: &str, message: Message) -> Element<'_, Message> {
-    button(text(label).size(font::NOTE_SIZE))
-        .padding([4, 8])
-        .style(style::text_button)
-        .on_press(message)
-        .into()
+fn bar_button<'a>((icon, tip): (char, &'a str), message: Message) -> Element<'a, Message> {
+    tooltip(
+        button(text(icon).font(font::ICONS).size(font::icon(BAR_ICON)))
+            .padding([4, 6])
+            .style(style::text_button)
+            .on_press(message),
+        container(text(tip).size(font::NOTE_SIZE))
+            .padding([6, 10])
+            .style(style::popup),
+        tooltip::Position::Top,
+    )
+    .into()
 }
 
 fn replay<'a>() -> Element<'a, Message> {
-    button(text("Replay").size(font::NOTE_SIZE))
-        .padding([8, 16])
-        .style(style::arrow)
-        .on_press(Message::Replay)
-        .into()
+    button(
+        row![
+            text(REPLAY).font(font::ICONS).size(font::icon(BAR_ICON)),
+            text("Replay").size(font::NOTE_SIZE),
+        ]
+        .spacing(6)
+        .align_y(Center),
+    )
+    .padding([8, 16])
+    .style(style::arrow)
+    .on_press(Message::Replay)
+    .into()
 }
 
 fn failed<'a>() -> Element<'a, Message> {
