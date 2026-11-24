@@ -1979,6 +1979,7 @@ dependencies = [
  "keyvalues-parser",
  "log",
  "reqwest",
+ "roxmltree",
  "serde",
  "serde_json",
  "sha2 0.11.1",
