@@ -1375,6 +1375,8 @@ fn acts_on_the_page(message: &Message) -> bool {
                     | showcase::Message::ToggleReviews
                     | showcase::Message::ScrollUp
                     | showcase::Message::ScrollDown
+                    | showcase::Message::PlayOrPause
+                    | showcase::Message::SwitchMute
             )
     )
 }
@@ -1415,6 +1417,12 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         }
         Key::Character(character) if character.eq_ignore_ascii_case("f") => {
             Some(Message::ToggleFilters)
+        }
+        Key::Character(character) if character.eq_ignore_ascii_case("p") => {
+            Some(Message::Showcase(showcase::Message::PlayOrPause))
+        }
+        Key::Character(character) if character.eq_ignore_ascii_case("m") => {
+            Some(Message::Showcase(showcase::Message::SwitchMute))
         }
         Key::Character(character) if character.eq_ignore_ascii_case("d") => {
             Some(Message::Showcase(showcase::Message::ToggleAbout))
@@ -1533,6 +1541,18 @@ mod tests {
 
     fn ids(numbers: &[u32]) -> Vec<AppId> {
         numbers.iter().copied().map(AppId).collect()
+    }
+
+    #[test]
+    fn p_plays_or_pauses_the_trailer_and_m_mutes_it() {
+        assert!(matches!(
+            key_message(pressed(Key::Character("p".into()))),
+            Some(Message::Showcase(showcase::Message::PlayOrPause))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("M".into()))),
+            Some(Message::Showcase(showcase::Message::SwitchMute))
+        ));
     }
 
     #[test]

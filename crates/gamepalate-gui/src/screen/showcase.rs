@@ -223,6 +223,8 @@ pub enum Message {
     ToggleFeatures,
     Hover(bool),
     PlayTrailer,
+    PlayOrPause,
+    SwitchMute,
     Trailer(video::Message),
     Measured(video::Surface),
 }
@@ -359,6 +361,12 @@ impl Showcase {
             Message::ToggleFeatures => self.features_open = !self.features_open,
             Message::Hover(hovered) => self.hovered = hovered,
             Message::PlayTrailer => self.play_trailer(),
+            Message::PlayOrPause => self.play_or_pause(),
+            Message::SwitchMute => {
+                if let (false, Some(Item::Trailer(index))) = (self.is_open(), self.current_item()) {
+                    self.trailers.switch_mute(index);
+                }
+            }
             Message::Trailer(message) => self.trailers.update(message),
             Message::Measured(surface) => self.trailers.measured(surface),
         }
@@ -388,6 +396,22 @@ impl Showcase {
             .map(|trailer| trailer.manifest_url.clone())
         {
             self.trailers.play(index, &manifest_url);
+        }
+    }
+
+    /// `P` does nothing under a sheet or the zoom.
+    fn play_or_pause(&mut self) {
+        if self.is_open() {
+            return;
+        }
+        let Some(Item::Trailer(index)) = self.current_item() else {
+            return;
+        };
+        if let Some(manifest_url) = self
+            .trailer(index)
+            .map(|trailer| trailer.manifest_url.clone())
+        {
+            self.trailers.play_or_pause(index, &manifest_url);
         }
     }
 

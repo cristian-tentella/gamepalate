@@ -1392,6 +1392,8 @@ fn acts_on_the_game(message: &Message) -> bool {
                     | showcase::Message::ToggleAbout
                     | showcase::Message::ToggleTags
                     | showcase::Message::ToggleReviews
+                    | showcase::Message::PlayOrPause
+                    | showcase::Message::SwitchMute
             )
     )
 }
@@ -1429,6 +1431,12 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         Key::Named(Named::ArrowLeft) => {
             Some(Message::Showcase(showcase::Message::PreviousScreenshot))
         }
+        Key::Character(key) if key.eq_ignore_ascii_case("p") => {
+            Some(Message::Showcase(showcase::Message::PlayOrPause))
+        }
+        Key::Character(key) if key.eq_ignore_ascii_case("m") => {
+            Some(Message::Showcase(showcase::Message::SwitchMute))
+        }
         Key::Character(key) if key.eq_ignore_ascii_case("d") => {
             Some(Message::Showcase(showcase::Message::ToggleAbout))
         }
@@ -1461,6 +1469,18 @@ mod tests {
     use iced::keyboard::{Location, Modifiers, key};
 
     use super::*;
+
+    #[test]
+    fn p_plays_or_pauses_the_trailer_and_m_mutes_it() {
+        assert!(matches!(
+            key_message(pressed(Key::Character("p".into()))),
+            Some(Message::Showcase(showcase::Message::PlayOrPause))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("M".into()))),
+            Some(Message::Showcase(showcase::Message::SwitchMute))
+        ));
+    }
 
     #[test]
     fn votes_with_one_and_two_and_marks_played_with_three() {

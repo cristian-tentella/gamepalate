@@ -2,7 +2,7 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use iced::Subscription;
 
-use crate::video::{self, Player, START_VOLUME, Surface};
+use crate::video::{self, Player, START_VOLUME, State, Surface};
 
 /// The sound of the trailers, one for the whole GUI: every gallery, in every screen, until the
 /// GUI closes. Nothing is saved.
@@ -34,6 +34,19 @@ impl Sound {
             true => (self.muted, self.volume),
             false => (!by_click, self.volume),
         }
+    }
+
+    /// `M` on the poster: the same switch as the mute button of a trailer.
+    fn switch(&mut self) {
+        if self.muted || self.volume == 0.0 {
+            if self.volume == 0.0 {
+                self.volume = START_VOLUME;
+            }
+            self.muted = false;
+        } else {
+            self.muted = true;
+        }
+        self.touched = true;
     }
 
     fn chosen(&mut self, player: &Player) {
@@ -108,6 +121,27 @@ impl Trailers {
 
     fn sound(&self) -> Sound {
         *self.sound.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `P`: on the poster it plays, on the video it pauses or plays again, at the end it replays.
+    pub(super) fn play_or_pause(&mut self, index: usize, manifest_url: &str) {
+        match self.player(index).map(Player::state) {
+            None => self.play(index, manifest_url),
+            Some(State::Ended) => self.update(video::Message::Replay),
+            Some(_) => self.update(video::Message::Toggle),
+        }
+    }
+
+    /// `M`: the mute of the trailer playing, or of the shared sound on the poster.
+    pub(super) fn switch_mute(&mut self, index: usize) {
+        match self.player(index) {
+            Some(_) => self.update(video::Message::Mute),
+            None => self
+                .sound
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .switch(),
+        }
     }
 
     /// Drops the player, which stops its threads: the poster comes back.
@@ -340,6 +374,58 @@ mod tests {
         votes.play(0, MANIFEST);
 
         assert!(votes.player(0).is_some_and(Player::is_silent));
+    }
+
+    #[test]
+    fn p_on_the_poster_plays_and_on_the_video_pauses() {
+        let mut trailers = measured();
+
+        trailers.play_or_pause(1, MANIFEST);
+        assert!(trailers.player(1).is_some_and(|player| !player.is_muted()));
+
+        // Without a runtime the player has failed, and P leaves it alone.
+        trailers.play_or_pause(1, MANIFEST);
+        assert!(trailers.player(1).is_some());
+    }
+
+    #[test]
+    fn m_on_the_poster_switches_the_shared_sound() {
+        let mut trailers = measured();
+
+        trailers.switch_mute(0);
+        assert_eq!(
+            trailers.sound(),
+            Sound {
+                muted: true,
+                volume: START_VOLUME,
+                touched: true
+            }
+        );
+        trailers.play(0, MANIFEST);
+        assert!(trailers.player(0).is_some_and(Player::is_muted));
+
+        trailers.switch_mute(0);
+        assert!(trailers.player(0).is_some_and(|player| !player.is_muted()));
+        assert!(!trailers.sound().muted);
+    }
+
+    #[test]
+    fn m_brings_back_a_quarter_after_zero() {
+        let mut trailers = measured();
+        trailers.play(0, MANIFEST);
+        trailers.update(video::Message::Volume(0.0));
+        trailers.stop();
+
+        trailers.switch_mute(0);
+
+        assert_eq!(
+            trailers.sound(),
+            Sound {
+                muted: false,
+                volume: START_VOLUME,
+                touched: true
+            }
+        );
     }
 
     #[test]
