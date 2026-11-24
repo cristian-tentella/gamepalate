@@ -33,7 +33,8 @@ impl Pages {
 
     pub fn is_screenshot(&self, url: &str) -> bool {
         self.pages.values().any(|page| {
-            matches!(page, Page::Ready(details) if details.store.screenshot_urls.iter().any(|shot| shot == url))
+            matches!(page, Page::Ready(details) if details.store.screenshot_urls.iter().any(|shot| shot == url)
+                || details.store.trailers.iter().any(|trailer| trailer.poster_url.as_deref() == Some(url)))
         })
     }
 
@@ -75,7 +76,7 @@ impl Pages {
 
 #[cfg(test)]
 mod tests {
-    use gamepalate_app::ItemDetails;
+    use gamepalate_app::{ItemDetails, Trailer};
 
     use super::*;
 
@@ -87,7 +88,11 @@ mod tests {
                 release_date: None,
                 header_url: None,
                 screenshot_urls: vec!["https://example.com/1.jpg".to_string()],
-                trailers: Vec::new(),
+                trailers: vec![Trailer {
+                    name: "Launch Trailer".to_string(),
+                    poster_url: Some("https://example.com/poster.jpg".to_string()),
+                    manifest_url: "https://example.com/dash_av1.mpd".to_string(),
+                }],
                 player_categories: Vec::new(),
                 controller: None,
                 italian: None,
@@ -137,6 +142,7 @@ mod tests {
         pages.loaded(AppId(1), details());
 
         assert!(pages.is_screenshot("https://example.com/1.jpg"));
+        assert!(pages.is_screenshot("https://example.com/poster.jpg"));
         assert!(!pages.is_screenshot("https://example.com/header.jpg"));
     }
 

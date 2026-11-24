@@ -7,6 +7,7 @@ mod pages;
 mod review_sheet;
 mod reviews;
 mod tags;
+mod trailers;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -19,7 +20,7 @@ use gamepalate_app::{
     reviews::{ReviewPage, ReviewQuery},
 };
 use iced::{
-    Center, ContentFit, Element, Fill, Shrink, Task, mouse, padding,
+    Center, ContentFit, Element, Fill, Shrink, Subscription, Task, mouse, padding,
     widget::{
         Id, button, column, container, image, mouse_area, opaque, operation, row, scrollable,
         scrollable::{AbsoluteOffset, RelativeOffset},
@@ -31,8 +32,10 @@ use iced::{
 use self::{
     descriptions::Descriptions,
     images::{Images, Picture},
-    pages::Pages,
+    media::Item,
+    pages::{Page, Pages},
     reviews::{Request, ReviewLists},
+    trailers::{Due, Trailers},
 };
 use super::game;
 use crate::{
@@ -40,7 +43,7 @@ use crate::{
         PAGE_TOP,
         backdrop::{self, Blurred},
     },
-    font, format, style,
+    font, format, style, video,
 };
 use media::next_index;
 pub use media::{SCREENSHOT_WIDTH, max_screenshot_width, screenshot_width};
@@ -81,7 +84,8 @@ pub struct Showcase {
     hours_typed: String,
     has_reviews: bool,
     extras: Images,
-    screenshot: usize,
+    /// The item of the gallery shown: the trailers first, then the screenshots.
+    item: usize,
     last_screenshot: Option<String>,
     shown: Option<AppId>,
     browsing: bool,
@@ -92,6 +96,7 @@ pub struct Showcase {
     hovered: bool,
     originals: HashMap<String, Picture>,
     thumbnails: HashMap<String, Picture>,
+    trailers: Trailers,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -217,6 +222,9 @@ pub enum Message {
     Close,
     ToggleFeatures,
     Hover(bool),
+    PlayTrailer,
+    Trailer(video::Message),
+    Measured(video::Surface),
 }
 
 impl Showcase {
@@ -232,7 +240,7 @@ impl Showcase {
             hours_typed: String::new(),
             has_reviews: false,
             extras: Images::default(),
-            screenshot: 0,
+            item: 0,
             last_screenshot: None,
             shown: None,
             browsing: false,
@@ -243,6 +251,7 @@ impl Showcase {
             hovered: false,
             originals: HashMap::new(),
             thumbnails: HashMap::new(),
+            trailers: Trailers::default(),
         }
     }
 
@@ -300,9 +309,9 @@ impl Showcase {
             Message::OpenLink(url) => super::open(url),
             Message::PreviousScreenshot | Message::NextScreenshot if self.popups.open.is_some() => {
             }
-            Message::PreviousScreenshot => self.show_screenshot(self.screenshot.saturating_sub(1)),
+            Message::PreviousScreenshot => self.show_screenshot(self.item.saturating_sub(1)),
             Message::NextScreenshot => {
-                self.show_screenshot(next_index(self.screenshot, self.screenshot_count()));
+                self.show_screenshot(next_index(self.item, self.item_count()));
             }
             Message::ShowScreenshot(index) => self.show_screenshot(index),
             Message::RetryDetails => {
@@ -349,9 +358,58 @@ impl Showcase {
             }
             Message::ToggleFeatures => self.features_open = !self.features_open,
             Message::Hover(hovered) => self.hovered = hovered,
+            Message::PlayTrailer => self.play_trailer(),
+            Message::Trailer(message) => self.trailers.update(message),
+            Message::Measured(surface) => self.trailers.measured(surface),
         }
+        if self.is_open() {
+            self.trailers.stop();
+        }
+        self.autoplay();
 
         self.load_shown()
+    }
+
+    pub fn subscription(&self) -> Subscription<Message> {
+        self.trailers.subscription().map(Message::Trailer)
+    }
+
+    /// Stops the trailer, for what covers the gallery or takes the place of the screen.
+    pub fn stop_trailer(&mut self) {
+        self.trailers.stop();
+    }
+
+    fn play_trailer(&mut self) {
+        let Some(Item::Trailer(index)) = self.current_item() else {
+            return;
+        };
+        if let Some(manifest_url) = self
+            .trailer(index)
+            .map(|trailer| trailer.manifest_url.clone())
+        {
+            self.trailers.play(index, &manifest_url);
+        }
+    }
+
+    /// The first trailer of a game just shown starts by itself, when the gallery shows it.
+    fn autoplay(&mut self) {
+        if !self.trailers.is_armed() {
+            return;
+        }
+        let page = self.shown.and_then(|id| self.pages.get(id));
+        let due = match page {
+            _ if self.is_open() || self.item != 0 => Due::Never,
+            Some(Page::Ready(details)) => details
+                .store
+                .trailers
+                .first()
+                .map_or(Due::Never, |trailer| {
+                    Due::Play(trailer.manifest_url.clone())
+                }),
+            Some(Page::Loading) | None if self.shown.is_some() => Due::Wait,
+            _ => Due::Never,
+        };
+        self.trailers.autoplay(due);
     }
 
     fn load_shown(&mut self) -> Task<Message> {
@@ -398,7 +456,8 @@ impl Showcase {
         self.has_reviews = has_reviews;
         if current != self.shown {
             self.shown = current;
-            self.screenshot = 0;
+            self.item = 0;
+            self.trailers.arm();
             self.last_screenshot = None;
             self.browsing = false;
             self.zoomed = false;
@@ -407,6 +466,7 @@ impl Showcase {
             self.expanded.clear();
             self.tags = current.and_then(|id| self.gamepalate.game_tags(id));
             self.originals.clear();
+            self.autoplay();
         }
     }
 

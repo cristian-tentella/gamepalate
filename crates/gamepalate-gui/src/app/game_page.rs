@@ -263,11 +263,17 @@ impl GamePage {
         Action::Run(task)
     }
 
-    pub fn subscription(keys: bool) -> Subscription<Message> {
+    pub fn subscription(&self, keys: bool) -> Subscription<Message> {
+        let trailer = self.showcase.subscription().map(Message::Showcase);
         if !keys {
-            return Subscription::none();
+            return trailer;
         }
-        keyboard::listen().filter_map(key_message)
+        Subscription::batch([keyboard::listen().filter_map(key_message), trailer])
+    }
+
+    /// The search over the page stops the trailer.
+    pub fn stop_trailer(&mut self) {
+        self.showcase.stop_trailer();
     }
 
     /// The sheet over the blurred page. `area` is the size below the top bar, `under` names the
@@ -405,7 +411,7 @@ impl GamePage {
                 .into(),
                 gallery: Box::new(move |width, height| {
                     showcase
-                        .gallery(game.id, width, height)
+                        .gallery(game.id, width, height, scale)
                         .map(Message::Showcase)
                 }),
                 header: Box::new(move |width, height| {

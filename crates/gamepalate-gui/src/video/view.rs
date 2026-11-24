@@ -8,7 +8,7 @@ use iced::advanced::widget::{Tree, Widget, tree};
 use iced::advanced::{Clipboard, Shell, mouse};
 use iced::widget::shader::{self, Pipeline, Primitive, Viewport};
 use iced::widget::{
-    Shader, button, column, container, mouse_area, row, slider, space, stack, text, tooltip,
+    Shader, button, column, container, mouse_area, row, slider, stack, text, tooltip,
 };
 use iced::window::{self, RedrawRequest};
 use iced::{Center, Color, Element, Event, Fill, Length, Point, Rectangle, Size, Theme, wgpu};
@@ -227,15 +227,7 @@ impl Player {
         let state = self.state();
         let content: Element<'a, Message> = match &state {
             State::Failed(_) => failed(),
-            State::Loading => stack![
-                poster,
-                container(space())
-                    .width(Fill)
-                    .height(Fill)
-                    .style(style::veil),
-                self.frames()
-            ]
-            .into(),
+            State::Loading => stack![poster, self.frames()].into(),
             State::Ended => stack![self.frames(), container(replay()).center(Fill)].into(),
             State::Playing | State::Paused => {
                 let screen = mouse_area(self.frames()).on_press(Message::Toggle);

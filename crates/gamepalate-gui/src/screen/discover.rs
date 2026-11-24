@@ -260,6 +260,9 @@ impl Discover {
         if self.panel_open && acts_on_the_game(&message) {
             return Task::none();
         }
+        if stops_the_trailer(&message) {
+            self.showcase.stop_trailer();
+        }
         let task = self.handle(message);
         let has_reviews = self.current().is_some_and(|game| game.reviews.total > 0);
         self.showcase
@@ -546,14 +549,21 @@ impl Discover {
         Task::none()
     }
 
-    pub fn subscription(keys: bool) -> Subscription<Message> {
+    pub fn subscription(&self, keys: bool) -> Subscription<Message> {
+        let trailer = self.showcase.subscription().map(Message::Showcase);
         if !keys {
-            return Subscription::none();
+            return trailer;
         }
         Subscription::batch([
             keyboard::listen().filter_map(key_message),
             event::listen_with(escape_message),
+            trailer,
         ])
+    }
+
+    /// Leaving Discover, or covering it with a game or the search, stops the trailer.
+    pub fn stop_trailer(&mut self) {
+        self.showcase.stop_trailer();
     }
 
     pub fn view(&self, scale: f32) -> Element<'_, Message> {
@@ -679,7 +689,7 @@ impl Discover {
             ]
         });
         let toast = self.toasts.view(Message::Undo);
-        let game = container(self.game(layout, game_size.height))
+        let game = container(self.game(layout, game_size.height, scale))
             .padding(GAME_PADDING)
             .width(Fill)
             .height(Fill)
@@ -946,12 +956,13 @@ impl Discover {
         game: &'a RecommendedGame,
         layout: Layout,
         height: f32,
+        scale: f32,
     ) -> Element<'a, Message> {
         let (shot_width, shot_height) = layout.shot_size();
         let content: Element<'a, Message> = match layout {
             Layout::Beside(_) => row![
                 self.showcase
-                    .media(game.id, shot_width, shot_height)
+                    .media(game.id, shot_width, shot_height, scale)
                     .map(Message::Showcase),
                 column![
                     self.summary(game, SIDE_WIDTH, true),
@@ -971,7 +982,7 @@ impl Discover {
                     ]
                     .spacing(CARD_SPACING),
                     self.showcase
-                        .gallery(game.id, shot_width, shot_height)
+                        .gallery(game.id, shot_width, shot_height, scale)
                         .map(Message::Showcase),
                 ]
                 .spacing(CARD_SPACING)
@@ -1070,7 +1081,7 @@ impl Discover {
         }
     }
 
-    fn game(&self, layout: Layout, height: f32) -> Element<'_, Message> {
+    fn game(&self, layout: Layout, height: f32, scale: f32) -> Element<'_, Message> {
         let content: Element<'_, Message> = match &self.state {
             State::Loading => skeleton(layout, height),
             State::Failed(error) => column![
@@ -1082,7 +1093,7 @@ impl Discover {
             .into(),
             State::Ready(queue) => match queue.current() {
                 None => self.empty(),
-                Some(game) => self.card(queue, game, layout, height),
+                Some(game) => self.card(queue, game, layout, height, scale),
             },
         };
 
@@ -1353,6 +1364,14 @@ fn stopped_by_popup(message: &Message) -> bool {
             | Message::Star
             | Message::Open(_)
             | Message::ToggleFilters
+    )
+}
+
+/// A vote or a skip moves on: the trailer stops even when the game stays.
+fn stops_the_trailer(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::Later | Message::Vote(_) | Message::Played | Message::Star
     )
 }
 
@@ -1761,6 +1780,18 @@ mod tests {
 
         assert!(restore(&mut state, None, DiscoverMode::New));
         assert!(matches!(state, State::Ready(_)));
+    }
+
+    #[test]
+    fn a_vote_or_a_skip_stops_the_trailer() {
+        assert!(stops_the_trailer(&Message::Later));
+        assert!(stops_the_trailer(&Message::Vote(Pick::Played)));
+        assert!(stops_the_trailer(&Message::Played));
+        assert!(stops_the_trailer(&Message::Star));
+        assert!(!stops_the_trailer(&Message::Previous));
+        assert!(!stops_the_trailer(&Message::Showcase(
+            showcase::Message::ToggleAbout
+        )));
     }
 
     #[test]
