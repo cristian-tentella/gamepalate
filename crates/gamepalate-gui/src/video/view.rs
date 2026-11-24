@@ -26,6 +26,15 @@ const PAUSE: char = '\u{E034}';
 const VOLUME_UP: char = '\u{E050}';
 const VOLUME_OFF: char = '\u{E04F}';
 const REPLAY: char = '\u{E042}';
+const VOLUME_WIDTH: f32 = 72.0;
+const VOLUME_STEP: f32 = 0.01;
+const SPINNER_DELAY: Duration = Duration::from_millis(300);
+const SPINNER_SIZE: f32 = 40.0;
+const SPINNER_STROKE: f32 = 4.0;
+const SPINNER_TURN: f32 = 1.568;
+const SPINNER_CYCLE: f32 = 1.333;
+const SPINNER_MAX_SWEEP: f32 = 270.0;
+const SPINNER_MIN_SWEEP: f32 = 10.0;
 
 const SHADER: &str = r#"
 @group(0) @binding(0) var plane_y: texture_2d<f32>;
@@ -87,9 +96,10 @@ impl Surface {
         }
     }
 
-    pub fn options(&self, muted: bool) -> Options {
+    pub fn options(&self, muted: bool, volume: f32) -> Options {
         Options {
             muted,
+            volume,
             rgba: self.software,
         }
     }
@@ -227,7 +237,12 @@ impl Player {
         let state = self.state();
         let content: Element<'a, Message> = match &state {
             State::Failed(_) => failed(),
-            State::Loading => stack![poster, self.frames()].into(),
+            State::Loading => stack![
+                poster,
+                self.frames(),
+                container(spinner(self.loading_since)).center(Fill),
+            ]
+            .into(),
             State::Ended => stack![self.frames(), container(replay()).center(Fill)].into(),
             State::Playing | State::Paused => {
                 let screen = mouse_area(self.frames()).on_press(Message::Toggle);
@@ -256,10 +271,28 @@ impl Player {
             State::Paused => (PLAY, "Play"),
             _ => (PAUSE, "Pause"),
         };
-        let mute = match self.is_muted() {
+        let mute = match self.is_silent() {
             true => (VOLUME_OFF, "Unmute"),
             false => (VOLUME_UP, "Mute"),
         };
+        let level = match self.is_muted() {
+            true => 0.0,
+            false => self.volume(),
+        };
+        let volume = self.volume_open.then(|| {
+            slider(0.0..=1.0, level, Message::Volume)
+                .step(VOLUME_STEP)
+                .width(VOLUME_WIDTH)
+                .style(style::video_position)
+        });
+        let sound = mouse_area(
+            row![bar_button(mute, Message::Mute)]
+                .push(volume)
+                .spacing(4)
+                .align_y(Center),
+        )
+        .on_enter(Message::VolumeHovered(true))
+        .on_exit(Message::VolumeHovered(false));
 
         container(
             container(
@@ -274,7 +307,7 @@ impl Player {
                         Duration::from_secs_f64(duration)
                     ))
                     .size(font::NOTE_SIZE),
-                    bar_button(mute, Message::Mute),
+                    sound,
                 ]
                 .spacing(BAR_SPACING)
                 .align_y(Center),
@@ -335,6 +368,123 @@ fn failed<'a>() -> Element<'a, Message> {
     .center(Fill)
     .style(style::picture)
     .into()
+}
+
+/// The circular indicator of Material, in the accent: it shows only after [`SPINNER_DELAY`],
+/// so a trailer that starts at once does not flash it.
+fn spinner<'a>(since: Instant) -> Element<'a, Message> {
+    Element::new(Spinner { since })
+}
+
+struct Spinner {
+    since: Instant,
+}
+
+/// Where the arc starts and how wide it is, in degrees, `elapsed` seconds after the delay:
+/// the whole turns in [`SPINNER_TURN`], and in each [`SPINNER_CYCLE`] the head runs ahead
+/// and then the tail catches up.
+fn arc(elapsed: f32) -> (f32, f32) {
+    let cycles = elapsed / SPINNER_CYCLE;
+    let done = cycles.floor();
+    let phase = cycles - done;
+    let (head, tail) = match phase < 0.5 {
+        true => (ease(phase * 2.0) * SPINNER_MAX_SWEEP, 0.0),
+        false => (
+            SPINNER_MAX_SWEEP,
+            ease((phase - 0.5) * 2.0) * SPINNER_MAX_SWEEP,
+        ),
+    };
+    let start = elapsed / SPINNER_TURN * 360.0 + done * SPINNER_MAX_SWEEP + tail;
+
+    (start % 360.0, (head - tail).max(SPINNER_MIN_SWEEP))
+}
+
+fn ease(t: f32) -> f32 {
+    match t < 0.5 {
+        true => 4.0 * t * t * t,
+        false => 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0,
+    }
+}
+
+fn shows_spinner(since: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(since) >= SPINNER_DELAY
+}
+
+impl<M> Widget<M, Theme, iced::Renderer> for Spinner {
+    fn size(&self) -> Size<Length> {
+        Size::new(Length::Fixed(SPINNER_SIZE), Length::Fixed(SPINNER_SIZE))
+    }
+
+    fn layout(
+        &mut self,
+        _tree: &mut Tree,
+        _renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        layout::atomic(limits, SPINNER_SIZE, SPINNER_SIZE)
+    }
+
+    fn draw(
+        &self,
+        _tree: &Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        _style: &renderer::Style,
+        layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _viewport: &Rectangle,
+    ) {
+        let now = Instant::now();
+        if !shows_spinner(self.since, now) {
+            return;
+        }
+        let elapsed = (now - self.since - SPINNER_DELAY).as_secs_f32();
+        let (start, sweep) = arc(elapsed);
+        let bounds = layout.bounds();
+        let center = bounds.center();
+        let radius = (SPINNER_SIZE - SPINNER_STROKE) / 2.0;
+        let color = theme.extended_palette().primary.base.color;
+        // The arc is drawn as round dots close enough to touch, one every 4 degrees.
+        let dots = (sweep / 4.0).ceil() as usize;
+        for dot in 0..=dots {
+            let angle = (start + sweep * dot as f32 / dots as f32 - 90.0).to_radians();
+            let at = Point::new(
+                center.x + radius * angle.cos() - SPINNER_STROKE / 2.0,
+                center.y + radius * angle.sin() - SPINNER_STROKE / 2.0,
+            );
+            renderer.fill_quad(
+                Quad {
+                    bounds: Rectangle::new(at, Size::new(SPINNER_STROKE, SPINNER_STROKE)),
+                    border: iced::Border::default().rounded(SPINNER_STROKE / 2.0),
+                    ..Quad::default()
+                },
+                color,
+            );
+        }
+    }
+
+    fn update(
+        &mut self,
+        _tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _renderer: &iced::Renderer,
+        _clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, M>,
+        viewport: &Rectangle,
+    ) {
+        let Event::Window(window::Event::RedrawRequested(now)) = event else {
+            return;
+        };
+        if !viewport.intersects(&layout.bounds()) {
+            return;
+        }
+        match shows_spinner(self.since, *now) {
+            true => shell.request_redraw(),
+            false => shell.request_redraw_at(RedrawRequest::At(self.since + SPINNER_DELAY)),
+        }
+    }
 }
 
 /// Draws the frame the engine picks at each redraw, and asks for the next redraw itself,
@@ -701,9 +851,10 @@ mod tests {
 
         assert_eq!(height(wgpu.source("https://a/dash_av1.mpd")), 1013);
         assert_eq!(
-            wgpu.options(true),
+            wgpu.options(true, 0.5),
             Options {
                 muted: true,
+                volume: 0.5,
                 rgba: false
             }
         );
@@ -719,12 +870,39 @@ mod tests {
             240
         );
         assert_eq!(
-            software.options(false),
+            software.options(false, 1.0),
             Options {
                 muted: false,
+                volume: 1.0,
                 rgba: true
             }
         );
+    }
+
+    #[test]
+    fn the_spinner_waits_300_ms() {
+        let since = Instant::now();
+
+        assert!(!shows_spinner(since, since));
+        assert!(!shows_spinner(since, since + Duration::from_millis(299)));
+        assert!(shows_spinner(since, since + Duration::from_millis(300)));
+        assert!(!shows_spinner(since + Duration::from_millis(10), since));
+    }
+
+    #[test]
+    fn the_spinner_arc_grows_then_shrinks() {
+        let (_, short) = arc(0.0);
+        let (_, long) = arc(SPINNER_CYCLE * 0.5);
+        let (_, back) = arc(SPINNER_CYCLE * 0.99);
+
+        assert_eq!(short, SPINNER_MIN_SWEEP);
+        assert_eq!(long, SPINNER_MAX_SWEEP);
+        assert!(back < 20.0);
+        for step in 0..100 {
+            let (start, sweep) = arc(step as f32 * 0.05);
+            assert!((0.0..360.0).contains(&start));
+            assert!((SPINNER_MIN_SWEEP..=SPINNER_MAX_SWEEP).contains(&sweep));
+        }
     }
 
     #[test]

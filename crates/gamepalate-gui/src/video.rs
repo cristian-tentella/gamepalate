@@ -20,16 +20,29 @@ const FRAME_TOLERANCE: f64 = 0.0005;
 const IDLE: Duration = Duration::from_millis(5);
 const TICK: Duration = Duration::from_millis(250);
 const VIEWS_LOGGED_EVERY: Duration = Duration::from_secs(1);
+pub const FULL_VOLUME: f32 = 1.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
     Dash { manifest_url: String, height: u32 },
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// How the trailer starts: `volume` goes from 0 to 1, and 0 counts as muted.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Options {
     pub muted: bool,
+    pub volume: f32,
     pub rgba: bool,
+}
+
+impl Default for Options {
+    fn default() -> Options {
+        Options {
+            muted: false,
+            volume: FULL_VOLUME,
+            rgba: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +71,8 @@ pub enum Message {
     Scrub(f64),
     Seek,
     Mute,
+    Volume(f32),
+    VolumeHovered(bool),
     Replay,
     Retry,
     Hovered(bool),
@@ -70,6 +85,8 @@ pub struct Player {
     options: Options,
     scrub: Option<f64>,
     hovered: bool,
+    volume_open: bool,
+    loading_since: Instant,
     views: AtomicU32,
     views_since: Instant,
 }
@@ -82,6 +99,8 @@ impl Player {
             options,
             scrub: None,
             hovered: false,
+            volume_open: false,
+            loading_since: Instant::now(),
             views: AtomicU32::new(0),
             views_since: Instant::now(),
         }
@@ -100,7 +119,12 @@ impl Player {
                     self.seek(Duration::from_secs_f64(seconds.max(0.0)));
                 }
             }
-            Message::Mute => self.set_muted(!self.is_muted()),
+            Message::Mute => self.switch_sound(),
+            Message::Volume(volume) => {
+                self.set_volume(volume);
+                self.set_muted(self.volume() == 0.0);
+            }
+            Message::VolumeHovered(open) => self.volume_open = open,
             Message::Replay => {
                 self.seek(Duration::ZERO);
                 self.play();
@@ -121,8 +145,22 @@ impl Player {
     fn retry(&mut self) {
         self.shared.stop();
         self.options.muted = self.is_muted();
+        self.options.volume = self.volume();
         self.shared = start(&self.source, self.options);
         self.scrub = None;
+        self.loading_since = Instant::now();
+    }
+
+    /// The mute button: a trailer turned down to zero comes back at full volume.
+    fn switch_sound(&self) {
+        if self.is_silent() {
+            if self.volume() == 0.0 {
+                self.set_volume(FULL_VOLUME);
+            }
+            self.set_muted(false);
+        } else {
+            self.set_muted(true);
+        }
     }
 
     fn log_views(&mut self, now: Instant) {
@@ -168,6 +206,20 @@ impl Player {
 
     pub fn is_muted(&self) -> bool {
         self.shared.is_muted()
+    }
+
+    pub fn set_volume(&self, volume: f32) {
+        let volume = volume.clamp(0.0, FULL_VOLUME);
+        self.shared.volume.store(volume.to_bits(), Ordering::SeqCst);
+    }
+
+    pub fn volume(&self) -> f32 {
+        self.shared.volume()
+    }
+
+    /// Muted, or turned down to zero.
+    pub fn is_silent(&self) -> bool {
+        self.is_muted() || self.volume() == 0.0
     }
 
     pub fn stop(&self) {
@@ -255,6 +307,7 @@ struct Shared {
     seek_to: Mutex<f64>,
     playing: AtomicBool,
     muted: AtomicBool,
+    volume: AtomicU32,
     stopped: AtomicBool,
     started: AtomicBool,
     drawn: AtomicU64,
@@ -275,6 +328,7 @@ impl Shared {
             seek_to: Mutex::new(0.0),
             playing: AtomicBool::new(true),
             muted: AtomicBool::new(options.muted),
+            volume: AtomicU32::new(options.volume.clamp(0.0, FULL_VOLUME).to_bits()),
             stopped: AtomicBool::new(false),
             started: AtomicBool::new(false),
             drawn: AtomicU64::new(0),
@@ -328,6 +382,18 @@ impl Shared {
 
     fn is_muted(&self) -> bool {
         self.muted.load(Ordering::SeqCst)
+    }
+
+    fn volume(&self) -> f32 {
+        f32::from_bits(self.volume.load(Ordering::SeqCst))
+    }
+
+    /// What the samples are multiplied by: the square of the volume, closer to how loud it sounds.
+    fn gain(&self) -> f32 {
+        match self.is_muted() {
+            true => 0.0,
+            false => self.volume().powi(2),
+        }
     }
 
     fn is_audible(&self, epoch: u64) -> bool {
@@ -646,6 +712,8 @@ mod tests {
             options,
             scrub: None,
             hovered: false,
+            volume_open: false,
+            loading_since: Instant::now(),
             views: AtomicU32::new(0),
             views_since: Instant::now(),
         }
@@ -708,6 +776,40 @@ mod tests {
     }
 
     #[test]
+    fn the_volume_slider_sets_the_gain_and_zero_mutes() {
+        let mut player = started(Options::default());
+
+        player.update(Message::Volume(0.5));
+        assert_eq!(player.volume(), 0.5);
+        assert_eq!(player.shared.gain(), 0.25);
+        assert!(!player.is_silent());
+
+        player.update(Message::Volume(0.0));
+        assert!(player.is_muted());
+        assert_eq!(player.shared.gain(), 0.0);
+
+        player.update(Message::Volume(0.3));
+        assert!(!player.is_muted());
+    }
+
+    #[test]
+    fn unmuting_at_zero_comes_back_at_full_volume() {
+        let mut player = started(Options::default());
+        player.update(Message::Volume(0.4));
+        player.update(Message::Mute);
+        assert!(player.is_muted());
+        assert_eq!(player.shared.gain(), 0.0);
+
+        player.update(Message::Mute);
+        assert_eq!(player.volume(), 0.4);
+
+        player.update(Message::Volume(0.0));
+        player.update(Message::Mute);
+        assert!(!player.is_muted());
+        assert_eq!(player.volume(), FULL_VOLUME);
+    }
+
+    #[test]
     fn replay_starts_again_from_the_beginning() {
         let mut player = started(Options::default());
         player.seek(Duration::from_secs(82));
@@ -724,6 +826,7 @@ mod tests {
     fn retry_starts_a_new_engine_with_the_same_mute() {
         let mut player = started(Options::default());
         player.set_muted(true);
+        player.set_volume(0.6);
         let old = Arc::clone(&player.shared);
 
         player.update(Message::Retry);
@@ -731,6 +834,7 @@ mod tests {
         assert!(old.is_stopped());
         assert!(!Arc::ptr_eq(&old, &player.shared));
         assert!(player.is_muted());
+        assert_eq!(player.volume(), 0.6);
     }
 
     #[test]
@@ -816,7 +920,7 @@ mod tests {
                 },
                 Options {
                     muted: silent,
-                    rgba: false,
+                    ..Options::default()
                 },
             );
 

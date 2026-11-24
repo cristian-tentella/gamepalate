@@ -239,9 +239,9 @@ where
                 }
             }
 
-            let volume = if output.is_muted() { 0.0 } else { 1.0 };
+            let gain = output.gain();
             for (frame, stereo) in data.chunks_mut(channels).zip(scratch.as_chunks::<2>().0) {
-                let [left, right] = stereo.map(|sample| sample * volume);
+                let [left, right] = stereo.map(|sample| sample * gain);
                 for (channel, sample) in frame.iter_mut().enumerate() {
                     let value = match (channels, channel) {
                         (1, _) => (left + right) * 0.5,
