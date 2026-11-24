@@ -87,6 +87,7 @@ mod tests {
                 release_date: None,
                 header_url: None,
                 screenshot_urls: vec!["https://example.com/1.jpg".to_string()],
+                trailers: Vec::new(),
                 player_categories: Vec::new(),
                 controller: None,
                 italian: None,

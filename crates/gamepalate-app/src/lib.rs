@@ -52,7 +52,7 @@ pub use gamepalate_core::{
     votes::{LATER_DAYS, Vote, VoteKind},
 };
 pub use gamepalate_steam::details::{
-    Controller, Italian, ItemDetails, SteamDeck, original_screenshot, thumbnail_screenshot,
+    Controller, Italian, ItemDetails, SteamDeck, Trailer, original_screenshot, thumbnail_screenshot,
 };
 pub use gamepalate_steam::{
     archive::PendingUpdate,
