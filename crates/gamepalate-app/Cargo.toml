@@ -21,7 +21,9 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 tokio = { version = "1", features = ["sync", "time"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
 tracing = "0.1.44"
-avif-decode = { version = "3.0.0", default-features = false }
+avif-parse = "2.1.0"
+dav1d = { package = "re_rav1d", version = "0.1.3" }
+yuv = "0.8.20"
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]

@@ -1,5 +1,6 @@
 pub mod account;
 pub mod app;
+mod avif;
 mod capsules;
 pub mod catalog_file;
 mod catalog_search;

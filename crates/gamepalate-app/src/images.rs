@@ -6,15 +6,16 @@ use std::{
     time::SystemTime,
 };
 
-use avif_decode::Decoder;
 use gamepalate_steam::{
     images::{ImageDownloader, ImageError},
     transport::{Fetch, SteamError},
 };
-use image::{DynamicImage, ImageBuffer, ImageFormat, RgbaImage};
+use image::{ImageFormat, RgbaImage};
 use reqwest::Client;
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
+
+use crate::avif::{self, AvifError};
 
 const EXTENSIONS: [&str; 4] = ["jpg", "png", "webp", "avif"];
 pub(crate) const MAX_CACHE_BYTES: u64 = 300 * 1024 * 1024;
@@ -39,7 +40,7 @@ pub enum LoadImageError {
     Decode(#[from] image::ImageError),
 
     #[error("could not read the AVIF image")]
-    Avif(#[from] avif_decode::Error),
+    Avif(#[from] AvifError),
 
     #[error("could not use the cached image {}", path.display())]
     Disk {
@@ -292,7 +293,7 @@ fn file_name(url: &str) -> String {
 fn decode_extra(bytes: &[u8]) -> Result<DecodedImage, LoadImageError> {
     let image = match image::guess_format(bytes) {
         Ok(ImageFormat::Avif) => std::panic::catch_unwind(|| avif(bytes)).unwrap_or(Err(
-            LoadImageError::Avif(avif_decode::Error::InternalError("the decoder stopped")),
+            LoadImageError::Avif(AvifError::Unsupported("an image that stops the decoder")),
         ))?,
         _ => image::load_from_memory(bytes)?.to_rgba8(),
     };
@@ -304,48 +305,10 @@ fn decode_extra(bytes: &[u8]) -> Result<DecodedImage, LoadImageError> {
 }
 
 fn avif(bytes: &[u8]) -> Result<RgbaImage, LoadImageError> {
-    let unsupported = || avif_decode::Error::Unsupported("the image size");
-    let image = match Decoder::from_avif(bytes)?.to_image()? {
-        avif_decode::Image::Rgb8(image) => {
-            let (pixels, width, height) = image.into_contiguous_buf();
-            let raw = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
-            DynamicImage::ImageRgb8(sized(width, height, raw).ok_or_else(unsupported)?)
-        }
-        avif_decode::Image::Rgba8(image) => {
-            let (pixels, width, height) = image.into_contiguous_buf();
-            let raw = pixels.iter().flat_map(|p| [p.r, p.g, p.b, p.a]).collect();
-            DynamicImage::ImageRgba8(sized(width, height, raw).ok_or_else(unsupported)?)
-        }
-        avif_decode::Image::Gray8(image) => {
-            let (pixels, width, height) = image.into_contiguous_buf();
-            let raw = pixels.iter().map(|p| p.value()).collect();
-            DynamicImage::ImageLuma8(sized(width, height, raw).ok_or_else(unsupported)?)
-        }
-        avif_decode::Image::Rgb16(image) => {
-            let (pixels, width, height) = image.into_contiguous_buf();
-            let raw = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
-            DynamicImage::ImageRgb16(sized(width, height, raw).ok_or_else(unsupported)?)
-        }
-        avif_decode::Image::Rgba16(image) => {
-            let (pixels, width, height) = image.into_contiguous_buf();
-            let raw = pixels.iter().flat_map(|p| [p.r, p.g, p.b, p.a]).collect();
-            DynamicImage::ImageRgba16(sized(width, height, raw).ok_or_else(unsupported)?)
-        }
-        avif_decode::Image::Gray16(image) => {
-            let (pixels, width, height) = image.into_contiguous_buf();
-            let raw = pixels.iter().map(|p| p.value()).collect();
-            DynamicImage::ImageLuma16(sized(width, height, raw).ok_or_else(unsupported)?)
-        }
-    };
-    Ok(image.to_rgba8())
-}
-
-fn sized<P: image::Pixel>(
-    width: usize,
-    height: usize,
-    raw: Vec<P::Subpixel>,
-) -> Option<ImageBuffer<P, Vec<P::Subpixel>>> {
-    ImageBuffer::from_raw(width.try_into().ok()?, height.try_into().ok()?, raw)
+    let (width, height, rgba) = avif::decode(bytes)?;
+    RgbaImage::from_raw(width, height, rgba).ok_or(LoadImageError::Avif(AvifError::Unsupported(
+        "the image size",
+    )))
 }
 
 fn touch(path: &Path) {
@@ -800,7 +763,7 @@ mod tests {
             image::Rgba([x as u8 * 80, y as u8 * 90, 7, 255])
         });
         let mut webp = Vec::new();
-        DynamicImage::ImageRgba8(original.clone())
+        image::DynamicImage::ImageRgba8(original.clone())
             .write_to(&mut std::io::Cursor::new(&mut webp), ImageFormat::WebP)
             .unwrap();
 
