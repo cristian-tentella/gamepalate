@@ -279,20 +279,15 @@ impl Player {
             true => 0.0,
             false => self.volume(),
         };
-        let volume = self.volume_open.then(|| {
+        let sound = row![
+            bar_button(mute, Message::Mute),
             slider(0.0..=1.0, level, Message::Volume)
                 .step(VOLUME_STEP)
                 .width(VOLUME_WIDTH)
-                .style(style::video_position)
-        });
-        let sound = mouse_area(
-            row![bar_button(mute, Message::Mute)]
-                .push(volume)
-                .spacing(4)
-                .align_y(Center),
-        )
-        .on_enter(Message::VolumeHovered(true))
-        .on_exit(Message::VolumeHovered(false));
+                .style(style::video_position),
+        ]
+        .spacing(4)
+        .align_y(Center);
 
         container(
             container(

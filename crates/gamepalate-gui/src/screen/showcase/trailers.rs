@@ -2,14 +2,14 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use iced::Subscription;
 
-use crate::video::{self, FULL_VOLUME, Player, Surface};
+use crate::video::{self, Player, START_VOLUME, Surface};
 
 /// The sound of the trailers, one for the whole GUI: every gallery, in every screen, until the
 /// GUI closes. Nothing is saved.
 static SOUND: LazyLock<Arc<Mutex<Sound>>> = LazyLock::new(Arc::default);
 
 /// Until the sound is touched, a trailer that starts by itself is muted and a click plays with
-/// sound; afterwards every trailer starts as the sound was left.
+/// sound, both at [`START_VOLUME`]; afterwards every trailer starts as the sound was left.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Sound {
     muted: bool,
@@ -21,7 +21,7 @@ impl Default for Sound {
     fn default() -> Sound {
         Sound {
             muted: false,
-            volume: FULL_VOLUME,
+            volume: START_VOLUME,
             touched: false,
         }
     }
@@ -290,7 +290,7 @@ mod tests {
 
         trailers.play(0, MANIFEST);
         assert!(trailers.player(0).is_some_and(|player| !player.is_muted()));
-        assert_eq!(trailers.player(0).map(Player::volume), Some(FULL_VOLUME));
+        assert_eq!(trailers.player(0).map(Player::volume), Some(START_VOLUME));
     }
 
     #[test]
@@ -343,12 +343,17 @@ mod tests {
     }
 
     #[test]
-    fn hovering_the_bar_does_not_touch_the_sound() {
+    fn the_first_unmute_brings_a_quarter_of_the_volume() {
         let mut trailers = measured();
-        trailers.play(0, MANIFEST);
+        trailers.arm();
+        trailers.autoplay(Due::Play(MANIFEST.to_string()));
         trailers.update(video::Message::Hovered(true));
-        trailers.update(video::Message::VolumeHovered(true));
-
         assert!(!trailers.sound().touched);
+
+        trailers.update(video::Message::Mute);
+
+        let player = trailers.player(0).unwrap();
+        assert!(!player.is_muted());
+        assert_eq!(player.volume(), START_VOLUME);
     }
 }

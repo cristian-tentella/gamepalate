@@ -21,6 +21,8 @@ const IDLE: Duration = Duration::from_millis(5);
 const TICK: Duration = Duration::from_millis(250);
 const VIEWS_LOGGED_EVERY: Duration = Duration::from_secs(1);
 pub const FULL_VOLUME: f32 = 1.0;
+/// The volume until the Utente picks one, and after unmuting a trailer turned down to zero.
+pub const START_VOLUME: f32 = 0.25;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -72,7 +74,6 @@ pub enum Message {
     Seek,
     Mute,
     Volume(f32),
-    VolumeHovered(bool),
     Replay,
     Retry,
     Hovered(bool),
@@ -85,7 +86,6 @@ pub struct Player {
     options: Options,
     scrub: Option<f64>,
     hovered: bool,
-    volume_open: bool,
     loading_since: Instant,
     views: AtomicU32,
     views_since: Instant,
@@ -99,7 +99,6 @@ impl Player {
             options,
             scrub: None,
             hovered: false,
-            volume_open: false,
             loading_since: Instant::now(),
             views: AtomicU32::new(0),
             views_since: Instant::now(),
@@ -124,7 +123,6 @@ impl Player {
                 self.set_volume(volume);
                 self.set_muted(self.volume() == 0.0);
             }
-            Message::VolumeHovered(open) => self.volume_open = open,
             Message::Replay => {
                 self.seek(Duration::ZERO);
                 self.play();
@@ -151,11 +149,11 @@ impl Player {
         self.loading_since = Instant::now();
     }
 
-    /// The mute button: a trailer turned down to zero comes back at full volume.
+    /// The mute button: a trailer turned down to zero comes back at [`START_VOLUME`].
     fn switch_sound(&self) {
         if self.is_silent() {
             if self.volume() == 0.0 {
-                self.set_volume(FULL_VOLUME);
+                self.set_volume(START_VOLUME);
             }
             self.set_muted(false);
         } else {
@@ -712,7 +710,6 @@ mod tests {
             options,
             scrub: None,
             hovered: false,
-            volume_open: false,
             loading_since: Instant::now(),
             views: AtomicU32::new(0),
             views_since: Instant::now(),
@@ -793,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn unmuting_at_zero_comes_back_at_full_volume() {
+    fn unmuting_at_zero_comes_back_at_a_quarter() {
         let mut player = started(Options::default());
         player.update(Message::Volume(0.4));
         player.update(Message::Mute);
@@ -806,7 +803,7 @@ mod tests {
         player.update(Message::Volume(0.0));
         player.update(Message::Mute);
         assert!(!player.is_muted());
-        assert_eq!(player.volume(), FULL_VOLUME);
+        assert_eq!(player.volume(), START_VOLUME);
     }
 
     #[test]
