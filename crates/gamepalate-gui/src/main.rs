@@ -8,6 +8,9 @@ mod progress;
 mod screen;
 mod smooth;
 mod style;
+// The trailer widget and the gallery start using it in the next steps of the trailers work.
+#[allow(dead_code)]
+mod video;
 mod window_icon;
 
 use gamepalate_app::{log::start_log, setup::saved_gui_settings};

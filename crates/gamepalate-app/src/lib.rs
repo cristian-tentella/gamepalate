@@ -61,6 +61,11 @@ pub use gamepalate_steam::{
     description::{Block, Span},
     transport::SteamError,
 };
+pub mod trailer {
+    pub use gamepalate_steam::trailer::{
+        AudioRendition, Manifest, Segments, TrailerDownloader, TrailerError, VideoRendition,
+    };
+}
 pub mod reviews {
     pub use gamepalate_steam::reviews::{
         Block, Language, Languages, Order, Review, ReviewPage, ReviewQuery, Span, Verdict,
