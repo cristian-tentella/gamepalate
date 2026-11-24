@@ -721,6 +721,50 @@ pub fn arrow(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+/// The control bar of a trailer: a pill like the gallery arrows, over the video.
+pub fn video_bar(theme: &Theme) -> container::Style {
+    let background = theme.extended_palette().background.base;
+
+    container::Style {
+        background: Some(background.color.scale_alpha(0.85).into()),
+        text_color: Some(background.text),
+        border: Border {
+            radius: 999.0.into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
+    }
+}
+
+/// The position of a trailer: the part already seen has the accent.
+pub fn video_position(theme: &Theme, status: slider::Status) -> slider::Style {
+    let palette = theme.extended_palette();
+    let handle = match status {
+        slider::Status::Active => palette.primary.base.color,
+        slider::Status::Hovered | slider::Status::Dragged => palette.primary.strong.color,
+    };
+
+    slider::Style {
+        rail: slider::Rail {
+            backgrounds: (
+                palette.primary.base.color.into(),
+                palette.background.strong.color.into(),
+            ),
+            width: 4.0,
+            border: Border {
+                radius: 2.0.into(),
+                ..Border::default()
+            },
+        },
+        handle: slider::Handle {
+            shape: slider::HandleShape::Circle { radius: 6.0 },
+            background: handle.into(),
+            border_width: 0.0,
+            border_color: Color::TRANSPARENT,
+        },
+    }
+}
+
 pub fn popup(theme: &Theme) -> container::Style {
     let background = theme.extended_palette().background;
 

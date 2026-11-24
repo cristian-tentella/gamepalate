@@ -1,19 +1,25 @@
 mod audio;
 mod decode;
 mod stream;
+mod view;
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+use iced::Subscription;
 use iced::widget::image;
 
 use self::audio::{AudioBuffer, Clock};
 
+pub use self::view::{Surface, probe};
+
 const FRAME_CAPACITY: usize = 30;
 const FRAME_TOLERANCE: f64 = 0.0005;
 const IDLE: Duration = Duration::from_millis(5);
+const TICK: Duration = Duration::from_millis(250);
+const VIEWS_LOGGED_EVERY: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -46,19 +52,97 @@ pub struct Frame {
     pub rgba: Option<image::Handle>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum Message {
+    Toggle,
+    Scrub(f64),
+    Seek,
+    Mute,
+    Replay,
+    Retry,
+    Hovered(bool),
+    Tick,
+}
+
 pub struct Player {
     shared: Arc<Shared>,
+    source: Source,
+    options: Options,
+    scrub: Option<f64>,
+    hovered: bool,
+    views: AtomicU32,
+    views_since: Instant,
 }
 
 impl Player {
     pub fn new(source: Source, options: Options) -> Player {
-        let shared = Arc::new(Shared::new(options));
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => decode::start(Arc::clone(&shared), runtime, source, options.rgba),
-            Err(error) => shared.fail(format!("no async runtime for the trailer: {error}")),
+        Player {
+            shared: start(&source, options),
+            source,
+            options,
+            scrub: None,
+            hovered: false,
+            views: AtomicU32::new(0),
+            views_since: Instant::now(),
         }
+    }
 
-        Player { shared }
+    pub fn update(&mut self, message: Message) {
+        match message {
+            Message::Toggle => match self.state() {
+                State::Playing | State::Loading => self.pause(),
+                State::Paused => self.play(),
+                State::Ended | State::Failed(_) => {}
+            },
+            Message::Scrub(seconds) => self.scrub = Some(seconds),
+            Message::Seek => {
+                if let Some(seconds) = self.scrub.take() {
+                    self.seek(Duration::from_secs_f64(seconds.max(0.0)));
+                }
+            }
+            Message::Mute => self.set_muted(!self.is_muted()),
+            Message::Replay => {
+                self.seek(Duration::ZERO);
+                self.play();
+            }
+            Message::Retry => self.retry(),
+            Message::Hovered(hovered) => self.hovered = hovered,
+            Message::Tick => self.log_views(Instant::now()),
+        }
+    }
+
+    pub fn subscription(&self) -> Subscription<Message> {
+        match self.state() {
+            State::Loading | State::Playing => iced::time::every(TICK).map(|_| Message::Tick),
+            State::Paused | State::Ended | State::Failed(_) => Subscription::none(),
+        }
+    }
+
+    fn retry(&mut self) {
+        self.shared.stop();
+        self.options.muted = self.is_muted();
+        self.shared = start(&self.source, self.options);
+        self.scrub = None;
+    }
+
+    fn log_views(&mut self, now: Instant) {
+        let elapsed = now.duration_since(self.views_since);
+        if elapsed >= VIEWS_LOGGED_EVERY {
+            let views = self.views.swap(0, Ordering::Relaxed);
+            tracing::debug!(
+                "the trailer view was built {views} times in {:.2} s",
+                elapsed.as_secs_f64()
+            );
+            self.views_since = now;
+        }
+    }
+
+    fn shows_an_old_frame(&self) -> bool {
+        let epoch = self.shared.epoch();
+        lock(&self.shared.frames)
+            .current
+            .as_ref()
+            .is_some_and(|frame| frame.epoch != epoch)
     }
 
     pub fn state(&self) -> State {
@@ -115,6 +199,16 @@ impl Drop for Player {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+fn start(source: &Source, options: Options) -> Arc<Shared> {
+    let shared = Arc::new(Shared::new(options));
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => decode::start(Arc::clone(&shared), runtime, source.clone(), options.rgba),
+        Err(error) => shared.fail(format!("no async runtime for the trailer: {error}")),
+    }
+
+    shared
 }
 
 #[derive(Default)]
@@ -540,6 +634,143 @@ mod tests {
         );
 
         assert!(matches!(player.state(), State::Failed(_)));
+    }
+
+    fn idle_player(options: Options) -> Player {
+        Player {
+            shared: Arc::new(Shared::new(options)),
+            source: Source::Dash {
+                manifest_url: "https://video.akamai.steamstatic.com/a/dash_av1.mpd".to_string(),
+                height: 720,
+            },
+            options,
+            scrub: None,
+            hovered: false,
+            views: AtomicU32::new(0),
+            views_since: Instant::now(),
+        }
+    }
+
+    fn started(options: Options) -> Player {
+        let player = idle_player(options);
+        player.shared.drawn(0);
+        player
+    }
+
+    #[test]
+    fn the_bar_toggles_pause_and_play() {
+        let mut player = started(Options::default());
+        assert_eq!(player.state(), State::Playing);
+
+        player.update(Message::Toggle);
+        assert_eq!(player.state(), State::Paused);
+        player.update(Message::Toggle);
+        assert_eq!(player.state(), State::Playing);
+    }
+
+    #[test]
+    fn a_click_does_nothing_at_the_end() {
+        let mut player = started(Options::default());
+        player.shared.video_finished(0);
+        player.shared.audio_played_out(0);
+        assert_eq!(player.state(), State::Ended);
+
+        player.update(Message::Toggle);
+
+        assert_eq!(player.state(), State::Ended);
+        assert!(player.shared.playing.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn the_position_seeks_when_it_is_released() {
+        let mut player = started(Options::default());
+
+        player.update(Message::Scrub(12.0));
+        player.update(Message::Scrub(40.5));
+        assert_eq!(player.shared.epoch(), 0);
+        player.update(Message::Seek);
+
+        assert_eq!(player.shared.epoch(), 1);
+        assert_eq!(player.shared.seek_target(), 40.5);
+        assert_eq!(player.scrub, None);
+        player.update(Message::Seek);
+        assert_eq!(player.shared.epoch(), 1);
+    }
+
+    #[test]
+    fn mute_switches_the_sound() {
+        let mut player = started(Options::default());
+
+        player.update(Message::Mute);
+        assert!(player.is_muted());
+        player.update(Message::Mute);
+        assert!(!player.is_muted());
+    }
+
+    #[test]
+    fn replay_starts_again_from_the_beginning() {
+        let mut player = started(Options::default());
+        player.seek(Duration::from_secs(82));
+        player.pause();
+
+        player.update(Message::Replay);
+
+        assert_eq!(player.shared.epoch(), 2);
+        assert_eq!(player.shared.seek_target(), 0.0);
+        assert!(player.shared.playing.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn retry_starts_a_new_engine_with_the_same_mute() {
+        let mut player = started(Options::default());
+        player.set_muted(true);
+        let old = Arc::clone(&player.shared);
+
+        player.update(Message::Retry);
+
+        assert!(old.is_stopped());
+        assert!(!Arc::ptr_eq(&old, &player.shared));
+        assert!(player.is_muted());
+    }
+
+    #[test]
+    fn the_bar_follows_the_mouse() {
+        let mut player = started(Options::default());
+
+        player.update(Message::Hovered(true));
+        assert!(player.hovered);
+        player.update(Message::Hovered(false));
+        assert!(!player.hovered);
+    }
+
+    #[test]
+    fn an_old_frame_shows_until_the_seek_brings_a_new_one() {
+        let player = started(Options::default());
+        assert!(player.shared.push_frame(frame(0, 1.0)));
+        player.shared.select(Instant::now());
+        assert!(!player.shows_an_old_frame());
+
+        player.seek(Duration::from_secs(40));
+        player.shared.select(Instant::now());
+        assert!(player.shows_an_old_frame());
+
+        assert!(player.shared.push_frame(frame(1, 40.0)));
+        player.shared.select(Instant::now());
+        assert!(!player.shows_an_old_frame());
+    }
+
+    #[test]
+    fn the_views_are_counted_once_a_second() {
+        let mut player = started(Options::default());
+        let start = player.views_since;
+        player.views.store(4, Ordering::Relaxed);
+
+        player.log_views(start + Duration::from_millis(500));
+        assert_eq!(player.views.load(Ordering::Relaxed), 4);
+        player.log_views(start + Duration::from_secs(1));
+
+        assert_eq!(player.views.load(Ordering::Relaxed), 0);
+        assert_eq!(player.views_since, start + Duration::from_secs(1));
     }
 
     const HADES: &str = "https://video.akamai.steamstatic.com/store_trailers/1145360/312686/b0312c49135823cc34946e98148abfb8da71f0fb/1750627549/dash_av1.mpd";
