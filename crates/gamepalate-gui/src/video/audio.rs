@@ -253,8 +253,24 @@ where
                 }
             }
         },
-        move |error| failure.fail(format!("the audio output stopped: {error}")),
+        move |error: cpal::Error| {
+            if stops_the_output(error.kind()) {
+                failure.fail(format!("the audio output stopped: {error}"));
+            } else {
+                tracing::debug!("trailer audio output: {error}");
+            }
+        },
         None,
+    )
+}
+
+fn stops_the_output(kind: cpal::ErrorKind) -> bool {
+    matches!(
+        kind,
+        cpal::ErrorKind::DeviceNotAvailable
+            | cpal::ErrorKind::HostUnavailable
+            | cpal::ErrorKind::PermissionDenied
+            | cpal::ErrorKind::StreamInvalidated
     )
 }
 
@@ -268,6 +284,15 @@ mod tests {
         (0..frames)
             .flat_map(|frame| [frame as f32, -(frame as f32)])
             .collect()
+    }
+
+    #[test]
+    fn an_underrun_does_not_stop_the_trailer() {
+        assert!(!stops_the_output(cpal::ErrorKind::Xrun));
+        assert!(!stops_the_output(cpal::ErrorKind::DeviceChanged));
+        assert!(!stops_the_output(cpal::ErrorKind::BackendError));
+        assert!(stops_the_output(cpal::ErrorKind::DeviceNotAvailable));
+        assert!(stops_the_output(cpal::ErrorKind::StreamInvalidated));
     }
 
     #[test]
