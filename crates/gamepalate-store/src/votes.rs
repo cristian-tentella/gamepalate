@@ -7,6 +7,7 @@ use std::{
 
 use gamepalate_core::{
     ids::AppId,
+    lists::ListId,
     timestamp::Timestamp,
     votes::{Vote, VoteKind, Votes},
 };
@@ -24,6 +25,7 @@ const HEADER: &str = "\
 # bet = true  the vote was given to a bet
 # searched = true  the vote was given to a game you looked up, not to a recommendation
 # starred = true  you are thinking of buying it (only on would_try)
+# lists = [..]   the lists of a starred game (ids from lists.toml)
 # at          when the vote was cast, in milliseconds since 1970 (for the last 24 hours and the 7 days of a later)
 ";
 
@@ -55,6 +57,12 @@ pub enum VotesError {
 
     #[error("the vote for {0} has starred = true, which only a would_try can have")]
     StarredNotWouldTry(u32),
+
+    #[error("the vote for {0} has lists, which only a game with starred = true can have")]
+    ListsNotStarred(u32),
+
+    #[error("the vote for {0} has lists = [], which can only name some lists")]
+    ListsEmpty(u32),
 }
 
 #[derive(Deserialize)]
@@ -76,6 +84,7 @@ struct VoteEntry {
     genre_ok: Option<bool>,
     searched: Option<bool>,
     starred: Option<bool>,
+    lists: Option<Vec<u32>>,
 }
 
 #[derive(Deserialize)]
@@ -161,9 +170,15 @@ fn votes_text(votes: &Votes, name: impl Fn(AppId) -> Option<String>) -> String {
             ""
         };
         let starred = if vote.starred { ", starred = true" } else { "" };
+        let lists = if vote.lists.is_empty() {
+            String::new()
+        } else {
+            let ids: Vec<String> = vote.lists.iter().map(|id| id.0.to_string()).collect();
+            format!(", lists = [{}]", ids.join(", "))
+        };
         let _ = write!(
             text,
-            "{} = {{ vote = \"{}\", date = \"{}\"{at}{bet}{searched}{starred} }}",
+            "{} = {{ vote = \"{}\", date = \"{}\"{at}{bet}{searched}{starred}{lists} }}",
             id.0,
             kind_name(vote.kind),
             vote.date
@@ -229,6 +244,12 @@ fn vote_from_entry(appid: u32, entry: VoteEntry) -> Result<Option<Vote>, VotesEr
     if starred && !matches!(entry.vote.kind(), Some(VoteKind::WouldTry)) {
         return Err(VotesError::StarredNotWouldTry(appid));
     }
+    let lists = match entry.lists {
+        None => BTreeSet::new(),
+        Some(_) if !starred => return Err(VotesError::ListsNotStarred(appid)),
+        Some(lists) if lists.is_empty() => return Err(VotesError::ListsEmpty(appid)),
+        Some(lists) => lists.into_iter().map(ListId).collect(),
+    };
 
     Ok(entry.vote.kind().map(|kind| Vote {
         kind,
@@ -237,6 +258,7 @@ fn vote_from_entry(appid: u32, entry: VoteEntry) -> Result<Option<Vote>, VotesEr
         bet,
         searched,
         starred,
+        lists,
     }))
 }
 
@@ -418,6 +440,60 @@ mod tests {
     fn the_header_explains_the_star() {
         assert!(
             HEADER.contains("# starred = true  you are thinking of buying it (only on would_try)")
+        );
+    }
+
+    #[test]
+    fn the_lists_of_a_star_survive_saving_and_loading() {
+        let votes = parse_votes(
+            r#"
+            [votes]
+            1145360 = { vote = "would_try", date = "2026-11-16", at = 1794835200000, starred = true, lists = [5, 2] } # Disco Elysium
+            620 = { vote = "would_try", date = "2026-11-16", starred = true }
+            "#,
+        )
+        .unwrap()
+        .votes;
+
+        assert_eq!(
+            votes[&AppId(1145360)].lists,
+            BTreeSet::from([ListId(2), ListId(5)])
+        );
+        assert!(votes[&AppId(620)].lists.is_empty());
+        let text = votes_text(&votes, |_| None);
+        assert!(text.contains(
+            "1145360 = { vote = \"would_try\", date = \"2026-11-16\", at = 1794835200000, starred = true, lists = [2, 5] }"
+        ));
+        assert!(
+            text.contains("620 = { vote = \"would_try\", date = \"2026-11-16\", starred = true }")
+        );
+        assert_eq!(parse_votes(&text).unwrap().votes, votes);
+    }
+
+    #[test]
+    fn parse_votes_rejects_lists_without_a_star() {
+        for vote in [
+            r#"vote = "would_try", date = "2026-10-07", lists = [2]"#,
+            r#"vote = "not_for_me", date = "2026-10-07", lists = [2]"#,
+        ] {
+            let error = parse_votes(&format!("votes = {{ 10 = {{ {vote} }} }}")).unwrap_err();
+            assert!(matches!(error, VotesError::ListsNotStarred(10)));
+            assert!(error.to_string().contains("10"));
+        }
+    }
+
+    #[test]
+    fn parse_votes_rejects_empty_lists() {
+        let result = parse_votes(
+            r#"votes = { 10 = { vote = "would_try", date = "2026-10-07", starred = true, lists = [] } }"#,
+        );
+        assert!(matches!(result, Err(VotesError::ListsEmpty(10))));
+    }
+
+    #[test]
+    fn the_header_explains_the_lists() {
+        assert!(
+            HEADER.contains("# lists = [..]   the lists of a starred game (ids from lists.toml)")
         );
     }
 

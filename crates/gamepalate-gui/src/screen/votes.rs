@@ -300,7 +300,7 @@ impl Votes {
                     let save = Task::perform(
                         async move {
                             gamepalate
-                                .star(id, starred, false, false)
+                                .star(id, starred.into(), false, false)
                                 .map_err(|error| error.to_string())
                         },
                         Message::VoteSaved,

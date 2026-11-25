@@ -434,7 +434,7 @@ impl Discover {
                 let save = Task::perform(
                     async move {
                         gamepalate
-                            .star(id, starred, bet, false)
+                            .star(id, starred.into(), bet, false)
                             .map_err(|error| error.to_string())
                     },
                     move |result| Message::StarSaved(id, starred, result),

@@ -26,7 +26,10 @@ mod steam_account;
 pub mod steam_client;
 pub mod tags;
 pub mod update;
-pub use app::{BrowseRow, Gamepalate, OpenError, RecommendError, StarError, VoteError, VotedGame};
+pub use app::{
+    BrowseRow, Gamepalate, ListError, OpenError, RecommendError, StarChange, StarError, VoteError,
+    VotedGame,
+};
 pub use capsules::{CAPSULE_HEIGHT, CAPSULE_WIDTH, Capsule};
 pub use catalog_search::{MAX_MATCHES, MIN_SEARCH_CHARS};
 pub use details::GameDetails;
@@ -46,6 +49,7 @@ pub use gamepalate_core::{
     filters::{Blame, DiscoverMode, FilterOptions},
     game::{Discount, Price, Reviews},
     ids::{AppId, SteamId, TagId},
+    lists::{ListId, Lists},
     opinion::Labels,
     region::Region,
     search::{Continuation, Recommendation, RecommendedGame, SearchError, SearchOptions, SortBy},

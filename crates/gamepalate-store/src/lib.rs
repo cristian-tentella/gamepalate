@@ -9,6 +9,7 @@ pub mod families_edit;
 pub mod gui;
 mod keys;
 pub mod known;
+pub mod lists;
 pub mod off_catalog;
 pub mod signals;
 pub mod votes;

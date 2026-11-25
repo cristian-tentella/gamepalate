@@ -187,7 +187,7 @@ impl GamePage {
                     false,
                     move |gamepalate| {
                         gamepalate
-                            .star(id, starred, false, true)
+                            .star(id, starred.into(), false, true)
                             .map_err(|error| error.to_string())
                     },
                 )

@@ -11,6 +11,7 @@ use gamepalate_core::{
     filters::{FilterContext, FilterOptions, chosen_filters, first_failed, owned_games},
     game::{Price, Reviews},
     ids::AppId,
+    lists::{ListId, Lists},
     off_catalog::OffCatalogGames,
     search::SearchInputs,
     taste::game_name,
@@ -37,9 +38,38 @@ pub struct VotedGame {
 #[derive(Debug, thiserror::Error)]
 #[error("could not save the vote in {}", path.display())]
 pub struct VoteError {
-    path: PathBuf,
+    pub(super) path: PathBuf,
     #[source]
-    source: VotesError,
+    pub(super) source: VotesError,
+}
+
+/// What changes in the star of a game.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StarChange {
+    Star,
+    /// Takes the star off, and the game out of every list.
+    Unstar,
+    /// Puts the game in the list, which gives it the star.
+    AddTo(ListId),
+    /// Takes the game out of the list. The star stays.
+    RemoveFrom(ListId),
+}
+
+/// `true` puts the star on, `false` takes it off.
+impl From<bool> for StarChange {
+    fn from(starred: bool) -> StarChange {
+        if starred {
+            StarChange::Star
+        } else {
+            StarChange::Unstar
+        }
+    }
+}
+
+impl StarChange {
+    pub fn gives_star(self) -> bool {
+        matches!(self, StarChange::Star | StarChange::AddTo(_))
+    }
 }
 
 /// Why a star was not saved.
@@ -47,6 +77,8 @@ pub struct VoteError {
 pub enum StarError {
     #[error("a game you have cannot be starred")]
     Owned,
+    #[error("the list is gone")]
+    NoList,
     #[error(transparent)]
     Vote(#[from] VoteError),
 }
@@ -67,38 +99,63 @@ fn saved_vote(
     Ok(changed)
 }
 
-/// The votes with the star put on `id` or taken off it. A star needs a Would try: the game gets
-/// `new_vote`, a Would try, when it has none that counts. A game you have cannot get a star.
-/// Without a change, or with an error, nothing is saved.
+/// The votes with `change` made to the star of `id`. A star needs a Would try: the game gets
+/// `new_vote`, a Would try, when it has none that counts. Losing the star takes the game out of
+/// its lists; leaving its last list keeps the star. A game you have cannot get a star, nor a
+/// list. Without a change, or with an error, nothing is saved.
+#[allow(clippy::too_many_arguments)]
 fn saved_star(
     path: &Path,
     votes: &Votes,
+    lists: &Lists,
     id: AppId,
-    starred: bool,
+    change: StarChange,
     owned: bool,
     new_vote: Vote,
     name: impl Fn(AppId) -> Option<String>,
 ) -> Result<Votes, StarError> {
-    if starred && owned {
+    if change.gives_star() && owned {
         return Err(StarError::Owned);
+    }
+    if let StarChange::AddTo(list) = change
+        && !lists.contains_key(&list)
+    {
+        return Err(StarError::NoList);
     }
     let now = new_vote.at.unwrap_or(Timestamp(0));
     let mut changed = votes.clone();
     match standing(votes, id, now) {
         Some(vote) if vote.kind == VoteKind::WouldTry => {
-            if vote.starred == starred {
+            let mut starred = vote.clone();
+            match change {
+                StarChange::Star => starred.starred = true,
+                StarChange::Unstar => {
+                    starred.starred = false;
+                    starred.lists.clear();
+                }
+                StarChange::AddTo(list) => {
+                    starred.starred = true;
+                    starred.lists.insert(list);
+                }
+                StarChange::RemoveFrom(list) => {
+                    starred.lists.remove(&list);
+                }
+            }
+            if starred == *vote {
                 return Ok(changed);
             }
-            if let Some(vote) = changed.get_mut(&id) {
-                vote.starred = starred;
-            }
+            changed.insert(id, starred);
         }
-        _ if starred => cast(
+        _ if change.gives_star() => cast(
             &mut changed,
             id,
             Vote {
                 kind: VoteKind::WouldTry,
                 starred: true,
+                lists: match change {
+                    StarChange::AddTo(list) => [list].into(),
+                    _ => Default::default(),
+                },
                 ..new_vote
             },
         ),
@@ -187,12 +244,10 @@ impl Gamepalate {
             &votes,
             id,
             Vote {
-                kind,
-                date,
                 at: Some(at),
                 bet,
                 searched,
-                starred: false,
+                ..Vote::new(kind, &date)
             },
             |id| self.saved_name(id),
         )
@@ -200,21 +255,24 @@ impl Gamepalate {
         Ok(())
     }
 
-    /// Puts the star on a game, or takes it off. A star needs a Would try: a game with another
-    /// vote or none gets one, with `bet` and `searched` as `vote` would give it. Taking the star
-    /// off leaves the Would try. A game you have cannot get a star, and nothing is saved.
+    /// Puts the star on a game or takes it off, or puts the game in a list or takes it out. A
+    /// star needs a Would try: a game with another vote or none gets one, with `bet` and
+    /// `searched` as `vote` would give it. Taking the star off leaves the Would try and empties
+    /// the lists; leaving the last list keeps the star. A game you have cannot get a star nor a
+    /// list, and nothing is saved.
     pub fn star(
         &self,
         id: AppId,
-        starred: bool,
+        change: StarChange,
         bet: bool,
         searched: bool,
     ) -> Result<(), StarError> {
-        let owned = starred
+        let owned = change.gives_star()
             && self.with_inputs(|inputs| {
                 owned_games(inputs.signals, inputs.corrections).contains(&id)
             });
         let mut votes = self.write_votes();
+        let lists = self.lock_lists();
         let now = jiff::Zoned::now();
         let new_vote = Vote {
             at: Some(Timestamp(now.timestamp().as_millisecond())),
@@ -225,8 +283,9 @@ impl Gamepalate {
         *votes = saved_star(
             &self.data_dir.join("votes.toml"),
             &votes,
+            &lists,
             id,
-            starred,
+            change,
             owned,
             new_vote,
             |id| self.saved_name(id),
@@ -245,7 +304,7 @@ impl Gamepalate {
         Ok(())
     }
 
-    fn saved_name(&self, id: AppId) -> Option<String> {
+    pub(super) fn saved_name(&self, id: AppId) -> Option<String> {
         let name = game_name(id, &self.files.catalog, &self.files.off_catalog);
         (name != format!("#{}", id.0)).then_some(name)
     }
@@ -403,11 +462,22 @@ mod tests {
         owned: bool,
         searched: bool,
     ) -> Result<Votes, StarError> {
+        change_in(path, votes, starred.into(), owned, searched)
+    }
+
+    fn change_in(
+        path: &Path,
+        votes: &Votes,
+        change: StarChange,
+        owned: bool,
+        searched: bool,
+    ) -> Result<Votes, StarError> {
         saved_star(
             path,
             votes,
+            &two_lists(),
             AppId(620),
-            starred,
+            change,
             owned,
             Vote {
                 at: Some(Timestamp(NOW)),
@@ -575,6 +645,207 @@ mod tests {
                 .unwrap()
                 .contains(", starred")
         );
+    }
+
+    fn two_lists() -> Lists {
+        Lists::from([
+            (ListId(2), "Co-op".to_string()),
+            (ListId(5), "On sale".to_string()),
+        ])
+    }
+
+    fn in_lists(lists: &[u32]) -> Votes {
+        let mut votes = voted_as(VoteKind::WouldTry, true);
+        if let Some(vote) = votes.get_mut(&AppId(620)) {
+            vote.lists = lists.iter().copied().map(ListId).collect();
+        }
+        votes
+    }
+
+    fn lists_of(votes: &Votes) -> Vec<ListId> {
+        votes[&AppId(620)].lists.iter().copied().collect()
+    }
+
+    #[test]
+    fn a_list_on_a_game_without_a_vote_gives_a_starred_would_try() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        let votes = change_in(
+            &path,
+            &Votes::new(),
+            StarChange::AddTo(ListId(2)),
+            false,
+            true,
+        )
+        .unwrap();
+
+        let vote = &votes[&AppId(620)];
+        assert_eq!(vote.kind, VoteKind::WouldTry);
+        assert!(vote.starred && vote.searched);
+        assert_eq!(lists_of(&votes), [ListId(2)]);
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("starred = true, lists = [2] } # Portal 2")
+        );
+        assert_eq!(
+            gamepalate_store::votes::load_votes(&path).unwrap().votes,
+            votes
+        );
+    }
+
+    #[test]
+    fn a_list_turns_a_not_for_me_into_a_starred_would_try() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        let votes = change_in(
+            &path,
+            &voted_as(VoteKind::NotForMe, false),
+            StarChange::AddTo(ListId(5)),
+            false,
+            false,
+        )
+        .unwrap();
+
+        let vote = &votes[&AppId(620)];
+        assert_eq!(vote.kind, VoteKind::WouldTry);
+        assert!(vote.starred && vote.bet);
+        assert_eq!(vote.at, Some(Timestamp(NOW)));
+        assert_eq!(lists_of(&votes), [ListId(5)]);
+    }
+
+    #[test]
+    fn a_list_stars_a_would_try_and_keeps_the_vote_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+        let before = voted_as(VoteKind::WouldTry, false);
+
+        let votes = change_in(&path, &before, StarChange::AddTo(ListId(2)), false, true).unwrap();
+
+        assert_eq!(
+            votes[&AppId(620)],
+            Vote {
+                starred: true,
+                lists: [ListId(2)].into(),
+                ..before[&AppId(620)].clone()
+            }
+        );
+    }
+
+    #[test]
+    fn a_second_list_adds_to_the_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        let votes = change_in(
+            &path,
+            &in_lists(&[2]),
+            StarChange::AddTo(ListId(5)),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(lists_of(&votes), [ListId(2), ListId(5)]);
+    }
+
+    #[test]
+    fn leaving_the_last_list_keeps_the_star() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        let votes = change_in(
+            &path,
+            &in_lists(&[2]),
+            StarChange::RemoveFrom(ListId(2)),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert!(votes[&AppId(620)].starred);
+        assert!(votes[&AppId(620)].lists.is_empty());
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains(", lists =")
+        );
+    }
+
+    #[test]
+    fn taking_the_star_off_empties_the_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        let votes = change_in(&path, &in_lists(&[2, 5]), StarChange::Unstar, false, false).unwrap();
+
+        assert_eq!(votes[&AppId(620)].kind, VoteKind::WouldTry);
+        assert!(!votes[&AppId(620)].starred);
+        assert!(votes[&AppId(620)].lists.is_empty());
+    }
+
+    #[test]
+    fn a_list_change_that_changes_nothing_saves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        for (before, change) in [
+            (in_lists(&[2]), StarChange::AddTo(ListId(2))),
+            (in_lists(&[2]), StarChange::RemoveFrom(ListId(5))),
+            (in_lists(&[2]), StarChange::Star),
+            (Votes::new(), StarChange::RemoveFrom(ListId(2))),
+            (
+                voted_as(VoteKind::NotForMe, false),
+                StarChange::RemoveFrom(ListId(2)),
+            ),
+        ] {
+            let votes = change_in(&path, &before, change, false, false).unwrap();
+            assert_eq!(votes, before);
+        }
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_list_that_is_gone_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        let error = change_in(
+            &path,
+            &Votes::new(),
+            StarChange::AddTo(ListId(9)),
+            false,
+            false,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, StarError::NoList));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_game_you_have_gets_no_list_and_nothing_is_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        for before in [Votes::new(), in_lists(&[2])] {
+            let error =
+                change_in(&path, &before, StarChange::AddTo(ListId(5)), true, false).unwrap_err();
+            assert!(matches!(error, StarError::Owned));
+        }
+        assert!(!path.exists());
+
+        let votes = change_in(
+            &path,
+            &in_lists(&[2]),
+            StarChange::RemoveFrom(ListId(2)),
+            true,
+            false,
+        )
+        .unwrap();
+        assert!(votes[&AppId(620)].lists.is_empty());
     }
 
     #[test]

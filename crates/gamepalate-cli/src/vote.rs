@@ -56,12 +56,9 @@ impl VoteChoice {
 impl VoteArgs {
     fn vote(&self, date: String, at: Timestamp) -> Vote {
         Vote {
-            kind: self.vote.kind(),
-            date,
             at: Some(at),
             bet: self.bet,
-            searched: false,
-            starred: false,
+            ..Vote::new(self.vote.kind(), &date)
         }
     }
 }

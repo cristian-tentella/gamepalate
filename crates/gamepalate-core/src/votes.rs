@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{ids::AppId, timestamp::Timestamp};
+use crate::{ids::AppId, lists::ListId, timestamp::Timestamp};
 
 pub type Votes = BTreeMap<AppId, Vote>;
 
@@ -13,6 +13,8 @@ pub struct Vote {
     pub searched: bool,
     /// The game is one you are thinking of buying. Only a Would try can have it.
     pub starred: bool,
+    /// The lists the starred game is in. Empty without the star.
+    pub lists: BTreeSet<ListId>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -50,22 +52,35 @@ impl VoteKind {
     }
 }
 
-/// Saves `vote` in place of the old one. A bet stays a bet, and a star stays on a Would try.
-/// `searched` is the new vote's own: a vote from Discover after a search is a vote from Discover.
+/// Saves `vote` in place of the old one. A bet stays a bet, and a star stays on a Would try with
+/// its lists: when the star is lost, the lists go with it. `searched` is the new vote's own: a
+/// vote from Discover after a search is a vote from Discover.
 pub fn cast(votes: &mut Votes, id: AppId, vote: Vote) {
     debug_assert!(
         !vote.starred || vote.kind == VoteKind::WouldTry,
         "only a Would try can be starred"
     );
+    debug_assert!(
+        vote.starred || vote.lists.is_empty(),
+        "only a starred game can be in a list"
+    );
     // A game found with a search was not recommended, so its vote does not answer a bet.
     let bet = !vote.searched && (vote.bet || votes.get(&id).is_some_and(|old| old.bet));
-    let starred = vote.kind == VoteKind::WouldTry
-        && (vote.starred || votes.get(&id).is_some_and(|old| old.starred));
+    let old = votes.get(&id).filter(|old| old.starred);
+    let starred = vote.kind == VoteKind::WouldTry && (vote.starred || old.is_some());
+    let lists = if starred {
+        let mut lists = vote.lists;
+        lists.extend(old.into_iter().flat_map(|old| old.lists.iter().copied()));
+        lists
+    } else {
+        BTreeSet::new()
+    };
     votes.insert(
         id,
         Vote {
             bet,
             starred,
+            lists,
             ..vote
         },
     );
@@ -76,7 +91,7 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 pub const LATER_DAYS: i64 = 7;
 
 impl Vote {
-    /// A vote cast on `date`, without a time, a bet, a search or a star.
+    /// A vote cast on `date`, without a time, a bet, a search, a star or a list.
     pub fn new(kind: VoteKind, date: &str) -> Vote {
         Vote {
             kind,
@@ -85,6 +100,7 @@ impl Vote {
             bet: false,
             searched: false,
             starred: false,
+            lists: BTreeSet::new(),
         }
     }
 
@@ -302,6 +318,61 @@ mod tests {
 
         assert!(votes[&AppId(620)].bet);
         assert!(votes[&AppId(620)].starred);
+    }
+
+    fn in_lists(kind: VoteKind, lists: &[u32]) -> Vote {
+        Vote {
+            lists: lists.iter().copied().map(ListId).collect(),
+            ..starred(kind)
+        }
+    }
+
+    #[test]
+    fn a_would_try_keeps_the_lists_of_the_star() {
+        let mut votes = Votes::new();
+        cast(
+            &mut votes,
+            AppId(620),
+            in_lists(VoteKind::WouldTry, &[2, 5]),
+        );
+
+        cast_on(&mut votes, VoteKind::WouldTry, false);
+
+        assert!(votes[&AppId(620)].starred);
+        assert_eq!(
+            votes[&AppId(620)].lists,
+            BTreeSet::from([ListId(2), ListId(5)])
+        );
+    }
+
+    #[test]
+    fn a_starred_would_try_adds_its_lists_to_the_old_ones() {
+        let mut votes = Votes::new();
+        cast(&mut votes, AppId(620), in_lists(VoteKind::WouldTry, &[2]));
+
+        cast(&mut votes, AppId(620), in_lists(VoteKind::WouldTry, &[5]));
+
+        assert_eq!(
+            votes[&AppId(620)].lists,
+            BTreeSet::from([ListId(2), ListId(5)])
+        );
+    }
+
+    #[test]
+    fn the_lists_are_lost_with_the_star() {
+        for kind in [VoteKind::Later, VoteKind::NotForMe] {
+            let mut votes = Votes::new();
+            cast(
+                &mut votes,
+                AppId(620),
+                in_lists(VoteKind::WouldTry, &[2, 5]),
+            );
+
+            cast_on(&mut votes, kind, false);
+
+            assert!(!votes[&AppId(620)].starred);
+            assert!(votes[&AppId(620)].lists.is_empty());
+        }
     }
 
     fn cast_at(votes: &mut Votes, id: u32, at: Option<i64>) {

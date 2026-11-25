@@ -3,6 +3,7 @@ mod browse;
 mod config;
 mod families;
 mod library;
+mod lists;
 mod media;
 mod votes;
 
@@ -22,6 +23,7 @@ use gamepalate_core::{
     filters::TagNameError,
     game_vector::{GameVector, game_vectors},
     ids::AppId,
+    lists::Lists,
     search::{
         Continuation, Recommendation, SearchError, SearchInputs, SearchOptions, recommend,
         recommend_from,
@@ -48,7 +50,8 @@ use crate::{
     log::{failed, known_converted},
 };
 pub use browse::BrowseRow;
-pub use votes::{StarError, VoteError, VotedGame};
+pub use lists::ListError;
+pub use votes::{StarChange, StarError, VoteError, VotedGame};
 
 pub(crate) const GUI_FILE: &str = "gui.toml";
 const FAMILIES_FILE: &str = "families.toml";
@@ -58,6 +61,7 @@ pub struct Gamepalate {
     data_dir: PathBuf,
     files: DataFiles,
     votes: Mutex<Votes>,
+    lists: Mutex<Lists>,
     corrections: Mutex<Corrections>,
     families: Mutex<Families>,
     revision: AtomicU64,
@@ -109,6 +113,7 @@ impl Gamepalate {
         Ok(Gamepalate {
             data_dir: dir,
             votes: Mutex::new(files.votes.clone()),
+            lists: Mutex::new(files.lists.clone()),
             corrections: Mutex::new(files.corrections.clone()),
             families: Mutex::new(files.families.clone()),
             revision: AtomicU64::new(0),
@@ -153,7 +158,7 @@ impl Gamepalate {
         .inspect_err(failed("could not recommend"))
     }
 
-    /// Goes up at every change of the votes, corrections or families: what a page made of them
+    /// Goes up at every change of the votes, lists, corrections or families: what a page made of them
     /// before is out of date.
     pub fn revision(&self) -> u64 {
         self.revision.load(Ordering::SeqCst)
@@ -165,6 +170,13 @@ impl Gamepalate {
         let votes = self.lock_votes();
         self.revision.fetch_add(1, Ordering::SeqCst);
         votes
+    }
+
+    // Taken after the votes, when both are needed
+    fn write_lists(&self) -> MutexGuard<'_, Lists> {
+        let lists = self.lock_lists();
+        self.revision.fetch_add(1, Ordering::SeqCst);
+        lists
     }
 
     fn write_corrections(&self) -> MutexGuard<'_, Corrections> {
@@ -181,6 +193,12 @@ impl Gamepalate {
 
     fn lock_votes(&self) -> MutexGuard<'_, Votes> {
         self.votes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn lock_lists(&self) -> MutexGuard<'_, Lists> {
+        self.lists
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
