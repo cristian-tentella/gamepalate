@@ -127,8 +127,8 @@ impl Showcase {
         }
     }
 
-    /// A video of the description over its poster, with the sensor that tells when it is in
-    /// sight and the probe that tells which renderer draws it.
+    /// A video of the description over its poster, with the layer that tells when more than a
+    /// quarter of it is in sight and the probe that tells which renderer draws it.
     fn video<'a>(
         &'a self,
         index: usize,
