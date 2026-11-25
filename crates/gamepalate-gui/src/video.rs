@@ -426,8 +426,12 @@ impl Shared {
     }
 
     fn seek(&self, to: f64) {
-        let epoch = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
-        *lock(&self.seek_to) = to;
+        // A thread that sees the new epoch reads the target after this lock, so never the old one.
+        let epoch = {
+            let mut target = lock(&self.seek_to);
+            *target = to;
+            self.epoch.fetch_add(1, Ordering::SeqCst) + 1
+        };
         self.audio().restart(epoch, to);
         lock(&self.frames).queue.clear();
         self.frames_changed.notify_all();
