@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use gamepalate_app::{
-    AppId, DiscoverPlace, FamilyChange, GameStanding, GameView, Gamepalate, VoteKind,
+    AppId, DiscoverPlace, FamilyChange, GameStanding, GameView, Gamepalate, ListId, Lists,
+    StarChange, VoteKind,
 };
 use iced::{
     Center, ContentFit, Element, Fill, Size, Subscription, Task,
@@ -22,6 +23,7 @@ use crate::{
         game::{self, Link, Pick, VOTE_HEIGHT},
         sentence,
         showcase::{self, Showcase},
+        star_menu::{self, NO_LISTS, StarMenu},
     },
     style,
 };
@@ -45,6 +47,7 @@ pub struct GamePage {
     backdrop: Option<image::Handle>,
     played: bool,
     changed: bool,
+    star_menu: StarMenu,
 }
 
 #[derive(Clone, Debug)]
@@ -53,6 +56,8 @@ pub enum Message {
     Later,
     Played,
     Star,
+    StarMenu(star_menu::Message),
+    ListCreated(Result<ListId, String>),
     RemoveVote,
     AddToFamily(String),
     Saved(String, bool, Result<Option<GameView>, String>),
@@ -78,6 +83,8 @@ enum Status {
     Voted {
         pick: Pick,
         starred: bool,
+        /// The names of the lists of the game, in the order of the lists.
+        lists: String,
         day: String,
     },
     Plain(String),
@@ -99,6 +106,7 @@ impl GamePage {
             backdrop,
             played: false,
             changed: false,
+            star_menu: StarMenu::new(gamepalate),
         };
         let task = Task::batch([page.load(), page.find_place()]);
 
@@ -126,6 +134,7 @@ impl GamePage {
 
     pub fn use_gamepalate(&mut self, gamepalate: &Arc<Gamepalate>) -> Task<Message> {
         self.gamepalate = Arc::clone(gamepalate);
+        self.star_menu = StarMenu::new(gamepalate);
         if let Some(game) = gamepalate.game_view(self.game.id) {
             self.game = game;
         }
@@ -136,6 +145,7 @@ impl GamePage {
         if self.showcase.is_open() && stopped_by_popup(&message) {
             return Action::Run(Task::none());
         }
+        self.star_menu.follow(&self.gamepalate);
         let task = match self.handle(message) {
             Action::Run(task) => task,
             close @ Action::Close { .. } => return close,
@@ -181,18 +191,44 @@ impl GamePage {
                 ),
             Message::Played => Task::none(),
             Message::Star if offers_star(&self.game) => {
-                let starred = !self.game.vote.as_ref().is_some_and(|vote| vote.starred);
-                self.save(
-                    format::star_toast(&self.game.name, starred),
-                    false,
-                    move |gamepalate| {
-                        gamepalate
-                            .star(id, starred.into(), false, true)
-                            .map_err(|error| error.to_string())
-                    },
-                )
+                self.star_menu.open(&self.gamepalate, id);
+                Task::none()
             }
             Message::Star => Task::none(),
+            Message::StarMenu(message) => {
+                let (starred, lists) = match &self.game.vote {
+                    Some(vote) => (vote.starred, vote.lists.clone()),
+                    None => (false, NO_LISTS.clone()),
+                };
+                let (action, task) = self.star_menu.update(message, starred, &lists);
+                let task = task.map(Message::StarMenu);
+                match action {
+                    Some(star_menu::Action::Star(change)) => {
+                        Task::batch([task, self.change_star(change)])
+                    }
+                    Some(star_menu::Action::Create(name)) => {
+                        let gamepalate = Arc::clone(&self.gamepalate);
+                        let create = Task::perform(
+                            async move {
+                                gamepalate
+                                    .create_list(&name)
+                                    .map_err(|error| sentence(&error.to_string()))
+                            },
+                            Message::ListCreated,
+                        );
+                        Task::batch([task, create])
+                    }
+                    None => task,
+                }
+            }
+            Message::ListCreated(Ok(list)) => {
+                self.star_menu.created(&self.gamepalate);
+                self.change_star(StarChange::AddTo(list))
+            }
+            Message::ListCreated(Err(error)) => {
+                self.star_menu.refused(error);
+                Task::none()
+            }
             Message::RemoveVote if self.game.vote.is_some() => self.save(
                 format::vote_removed(&self.game.name),
                 false,
@@ -263,10 +299,29 @@ impl GamePage {
         Action::Run(task)
     }
 
+    fn change_star(&mut self, change: StarChange) -> Task<Message> {
+        let id = self.game.id;
+        let text = match change {
+            StarChange::Star | StarChange::Unstar => {
+                format::star_toast(&self.game.name, change.gives_star())
+            }
+            StarChange::AddTo(list) => format::list_toast(self.star_menu.name(list), true),
+            StarChange::RemoveFrom(list) => format::list_toast(self.star_menu.name(list), false),
+        };
+        self.save(text, false, move |gamepalate| {
+            gamepalate
+                .star(id, change, false, true)
+                .map_err(|error| error.to_string())
+        })
+    }
+
     pub fn subscription(&self, keys: bool) -> Subscription<Message> {
         let trailer = self.showcase.subscription().map(Message::Showcase);
         if !keys {
             return trailer;
+        }
+        if self.star_menu.is_open() {
+            return Subscription::batch([star_menu::keys().map(Message::StarMenu), trailer]);
         }
         Subscription::batch([keyboard::listen().filter_map(key_message), trailer])
     }
@@ -366,26 +421,35 @@ impl GamePage {
 
     fn details(&self, size: Size, scale: f32) -> Element<'_, Message> {
         let game = &self.game;
-        let status = status(game, jiff::Zoned::now().date()).map(|status| {
-            let spans = match status {
-                Status::Voted { pick, starred, day } => {
-                    let mut spans = vec![
-                        span("Voted "),
-                        span(format::pick(pick)).font(font::SEMIBOLD),
-                    ];
-                    if starred {
-                        spans.push(span(" · Starred"));
+        let status =
+            status(game, self.star_menu.lists(), jiff::Zoned::now().date()).map(|status| {
+                let spans = match status {
+                    Status::Voted {
+                        pick,
+                        starred,
+                        lists,
+                        day,
+                    } => {
+                        let mut spans = vec![
+                            span("Voted "),
+                            span(format::pick(pick)).font(font::SEMIBOLD),
+                        ];
+                        if starred {
+                            spans.push(span(" · Starred"));
+                        }
+                        if !lists.is_empty() {
+                            spans.push(span(format!(" · {lists}")));
+                        }
+                        spans.push(span(format!(" · {day}")));
+                        spans
                     }
-                    spans.push(span(format!(" · {day}")));
-                    spans
-                }
-                Status::Plain(line) => vec![span(line)],
-            };
-            rich_text(spans)
-                .size(font::BAR_SIZE)
-                .style(style::muted)
-                .on_link_click(never)
-        });
+                    Status::Plain(line) => vec![span(line)],
+                };
+                rich_text(spans)
+                    .size(font::BAR_SIZE)
+                    .style(style::muted)
+                    .on_link_click(never)
+            });
         // An empty line while the place is found, so the columns below don't move
         let place = match &self.place.found {
             None => Some(" ".to_string()),
@@ -472,9 +536,12 @@ impl GamePage {
             },
             offers_played(game),
             star.then(|| {
-                game::star_button(
-                    game.vote.as_ref().is_some_and(|vote| vote.starred),
+                let vote = game.vote.as_ref();
+                self.star_menu.star(
+                    vote.is_some_and(|vote| vote.starred),
+                    vote.map_or(&NO_LISTS, |vote| &vote.lists),
                     Some(Message::Star),
+                    Message::StarMenu,
                 )
             }),
         )
@@ -603,7 +670,7 @@ fn joins_families(game: &GameView) -> bool {
     game.in_library || game.played_elsewhere
 }
 
-fn status(game: &GameView, today: Date) -> Option<Status> {
+fn status(game: &GameView, lists: &Lists, today: Date) -> Option<Status> {
     let standing = game.standing?;
     let voted = matches!(standing, GameStanding::WouldTry | GameStanding::NotForMe);
 
@@ -611,6 +678,12 @@ fn status(game: &GameView, today: Date) -> Option<Status> {
         Some(vote) if voted => Some(Status::Voted {
             pick: Pick::of(vote),
             starred: vote.starred,
+            lists: vote
+                .lists
+                .iter()
+                .filter_map(|list| lists.get(list).map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(", "),
             day: format::voted_day(&vote.date, today),
         }),
         _ => Some(Status::Plain(standing_text(standing))),
@@ -758,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn s_stars_the_game_in_either_case_and_ctrl_s_does_nothing() {
+    fn s_opens_the_star_menu_in_either_case_and_ctrl_s_does_nothing() {
         for key in ["s", "S"] {
             assert!(matches!(
                 key_message(pressed(Key::Character(key.into()))),
@@ -790,10 +863,43 @@ mod tests {
         };
 
         assert_eq!(
-            status(&found(Some(GameStanding::WouldTry), Some(starred)), today()),
+            status(
+                &found(Some(GameStanding::WouldTry), Some(starred)),
+                &Lists::new(),
+                today()
+            ),
             Some(Status::Voted {
                 pick: Pick::Vote(VoteKind::WouldTry),
                 starred: true,
+                lists: String::new(),
+                day: "today".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn the_status_names_the_lists_in_their_order() {
+        let lists = Lists::from([
+            (ListId(2), "Co-op".to_string()),
+            (ListId(5), "On sale".to_string()),
+            (ListId(7), "Steam Deck".to_string()),
+        ]);
+        let vote = Vote {
+            starred: true,
+            lists: [ListId(5), ListId(2)].into(),
+            ..Vote::new(VoteKind::WouldTry, "2026-11-13")
+        };
+
+        assert_eq!(
+            status(
+                &found(Some(GameStanding::WouldTry), Some(vote)),
+                &lists,
+                today()
+            ),
+            Some(Status::Voted {
+                pick: Pick::Vote(VoteKind::WouldTry),
+                starred: true,
+                lists: "Co-op, On sale".to_string(),
                 day: "today".to_string()
             })
         );
@@ -879,10 +985,15 @@ mod tests {
         let vote = Vote::new(VoteKind::NotForMe, "2026-11-13");
 
         assert_eq!(
-            status(&found(Some(GameStanding::NotForMe), Some(vote)), today()),
+            status(
+                &found(Some(GameStanding::NotForMe), Some(vote)),
+                &Lists::new(),
+                today()
+            ),
             Some(Status::Voted {
                 pick: Pick::Vote(VoteKind::NotForMe),
                 starred: false,
+                lists: String::new(),
                 day: "today".to_string()
             })
         );
@@ -892,11 +1003,13 @@ mod tests {
                     Some(GameStanding::WouldTry),
                     Some(Vote::new(VoteKind::WouldTry, "2026-11-02"))
                 ),
+                &Lists::new(),
                 today()
             ),
             Some(Status::Voted {
                 pick: Pick::Vote(VoteKind::WouldTry),
                 starred: false,
+                lists: String::new(),
                 day: "2 Nov".to_string()
             })
         );
@@ -909,22 +1022,28 @@ mod tests {
         assert_eq!(
             status(
                 &found(Some(GameStanding::InLibrary { hours: 42.0 }), None),
+                &Lists::new(),
                 today()
             ),
             Some(Status::Plain("In your library · 42 h".to_string()))
         );
         assert_eq!(
-            status(&found(Some(GameStanding::PlayedElsewhere), None), today()),
+            status(
+                &found(Some(GameStanding::PlayedElsewhere), None),
+                &Lists::new(),
+                today()
+            ),
             Some(Status::Plain("Played elsewhere".to_string()))
         );
         assert_eq!(
             status(
                 &found(Some(GameStanding::Later { days_left: 12 }), Some(later)),
+                &Lists::new(),
                 today()
             ),
             Some(Status::Plain("Later · back in 12 days".to_string()))
         );
-        assert_eq!(status(&found(None, None), today()), None);
+        assert_eq!(status(&found(None, None), &Lists::new(), today()), None);
     }
 
     #[test]

@@ -7,8 +7,8 @@ use std::{
 };
 
 use gamepalate_app::{
-    AppId, Currency, DiscoverMode, FilterOptions, Gamepalate, Price, SearchOptions, Vote, VoteKind,
-    VotedGame, VotesOrder, VotesSettings, VotesShow,
+    AppId, Currency, DiscoverMode, FilterOptions, Gamepalate, ListId, Price, SearchOptions,
+    StarChange, Vote, VoteKind, VotedGame, VotesOrder, VotesSettings, VotesShow,
 };
 use iced::{
     Center, Element, Event, Fill, Size, Subscription, Task, event,
@@ -30,6 +30,7 @@ use super::{
     game::{self, Link, Pick, VOTE_HEIGHT},
     sentence,
     showcase::{self, Showcase},
+    star_menu::{self, StarMenu},
 };
 use crate::{font, format, style};
 
@@ -88,6 +89,7 @@ pub struct Votes {
     toasts: Toasts,
     played: Option<AppId>,
     showcase: Showcase,
+    star_menu: StarMenu,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -129,6 +131,8 @@ pub enum Message {
     Played,
     PlayedSaved(AppId, String, Result<bool, String>),
     Star,
+    StarMenu(star_menu::Message),
+    ListCreated(AppId, Result<ListId, String>),
     Undo,
     Undone(Result<(), String>),
     SettingsSaved(Result<(), String>),
@@ -182,6 +186,7 @@ impl Votes {
             toasts: Toasts::default(),
             played: None,
             showcase: Showcase::new(gamepalate),
+            star_menu: StarMenu::new(gamepalate),
         };
         votes.rows = votes.shown_rows();
         let toast = error.map_or_else(Task::none, |error| votes.show_toast(error));
@@ -227,6 +232,7 @@ impl Votes {
             self.showcase.stop_trailer();
         }
         let task = self.handle(message);
+        self.star_menu.keep_for(self.current().map(|game| game.id));
 
         Task::batch([task, self.load()])
     }
@@ -293,21 +299,48 @@ impl Votes {
                 }
             }
             Message::Star => {
-                if let Some(game) = self.current().filter(|game| may_star(game)) {
-                    let (id, starred) = (game.id, !game.vote.starred);
-                    let text = format::star_toast(&game.name, starred);
-                    let gamepalate = Arc::clone(&self.gamepalate);
-                    let save = Task::perform(
-                        async move {
-                            gamepalate
-                                .star(id, starred.into(), false, false)
-                                .map_err(|error| error.to_string())
-                        },
-                        Message::VoteSaved,
-                    );
-                    return Task::batch([save, self.show_toast(text)]);
+                if let Some(id) = self
+                    .current()
+                    .filter(|game| may_star(game))
+                    .map(|game| game.id)
+                {
+                    self.star_menu.open(&self.gamepalate, id);
                 }
             }
+            Message::StarMenu(message) => {
+                let Some(game) = self
+                    .current()
+                    .filter(|game| self.star_menu.game() == Some(game.id))
+                else {
+                    return Task::none();
+                };
+                let (id, starred, lists) = (game.id, game.vote.starred, game.vote.lists.clone());
+                let (action, task) = self.star_menu.update(message, starred, &lists);
+                let task = task.map(Message::StarMenu);
+                return match action {
+                    Some(star_menu::Action::Star(change)) => {
+                        Task::batch([task, self.change_star(id, change)])
+                    }
+                    Some(star_menu::Action::Create(name)) => {
+                        let gamepalate = Arc::clone(&self.gamepalate);
+                        let create = Task::perform(
+                            async move {
+                                gamepalate
+                                    .create_list(&name)
+                                    .map_err(|error| sentence(&error.to_string()))
+                            },
+                            move |result| Message::ListCreated(id, result),
+                        );
+                        Task::batch([task, create])
+                    }
+                    None => task,
+                };
+            }
+            Message::ListCreated(id, Ok(list)) => {
+                self.star_menu.created(&self.gamepalate);
+                return self.change_star(id, StarChange::AddTo(list));
+            }
+            Message::ListCreated(_, Err(error)) => self.star_menu.refused(error),
             Message::VoteSaved(Ok(())) => {
                 self.games = by_id(self.gamepalate.voted_games());
                 // A game voted into another kind leaves the list of this filter at once.
@@ -384,6 +417,9 @@ impl Votes {
         let trailer = self.showcase.subscription().map(Message::Showcase);
         if !keys {
             return trailer;
+        }
+        if self.star_menu.is_open() {
+            return Subscription::batch([star_menu::keys().map(Message::StarMenu), trailer]);
         }
         Subscription::batch([
             keyboard::listen().filter_map(key_message),
@@ -791,12 +827,42 @@ impl Votes {
                 )
             },
             true,
-            game.filter(|game| may_star(game))
-                .map(|game| game::star_button(game.vote.starred, Some(Message::Star))),
+            game.filter(|game| may_star(game)).map(|game| {
+                self.star_menu.star(
+                    game.vote.starred,
+                    &game.vote.lists,
+                    Some(Message::Star),
+                    Message::StarMenu,
+                )
+            }),
         )
         .width(Fill);
 
         container(votes).center_y(Fill).into()
+    }
+
+    /// Saves the change to the star of `id`. The game stays selected.
+    fn change_star(&mut self, id: AppId, change: StarChange) -> Task<Message> {
+        let Some(game) = self.games.get(&id) else {
+            return Task::none();
+        };
+        let text = match change {
+            StarChange::Star | StarChange::Unstar => {
+                format::star_toast(&game.name, change.gives_star())
+            }
+            StarChange::AddTo(list) => format::list_toast(self.star_menu.name(list), true),
+            StarChange::RemoveFrom(list) => format::list_toast(self.star_menu.name(list), false),
+        };
+        let gamepalate = Arc::clone(&self.gamepalate);
+        let save = Task::perform(
+            async move {
+                gamepalate
+                    .star(id, change, false, false)
+                    .map_err(|error| error.to_string())
+            },
+            Message::VoteSaved,
+        );
+        Task::batch([save, self.show_toast(text)])
     }
 
     fn current(&self) -> Option<&VotedGame> {
@@ -2370,7 +2436,7 @@ mod tests {
     }
 
     #[test]
-    fn s_stars_the_game_in_either_case_and_ctrl_s_does_nothing() {
+    fn s_opens_the_star_menu_in_either_case_and_ctrl_s_does_nothing() {
         for key in ["s", "S"] {
             assert!(matches!(
                 key_message(pressed(Key::Character(key.into()))),

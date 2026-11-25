@@ -21,6 +21,7 @@ pub mod profile;
 pub mod settings;
 pub mod setup;
 pub(crate) mod showcase;
+pub(crate) mod star_menu;
 mod steam_client;
 pub mod votes;
 
