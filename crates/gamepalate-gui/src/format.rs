@@ -72,6 +72,15 @@ pub fn short_filters(summary: &str, most: usize) -> Option<String> {
     })
 }
 
+/// The name cut to `most` characters with …, or None when it fits as it is.
+pub fn short_name(name: &str, most: usize) -> Option<String> {
+    if name.chars().count() <= most {
+        return None;
+    }
+    let cut: String = name.chars().take(most.saturating_sub(1)).collect();
+    Some(format!("{}…", cut.trim_end()))
+}
+
 pub fn filters(options: &SearchOptions, currency: &Currency) -> Option<String> {
     let filters = &options.filters;
     let mut parts = Vec::new();
@@ -827,6 +836,20 @@ mod tests {
         assert_eq!(
             short_filters("Without: Anime, Dating Sim, Noir", 10).as_deref(),
             Some("Without: A…")
+        );
+    }
+
+    #[test]
+    fn a_long_name_ends_with_dots_within_its_room() {
+        assert_eq!(short_name("Co-op", 12), None);
+        assert_eq!(short_name("Twelve chars", 12), None);
+        assert_eq!(
+            short_name("Quando scende sotto 10 €", 12).as_deref(),
+            Some("Quando scen…")
+        );
+        assert_eq!(
+            short_name("Per lo Steam Deck", 8).as_deref(),
+            Some("Per lo…")
         );
     }
 

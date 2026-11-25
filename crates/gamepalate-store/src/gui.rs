@@ -4,6 +4,7 @@ use gamepalate_core::{
     browse::{BrowseOptions, BrowseOrder, Choice},
     filters::FilterOptions,
     ids::AppId,
+    lists::ListId,
     search::SearchOptions,
 };
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
@@ -54,6 +55,51 @@ enum SavedShow {
     All,
 }
 
+/// The list the Starred segment of Votes shows: every starred game, one list, or the starred
+/// games in no list. A list that is gone is the GUI's to see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(from = "SavedList", into = "SavedList")]
+pub enum StarredList {
+    #[default]
+    All,
+    List(ListId),
+    NoList,
+}
+
+impl StarredList {
+    fn is_all(&self) -> bool {
+        *self == StarredList::All
+    }
+}
+
+// In the file a list is its id, and no list is "no_list".
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum SavedList {
+    Id(u32),
+    Word(String),
+}
+
+impl From<SavedList> for StarredList {
+    fn from(saved: SavedList) -> StarredList {
+        match saved {
+            SavedList::Id(id) => StarredList::List(ListId(id)),
+            SavedList::Word(word) if word == "no_list" => StarredList::NoList,
+            SavedList::Word(_) => StarredList::All,
+        }
+    }
+}
+
+impl From<StarredList> for SavedList {
+    fn from(list: StarredList) -> SavedList {
+        match list {
+            StarredList::All => SavedList::Word("all".to_string()),
+            StarredList::List(id) => SavedList::Id(id.0),
+            StarredList::NoList => SavedList::Word("no_list".to_string()),
+        }
+    }
+}
+
 /// The order of the Votes list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -70,6 +116,8 @@ pub enum VotesOrder {
 #[serde(from = "SavedVotes")]
 pub struct VotesSettings {
     pub show: VotesShow,
+    #[serde(skip_serializing_if = "StarredList::is_all")]
+    pub list: StarredList,
     pub order: VotesOrder,
     pub hide_owned: bool,
     pub only_bets: bool,
@@ -80,6 +128,7 @@ impl Default for VotesSettings {
     fn default() -> VotesSettings {
         VotesSettings {
             show: VotesShow::default(),
+            list: StarredList::default(),
             order: VotesOrder::default(),
             hide_owned: true,
             only_bets: false,
@@ -94,6 +143,8 @@ struct SavedVotes {
     #[serde(deserialize_with = "or_default")]
     show: Option<SavedShow>,
     #[serde(deserialize_with = "or_default")]
+    list: StarredList,
+    #[serde(deserialize_with = "or_default")]
     order: VotesOrder,
     hide_owned: bool,
     only_bets: bool,
@@ -105,6 +156,7 @@ impl Default for SavedVotes {
         let votes = VotesSettings::default();
         SavedVotes {
             show: None,
+            list: votes.list,
             order: votes.order,
             hide_owned: votes.hide_owned,
             only_bets: votes.only_bets,
@@ -123,6 +175,7 @@ impl From<SavedVotes> for VotesSettings {
         };
         VotesSettings {
             show,
+            list: saved.list,
             order: saved.order,
             hide_owned: saved.hide_owned,
             only_bets: saved.only_bets || matches!(saved.show, Some(SavedShow::Bets)),
@@ -267,6 +320,7 @@ mod tests {
             families_played: Some(vec![AppId(220), AppId(730)]),
             votes: VotesSettings {
                 show: VotesShow::NotForMe,
+                list: StarredList::default(),
                 order: VotesOrder::BestMatch,
                 hide_owned: false,
                 only_bets: true,
@@ -308,6 +362,79 @@ mod tests {
                 .contains("[votes]\nshow = \"starred\"\n")
         );
         assert_eq!(load_gui_settings(&path).votes.show, VotesShow::Starred);
+    }
+
+    #[test]
+    fn the_list_of_the_starred_segment_is_saved_and_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.toml");
+        let mut settings = GuiSettings::default();
+        settings.votes.show = VotesShow::Starred;
+
+        for (list, line) in [
+            (
+                StarredList::List(ListId(2)),
+                "list = 2
+",
+            ),
+            (
+                StarredList::NoList,
+                "list = \"no_list\"
+",
+            ),
+        ] {
+            settings.votes.list = list;
+            save_gui_settings(&path, &settings).unwrap();
+
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(text.contains(&format!(
+                "[votes]
+show = \"starred\"
+{line}"
+            )));
+            assert_eq!(load_gui_settings(&path).votes.list, list);
+        }
+    }
+
+    #[test]
+    fn all_starred_leaves_the_list_out_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.toml");
+
+        save_gui_settings(&path, &GuiSettings::default()).unwrap();
+
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("list ="));
+        assert_eq!(load_gui_settings(&path).votes.list, StarredList::All);
+    }
+
+    #[test]
+    fn a_file_without_the_list_or_with_a_wrong_one_shows_all_starred() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.toml");
+
+        for votes in [
+            "[votes]
+show = \"starred\"
+order = \"price\"
+",
+            "[votes]
+show = \"starred\"
+list = \"someday\"
+order = \"price\"
+",
+            "[votes]
+show = \"starred\"
+list = -3
+order = \"price\"
+",
+        ] {
+            std::fs::write(&path, votes).unwrap();
+
+            let votes = load_gui_settings(&path).votes;
+            assert_eq!(votes.list, StarredList::All);
+            assert_eq!(votes.show, VotesShow::Starred);
+            assert_eq!(votes.order, VotesOrder::Price);
+        }
     }
 
     #[test]

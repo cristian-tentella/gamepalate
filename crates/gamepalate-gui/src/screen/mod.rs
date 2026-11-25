@@ -17,6 +17,7 @@ use crate::{font, style};
 pub mod discover;
 pub(crate) mod game;
 pub mod library;
+mod list_menu;
 pub mod profile;
 pub mod settings;
 pub mod setup;

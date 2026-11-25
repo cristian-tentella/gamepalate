@@ -247,11 +247,7 @@ impl StarMenu {
             .as_ref()
             .map(|open| self.menu(open, starred, lists).map(map.clone()));
 
-        Element::new(Anchored {
-            on_close: map(Message::Close),
-            button,
-            menu,
-        })
+        anchored(button, menu, map(Message::Close))
     }
 
     fn menu(&self, open: &Open, starred: bool, lists: &BTreeSet<ListId>) -> Element<'_, Message> {
@@ -368,7 +364,21 @@ fn key_message(key: &Key) -> Option<Message> {
     }
 }
 
-/// Where the menu goes: under the star, or above it when there is no room below, and inside the
+/// `button` and, while there is one, `menu` under it in an overlay over the whole window: a click
+/// outside the menu sends `on_close`, and the page under it is out of reach.
+pub(super) fn anchored<'a, M: Clone + 'a>(
+    button: Element<'a, M>,
+    menu: Option<Element<'a, M>>,
+    on_close: M,
+) -> Element<'a, M> {
+    Element::new(Anchored {
+        button,
+        menu,
+        on_close,
+    })
+}
+
+/// Where the menu goes: under its button, or above it when there is no room below, and inside the
 /// window.
 fn place(anchor: Rectangle, menu: Size, window: Size) -> Point {
     let x = anchor.x.min(window.width - menu.width).max(0.0);
@@ -382,8 +392,7 @@ fn place(anchor: Rectangle, menu: Size, window: Size) -> Point {
     Point::new(x, y)
 }
 
-/// The star button and, while it is open, the menu in an overlay over the whole window: a click
-/// outside the menu closes it, and the page under it is out of reach.
+/// See [`anchored`].
 struct Anchored<'a, M> {
     button: Element<'a, M>,
     menu: Option<Element<'a, M>>,

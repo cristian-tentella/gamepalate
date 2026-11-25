@@ -7,8 +7,8 @@ use std::{
 };
 
 use gamepalate_app::{
-    AppId, Currency, DiscoverMode, FilterOptions, Gamepalate, ListId, Price, SearchOptions,
-    StarChange, Vote, VoteKind, VotedGame, VotesOrder, VotesSettings, VotesShow,
+    AppId, Currency, DiscoverMode, FilterOptions, Gamepalate, ListId, Lists, Price, SearchOptions,
+    StarChange, StarredList, Vote, VoteKind, VotedGame, VotesOrder, VotesSettings, VotesShow,
 };
 use iced::{
     Center, Element, Event, Fill, Size, Subscription, Task, event,
@@ -28,6 +28,7 @@ use super::{
     Toasts,
     discover::filters::{self, Action, Panel},
     game::{self, Link, Pick, VOTE_HEIGHT},
+    list_menu::{self, Choices, ListChoice, ListMenu},
     sentence,
     showcase::{self, Showcase},
     star_menu::{self, StarMenu},
@@ -65,6 +66,11 @@ const SIGN_WIDTH: f32 = 18.0;
 const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–3.";
 const NO_STARRED: &str = "No starred games";
 const STARRED_HINT: &str = "Press S on a game you are thinking of buying";
+const NO_STARRED_WITHOUT_LIST: &str = "No starred games without a list";
+const ALL_STARRED: &str = "All starred";
+const NO_LIST: &str = "No list";
+// The characters of a list name that fit the Starred segment beside its count.
+const SEGMENT_NAME_CHARS: usize = 12;
 
 pub struct Votes {
     gamepalate: Arc<Gamepalate>,
@@ -72,6 +78,8 @@ pub struct Votes {
     filter: Filter,
     // The segment saved in gui.toml: it changes only when a segment is chosen here.
     chip: VotesShow,
+    // The list chosen in Starred, as saved: a list that is gone shows as All starred.
+    starred_list: StarredList,
     order: Order,
     hide_owned: bool,
     only_bets: bool,
@@ -90,6 +98,7 @@ pub struct Votes {
     played: Option<AppId>,
     showcase: Showcase,
     star_menu: StarMenu,
+    list_menu: ListMenu,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -133,6 +142,9 @@ pub enum Message {
     Star,
     StarMenu(star_menu::Message),
     ListCreated(AppId, Result<ListId, String>),
+    ListMenu(list_menu::Message),
+    ListRenamed(Result<(), String>),
+    ListDeleted(Result<(), String>),
     Undo,
     Undone(Result<(), String>),
     SettingsSaved(Result<(), String>),
@@ -164,6 +176,7 @@ impl Votes {
             games: by_id(gamepalate.voted_games()),
             filter,
             chip,
+            starred_list: saved.list,
             order: saved.order.into(),
             hide_owned: saved.hide_owned,
             only_bets: saved.only_bets,
@@ -187,6 +200,7 @@ impl Votes {
             played: None,
             showcase: Showcase::new(gamepalate),
             star_menu: StarMenu::new(gamepalate),
+            list_menu: ListMenu::default(),
         };
         votes.rows = votes.shown_rows();
         let toast = error.map_or_else(Task::none, |error| votes.show_toast(error));
@@ -201,6 +215,13 @@ impl Votes {
             return (votes, task);
         };
         votes.filter = filter;
+        if votes
+            .games
+            .get(&id)
+            .is_some_and(|game| !list_keeps(votes.shown_list(), &game.vote))
+        {
+            votes.starred_list = StarredList::All;
+        }
         votes.rows = votes.shown_rows();
         votes.selected = votes.rows.iter().position(|&row| row == id).unwrap_or(0);
         votes.viewport = Some((votes.selected as f32 * ROW_HEIGHT, FIRST_HEIGHT));
@@ -239,6 +260,14 @@ impl Votes {
 
     fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Filter(Filter::Starred)
+                if self.filter == Filter::Starred
+                    && self.search.trim().is_empty()
+                    && !self.lists().is_empty() =>
+            {
+                let choices = self.choices();
+                self.list_menu.open(&choices, self.shown_list());
+            }
             Message::Filter(filter) => {
                 self.filter = filter;
                 self.chip = self.filter.into();
@@ -341,6 +370,59 @@ impl Votes {
                 return self.change_star(id, StarChange::AddTo(list));
             }
             Message::ListCreated(_, Err(error)) => self.star_menu.refused(error),
+            Message::ListMenu(message) => {
+                let choices = self.choices();
+                let (action, task) = self.list_menu.update(message, &choices);
+                let task = task.map(Message::ListMenu);
+                let gamepalate = Arc::clone(&self.gamepalate);
+                return match action {
+                    Some(list_menu::Action::Choose(list)) => {
+                        self.starred_list = list;
+                        Task::batch([task, self.refresh(), self.save_settings()])
+                    }
+                    Some(list_menu::Action::Rename(list, name)) => {
+                        let rename = Task::perform(
+                            async move {
+                                gamepalate
+                                    .rename_list(list, &name)
+                                    .map_err(|error| sentence(&error.to_string()))
+                            },
+                            Message::ListRenamed,
+                        );
+                        Task::batch([task, rename])
+                    }
+                    Some(list_menu::Action::Delete(list)) => {
+                        let delete = Task::perform(
+                            async move {
+                                gamepalate
+                                    .delete_list(list)
+                                    .map_err(|error| sentence(&error.to_string()))
+                            },
+                            Message::ListDeleted,
+                        );
+                        Task::batch([task, delete])
+                    }
+                    None => task,
+                };
+            }
+            Message::ListRenamed(Ok(())) => {
+                self.star_menu.follow(&self.gamepalate);
+                self.list_menu.renamed();
+            }
+            Message::ListRenamed(Err(error)) => self.list_menu.refused(error),
+            Message::ListDeleted(Ok(())) => {
+                self.star_menu.follow(&self.gamepalate);
+                self.games = by_id(self.gamepalate.voted_games());
+                let shown = self.shown_list();
+                let save = if shown == self.starred_list {
+                    Task::none()
+                } else {
+                    self.starred_list = shown;
+                    self.save_settings()
+                };
+                return Task::batch([self.refresh(), save]);
+            }
+            Message::ListDeleted(Err(error)) => return self.show_toast(error),
             Message::VoteSaved(Ok(())) => {
                 self.games = by_id(self.gamepalate.voted_games());
                 // A game voted into another kind leaves the list of this filter at once.
@@ -421,6 +503,9 @@ impl Votes {
         if self.star_menu.is_open() {
             return Subscription::batch([star_menu::keys().map(Message::StarMenu), trailer]);
         }
+        if self.list_menu.is_open() {
+            return Subscription::batch([list_menu::keys().map(Message::ListMenu), trailer]);
+        }
         Subscription::batch([
             keyboard::listen().filter_map(key_message),
             event::listen_with(escape_message),
@@ -486,7 +571,10 @@ impl Votes {
         let segment = |index: usize| -> Element<'_, Message> {
             let filter = FILTERS[index];
             let count = format::count(count(&self.games, filter, self.shown()) as u32);
-            let segment = button(container(segment_label(filter, count)).center(Fill))
+            let list = (filter == Filter::Starred && !self.lists().is_empty())
+                .then(|| (self.shown_list(), self.list_name()));
+            let tip = list.map_or(filter_label(filter), |(_, name)| name);
+            let segment = button(container(segment_label(filter, list, count)).center(Fill))
                 .width(Fill)
                 .height(Fill)
                 .padding([0, 4])
@@ -496,14 +584,21 @@ impl Votes {
                 ))
                 .on_press(Message::Filter(filter));
             if filter == Filter::Starred {
-                tooltip(
+                let segment = tooltip(
                     segment,
-                    container(text(filter_label(filter)).size(font::NOTE_SIZE))
+                    container(text(tip).size(font::NOTE_SIZE))
                         .padding([6, 10])
+                        .max_width(LIST_WIDTH)
                         .style(style::popup),
                     tooltip::Position::Bottom,
                 )
-                .into()
+                .into();
+                self.list_menu.segment(
+                    segment,
+                    &self.choices(),
+                    self.shown_list(),
+                    Message::ListMenu,
+                )
             } else {
                 segment.into()
             }
@@ -599,6 +694,7 @@ impl Votes {
                 empty_text(
                     self.games.is_empty(),
                     self.filter,
+                    (self.shown_list(), self.list_name()),
                     self.is_filtered(),
                     self.owned_hidden(),
                     &self.search,
@@ -905,7 +1001,25 @@ impl Votes {
             hide_owned: self.hide_owned,
             only_bets: self.only_bets,
             passing: self.passing.as_ref(),
+            list: self.shown_list(),
         }
+    }
+
+    fn lists(&self) -> &Lists {
+        self.star_menu.lists()
+    }
+
+    /// The list Starred shows: the one chosen while it is there, All starred otherwise.
+    fn shown_list(&self) -> StarredList {
+        shown_list(self.starred_list, self.lists())
+    }
+
+    fn list_name(&self) -> &str {
+        list_name(self.shown_list(), self.lists())
+    }
+
+    fn choices(&self) -> Choices {
+        choices(&self.games, self.lists(), self.shown(), self.shown_list())
     }
 
     /// True when Bets only or a filter of the panel is on.
@@ -944,6 +1058,7 @@ impl Votes {
         let gamepalate = Arc::clone(&self.gamepalate);
         let settings = VotesSettings {
             show: self.chip,
+            list: self.starred_list,
             order: self.order.into(),
             hide_owned: self.hide_owned,
             only_bets: self.only_bets,
@@ -962,7 +1077,11 @@ impl Votes {
 
     /// True when Hide owned is the only reason the segment has no games left.
     fn owned_hidden(&self) -> bool {
-        self.hide_owned && count(&self.games, self.filter, Shown::default()) > 0
+        let shown = Shown {
+            list: self.shown_list(),
+            ..Shown::default()
+        };
+        self.hide_owned && count(&self.games, self.filter, shown) > 0
     }
 
     fn shown_rows(&self) -> Vec<AppId> {
@@ -1073,19 +1192,99 @@ fn filter_label(filter: Filter) -> &'static str {
 }
 
 /// What a segment says: the star and the count for Starred, the name and the count for the rest.
-fn segment_label<'a>(filter: Filter, count: String) -> Element<'a, Message> {
+/// Once there are lists, Starred also says the list it shows.
+fn segment_label<'a>(
+    filter: Filter,
+    list: Option<(StarredList, &str)>,
+    count: String,
+) -> Element<'a, Message> {
     let note = |line: String| text(line).size(font::NOTE_SIZE).wrapping(Wrapping::None);
     match filter {
         Filter::Starred => row![
             text(font::STAR)
                 .font(font::ICONS)
                 .size(font::icon(SIGN_SIZE)),
-            note(count)
+            note(starred_label(list, count))
         ]
         .spacing(4)
         .align_y(Center)
         .into(),
         filter => note(format!("{} {count}", filter_label(filter))).into(),
+    }
+}
+
+/// The words after the star: the count alone, or with lists the list, the count and ▾. A long
+/// name ends with …, and the tooltip has it whole.
+fn starred_label(list: Option<(StarredList, &str)>, count: String) -> String {
+    match list {
+        None => count,
+        Some((StarredList::All, _)) => format!("{count} ▾"),
+        Some((_, name)) => {
+            let name = format::short_name(name, SEGMENT_NAME_CHARS).unwrap_or(name.to_string());
+            format!("{name} {count} ▾")
+        }
+    }
+}
+
+/// What the list shown in Starred is called.
+fn list_name(list: StarredList, lists: &Lists) -> &str {
+    match list {
+        StarredList::List(id) => lists.get(&id).map_or(ALL_STARRED, String::as_str),
+        StarredList::All => ALL_STARRED,
+        StarredList::NoList => NO_LIST,
+    }
+}
+
+/// The list Starred shows: a list that is gone, or No list without lists, is All starred.
+fn shown_list(chosen: StarredList, lists: &Lists) -> StarredList {
+    match chosen {
+        StarredList::List(id) if lists.contains_key(&id) => chosen,
+        StarredList::NoList if !lists.is_empty() => chosen,
+        _ => StarredList::All,
+    }
+}
+
+fn list_keeps(list: StarredList, vote: &Vote) -> bool {
+    match list {
+        StarredList::All => true,
+        StarredList::List(id) => vote.lists.contains(&id),
+        StarredList::NoList => vote.lists.is_empty(),
+    }
+}
+
+/// The rows of the menu of Starred, with their counts.
+fn choices(
+    games: &BTreeMap<AppId, VotedGame>,
+    lists: &Lists,
+    shown: Shown,
+    chosen: StarredList,
+) -> Choices {
+    let shown_in = |list| count(games, Filter::Starred, Shown { list, ..shown });
+    let all_in = |list| {
+        count(
+            games,
+            Filter::Starred,
+            Shown {
+                list,
+                ..Shown::default()
+            },
+        )
+    };
+    let no_list = (all_in(StarredList::NoList) > 0 || chosen == StarredList::NoList)
+        .then(|| shown_in(StarredList::NoList));
+
+    Choices {
+        all: shown_in(StarredList::All),
+        lists: lists
+            .iter()
+            .map(|(&id, name)| ListChoice {
+                id,
+                name: name.clone(),
+                shown: shown_in(StarredList::List(id)),
+                games: all_in(StarredList::List(id)),
+            })
+            .collect(),
+        no_list,
     }
 }
 
@@ -1225,6 +1424,8 @@ struct Shown<'a> {
     only_bets: bool,
     /// The games that pass the filters of the panel, when some are chosen.
     passing: Option<&'a BTreeSet<AppId>>,
+    /// The list of the Starred segment; the other segments do not mind it.
+    list: StarredList,
 }
 
 impl Shown<'_> {
@@ -1240,8 +1441,14 @@ impl Shown<'_> {
 fn count(games: &BTreeMap<AppId, VotedGame>, filter: Filter, shown: Shown) -> usize {
     games
         .values()
-        .filter(|game| filter.keeps(&game.vote) && shown.keeps(game))
+        .filter(|game| in_segment(filter, shown, game))
         .count()
+}
+
+fn in_segment(filter: Filter, shown: Shown, game: &VotedGame) -> bool {
+    filter.keeps(&game.vote)
+        && shown.keeps(game)
+        && (filter != Filter::Starred || list_keeps(shown.list, &game.vote))
 }
 
 /// Where the selection goes once the rows change: on the same game if it is still
@@ -1265,7 +1472,7 @@ fn rows(
         .values()
         .filter(|game| {
             if search.is_empty() {
-                filter.keeps(&game.vote) && shown.keeps(game)
+                in_segment(filter, shown, game)
             } else {
                 game.name.to_lowercase().contains(&search)
             }
@@ -1329,6 +1536,7 @@ pub(super) fn bets_summary(
 fn empty_text(
     no_votes: bool,
     filter: Filter,
+    (list, name): (StarredList, &str),
     filtered: bool,
     owned_hidden: bool,
     search: &str,
@@ -1351,7 +1559,11 @@ fn empty_text(
             _ => format!("You own all your {} games", filter_label(filter)),
         }
     } else if filter == Filter::Starred {
-        NO_STARRED.to_string()
+        match list {
+            StarredList::All => NO_STARRED.to_string(),
+            StarredList::NoList => NO_STARRED_WITHOUT_LIST.to_string(),
+            StarredList::List(_) => format!("No games in {name}"),
+        }
     } else {
         format!("No {} votes", filter_label(filter))
     }
@@ -1528,16 +1740,20 @@ mod tests {
 
     use super::*;
 
+    const ALL: (StarredList, &str) = (StarredList::All, ALL_STARRED);
+
     const HIDE_OWNED: Shown = Shown {
         hide_owned: true,
         only_bets: false,
         passing: None,
+        list: StarredList::All,
     };
 
     const BETS_ONLY: Shown = Shown {
         hide_owned: false,
         only_bets: true,
         passing: None,
+        list: StarredList::All,
     };
 
     fn passing_only(passing: &BTreeSet<AppId>) -> Shown<'_> {
@@ -1545,6 +1761,7 @@ mod tests {
             hide_owned: false,
             only_bets: false,
             passing: Some(passing),
+            list: StarredList::All,
         }
     }
 
@@ -1775,6 +1992,192 @@ mod tests {
         assert_eq!(count(&games, Filter::All, Shown::default()), 8);
     }
 
+    const CO_OP: ListId = ListId(2);
+    const ON_SALE: ListId = ListId(5);
+
+    fn some_lists() -> Lists {
+        Lists::from([
+            (CO_OP, "Co-op".to_string()),
+            (ON_SALE, "On sale".to_string()),
+        ])
+    }
+
+    /// Tunic and Hades in Co-op, Tunic in On sale too; Satisfactory and Celeste in no list.
+    fn with_lists() -> BTreeMap<AppId, VotedGame> {
+        let mut games = with_stars();
+        let mut put = |id: u32, lists: &[ListId]| {
+            games.get_mut(&AppId(id)).unwrap().vote.lists = lists.iter().copied().collect();
+        };
+        put(7, &[CO_OP, ON_SALE]);
+        put(6, &[CO_OP]);
+        games
+    }
+
+    fn in_list(shown: Shown<'_>, list: StarredList) -> Shown<'_> {
+        Shown { list, ..shown }
+    }
+
+    #[test]
+    fn the_starred_segment_shows_the_list_chosen() {
+        let games = with_lists();
+        let starred = |shown: Shown| {
+            (
+                count(&games, Filter::Starred, shown),
+                rows(&games, Filter::Starred, Order::Newest, shown, "", None),
+            )
+        };
+        let co_op = StarredList::List(CO_OP);
+
+        assert_eq!(starred(Shown::default()), (4, ids(&[8, 7, 2, 6])));
+        assert_eq!(starred(in_list(Shown::default(), co_op)), (2, ids(&[7, 6])));
+        assert_eq!(starred(in_list(HIDE_OWNED, co_op)), (1, ids(&[7])));
+        assert_eq!(starred(in_list(BETS_ONLY, co_op)), (1, ids(&[7])));
+        assert_eq!(
+            starred(in_list(Shown::default(), StarredList::NoList)),
+            (2, ids(&[8, 2]))
+        );
+        assert_eq!(
+            starred(in_list(HIDE_OWNED, StarredList::NoList)),
+            (2, ids(&[8, 2]))
+        );
+        assert_eq!(
+            starred(in_list(BETS_ONLY, StarredList::NoList)),
+            (1, ids(&[2]))
+        );
+        assert_eq!(
+            starred(in_list(BETS_ONLY, StarredList::All)),
+            (2, ids(&[7, 2]))
+        );
+    }
+
+    #[test]
+    fn the_other_segments_do_not_mind_the_list() {
+        let games = with_lists();
+        let shown = in_list(Shown::default(), StarredList::List(ON_SALE));
+
+        assert_eq!(count(&games, Filter::WouldTry, shown), 6);
+        assert_eq!(count(&games, Filter::All, shown), 8);
+        assert_eq!(
+            rows(&games, Filter::WouldTry, Order::Newest, shown, "", None).len(),
+            6
+        );
+    }
+
+    #[test]
+    fn a_list_that_is_gone_shows_all_starred() {
+        let lists = some_lists();
+
+        assert_eq!(
+            shown_list(StarredList::List(CO_OP), &lists),
+            StarredList::List(CO_OP)
+        );
+        assert_eq!(
+            shown_list(StarredList::List(ListId(9)), &lists),
+            StarredList::All
+        );
+        assert_eq!(shown_list(StarredList::NoList, &lists), StarredList::NoList);
+        // Without lists every starred game is in no list, and the segment is the one of before
+        assert_eq!(
+            shown_list(StarredList::NoList, &Lists::new()),
+            StarredList::All
+        );
+        assert_eq!(
+            list_name(StarredList::List(ListId(9)), &lists),
+            "All starred"
+        );
+        assert_eq!(list_name(StarredList::List(ON_SALE), &lists), "On sale");
+    }
+
+    #[test]
+    fn the_menu_of_starred_counts_the_games_of_each_list() {
+        let games = with_lists();
+        let choices = choices(&games, &some_lists(), HIDE_OWNED, StarredList::All);
+
+        assert_eq!(choices.all, 3);
+        let lists: Vec<_> = choices
+            .lists
+            .iter()
+            .map(|list| (list.id, list.name.as_str(), list.shown, list.games))
+            .collect();
+        assert_eq!(lists, [(CO_OP, "Co-op", 1, 2), (ON_SALE, "On sale", 1, 1)]);
+        assert_eq!(choices.no_list, Some(2));
+    }
+
+    #[test]
+    fn no_list_is_in_the_menu_only_with_starred_games_in_no_list() {
+        let mut games = with_lists();
+        for id in [2, 8] {
+            games.get_mut(&AppId(id)).unwrap().vote.lists = BTreeSet::from([ON_SALE]);
+        }
+
+        let all = choices(&games, &some_lists(), Shown::default(), StarredList::All);
+        assert_eq!(all.no_list, None);
+        let chosen = choices(&games, &some_lists(), Shown::default(), StarredList::NoList);
+        assert_eq!(chosen.no_list, Some(0));
+    }
+
+    #[test]
+    fn the_starred_segment_says_the_list_once_there_are_lists() {
+        assert_eq!(starred_label(None, "12".to_string()), "12");
+        assert_eq!(
+            starred_label(Some((StarredList::All, "All starred")), "12".to_string()),
+            "12 ▾"
+        );
+        assert_eq!(
+            starred_label(Some((StarredList::List(CO_OP), "Co-op")), "4".to_string()),
+            "Co-op 4 ▾"
+        );
+        assert_eq!(
+            starred_label(
+                Some((StarredList::List(CO_OP), "Quando scende sotto 10 €")),
+                "4".to_string()
+            ),
+            "Quando scen… 4 ▾"
+        );
+        assert_eq!(
+            starred_label(Some((StarredList::NoList, "No list")), "2".to_string()),
+            "No list 2 ▾"
+        );
+    }
+
+    #[test]
+    fn an_empty_list_says_why() {
+        assert_eq!(
+            empty_text(
+                false,
+                Filter::Starred,
+                (StarredList::NoList, NO_LIST),
+                false,
+                false,
+                ""
+            ),
+            "No starred games without a list"
+        );
+        assert_eq!(
+            empty_text(
+                false,
+                Filter::Starred,
+                (StarredList::List(CO_OP), "Co-op"),
+                false,
+                false,
+                ""
+            ),
+            "No games in Co-op"
+        );
+        // A list called like a row of the menu is still a list
+        assert_eq!(
+            empty_text(
+                false,
+                Filter::Starred,
+                (StarredList::List(CO_OP), "All starred"),
+                false,
+                false,
+                ""
+            ),
+            "No games in All starred"
+        );
+    }
+
     #[test]
     fn a_vote_stops_the_trailer() {
         assert!(stops_the_trailer(&Message::Vote(Pick::Played)));
@@ -1858,23 +2261,23 @@ mod tests {
     #[test]
     fn the_starred_segment_says_why_it_is_empty() {
         assert_eq!(
-            empty_text(false, Filter::Starred, false, false, ""),
+            empty_text(false, Filter::Starred, ALL, false, false, ""),
             NO_STARRED
         );
         assert_eq!(
-            empty_text(false, Filter::Starred, true, false, ""),
+            empty_text(false, Filter::Starred, ALL, true, false, ""),
             "No starred games match the filters"
         );
         assert_eq!(
-            empty_text(false, Filter::Starred, false, true, ""),
+            empty_text(false, Filter::Starred, ALL, false, true, ""),
             "You own all your starred games"
         );
         assert_eq!(
-            empty_text(false, Filter::Starred, false, false, "hades"),
+            empty_text(false, Filter::Starred, ALL, false, false, "hades"),
             "No votes match \"hades\""
         );
         assert_eq!(
-            empty_text(true, Filter::Starred, false, false, ""),
+            empty_text(true, Filter::Starred, ALL, false, false, ""),
             NO_VOTES
         );
     }
@@ -1965,17 +2368,20 @@ mod tests {
     fn says_why_the_list_is_empty() {
         let not_for_me = Filter::NotForMe;
 
-        assert_eq!(empty_text(true, not_for_me, false, false, ""), NO_VOTES);
         assert_eq!(
-            empty_text(false, not_for_me, false, false, ""),
+            empty_text(true, not_for_me, ALL, false, false, ""),
+            NO_VOTES
+        );
+        assert_eq!(
+            empty_text(false, not_for_me, ALL, false, false, ""),
             "No Not for me votes"
         );
         assert_eq!(
-            empty_text(false, Filter::WouldTry, false, false, ""),
+            empty_text(false, Filter::WouldTry, ALL, false, false, ""),
             "No Would try votes"
         );
         assert_eq!(
-            empty_text(false, not_for_me, false, false, " hades "),
+            empty_text(false, not_for_me, ALL, false, false, " hades "),
             "No votes match \"hades\""
         );
     }
@@ -2057,19 +2463,19 @@ mod tests {
     #[test]
     fn says_when_no_vote_matches_the_filters() {
         assert_eq!(
-            empty_text(false, Filter::WouldTry, true, false, ""),
+            empty_text(false, Filter::WouldTry, ALL, true, false, ""),
             "No Would try votes match the filters"
         );
         assert_eq!(
-            empty_text(false, Filter::NotForMe, true, false, ""),
+            empty_text(false, Filter::NotForMe, ALL, true, false, ""),
             "No Not for me votes match the filters"
         );
         assert_eq!(
-            empty_text(false, Filter::All, true, false, ""),
+            empty_text(false, Filter::All, ALL, true, false, ""),
             "No votes match the filters"
         );
         assert_eq!(
-            empty_text(false, Filter::All, true, false, "hades"),
+            empty_text(false, Filter::All, ALL, true, false, "hades"),
             "No votes match \"hades\""
         );
     }
@@ -2210,6 +2616,7 @@ mod tests {
             hide_owned: true,
             only_bets: false,
             passing: Some(&passing),
+            list: StarredList::All,
         };
 
         // Subnautica passes the filters but is owned, GRIME passes and is not owned.
@@ -2225,19 +2632,19 @@ mod tests {
         let would_try = Filter::WouldTry;
 
         assert_eq!(
-            empty_text(false, would_try, false, true, ""),
+            empty_text(false, would_try, ALL, false, true, ""),
             "You own all your Would try games"
         );
         assert_eq!(
-            empty_text(false, Filter::NotForMe, false, true, ""),
+            empty_text(false, Filter::NotForMe, ALL, false, true, ""),
             "You own all your Not for me games"
         );
         assert_eq!(
-            empty_text(false, Filter::All, false, true, ""),
+            empty_text(false, Filter::All, ALL, false, true, ""),
             "You own all your voted games"
         );
         assert_eq!(
-            empty_text(false, would_try, true, true, ""),
+            empty_text(false, would_try, ALL, true, true, ""),
             "No Would try votes match the filters"
         );
     }
