@@ -18,6 +18,9 @@ use crate::app::{App, window_settings};
 
 fn main() -> anyhow::Result<()> {
     let _ = start_log();
+    if style::picks_tiny_skia(std::env::var("ICED_BACKEND").ok().as_deref()) {
+        style::drop_shadows();
+    }
     tracing::info!("gamepalate {} started", env!("CARGO_PKG_VERSION"));
     let gui = saved_gui_settings();
     let saved = gui.window;

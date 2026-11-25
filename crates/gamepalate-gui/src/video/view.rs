@@ -178,6 +178,9 @@ impl<M> Widget<M, Theme, iced::Renderer> for Probe<'_, M> {
             height: physical(layout.bounds().height, self.scale),
             software: is_software(renderer),
         };
+        if surface.software {
+            style::drop_shadows();
+        }
         let last = tree.state.downcast_mut::<Option<Surface>>();
         if *last != Some(surface) {
             *last = Some(surface);
