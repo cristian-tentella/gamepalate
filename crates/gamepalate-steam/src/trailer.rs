@@ -229,7 +229,7 @@ fn segments(base: &Url, representation: Node, total: Duration) -> Result<Segment
     if timescale == 0 || duration == 0 {
         return Err("a SegmentTemplate with a zero duration".to_string());
     }
-    let start_number = match template.attribute("startNumber") {
+    let start_number: u32 = match template.attribute("startNumber") {
         Some(_) => number(template, "startNumber")?,
         None => 1,
     };
@@ -249,9 +249,15 @@ fn segments(base: &Url, representation: Node, total: Duration) -> Result<Segment
     let (before_number, number_width, after_number) = number_template(&media)
         .ok_or_else(|| format!("a media template without $Number$: {media}"))?;
 
-    let total_ticks = total.as_nanos() * u128::from(timescale) / 1_000_000_000;
+    let too_many = || "too many segments".to_string();
+    let total_ticks = total
+        .as_nanos()
+        .checked_mul(u128::from(timescale))
+        .ok_or_else(too_many)?
+        / 1_000_000_000;
     let count = total_ticks.div_ceil(u128::from(duration)).max(1);
-    let count = u32::try_from(count).map_err(|_| "too many segments".to_string())?;
+    let count = u32::try_from(count).map_err(|_| too_many())?;
+    start_number.checked_add(count - 1).ok_or_else(too_many)?;
 
     let segments = Segments {
         timescale,
@@ -332,7 +338,7 @@ fn iso_duration(text: &str) -> Option<Duration> {
         return None;
     }
 
-    Some(Duration::from_secs_f64(seconds))
+    Duration::try_from_secs_f64(seconds).ok()
 }
 
 #[derive(Debug)]
@@ -681,6 +687,25 @@ mod tests {
         assert_eq!(iso_duration("P1DT1S"), Some(Duration::from_secs(86_401)));
         assert_eq!(iso_duration("PT12"), None);
         assert_eq!(iso_duration("1M25S"), None);
+        assert_eq!(iso_duration("PT1e30S"), None);
+    }
+
+    #[test]
+    fn a_manifest_with_numbers_too_large_is_an_error() {
+        let too_many = |xml: &str| {
+            matches!(
+                Manifest::parse(HADES_URL, xml),
+                Err(TrailerError::Manifest { reason, .. }) if reason == "too many segments"
+            )
+        };
+
+        assert!(too_many(
+            &HADES.replace(r#"startNumber="1""#, r#"startNumber="4294967295""#)
+        ));
+        assert!(too_many(&HADES.replace("PT1M25.5S", "PT1e18S").replace(
+            r#"timescale="1000000""#,
+            r#"timescale="18446744073709551615""#
+        )));
     }
 
     #[test]
