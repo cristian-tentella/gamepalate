@@ -24,17 +24,18 @@ pub fn find_box<'a>(bytes: &'a [u8], path: &[&[u8; 4]]) -> Option<&'a [u8]> {
             }
             size => (8, size),
         };
+        let end = offset.checked_add(size)?;
         if size < header {
             return None;
         }
-        let body = bytes.get(offset + header..offset + size)?;
+        let body = bytes.get(offset + header..end)?;
         if kind == *first {
             return match rest {
                 [] => Some(body),
                 rest => find_box(body, rest),
             };
         }
-        offset += size;
+        offset = end;
     }
 
     None
@@ -301,6 +302,11 @@ mod tests {
 
         assert_eq!(tfdt(&broken), None);
         assert_eq!(tfdt(&[0, 0, 0, 3, b'm', b'o', b'o', b'f']), None);
+        let mut huge = mp4_box(b"styp", b"msdh");
+        huge.extend_from_slice(&[0, 0, 0, 1]);
+        huge.extend_from_slice(b"free");
+        huge.extend_from_slice(&u64::MAX.to_be_bytes());
+        assert_eq!(tfdt(&huge), None);
     }
 
     #[test]
