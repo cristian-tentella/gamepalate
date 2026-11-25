@@ -18,6 +18,7 @@ const REPRESENTATION_ID: &str = "$RepresentationID$";
 const NUMBER: &str = "$Number";
 const MANIFEST_ACCEPT: &str = "application/dash+xml";
 const SEGMENT_ACCEPT: &str = "video/mp4, audio/mp4";
+const VIDEO_ACCEPT: &str = "video/webm";
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrailerError {
@@ -374,6 +375,15 @@ impl<F: Fetch> TrailerDownloader<F> {
 
     pub async fn segment(&self, url: &Url) -> Result<Vec<u8>, TrailerError> {
         self.download(url.clone(), SEGMENT_ACCEPT).await
+    }
+
+    /// A whole `webm`, such as a video of the description, with the same limits as a segment.
+    pub async fn video(&self, url: &str) -> Result<Vec<u8>, TrailerError> {
+        let parsed = Url::parse(url).map_err(|_| TrailerError::Url {
+            url: url.to_string(),
+        })?;
+
+        self.download(parsed, VIDEO_ACCEPT).await
     }
 
     async fn download(&self, url: Url, accept: &'static str) -> Result<Vec<u8>, TrailerError> {
@@ -783,6 +793,28 @@ mod tests {
         let requests = downloader.fetch.requests.lock().unwrap();
         assert_eq!(requests[0].url(), &url);
         assert_eq!(requests[0].headers()[ACCEPT], SEGMENT_ACCEPT);
+    }
+
+    #[tokio::test]
+    async fn downloads_a_whole_video() {
+        let downloader = downloader(Answer::Body(200, vec![0x1a, 0x45]));
+        let url = "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1145360/extras/a.webm?t=1";
+
+        assert_eq!(downloader.video(url).await.unwrap(), vec![0x1a, 0x45]);
+        let requests = downloader.fetch.requests.lock().unwrap();
+        assert_eq!(requests[0].url().as_str(), url);
+        assert_eq!(requests[0].headers()[ACCEPT], VIDEO_ACCEPT);
+    }
+
+    #[tokio::test]
+    async fn refuses_a_video_that_is_not_a_url() {
+        let downloader = downloader(Answer::Body(200, Vec::new()));
+
+        assert!(matches!(
+            downloader.video("extras/a.webm").await,
+            Err(TrailerError::Url { .. })
+        ));
+        assert!(downloader.fetch.requests.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
