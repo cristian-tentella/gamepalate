@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use gamepalate_app::{AppId, Block, Span};
 use iced::{
-    Center, ContentFit, Element, Task, padding,
-    widget::{button, column, container, image, rich_text, row, space, span, text},
+    ContentFit, Element, Task, mouse, padding,
+    widget::{column, container, image, mouse_area, rich_text, row, space, span, text, tooltip},
 };
 
 use super::{
-    BODY_SIZE, MEASURE, Message, PLAY, Popup, Showcase, descriptions::Description, images::Picture,
+    BODY_SIZE, MEASURE, Message, Popup, Showcase, descriptions::Description, images::Picture,
     sheet_note,
 };
 use crate::{font, style};
@@ -108,18 +108,29 @@ impl Showcase {
             Block::Image { url, width, height } => {
                 self.extra(url, extra_size(*width, *height, MEASURE))
             }
-            Block::Video { url } => button(
-                row![
-                    text(PLAY).font(font::ICONS).size(font::icon(12.0)),
-                    text("Play video").size(BODY_SIZE),
-                ]
-                .spacing(8)
-                .align_y(Center),
-            )
-            .padding(0)
-            .style(style::link)
-            .on_press(Message::OpenLink(url.clone()))
-            .into(),
+            Block::Video {
+                webm,
+                mp4,
+                poster,
+                width,
+                height,
+            } => {
+                let size = extra_size(*width, *height, MEASURE);
+                let shown = self.extra(poster.as_deref().unwrap_or_default(), size);
+                let Some(url) = webm.as_ref().or(mp4.as_ref()) else {
+                    return shown;
+                };
+                tooltip(
+                    mouse_area(shown)
+                        .on_press(Message::OpenLink(url.clone()))
+                        .interaction(mouse::Interaction::Pointer),
+                    container(text("Open in browser").size(font::NOTE_SIZE))
+                        .padding([6, 10])
+                        .style(style::popup),
+                    tooltip::Position::FollowCursor,
+                )
+                .into()
+            }
         }
     }
 
