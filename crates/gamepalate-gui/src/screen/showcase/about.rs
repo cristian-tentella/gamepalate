@@ -2,15 +2,15 @@ use std::sync::Arc;
 
 use gamepalate_app::{AppId, Block, Span};
 use iced::{
-    Center, ContentFit, Element, Task, padding,
-    widget::{button, column, container, image, rich_text, row, space, span, text},
+    ContentFit, Element, Task, padding,
+    widget::{column, container, image, rich_text, row, space, span, stack, text},
 };
 
 use super::{
-    BODY_SIZE, MEASURE, Message, PLAY, Popup, Showcase, descriptions::Description, images::Picture,
-    sheet_note,
+    BODY_SIZE, MEASURE, Message, Popup, Showcase, descriptions::Description, images::Picture,
+    sheet_note, sight::sight,
 };
-use crate::{font, style};
+use crate::{font, style, video};
 
 const BODY_LINE_HEIGHT: f32 = 1.5;
 const HEADING_SIZE: f32 = 20.0;
@@ -72,7 +72,7 @@ impl Showcase {
                 blocks
                     .iter()
                     .enumerate()
-                    .map(|(index, block)| self.block(block, index == 0)),
+                    .map(|(index, block)| self.block(index, block)),
             )
             .spacing(BLOCK_SPACING)
             .into(),
@@ -84,7 +84,7 @@ impl Showcase {
         }
     }
 
-    fn block<'a>(&'a self, block: &'a Block, first: bool) -> Element<'a, Message> {
+    fn block<'a>(&'a self, index: usize, block: &'a Block) -> Element<'a, Message> {
         match block {
             Block::Heading(heading) => container(
                 text(heading)
@@ -92,7 +92,7 @@ impl Showcase {
                     .font(font::SEMIBOLD)
                     .line_height(1.3),
             )
-            .padding(padding::top(if first { 0.0 } else { HEADING_SPACE }))
+            .padding(padding::top(if index == 0 { 0.0 } else { HEADING_SPACE }))
             .into(),
             Block::Paragraph(spans) => paragraph(spans),
             Block::List(items) => column(items.iter().map(|item| {
@@ -108,22 +108,51 @@ impl Showcase {
             Block::Image { url, width, height } => {
                 self.extra(url, extra_size(*width, *height, MEASURE))
             }
-            Block::Video { url } => button(
-                row![
-                    text(PLAY).font(font::ICONS).size(font::icon(12.0)),
-                    text("Play video").size(BODY_SIZE),
-                ]
-                .spacing(8)
-                .align_y(Center),
-            )
-            .padding(0)
-            .style(style::link)
-            .on_press(Message::OpenLink(url.clone()))
-            .into(),
+            Block::Video {
+                webm,
+                poster,
+                width,
+                height,
+                ..
+            } => {
+                let size = extra_size(*width, *height, MEASURE);
+                let poster = poster.as_deref().unwrap_or_default();
+                match (webm, size) {
+                    (Some(_), Some((width, height))) => {
+                        self.video(index, self.extra(poster, size), width, height)
+                    }
+                    _ => self.extra(poster, size),
+                }
+            }
         }
     }
 
-    fn extra<'a>(&self, url: &str, size: Option<(f32, f32)>) -> Element<'a, Message> {
+    /// A video of the description over its poster, with the layer that tells when more than a
+    /// quarter of it is in sight and the probe that tells which renderer draws it.
+    fn video<'a>(
+        &'a self,
+        index: usize,
+        poster: Element<'a, video::Message>,
+        width: f32,
+        height: f32,
+    ) -> Element<'a, Message> {
+        let video = match self.loops.player(index) {
+            Some(player) => player.view_loop(poster, self.loops.plays(index)),
+            None => video::still(poster),
+        };
+        let shown = container(video.map(move |message| Message::Loop(index, message)))
+            .width(width)
+            .height(height);
+
+        stack![
+            shown,
+            sight(move |in_sight| Message::LoopSight(index, in_sight)),
+            video::probe(1.0, Message::LoopMeasured),
+        ]
+        .into()
+    }
+
+    fn extra<'a, M: 'a>(&self, url: &str, size: Option<(f32, f32)>) -> Element<'a, M> {
         let picture = self.extras.get(url);
         match (picture, size) {
             (Some(Picture::Ready(allocation)), Some((width, height))) => {

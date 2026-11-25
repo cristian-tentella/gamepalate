@@ -2,6 +2,7 @@ mod audio;
 mod decode;
 mod stream;
 mod view;
+mod webm;
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -13,9 +14,14 @@ use iced::widget::image;
 
 use self::audio::{AudioBuffer, Clock};
 
-pub use self::view::{Surface, probe, spinner};
+pub use self::view::{Surface, probe, spinner, still};
+
+/// Each player, and each retry, draws on its own textures.
+static NEXT_PLAYER: AtomicU64 = AtomicU64::new(0);
 
 const FRAME_CAPACITY: usize = 30;
+/// A shorter queue for the videos of the description, which can play several at a time.
+const LOOP_CAPACITY: usize = 8;
 const FRAME_TOLERANCE: f64 = 0.0005;
 const IDLE: Duration = Duration::from_millis(5);
 const TICK: Duration = Duration::from_millis(250);
@@ -26,7 +32,23 @@ pub const START_VOLUME: f32 = 0.25;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
-    Dash { manifest_url: String, height: u32 },
+    Dash {
+        manifest_url: String,
+        height: u32,
+    },
+    /// A whole `webm` without sound, downloaded once and played in a loop.
+    Loop {
+        url: String,
+    },
+}
+
+impl Source {
+    fn has_sound(&self) -> bool {
+        match self {
+            Source::Dash { .. } => true,
+            Source::Loop { .. } => false,
+        }
+    }
 }
 
 /// How the trailer starts: `volume` goes from 0 to 1, and 0 counts as muted.
@@ -81,6 +103,7 @@ pub enum Message {
 }
 
 pub struct Player {
+    id: u64,
     shared: Arc<Shared>,
     source: Source,
     options: Options,
@@ -94,6 +117,7 @@ pub struct Player {
 impl Player {
     pub fn new(source: Source, options: Options) -> Player {
         Player {
+            id: NEXT_PLAYER.fetch_add(1, Ordering::Relaxed),
             shared: start(&source, options),
             source,
             options,
@@ -145,6 +169,7 @@ impl Player {
         self.options.muted = self.is_muted();
         self.options.volume = self.volume();
         self.shared = start(&self.source, self.options);
+        self.id = NEXT_PLAYER.fetch_add(1, Ordering::Relaxed);
         self.scrub = None;
         self.loading_since = Instant::now();
     }
@@ -186,11 +211,11 @@ impl Player {
     }
 
     pub fn play(&self) {
-        self.shared.playing.store(true, Ordering::SeqCst);
+        self.shared.set_playing(true, Instant::now());
     }
 
     pub fn pause(&self) {
-        self.shared.playing.store(false, Ordering::SeqCst);
+        self.shared.set_playing(false, Instant::now());
     }
 
     pub fn seek(&self, position: Duration) {
@@ -198,17 +223,23 @@ impl Player {
         self.shared.seek(position.min(end).as_secs_f64());
     }
 
+    /// Nothing for a source without sound.
     pub fn set_muted(&self, muted: bool) {
-        self.shared.muted.store(muted, Ordering::SeqCst);
+        if self.source.has_sound() {
+            self.shared.muted.store(muted, Ordering::SeqCst);
+        }
     }
 
     pub fn is_muted(&self) -> bool {
         self.shared.is_muted()
     }
 
+    /// Nothing for a source without sound.
     pub fn set_volume(&self, volume: f32) {
-        let volume = volume.clamp(0.0, FULL_VOLUME);
-        self.shared.volume.store(volume.to_bits(), Ordering::SeqCst);
+        if self.source.has_sound() {
+            let volume = volume.clamp(0.0, FULL_VOLUME);
+            self.shared.volume.store(volume.to_bits(), Ordering::SeqCst);
+        }
     }
 
     pub fn volume(&self) -> f32 {
@@ -224,8 +255,15 @@ impl Player {
         self.shared.stop();
     }
 
+    /// For a loop, the position in the current lap.
     pub fn position(&self) -> Duration {
-        Duration::from_secs_f64(self.shared.clock().at(Instant::now()).max(0.0))
+        let time = self.shared.clock().at(Instant::now()).max(0.0);
+        let time = match (self.source.has_sound(), self.duration()) {
+            (false, Some(lap)) if !lap.is_zero() => time % lap.as_secs_f64(),
+            _ => time,
+        };
+
+        Duration::from_secs_f64(time)
     }
 
     pub fn duration(&self) -> Option<Duration> {
@@ -252,7 +290,7 @@ impl Drop for Player {
 }
 
 fn start(source: &Source, options: Options) -> Arc<Shared> {
-    let shared = Arc::new(Shared::new(options));
+    let shared = Arc::new(Shared::for_source(source, options));
     match tokio::runtime::Handle::try_current() {
         Ok(runtime) => decode::start(Arc::clone(&shared), runtime, source.clone(), options.rgba),
         Err(error) => shared.fail(format!("no async runtime for the trailer: {error}")),
@@ -315,6 +353,9 @@ struct Shared {
     failure: OnceLock<String>,
     frames: Mutex<Frames>,
     frames_changed: Condvar,
+    capacity: usize,
+    /// Without sound the clock is the wall clock: it starts at the first drawn frame and stops in pause.
+    sound: bool,
     audio: Mutex<AudioBuffer>,
     clock: Mutex<Clock>,
 }
@@ -336,8 +377,22 @@ impl Shared {
             failure: OnceLock::new(),
             frames: Mutex::new(Frames::default()),
             frames_changed: Condvar::new(),
+            capacity: FRAME_CAPACITY,
+            sound: true,
             audio: Mutex::new(AudioBuffer::new(0, 0.0)),
             clock: Mutex::new(Clock::stopped(0.0)),
+        }
+    }
+
+    fn for_source(source: &Source, options: Options) -> Shared {
+        let shared = Shared::new(options);
+        match source.has_sound() {
+            true => shared,
+            false => Shared {
+                capacity: LOOP_CAPACITY,
+                sound: false,
+                ..shared
+            },
         }
     }
 
@@ -439,9 +494,29 @@ impl Shared {
     }
 
     fn drawn(&self, epoch: u64) {
+        self.drawn_at(epoch, Instant::now());
+    }
+
+    fn drawn_at(&self, epoch: u64, now: Instant) {
         if epoch == self.epoch() {
             self.drawn.store(epoch + 1, Ordering::SeqCst);
             self.started.store(true, Ordering::SeqCst);
+            if !self.sound && self.playing.load(Ordering::SeqCst) {
+                self.clock().run(now);
+            }
+        }
+    }
+
+    fn set_playing(&self, playing: bool, now: Instant) {
+        self.playing.store(playing, Ordering::SeqCst);
+        if self.sound {
+            return;
+        }
+        let mut clock = self.clock();
+        match playing {
+            true if self.drawn.load(Ordering::SeqCst) == self.epoch() + 1 => clock.run(now),
+            true => {}
+            false => clock.halt(now),
         }
     }
 
@@ -485,7 +560,7 @@ impl Shared {
     fn push_frame(&self, frame: Frame) -> bool {
         let epoch = frame.epoch;
         let mut frames = lock(&self.frames);
-        while frames.queue.len() >= FRAME_CAPACITY && self.is_current(epoch) {
+        while frames.queue.len() >= self.capacity && self.is_current(epoch) {
             frames = self
                 .frames_changed
                 .wait_timeout(frames, Duration::from_millis(50))
@@ -706,6 +781,7 @@ mod tests {
 
     fn idle_player(options: Options) -> Player {
         Player {
+            id: 0,
             shared: Arc::new(Shared::new(options)),
             source: Source::Dash {
                 manifest_url: "https://video.akamai.steamstatic.com/a/dash_av1.mpd".to_string(),
@@ -876,6 +952,238 @@ mod tests {
 
         assert_eq!(player.views.load(Ordering::Relaxed), 0);
         assert_eq!(player.views_since, start + Duration::from_secs(1));
+    }
+
+    fn description() -> Source {
+        Source::Loop {
+            url:
+                "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1/extras/a.webm"
+                    .to_string(),
+        }
+    }
+
+    fn looping_player() -> Player {
+        let source = description();
+        Player {
+            id: 0,
+            shared: Arc::new(Shared::for_source(&source, Options::default())),
+            source,
+            options: Options::default(),
+            scrub: None,
+            hovered: false,
+            loading_since: Instant::now(),
+            views: AtomicU32::new(0),
+            views_since: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn a_loop_has_no_sound_and_a_short_queue() {
+        let shared = Shared::for_source(&description(), Options::default());
+        assert!(!shared.sound);
+        assert_eq!(shared.capacity, LOOP_CAPACITY);
+
+        let trailer =
+            Shared::for_source(&idle_player(Options::default()).source, Options::default());
+        assert!(trailer.sound);
+        assert_eq!(trailer.capacity, FRAME_CAPACITY);
+    }
+
+    #[test]
+    fn mute_and_volume_do_nothing_without_sound() {
+        let mut player = looping_player();
+
+        player.update(Message::Mute);
+        player.set_volume(0.3);
+
+        assert!(!player.is_muted());
+        assert_eq!(player.volume(), FULL_VOLUME);
+    }
+
+    #[test]
+    fn the_wall_clock_starts_at_the_first_drawn_frame() {
+        let shared = Shared::for_source(&description(), Options::default());
+        let start = Instant::now();
+        assert!(shared.push_frame(frame(0, 0.0)));
+        assert!(!shared.clock().is_running());
+
+        shared.select(start);
+        shared.drawn_at(0, start);
+        shared.drawn_at(0, start + Duration::from_millis(500));
+
+        assert_eq!(shared.state(), State::Playing);
+        assert!((shared.clock().at(start + Duration::from_secs(1)) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_wall_clock_stands_still_in_pause_and_goes_on_from_there() {
+        let shared = Shared::for_source(&description(), Options::default());
+        let start = Instant::now();
+        shared.drawn_at(0, start);
+
+        shared.set_playing(false, start + Duration::from_secs(2));
+        assert_eq!(shared.state(), State::Paused);
+        assert!((shared.clock().at(start + Duration::from_secs(9)) - 2.0).abs() < 1e-9);
+        shared.drawn_at(0, start + Duration::from_secs(9));
+        assert!(!shared.clock().is_running());
+        shared.set_playing(true, start + Duration::from_secs(9));
+
+        assert!((shared.clock().at(start + Duration::from_secs(10)) - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn after_a_seek_the_wall_clock_waits_for_the_new_frame() {
+        let shared = Shared::for_source(&description(), Options::default());
+        let start = Instant::now();
+        shared.drawn_at(0, start);
+
+        shared.seek(0.5);
+        shared.set_playing(true, start + Duration::from_secs(1));
+        assert_eq!(shared.clock().at(start + Duration::from_secs(2)), 0.5);
+        shared.drawn_at(1, start + Duration::from_secs(2));
+
+        assert!((shared.clock().at(start + Duration::from_millis(2250)) - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_play_before_the_first_frame_does_not_start_the_wall_clock() {
+        let shared = Shared::for_source(&description(), Options::default());
+
+        shared.set_playing(false, Instant::now());
+        shared.set_playing(true, Instant::now());
+
+        assert!(!shared.clock().is_running());
+        assert_eq!(shared.state(), State::Loading);
+    }
+
+    #[test]
+    fn the_trailer_clock_is_left_to_the_audio() {
+        let shared = Shared::new(Options::default());
+
+        shared.drawn_at(0, Instant::now());
+        shared.set_playing(true, Instant::now());
+
+        assert!(!shared.clock().is_running());
+    }
+
+    #[test]
+    fn the_position_of_a_loop_is_in_the_current_lap() {
+        let player = looping_player();
+        let _ = player.shared.duration.set(Duration::from_millis(300));
+        *player.shared.clock() = Clock::stopped(0.75);
+
+        assert_eq!(player.position().as_millis(), 150);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_loop_fails_on_a_bad_address_without_opening_the_audio() {
+        let player = Player::new(
+            Source::Loop {
+                url: "extras/a.webm".to_string(),
+            },
+            Options::default(),
+        );
+
+        let start = Instant::now();
+        while !matches!(player.state(), State::Failed(_))
+            && start.elapsed() < Duration::from_secs(5)
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        assert_eq!(
+            player.state(),
+            State::Failed("extras/a.webm is not a valid trailer address".to_string())
+        );
+    }
+
+    const HADES_GIF: &str = "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1145360/extras/be2c018a297716c7e8925b55a2390c8f.webm?t=1758127023";
+    const HADES_II_GIFS: [&str; 2] = [
+        "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1145350/extras/43c056f0768d57fb1610417dc3f0dbe2.webm?t=1779901265",
+        "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1145350/extras/9eb5e37616fb72c42d6c8e8e918f78d8.webm?t=1779901265",
+    ];
+    const VSYNC: Duration = Duration::from_micros(6944);
+
+    /// Draws like the widget does, for `seconds`: at the next frame's time when `paced`,
+    /// at every 144 Hz vsync when not. Returns the frames shown.
+    fn watch_loop(player: &Player, seconds: f64, paced: bool, label: &str) -> usize {
+        let start = Instant::now();
+        let mut first_at = None;
+        let (mut redraws, mut shown) = (0, 0);
+        let mut last = None;
+        let mut late = Vec::new();
+        while start.elapsed().as_secs_f64() < seconds {
+            redraws += 1;
+            if let Some(frame) = player.frame() {
+                player.drawn(&frame);
+                first_at.get_or_insert_with(|| start.elapsed());
+                if last != Some((frame.epoch, frame.pts)) {
+                    last = Some((frame.epoch, frame.pts));
+                    shown += 1;
+                    let clock = player.shared.clock().at(Instant::now());
+                    late.push((clock - frame.pts) * 1000.0);
+                }
+            }
+            let next = match paced {
+                true => player.next_frame_at().unwrap_or(Instant::now() + IDLE),
+                false => Instant::now() + VSYNC,
+            };
+            std::thread::sleep(next.saturating_duration_since(Instant::now()));
+        }
+        let lap = player.duration().unwrap_or_default().as_secs_f64();
+        let clock = player.shared.clock().at(Instant::now());
+        let playing = seconds - first_at.unwrap_or_default().as_secs_f64();
+        let mean = late.iter().sum::<f64>() / late.len().max(1) as f64;
+        let max = late.iter().copied().fold(0.0, f64::max);
+        println!(
+            "{label}: {:?}, first frame after {:.0} ms, lap {lap:.3} s, {:.2} laps, {shown} frames \
+             ({:.1} a second), {redraws} redraws ({:.1} a second), late mean {mean:.1} ms, max {max:.1} ms",
+            player.state(),
+            first_at.unwrap_or_default().as_secs_f64() * 1000.0,
+            clock / lap.max(f64::MIN_POSITIVE),
+            shown as f64 / playing,
+            redraws as f64 / seconds,
+        );
+
+        shown
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "downloads the description videos of Hades and Hades II from Steam; silent"]
+    async fn loops_the_description_videos_of_hades() {
+        let runtime = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            let seconds: f64 = std::env::var("GAMEPALATE_TEST_SECONDS")
+                .ok()
+                .and_then(|seconds| seconds.parse().ok())
+                .unwrap_or(30.0);
+            let urls = [HADES_GIF, HADES_II_GIFS[0], HADES_II_GIFS[1]];
+            for paced in [true, false] {
+                let how = match paced {
+                    true => "at the next frame",
+                    false => "at every vsync",
+                };
+                std::thread::scope(|scope| {
+                    for (index, url) in urls.iter().enumerate() {
+                        let label = format!("video {} {how}", index + 1);
+                        let runtime = &runtime;
+                        scope.spawn(move || {
+                            let _runtime = runtime.enter();
+                            let player = Player::new(
+                                Source::Loop {
+                                    url: url.to_string(),
+                                },
+                                Options::default(),
+                            );
+                            assert!(watch_loop(&player, seconds, paced, &label) > 10);
+                            assert_eq!(player.state(), State::Playing);
+                        });
+                    }
+                });
+            }
+        })
+        .await
+        .unwrap();
     }
 
     const HADES: &str = "https://video.akamai.steamstatic.com/store_trailers/1145360/312686/b0312c49135823cc34946e98148abfb8da71f0fb/1750627549/dash_av1.mpd";

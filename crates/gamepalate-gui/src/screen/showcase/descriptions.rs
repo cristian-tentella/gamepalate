@@ -26,13 +26,17 @@ impl Descriptions {
 
     pub fn image_urls(&self, id: AppId) -> Vec<String> {
         match self.descriptions.get(&id) {
-            Some(Description::Ready(blocks)) => blocks
-                .iter()
-                .filter_map(|block| match block {
+            Some(Description::Ready(blocks)) => {
+                let images = blocks.iter().filter_map(|block| match block {
                     Block::Image { url, .. } => Some(url.clone()),
                     _ => None,
-                })
-                .collect(),
+                });
+                let posters = blocks.iter().filter_map(|block| match block {
+                    Block::Video { poster, .. } => poster.clone(),
+                    _ => None,
+                });
+                images.chain(posters).collect()
+            }
             _ => Vec::new(),
         }
     }
@@ -86,7 +90,11 @@ mod tests {
                 height: 105,
             },
             Block::Video {
-                url: "https://example.com/v.mp4".to_string(),
+                webm: Some("https://example.com/v.webm".to_string()),
+                mp4: None,
+                poster: Some("https://example.com/v.poster.avif".to_string()),
+                width: 600,
+                height: 338,
             },
             Block::Image {
                 url: "https://example.com/b.webp".to_string(),
@@ -140,14 +148,18 @@ mod tests {
     }
 
     #[test]
-    fn gives_the_images_in_their_order() {
+    fn gives_the_images_in_their_order_then_the_posters() {
         let mut descriptions = Descriptions::default();
         descriptions.want(&[AppId(1)]);
         descriptions.loaded(AppId(1), blocks());
 
         assert_eq!(
             descriptions.image_urls(AppId(1)),
-            ["https://example.com/a.avif", "https://example.com/b.webp"]
+            [
+                "https://example.com/a.avif",
+                "https://example.com/b.webp",
+                "https://example.com/v.poster.avif",
+            ]
         );
         assert!(descriptions.image_urls(AppId(2)).is_empty());
     }

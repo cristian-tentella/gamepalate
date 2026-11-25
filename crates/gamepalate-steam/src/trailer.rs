@@ -9,8 +9,18 @@ use tokio::time::timeout;
 
 use crate::transport::{Fetch, USER_AGENT};
 
-const TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_BYTES: usize = 16 * 1024 * 1024;
+const MEGABYTE: usize = 1024 * 1024;
+/// A manifest or a segment of a trailer.
+const SEGMENT: Limits = Limits {
+    bytes: 16 * MEGABYTE,
+    timeout: Duration::from_secs(30),
+};
+/// A whole video of the description, which can be larger than a segment: one of Arms of God
+/// weighs 16.2 MB.
+const VIDEO: Limits = Limits {
+    bytes: 64 * MEGABYTE,
+    timeout: Duration::from_secs(120),
+};
 const MAX_HEIGHT: u32 = 1080;
 const AV1: &str = "av01";
 const AAC: &str = "mp4a.40";
@@ -18,6 +28,7 @@ const REPRESENTATION_ID: &str = "$RepresentationID$";
 const NUMBER: &str = "$Number";
 const MANIFEST_ACCEPT: &str = "application/dash+xml";
 const SEGMENT_ACCEPT: &str = "video/mp4, audio/mp4";
+const VIDEO_ACCEPT: &str = "video/webm";
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrailerError {
@@ -35,8 +46,8 @@ pub enum TrailerError {
     #[error("{url} answered HTTP {status}")]
     Status { url: String, status: StatusCode },
 
-    #[error("{url} is larger than {} MB", MAX_BYTES / 1024 / 1024)]
-    TooLarge { url: String },
+    #[error("{url} is larger than {megabytes} MB")]
+    TooLarge { url: String, megabytes: usize },
 
     #[error("the trailer manifest {url} is not valid XML")]
     Xml {
@@ -341,6 +352,13 @@ fn iso_duration(text: &str) -> Option<Duration> {
     Duration::try_from_secs_f64(seconds).ok()
 }
 
+/// How much a download may weigh and how long it may take.
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    bytes: usize,
+    timeout: Duration,
+}
+
 #[derive(Debug)]
 pub struct TrailerDownloader<F = Client> {
     fetch: F,
@@ -366,19 +384,33 @@ impl<F: Fetch> TrailerDownloader<F> {
         let parsed = Url::parse(url).map_err(|_| TrailerError::Url {
             url: url.to_string(),
         })?;
-        let bytes = self.download(parsed, MANIFEST_ACCEPT).await?;
+        let bytes = self.download(parsed, MANIFEST_ACCEPT, SEGMENT).await?;
         let xml = String::from_utf8_lossy(&bytes);
 
         Manifest::parse(url, &xml)
     }
 
     pub async fn segment(&self, url: &Url) -> Result<Vec<u8>, TrailerError> {
-        self.download(url.clone(), SEGMENT_ACCEPT).await
+        self.download(url.clone(), SEGMENT_ACCEPT, SEGMENT).await
     }
 
-    async fn download(&self, url: Url, accept: &'static str) -> Result<Vec<u8>, TrailerError> {
+    /// A whole `webm`, such as a video of the description, up to 64 MB and 2 minutes.
+    pub async fn video(&self, url: &str) -> Result<Vec<u8>, TrailerError> {
+        let parsed = Url::parse(url).map_err(|_| TrailerError::Url {
+            url: url.to_string(),
+        })?;
+
+        self.download(parsed, VIDEO_ACCEPT, VIDEO).await
+    }
+
+    async fn download(
+        &self,
+        url: Url,
+        accept: &'static str,
+        limits: Limits,
+    ) -> Result<Vec<u8>, TrailerError> {
         let text = url.to_string();
-        match timeout(TIMEOUT, self.download_now(url, accept)).await {
+        match timeout(limits.timeout, self.download_now(url, accept, limits.bytes)).await {
             Ok(result) => result,
             Err(_) => Err(TrailerError::Network {
                 url: text,
@@ -388,8 +420,17 @@ impl<F: Fetch> TrailerDownloader<F> {
         }
     }
 
-    async fn download_now(&self, url: Url, accept: &'static str) -> Result<Vec<u8>, TrailerError> {
+    async fn download_now(
+        &self,
+        url: Url,
+        accept: &'static str,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, TrailerError> {
         let text = url.to_string();
+        let too_large = |url: String| TrailerError::TooLarge {
+            url,
+            megabytes: max_bytes / MEGABYTE,
+        };
         let mut request = Request::new(Method::GET, url);
         request
             .headers_mut()
@@ -407,9 +448,9 @@ impl<F: Fetch> TrailerDownloader<F> {
         }
         if response
             .content_length()
-            .is_some_and(|length| length > MAX_BYTES as u64)
+            .is_some_and(|length| length > max_bytes as u64)
         {
-            return Err(TrailerError::TooLarge { url: text });
+            return Err(too_large(text));
         }
 
         let mut bytes = Vec::new();
@@ -418,8 +459,8 @@ impl<F: Fetch> TrailerDownloader<F> {
             .await
             .map_err(|error| network(&text, error))?
         {
-            if bytes.len() + chunk.len() > MAX_BYTES {
-                return Err(TrailerError::TooLarge { url: text });
+            if bytes.len() + chunk.len() > max_bytes {
+                return Err(too_large(text));
             }
             bytes.extend_from_slice(&chunk);
         }
@@ -755,6 +796,8 @@ mod tests {
         }
     }
 
+    const VIDEO_URL: &str = "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1145360/extras/a.webm?t=1";
+
     fn downloader(answer: Answer) -> TrailerDownloader<FakeCdn> {
         TrailerDownloader::with_fetch(FakeCdn {
             answer,
@@ -786,6 +829,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn downloads_a_whole_video() {
+        let downloader = downloader(Answer::Body(200, vec![0x1a, 0x45]));
+
+        assert_eq!(downloader.video(VIDEO_URL).await.unwrap(), vec![0x1a, 0x45]);
+        let requests = downloader.fetch.requests.lock().unwrap();
+        assert_eq!(requests[0].url().as_str(), VIDEO_URL);
+        assert_eq!(requests[0].headers()[ACCEPT], VIDEO_ACCEPT);
+    }
+
+    #[tokio::test]
+    async fn refuses_a_video_that_is_not_a_url() {
+        let downloader = downloader(Answer::Body(200, Vec::new()));
+
+        assert!(matches!(
+            downloader.video("extras/a.webm").await,
+            Err(TrailerError::Url { .. })
+        ));
+        assert!(downloader.fetch.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn fails_on_a_missing_segment() {
         let downloader = downloader(Answer::Body(404, b"<html>".to_vec()));
         let url = hades().audio.segments.url(30);
@@ -801,12 +865,49 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_a_segment_over_sixteen_megabytes() {
-        let downloader = downloader(Answer::Body(200, vec![0; MAX_BYTES + 1]));
+        let downloader = downloader(Answer::Body(200, vec![0; SEGMENT.bytes + 1]));
         let url = hades().video[0].segments.url(1);
 
         assert!(matches!(
             downloader.segment(&url).await,
-            Err(TrailerError::TooLarge { .. })
+            Err(TrailerError::TooLarge { megabytes: 16, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn downloads_a_video_larger_than_a_segment() {
+        let downloader = downloader(Answer::Body(200, vec![0; SEGMENT.bytes + 1]));
+
+        let bytes = downloader.video(VIDEO_URL).await.unwrap();
+
+        assert_eq!(bytes.len(), SEGMENT.bytes + 1);
+    }
+
+    #[tokio::test]
+    async fn refuses_a_video_over_sixty_four_megabytes() {
+        let downloader = downloader(Answer::Body(200, vec![0; VIDEO.bytes + 1]));
+
+        let error = downloader.video(VIDEO_URL).await.unwrap_err();
+
+        assert!(matches!(
+            error,
+            TrailerError::TooLarge { megabytes: 64, .. }
+        ));
+        assert!(error.to_string().ends_with("is larger than 64 MB"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn waits_longer_for_a_video_than_for_a_segment() {
+        let downloader = std::sync::Arc::new(downloader(Answer::Never));
+        let waiting = std::sync::Arc::clone(&downloader);
+        let video = tokio::spawn(async move { waiting.video(VIDEO_URL).await });
+
+        tokio::time::sleep(SEGMENT.timeout + Duration::from_secs(1)).await;
+        assert!(!video.is_finished());
+
+        assert!(matches!(
+            video.await.unwrap(),
+            Err(TrailerError::Network { reason, .. }) if reason == "timed out"
         ));
     }
 

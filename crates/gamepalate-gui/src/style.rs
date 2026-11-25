@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use iced::{
     Border, Color, Element, Shadow, Theme, Vector, border, gradient,
     overlay::menu,
@@ -5,6 +7,33 @@ use iced::{
     theme::palette,
     widget::{button, container, pick_list, progress_bar, rule, slider, text, text_input, toggler},
 };
+
+/// Set once tiny-skia draws the window. iced_tiny_skia 0.14.1 paints the shadow of a quad without
+/// the clip of a partial redraw (`Engine::draw_quad` passes no mask to `draw_pixmap`), over the
+/// quad too: every redraw of a playing video or a hovered button under a sheet darkened the
+/// whole sheet a little more. With tiny-skia nothing has a shadow.
+static NO_SHADOWS: AtomicBool = AtomicBool::new(false);
+
+/// Called when tiny-skia is chosen: from `ICED_BACKEND` at the start, or by the first widget
+/// that sees the renderer.
+pub fn drop_shadows() {
+    NO_SHADOWS.store(true, Ordering::Relaxed);
+}
+
+/// Whether `ICED_BACKEND` makes iced start with tiny-skia: the first backend it names. Without
+/// it iced tries wgpu first, and only a widget can tell.
+pub fn picks_tiny_skia(iced_backend: Option<&str>) -> bool {
+    iced_backend
+        .and_then(|backends| backends.split(',').find(|backend| !backend.is_empty()))
+        .is_some_and(|backend| matches!(backend, "tiny-skia" | "tiny_skia"))
+}
+
+fn shadow(shadow: Shadow) -> Shadow {
+    match NO_SHADOWS.load(Ordering::Relaxed) {
+        true => Shadow::default(),
+        false => shadow,
+    }
+}
 
 const BADGE_TINT: f32 = 0.14;
 const KEYCAP_BORDER: f32 = 0.3;
@@ -453,11 +482,11 @@ pub fn toast(theme: &Theme) -> container::Style {
             radius: 6.0.into(),
             ..Border::default()
         },
-        shadow: Shadow {
+        shadow: shadow(Shadow {
             color: Color::BLACK.scale_alpha(0.2),
             offset: Vector::new(0.0, 2.0),
             blur_radius: 8.0,
-        },
+        }),
         ..container::Style::default()
     }
 }
@@ -776,11 +805,11 @@ pub fn popup(theme: &Theme) -> container::Style {
             width: 1.0,
             radius: 8.0.into(),
         },
-        shadow: Shadow {
+        shadow: shadow(Shadow {
             color: Color::BLACK.scale_alpha(0.25),
             offset: Vector::new(0.0, 4.0),
             blur_radius: 16.0,
-        },
+        }),
         ..container::Style::default()
     }
 }
@@ -1069,11 +1098,11 @@ pub fn menu(theme: &Theme) -> menu::Style {
             .color
             .scale_alpha(if palette.is_dark { 0.3 } else { 0.12 })
             .into(),
-        shadow: Shadow {
+        shadow: shadow(Shadow {
             color: Color::BLACK.scale_alpha(0.2),
             offset: Vector::new(0.0, 4.0),
             blur_radius: 12.0,
-        },
+        }),
     }
 }
 
@@ -1278,6 +1307,16 @@ pub fn capsule_selected(theme: &Theme) -> container::Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn iced_starts_with_tiny_skia_when_it_is_the_first_backend_named() {
+        assert!(picks_tiny_skia(Some("tiny-skia")));
+        assert!(picks_tiny_skia(Some("tiny_skia")));
+        assert!(picks_tiny_skia(Some(",tiny-skia,wgpu")));
+        assert!(!picks_tiny_skia(Some("wgpu,tiny-skia")));
+        assert!(!picks_tiny_skia(Some("")));
+        assert!(!picks_tiny_skia(None));
+    }
 
     #[test]
     fn faded_text_keeps_its_alpha_in_the_light_and_fades_more_in_the_dark() {

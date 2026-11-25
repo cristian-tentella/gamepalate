@@ -12,7 +12,7 @@ use symphonia::core::meta::MetadataOptions;
 use tokio::runtime::Handle;
 
 use super::stream::{self, Fetcher, Next, Timeline};
-use super::{Frame, Shared, Source, audio};
+use super::{Frame, Shared, Source, audio, webm};
 
 const WAIT: Duration = Duration::from_millis(50);
 const AUDIO_AHEAD: f64 = 10.0;
@@ -20,10 +20,21 @@ const DEFAULT_RATE: u32 = 48_000;
 
 pub fn start(shared: Arc<Shared>, runtime: Handle, source: Source, rgba: bool) {
     let thread = Arc::clone(&shared);
+    let name = match source {
+        Source::Dash { .. } => "trailer-video",
+        Source::Loop { .. } => "description-video",
+    };
     let spawned = std::thread::Builder::new()
-        .name("trailer-video".to_string())
+        .name(name.to_string())
         .spawn(move || {
-            if let Err(reason) = play(&thread, runtime, source, rgba) {
+            let played = match source {
+                Source::Dash {
+                    manifest_url,
+                    height,
+                } => play(&thread, runtime, &manifest_url, height, rgba),
+                Source::Loop { url } => webm::play(&thread, runtime, url, rgba),
+            };
+            if let Err(reason) = played {
                 thread.fail(reason);
             }
         });
@@ -32,14 +43,16 @@ pub fn start(shared: Arc<Shared>, runtime: Handle, source: Source, rgba: bool) {
     }
 }
 
-fn play(shared: &Arc<Shared>, runtime: Handle, source: Source, rgba: bool) -> Result<(), String> {
-    let Source::Dash {
-        manifest_url,
-        height,
-    } = source;
+fn play(
+    shared: &Arc<Shared>,
+    runtime: Handle,
+    manifest_url: &str,
+    height: u32,
+    rgba: bool,
+) -> Result<(), String> {
     let downloader = Arc::new(TrailerDownloader::new().map_err(|error| error.to_string())?);
     let manifest = runtime
-        .block_on(downloader.manifest(&manifest_url))
+        .block_on(downloader.manifest(manifest_url))
         .map_err(|error| error.to_string())?;
     let _ = shared.duration.set(manifest.duration);
     let video = manifest.video_for_height(height).clone();

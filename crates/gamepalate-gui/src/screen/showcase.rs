@@ -2,10 +2,12 @@ mod about;
 mod deck;
 mod descriptions;
 pub(crate) mod images;
+mod loops;
 mod media;
 mod pages;
 mod review_sheet;
 mod reviews;
+mod sight;
 mod tags;
 mod trailers;
 
@@ -30,8 +32,9 @@ use iced::{
 };
 
 use self::{
-    descriptions::Descriptions,
+    descriptions::{Description, Descriptions},
     images::{Images, Picture},
+    loops::Loops,
     media::Item,
     pages::{Page, Pages},
     reviews::{Request, ReviewLists},
@@ -97,6 +100,7 @@ pub struct Showcase {
     originals: HashMap<String, Picture>,
     thumbnails: HashMap<String, Picture>,
     trailers: Trailers,
+    loops: Loops,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -227,6 +231,11 @@ pub enum Message {
     SwitchMute,
     Trailer(video::Message),
     Measured(video::Surface),
+    /// A video of the description, by the index of its block.
+    Loop(usize, video::Message),
+    /// Whether more than a quarter of the height of a video of the description shows.
+    LoopSight(usize, bool),
+    LoopMeasured(video::Surface),
 }
 
 impl Showcase {
@@ -254,6 +263,7 @@ impl Showcase {
             originals: HashMap::new(),
             thumbnails: HashMap::new(),
             trailers: Trailers::default(),
+            loops: Loops::default(),
         }
     }
 
@@ -369,22 +379,50 @@ impl Showcase {
             }
             Message::Trailer(message) => self.trailers.update(message),
             Message::Measured(surface) => self.trailers.measured(surface),
+            Message::Loop(index, message) => self.loops.update(index, message),
+            Message::LoopSight(index, in_sight) => self.loops.sight(index, in_sight),
+            Message::LoopMeasured(surface) => self.loops.measured(surface.software),
         }
         if self.is_open() {
             self.trailers.stop();
         }
+        self.sync_loops();
         self.autoplay();
 
         self.load_shown()
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        self.trailers.subscription().map(Message::Trailer)
+        Subscription::batch([
+            self.trailers.subscription().map(Message::Trailer),
+            self.loops
+                .subscription()
+                .map(|(index, message)| Message::Loop(index, message)),
+        ])
     }
 
     /// Stops the trailer, for what covers the gallery or takes the place of the screen.
     pub fn stop_trailer(&mut self) {
         self.trailers.stop();
+    }
+
+    /// The search or a game over the screen, or the screen set aside: the videos of the About
+    /// sheet stop, and play again once nothing covers them.
+    pub fn cover(&mut self, covered: bool) {
+        self.loops.cover(covered);
+        self.sync_loops();
+    }
+
+    /// The videos of the description play only in the About sheet of the game shown.
+    fn sync_loops(&mut self) {
+        let blocks = match self.shown.filter(|_| self.popups.is(Popup::About)) {
+            Some(id) => match self.descriptions.get(id) {
+                Some(Description::Ready(blocks)) => Some(blocks.as_slice()),
+                _ => None,
+            },
+            None => None,
+        };
+        self.loops.sync(blocks);
     }
 
     fn play_trailer(&mut self) {
@@ -486,6 +524,7 @@ impl Showcase {
             self.browsing = false;
             self.zoomed = false;
             self.popups.close();
+            self.loops.clear();
             self.spoilers.clear();
             self.expanded.clear();
             self.tags = current.and_then(|id| self.gamepalate.game_tags(id));

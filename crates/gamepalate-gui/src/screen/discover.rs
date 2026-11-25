@@ -566,6 +566,11 @@ impl Discover {
         self.showcase.stop_trailer();
     }
 
+    /// The videos of the About sheet stop while something covers Discover or it is set aside.
+    pub fn cover(&mut self, covered: bool) {
+        self.showcase.cover(covered);
+    }
+
     pub fn view(&self, scale: f32) -> Element<'_, Message> {
         stack![responsive(move |size| self.screen(size, scale))]
             .push(self.showcase.zoom().map(|zoom| zoom.map(Message::Showcase)))

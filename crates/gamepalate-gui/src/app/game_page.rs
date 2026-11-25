@@ -276,6 +276,11 @@ impl GamePage {
         self.showcase.stop_trailer();
     }
 
+    /// The videos of the About sheet stop while the search covers the page.
+    pub fn cover(&mut self, covered: bool) {
+        self.showcase.cover(covered);
+    }
+
     /// The sheet over the blurred page. `area` is the size below the top bar, `under` names the
     /// page the sheet goes back to.
     pub fn view(&self, scale: f32, area: Size, under: &'static str) -> Element<'_, Message> {

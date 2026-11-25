@@ -49,7 +49,19 @@ impl Clock {
         };
     }
 
-    fn halt(&mut self, now: Instant) {
+    /// The wall clock of a video without sound: it runs from where it stands, with no limit.
+    pub fn run(&mut self, now: Instant) {
+        if !self.running {
+            *self = Clock {
+                pts: self.pts,
+                at: now,
+                running: true,
+                ahead: f64::INFINITY,
+            };
+        }
+    }
+
+    pub fn halt(&mut self, now: Instant) {
         if self.running {
             self.pts = self.at(now);
             self.running = false;
@@ -318,6 +330,32 @@ mod tests {
 
         assert!(!clock.is_running());
         assert!((clock.at(start + Duration::from_secs(9)) - 5.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_wall_clock_runs_from_where_it_stands() {
+        let start = Instant::now();
+        let mut clock = Clock::stopped(2.0);
+
+        clock.run(start);
+        clock.run(start + Duration::from_secs(1));
+
+        assert!(clock.is_running());
+        assert!((clock.at(start + Duration::from_millis(1500)) - 3.5).abs() < 1e-9);
+        assert!((clock.at(start + Duration::from_secs(600)) - 602.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_wall_clock_stands_still_in_pause() {
+        let start = Instant::now();
+        let mut clock = Clock::stopped(0.0);
+        clock.run(start);
+
+        clock.halt(start + Duration::from_millis(400));
+        assert!((clock.at(start + Duration::from_secs(5)) - 0.4).abs() < 1e-9);
+        clock.run(start + Duration::from_secs(5));
+
+        assert!((clock.at(start + Duration::from_millis(5100)) - 0.5).abs() < 1e-9);
     }
 
     #[test]

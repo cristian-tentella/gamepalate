@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -11,7 +12,9 @@ use iced::widget::{
     Shader, button, column, container, mouse_area, row, slider, stack, text, tooltip,
 };
 use iced::window::{self, RedrawRequest};
-use iced::{Center, Color, Element, Event, Fill, Length, Point, Rectangle, Size, Theme, wgpu};
+use iced::{
+    Center, Color, Element, Event, Fill, Length, Point, Rectangle, Size, Theme, padding, wgpu,
+};
 
 use super::{Frame, IDLE, Message, Options, Player, Source, State};
 use crate::{font, style};
@@ -35,6 +38,11 @@ const SPINNER_TURN: f32 = 1.568;
 const SPINNER_CYCLE: f32 = 1.333;
 const SPINNER_MAX_SWEEP: f32 = 270.0;
 const SPINNER_MIN_SWEEP: f32 = 10.0;
+const LOOP_PLAY: f32 = 48.0;
+const LOOP_PLAY_SHADOW: f32 = 2.0;
+const LOOP_INSET: f32 = 8.0;
+/// The textures of a player not drawn for this long are let go.
+const TEXTURES_KEPT: Duration = Duration::from_secs(5);
 
 const SHADER: &str = r#"
 @group(0) @binding(0) var plane_y: texture_2d<f32>;
@@ -170,6 +178,9 @@ impl<M> Widget<M, Theme, iced::Renderer> for Probe<'_, M> {
             height: physical(layout.bounds().height, self.scale),
             software: is_software(renderer),
         };
+        if surface.software {
+            style::drop_shadows();
+        }
         let last = tree.state.downcast_mut::<Option<Surface>>();
         if *last != Some(surface) {
             *last = Some(surface);
@@ -186,17 +197,23 @@ fn is_software(renderer: &iced::Renderer) -> bool {
     matches!(renderer, iced::Renderer::Secondary(_))
 }
 
-/// The redraw the frames ask for after a redraw: none while nothing moves, the next vsync with wgpu,
-/// the next frame's time with tiny-skia, which has no vsync.
+/// Whether the frames ask for a redraw at the next frame's time rather than at every vsync:
+/// tiny-skia has no vsync, and a loop without sound is often a slow GIF (10–25 fps).
+fn paced(software: bool, source: &Source) -> bool {
+    software || !source.has_sound()
+}
+
+/// The redraw the frames ask for after a redraw: none while nothing moves, the next vsync,
+/// or the next frame's time when [`paced`].
 fn redraw(
-    software: bool,
+    paced: bool,
     state: &State,
     old_frame: bool,
     next_frame_at: Option<Instant>,
     now: Instant,
 ) -> Option<RedrawRequest> {
     let moving = matches!(state, State::Loading | State::Playing) || old_frame;
-    match (moving, software) {
+    match (moving, paced) {
         (false, _) => None,
         (true, false) => Some(RedrawRequest::NextFrame),
         (true, true) => Some(RedrawRequest::At(next_frame_at.unwrap_or(now + IDLE))),
@@ -236,7 +253,7 @@ impl Player {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let state = self.state();
         let content: Element<'a, Message> = match &state {
-            State::Failed(_) => failed(),
+            State::Failed(_) => failed("Couldn't play the trailer"),
             State::Loading => stack![
                 poster,
                 self.frames(),
@@ -249,6 +266,36 @@ impl Player {
                 let bar = (self.hovered || state == State::Paused).then(|| self.bar(&state));
                 stack![screen].push(bar).into()
             }
+        };
+
+        mouse_area(container(content).width(Fill).height(Fill).clip(true))
+            .on_enter(Message::Hovered(true))
+            .on_exit(Message::Hovered(false))
+            .into()
+    }
+
+    /// A video of the description: no bar, the play button while it stands still and, under the
+    /// mouse, a small pause button in the corner. `playing` is whether it should play.
+    pub fn view_loop<'a>(
+        &'a self,
+        poster: Element<'a, Message>,
+        playing: bool,
+    ) -> Element<'a, Message> {
+        self.views
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let state = self.state();
+        let content: Element<'a, Message> = match (&state, playing) {
+            (State::Failed(_), _) => failed("Couldn't play the video"),
+            (_, false) => stack![poster, self.frames(), play_button()].into(),
+            (State::Loading, true) => stack![
+                poster,
+                self.frames(),
+                container(spinner(self.loading_since)).center(Fill),
+            ]
+            .into(),
+            (_, true) => stack![poster, self.frames()]
+                .push(self.hovered.then(pause_corner))
+                .into(),
         };
 
         mouse_area(container(content).width(Fill).height(Fill).clip(true))
@@ -346,12 +393,43 @@ fn replay<'a>() -> Element<'a, Message> {
     .into()
 }
 
-fn failed<'a>() -> Element<'a, Message> {
+/// The poster of a video of the description that has no player yet, with the play button.
+pub fn still(poster: Element<'_, Message>) -> Element<'_, Message> {
+    stack![poster, play_button()].into()
+}
+
+/// The whole video is the button, so that a click anywhere plays it.
+fn play_button<'a>() -> Element<'a, Message> {
+    let icon = |color: Color| text(PLAY).font(font::ICONS).size(LOOP_PLAY).color(color);
+    let play = tooltip(
+        stack![
+            container(icon(Color::BLACK.scale_alpha(0.4))).padding(padding::top(LOOP_PLAY_SHADOW)),
+            icon(Color::WHITE),
+        ],
+        container(text("Play").size(font::NOTE_SIZE))
+            .padding([6, 10])
+            .style(style::popup),
+        tooltip::Position::Bottom,
+    );
+
+    mouse_area(container(play).center(Fill))
+        .on_press(Message::Toggle)
+        .interaction(mouse::Interaction::Pointer)
+        .into()
+}
+
+fn pause_corner<'a>() -> Element<'a, Message> {
+    container(container(bar_button((PAUSE, "Pause"), Message::Toggle)).style(style::video_bar))
+        .padding(LOOP_INSET)
+        .align_right(Fill)
+        .align_bottom(Fill)
+        .into()
+}
+
+fn failed<'a>(label: &'a str) -> Element<'a, Message> {
     container(
         column![
-            text("Couldn't play the trailer")
-                .size(font::NOTE_SIZE)
-                .style(style::muted),
+            text(label).size(font::NOTE_SIZE).style(style::muted),
             button(text("Retry").size(font::NOTE_SIZE))
                 .style(style::primary)
                 .padding([4, 12])
@@ -529,7 +607,7 @@ impl<M> Widget<M, Theme, iced::Renderer> for Frames<'_> {
                 renderer.draw_image(Image::new(handle.clone()), area, bounds);
             }
         } else {
-            let shader = Shader::new(Planes(Arc::clone(&frame)));
+            let shader = Shader::new(Planes(Arc::clone(&frame), self.player.id));
             let tree = Tree::new(&shader as &dyn Widget<M, Theme, iced::Renderer>);
             let node = layout::Node::new(area.size()).move_to(area.position());
             Widget::<M, Theme, iced::Renderer>::draw(
@@ -564,7 +642,7 @@ impl<M> Widget<M, Theme, iced::Renderer> for Frames<'_> {
             return;
         }
         let request = redraw(
-            is_software(renderer),
+            paced(is_software(renderer), &self.player.source),
             &self.player.state(),
             self.player.shows_an_old_frame(),
             self.player.next_frame_at(),
@@ -576,24 +654,25 @@ impl<M> Widget<M, Theme, iced::Renderer> for Frames<'_> {
     }
 }
 
-/// The shader program of one frame: three `R8Unorm` planes, I420.
-struct Planes(Arc<Frame>);
+/// The shader program of one frame of the player with that id: three `R8Unorm` planes, I420.
+struct Planes(Arc<Frame>, u64);
 
 impl<M> shader::Program<M> for Planes {
     type State = ();
     type Primitive = PlanesPrimitive;
 
     fn draw(&self, _state: &(), _cursor: mouse::Cursor, _bounds: Rectangle) -> PlanesPrimitive {
-        PlanesPrimitive(Arc::clone(&self.0))
+        PlanesPrimitive(Arc::clone(&self.0), self.1)
     }
 }
 
-struct PlanesPrimitive(Arc<Frame>);
+struct PlanesPrimitive(Arc<Frame>, u64);
 
 impl std::fmt::Debug for PlanesPrimitive {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("PlanesPrimitive")
+            .field("player", &self.1)
             .field("pts", &self.0.pts)
             .finish()
     }
@@ -606,12 +685,18 @@ struct Textures {
     bind_group: wgpu::BindGroup,
 }
 
+/// The textures of one player, so that several players draw at once.
+struct Slot {
+    textures: Textures,
+    uploaded: Option<(u64, u64)>,
+    used: Instant,
+}
+
 pub struct PlanesPipeline {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    textures: Option<Textures>,
-    uploaded: Option<(u64, u64)>,
+    slots: HashMap<u64, Slot>,
 }
 
 impl Pipeline for PlanesPipeline {
@@ -686,8 +771,7 @@ impl Pipeline for PlanesPipeline {
             pipeline,
             layout,
             sampler,
-            textures: None,
-            uploaded: None,
+            slots: HashMap::new(),
         }
     }
 }
@@ -751,6 +835,10 @@ impl PlanesPipeline {
     }
 }
 
+fn is_stale(used: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(used) >= TEXTURES_KEPT
+}
+
 fn chroma(width: u32, height: u32) -> (u32, u32) {
     (width.div_ceil(2), height.div_ceil(2))
 }
@@ -768,18 +856,32 @@ impl Primitive for PlanesPrimitive {
     ) {
         let frame = &self.0;
         let key = (frame.epoch, frame.pts.to_bits());
-        let fits = pipeline.textures.as_ref().is_some_and(|textures| {
-            textures.width == frame.width && textures.height == frame.height
+        let now = Instant::now();
+        pipeline
+            .slots
+            .retain(|&player, slot| player == self.1 || !is_stale(slot.used, now));
+        let fits = pipeline.slots.get(&self.1).is_some_and(|slot| {
+            slot.textures.width == frame.width && slot.textures.height == frame.height
         });
-        if fits && pipeline.uploaded == Some(key) {
-            return;
-        }
         if !fits {
-            pipeline.textures = Some(pipeline.textures(device, frame.width, frame.height));
+            let textures = pipeline.textures(device, frame.width, frame.height);
+            pipeline.slots.insert(
+                self.1,
+                Slot {
+                    textures,
+                    uploaded: None,
+                    used: now,
+                },
+            );
         }
-        let Some(textures) = &pipeline.textures else {
+        let Some(slot) = pipeline.slots.get_mut(&self.1) else {
             return;
         };
+        slot.used = now;
+        if slot.uploaded == Some(key) {
+            return;
+        }
+        let textures = &slot.textures;
         let (chroma_width, chroma_height) = chroma(frame.width, frame.height);
         let sizes = [
             (frame.width, frame.height),
@@ -812,13 +914,13 @@ impl Primitive for PlanesPrimitive {
                 },
             );
         }
-        pipeline.uploaded = Some(key);
+        slot.uploaded = Some(key);
     }
 
     fn draw(&self, pipeline: &PlanesPipeline, pass: &mut wgpu::RenderPass<'_>) -> bool {
-        if let Some(textures) = &pipeline.textures {
+        if let Some(slot) = pipeline.slots.get(&self.1) {
             pass.set_pipeline(&pipeline.pipeline);
-            pass.set_bind_group(0, &textures.bind_group, &[]);
+            pass.set_bind_group(0, &slot.textures.bind_group, &[]);
             pass.draw(0..6, 0..1);
         }
 
@@ -837,7 +939,24 @@ mod tests {
     fn height(source: Source) -> u32 {
         match source {
             Source::Dash { height, .. } => height,
+            Source::Loop { .. } => 0,
         }
+    }
+
+    #[test]
+    fn a_loop_redraws_at_the_next_frame_with_wgpu_too() {
+        let trailer = Source::Dash {
+            manifest_url: "https://a/dash_av1.mpd".to_string(),
+            height: 720,
+        };
+        let description = Source::Loop {
+            url: "https://a/extras/b.webm".to_string(),
+        };
+
+        assert!(!paced(false, &trailer));
+        assert!(paced(true, &trailer));
+        assert!(paced(false, &description));
+        assert!(paced(true, &description));
     }
 
     #[test]
@@ -872,6 +991,14 @@ mod tests {
                 rgba: true
             }
         );
+    }
+
+    #[test]
+    fn the_textures_of_a_player_go_after_5_s_without_drawing() {
+        let used = Instant::now();
+
+        assert!(!is_stale(used, used + Duration::from_millis(4900)));
+        assert!(is_stale(used, used + TEXTURES_KEPT));
     }
 
     #[test]
