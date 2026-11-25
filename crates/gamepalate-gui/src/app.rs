@@ -233,21 +233,35 @@ impl App {
     }
 
     /// Only the page in front plays a trailer: the search or a game over it stops it, and so
-    /// does setting Discover aside.
+    /// does setting Discover aside. The videos of an About sheet stop the same way, and play
+    /// again once the page is in front.
     fn hold_trailers(&mut self) {
         if let Some(parked) = &mut self.parked {
             parked.discover.stop_trailer();
+            parked.discover.cover(true);
         }
         let search_open = self.search.is_open();
-        if search_open || self.game_page.is_some() {
-            match &mut self.screen {
-                Screen::Discover(screen) => screen.stop_trailer(),
-                Screen::Votes(screen) => screen.stop_trailer(),
-                _ => {}
+        let covered = search_open || self.game_page.is_some();
+        match &mut self.screen {
+            Screen::Discover(screen) => {
+                if covered {
+                    screen.stop_trailer();
+                }
+                screen.cover(covered);
             }
+            Screen::Votes(screen) => {
+                if covered {
+                    screen.stop_trailer();
+                }
+                screen.cover(covered);
+            }
+            _ => {}
         }
-        if search_open && let Some(page) = &mut self.game_page {
-            page.stop_trailer();
+        if let Some(page) = &mut self.game_page {
+            if search_open {
+                page.stop_trailer();
+            }
+            page.cover(search_open);
         }
     }
 

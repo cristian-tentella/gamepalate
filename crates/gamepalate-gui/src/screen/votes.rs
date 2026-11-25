@@ -397,6 +397,11 @@ impl Votes {
         self.showcase.stop_trailer();
     }
 
+    /// The videos of the About sheet stop while a game or the search covers Votes.
+    pub fn cover(&mut self, covered: bool) {
+        self.showcase.cover(covered);
+    }
+
     pub fn view(&self, scale: f32) -> Element<'_, Message> {
         let toast = self.toasts.view(Message::Undo);
         let card = container(self.card(scale))

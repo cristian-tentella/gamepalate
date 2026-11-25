@@ -14,7 +14,10 @@ use iced::widget::image;
 
 use self::audio::{AudioBuffer, Clock};
 
-pub use self::view::{Surface, probe, spinner};
+pub use self::view::{Surface, probe, spinner, still};
+
+/// Each player, and each retry, draws on its own textures.
+static NEXT_PLAYER: AtomicU64 = AtomicU64::new(0);
 
 const FRAME_CAPACITY: usize = 30;
 /// A shorter queue for the videos of the description, which can play several at a time.
@@ -34,7 +37,6 @@ pub enum Source {
         height: u32,
     },
     /// A whole `webm` without sound, downloaded once and played in a loop.
-    #[allow(dead_code, reason = "the About sheet does not play the videos yet")]
     Loop {
         url: String,
     },
@@ -101,6 +103,7 @@ pub enum Message {
 }
 
 pub struct Player {
+    id: u64,
     shared: Arc<Shared>,
     source: Source,
     options: Options,
@@ -114,6 +117,7 @@ pub struct Player {
 impl Player {
     pub fn new(source: Source, options: Options) -> Player {
         Player {
+            id: NEXT_PLAYER.fetch_add(1, Ordering::Relaxed),
             shared: start(&source, options),
             source,
             options,
@@ -165,6 +169,7 @@ impl Player {
         self.options.muted = self.is_muted();
         self.options.volume = self.volume();
         self.shared = start(&self.source, self.options);
+        self.id = NEXT_PLAYER.fetch_add(1, Ordering::Relaxed);
         self.scrub = None;
         self.loading_since = Instant::now();
     }
@@ -776,6 +781,7 @@ mod tests {
 
     fn idle_player(options: Options) -> Player {
         Player {
+            id: 0,
             shared: Arc::new(Shared::new(options)),
             source: Source::Dash {
                 manifest_url: "https://video.akamai.steamstatic.com/a/dash_av1.mpd".to_string(),
@@ -959,6 +965,7 @@ mod tests {
     fn looping_player() -> Player {
         let source = description();
         Player {
+            id: 0,
             shared: Arc::new(Shared::for_source(&source, Options::default())),
             source,
             options: Options::default(),
