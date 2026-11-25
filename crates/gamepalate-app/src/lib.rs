@@ -1,5 +1,6 @@
 pub mod account;
 pub mod app;
+mod avif;
 mod capsules;
 pub mod catalog_file;
 mod catalog_search;
@@ -52,7 +53,7 @@ pub use gamepalate_core::{
     votes::{LATER_DAYS, Vote, VoteKind},
 };
 pub use gamepalate_steam::details::{
-    Controller, Italian, ItemDetails, SteamDeck, original_screenshot, thumbnail_screenshot,
+    Controller, Italian, ItemDetails, SteamDeck, Trailer, original_screenshot, thumbnail_screenshot,
 };
 pub use gamepalate_steam::{
     archive::PendingUpdate,
@@ -60,6 +61,11 @@ pub use gamepalate_steam::{
     description::{Block, Span},
     transport::SteamError,
 };
+pub mod trailer {
+    pub use gamepalate_steam::trailer::{
+        AudioRendition, Manifest, Segments, TrailerDownloader, TrailerError, VideoRendition,
+    };
+}
 pub mod reviews {
     pub use gamepalate_steam::reviews::{
         Block, Language, Languages, Order, Review, ReviewPage, ReviewQuery, Span, Verdict,

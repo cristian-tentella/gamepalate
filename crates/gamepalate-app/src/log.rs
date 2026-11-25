@@ -33,7 +33,9 @@ pub fn start_log() -> io::Result<()> {
                 .with_filter(
                     Targets::new()
                         .with_default(Level::WARN)
-                        .with_target("gamepalate", Level::INFO),
+                        .with_target("gamepalate", Level::INFO)
+                        // Every trailer audio segment starts with a few bytes the probe skips.
+                        .with_target("symphonia", Level::ERROR),
                 ),
         )
         .try_init()

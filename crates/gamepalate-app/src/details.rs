@@ -22,6 +22,9 @@ const LANGUAGE: &str = "english";
 const DESCRIPTION: &str = "the store description";
 const REVIEWS: &str = "the reviews";
 const EXTRAS_DEADLINE: Duration = Duration::from_secs(3);
+const DETAILS: &str = "the store details";
+/// The page waits this long, not the minutes the transport would retry while Steam is down.
+const DETAILS_DEADLINE: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameDetails {
@@ -57,12 +60,19 @@ impl<S: Get + Sync, P: Get + Sync> StoreDetails<S, P> {
     }
 
     pub async fn details(&self, id: AppId) -> Result<Option<GameDetails>, SteamError> {
-        let (names, store, protondb) = join3(
+        let read = join3(
             self.categories(),
             get_item_details(&self.transport, id, LANGUAGE, self.region.as_str()),
             extra(get_protondb(&self.protondb, id), "could not read ProtonDB"),
-        )
-        .await;
+        );
+        let Ok((names, store, protondb)) = tokio::time::timeout(DETAILS_DEADLINE, read).await
+        else {
+            return Err(SteamError::SteamDown {
+                endpoint: DETAILS.to_string(),
+                reason: format!("no answer in {}s", DETAILS_DEADLINE.as_secs()),
+                source: None,
+            });
+        };
         let Some(store) = store? else {
             return Ok(None);
         };
@@ -526,6 +536,20 @@ mod tests {
 
         assert_eq!(details.protondb, None);
         assert_eq!(details.modes, ["Single-player", "Co-op"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_store_gives_up_after_the_deadline() {
+        let store = StoreDetails::new(SlowSteam::default(), SlowSteam::default(), Region::ITALY);
+        let start = tokio::time::Instant::now();
+
+        let error = tokio::time::timeout(DETAILS_DEADLINE * 2, store.details(AppId(620)))
+            .await
+            .expect("the details give up by themselves")
+            .unwrap_err();
+
+        assert_eq!(start.elapsed(), DETAILS_DEADLINE);
+        assert!(matches!(error, SteamError::SteamDown { .. }));
     }
 
     #[tokio::test]

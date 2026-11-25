@@ -263,11 +263,17 @@ impl GamePage {
         Action::Run(task)
     }
 
-    pub fn subscription(keys: bool) -> Subscription<Message> {
+    pub fn subscription(&self, keys: bool) -> Subscription<Message> {
+        let trailer = self.showcase.subscription().map(Message::Showcase);
         if !keys {
-            return Subscription::none();
+            return trailer;
         }
-        keyboard::listen().filter_map(key_message)
+        Subscription::batch([keyboard::listen().filter_map(key_message), trailer])
+    }
+
+    /// The search over the page stops the trailer.
+    pub fn stop_trailer(&mut self) {
+        self.showcase.stop_trailer();
     }
 
     /// The sheet over the blurred page. `area` is the size below the top bar, `under` names the
@@ -405,7 +411,7 @@ impl GamePage {
                 .into(),
                 gallery: Box::new(move |width, height| {
                     showcase
-                        .gallery(game.id, width, height)
+                        .gallery(game.id, width, height, scale)
                         .map(Message::Showcase)
                 }),
                 header: Box::new(move |width, height| {
@@ -640,6 +646,12 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         Key::Named(Named::ArrowLeft) => {
             Some(Message::Showcase(showcase::Message::PreviousScreenshot))
         }
+        Key::Character(key) if key.eq_ignore_ascii_case("p") => {
+            Some(Message::Showcase(showcase::Message::PlayOrPause))
+        }
+        Key::Character(key) if key.eq_ignore_ascii_case("m") => {
+            Some(Message::Showcase(showcase::Message::SwitchMute))
+        }
         Key::Character(key) if key.eq_ignore_ascii_case("d") => {
             Some(Message::Showcase(showcase::Message::ToggleAbout))
         }
@@ -696,6 +708,18 @@ mod tests {
 
     fn today() -> Date {
         "2026-11-13".parse().unwrap()
+    }
+
+    #[test]
+    fn p_plays_or_pauses_the_trailer_and_m_mutes_it() {
+        assert!(matches!(
+            key_message(pressed(Key::Character("p".into()))),
+            Some(Message::Showcase(showcase::Message::PlayOrPause))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("M".into()))),
+            Some(Message::Showcase(showcase::Message::SwitchMute))
+        ));
     }
 
     #[test]

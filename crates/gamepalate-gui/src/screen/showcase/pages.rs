@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, hash_map::Entry},
     sync::Arc,
+    time::Instant,
 };
 
 use gamepalate_app::{AppId, GameDetails};
@@ -8,7 +9,8 @@ use gamepalate_app::{AppId, GameDetails};
 const MAX_PAGES: usize = 50;
 
 pub enum Page {
-    Loading,
+    /// Since when: the gallery shows the spinner after a moment.
+    Loading(Instant),
     Ready(Arc<GameDetails>),
     Missing,
     Failed(String),
@@ -27,13 +29,14 @@ impl Pages {
     pub fn details(&self, id: AppId) -> Option<&GameDetails> {
         match self.pages.get(&id) {
             Some(Page::Ready(details)) => Some(details),
-            Some(Page::Loading | Page::Missing | Page::Failed(_)) | None => None,
+            Some(Page::Loading(_) | Page::Missing | Page::Failed(_)) | None => None,
         }
     }
 
     pub fn is_screenshot(&self, url: &str) -> bool {
         self.pages.values().any(|page| {
-            matches!(page, Page::Ready(details) if details.store.screenshot_urls.iter().any(|shot| shot == url))
+            matches!(page, Page::Ready(details) if details.store.screenshot_urls.iter().any(|shot| shot == url)
+                || details.store.trailers.iter().any(|trailer| trailer.poster_url.as_deref() == Some(url)))
         })
     }
 
@@ -41,7 +44,7 @@ impl Pages {
         let mut started = Vec::new();
         for &id in ids {
             if let Entry::Vacant(entry) = self.pages.entry(id) {
-                entry.insert(Page::Loading);
+                entry.insert(Page::Loading(Instant::now()));
                 started.push(id);
             }
         }
@@ -69,13 +72,13 @@ impl Pages {
             return;
         }
         self.pages
-            .retain(|id, page| matches!(page, Page::Loading) || nearby.contains(id));
+            .retain(|id, page| matches!(page, Page::Loading(_)) || nearby.contains(id));
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use gamepalate_app::ItemDetails;
+    use gamepalate_app::{ItemDetails, Trailer};
 
     use super::*;
 
@@ -87,6 +90,11 @@ mod tests {
                 release_date: None,
                 header_url: None,
                 screenshot_urls: vec!["https://example.com/1.jpg".to_string()],
+                trailers: vec![Trailer {
+                    name: "Launch Trailer".to_string(),
+                    poster_url: Some("https://example.com/poster.jpg".to_string()),
+                    manifest_url: "https://example.com/dash_av1.mpd".to_string(),
+                }],
                 player_categories: Vec::new(),
                 controller: None,
                 italian: None,
@@ -108,7 +116,7 @@ mod tests {
             [AppId(1), AppId(2)]
         );
         assert!(pages.want(&[AppId(1), AppId(2)]).is_empty());
-        assert!(matches!(pages.get(AppId(1)), Some(Page::Loading)));
+        assert!(matches!(pages.get(AppId(1)), Some(Page::Loading(_))));
     }
 
     #[test]
@@ -136,6 +144,7 @@ mod tests {
         pages.loaded(AppId(1), details());
 
         assert!(pages.is_screenshot("https://example.com/1.jpg"));
+        assert!(pages.is_screenshot("https://example.com/poster.jpg"));
         assert!(!pages.is_screenshot("https://example.com/header.jpg"));
     }
 

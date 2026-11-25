@@ -4,22 +4,24 @@ use std::{
 };
 
 use ::image::imageops::FilterType;
-use gamepalate_app::{AppId, ImageKind, original_screenshot, thumbnail_screenshot};
+use gamepalate_app::{
+    AppId, GameDetails, ImageKind, Trailer, original_screenshot, thumbnail_screenshot,
+};
 use iced::{
-    Center, ContentFit, Element, Fill, Task, mouse, padding,
+    Center, Color, ContentFit, Element, Fill, Task, mouse, padding,
     widget::{
         Column, button, column, container, image, keyed_column, mouse_area, opaque, row, space,
-        stack, text,
+        stack, text, tooltip,
     },
 };
 
 use super::{
-    CLOSE, Message, Showcase, Shown, Version,
+    CLOSE, Message, PLAY, Showcase, Shown, Version,
     images::{Images, Picture},
     note,
     pages::Page,
 };
-use crate::{font, format, style};
+use crate::{font, format, style, video};
 
 const SCREENSHOTS_AHEAD: usize = 2;
 const DOT_SIZE: f32 = 8.0;
@@ -36,6 +38,48 @@ const RIGHT: char = '\u{E5CC}';
 const ARROW_INSET: f32 = 12.0;
 const BLURRED_WIDTH: u32 = 320;
 const BLUR_SIGMA: f32 = 5.0;
+const PLAY_SIZE: f32 = 72.0;
+const PLAY_HOVERED: f32 = 80.0;
+const PLAY_SHADOW: f32 = 3.0;
+const TRAILER_NAME_SIZE: f32 = 15.0;
+const TRAILER_NAME_INSET: f32 = 16.0;
+// The play glyph at this size is a triangle of about 7 by 9 pixels.
+const TRAILER_DOT_GLYPH: f32 = 15.0;
+
+/// One item of the gallery: the trailers come first, then the screenshots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Item {
+    Trailer(usize),
+    Screenshot(usize),
+}
+
+fn item_at(trailers: usize, screenshots: usize, index: usize) -> Option<Item> {
+    match index.checked_sub(trailers) {
+        None => Some(Item::Trailer(index)),
+        Some(screenshot) if screenshot < screenshots => Some(Item::Screenshot(screenshot)),
+        Some(_) => None,
+    }
+}
+
+fn item_of(details: &GameDetails, index: usize) -> Option<Item> {
+    let store = &details.store;
+    item_at(store.trailers.len(), store.screenshot_urls.len(), index)
+}
+
+fn item_count(details: &GameDetails) -> usize {
+    details.store.trailers.len() + details.store.screenshot_urls.len()
+}
+
+/// The pictures of the gallery in its order: the posters of the trailers, then the screenshots.
+fn pictures(details: &GameDetails) -> Vec<String> {
+    let store = &details.store;
+    store
+        .trailers
+        .iter()
+        .filter_map(|trailer| trailer.poster_url.clone())
+        .chain(store.screenshot_urls.iter().cloned())
+        .collect()
+}
 
 fn framed<'a>(
     picture: Option<&Picture>,
@@ -62,14 +106,28 @@ fn framed<'a>(
         .into()
 }
 
+/// The trailer in the place of the screenshot, with the poster under it while it loads.
+fn playing<'a>(
+    player: &'a video::Player,
+    poster: Element<'a, video::Message>,
+    width: f32,
+    height: f32,
+) -> Element<'a, Message> {
+    container(player.view(poster).map(Message::Trailer))
+        .width(width)
+        .height(height)
+        .style(style::picture)
+        .into()
+}
+
 fn wanted_versions(
     screenshots: &[String],
-    index: usize,
+    index: Option<usize>,
     zoomed: bool,
     browsing: bool,
     waiting: bool,
 ) -> Vec<(Version, String)> {
-    let current = screenshots.get(index);
+    let current = index.and_then(|index| screenshots.get(index));
     let mut wanted: Vec<(Version, String)> = current
         .filter(|_| zoomed)
         .map(|url| (Version::Original, url.clone()))
@@ -128,7 +186,7 @@ fn is_loaded<T>(
 ) -> bool {
     let done =
         |picture: Option<&Picture<T>>| matches!(picture, Some(Picture::Ready(_) | Picture::Failed));
-    !matches!(page, Some(Page::Loading) | None) && done(header) && screenshot.is_none_or(done)
+    !matches!(page, Some(Page::Loading(_)) | None) && done(header) && screenshot.is_none_or(done)
 }
 
 fn download_order(
@@ -189,13 +247,11 @@ impl Showcase {
         let waiting = self
             .current_screenshot()
             .is_some_and(|url| matches!(self.images.get(url), None | Some(Picture::Loading)));
-        let wanted = wanted_versions(
-            screenshots,
-            self.screenshot,
-            self.zoomed,
-            self.browsing,
-            waiting,
-        );
+        let index = match self.current_item() {
+            Some(Item::Screenshot(index)) => Some(index),
+            Some(Item::Trailer(_)) | None => None,
+        };
+        let wanted = wanted_versions(screenshots, index, self.zoomed, self.browsing, waiting);
 
         Task::batch(
             wanted
@@ -220,7 +276,7 @@ impl Showcase {
 
         let first: Vec<String> = upcoming
             .iter()
-            .filter_map(|&id| self.first_screenshot(id))
+            .filter_map(|&id| self.first_picture(id))
             .collect();
 
         Task::batch(
@@ -275,37 +331,61 @@ impl Showcase {
         }
     }
 
-    pub fn media<'a>(&'a self, id: AppId, width: f32, height: f32) -> Element<'a, Message> {
-        self.gallery_column(id, width, height)
+    /// `scale` measures the poster in physical pixels, to choose the rendition of a trailer.
+    pub fn media<'a>(
+        &'a self,
+        id: AppId,
+        width: f32,
+        height: f32,
+        scale: f32,
+    ) -> Element<'a, Message> {
+        self.gallery_column(id, width, height, scale)
             .push(self.description(id))
             .into()
     }
 
-    pub fn gallery<'a>(&'a self, id: AppId, width: f32, height: f32) -> Element<'a, Message> {
-        self.gallery_column(id, width, height).into()
+    pub fn gallery<'a>(
+        &'a self,
+        id: AppId,
+        width: f32,
+        height: f32,
+        scale: f32,
+    ) -> Element<'a, Message> {
+        self.gallery_column(id, width, height, scale).into()
     }
 
-    fn gallery_column<'a>(&'a self, id: AppId, width: f32, height: f32) -> Column<'a, Message> {
-        column![self.screenshot(id, width, height)]
+    fn gallery_column<'a>(
+        &'a self,
+        id: AppId,
+        width: f32,
+        height: f32,
+        scale: f32,
+    ) -> Column<'a, Message> {
+        column![self.screenshot(id, width, height, scale)]
             .push(
-                self.pages
-                    .details(id)
-                    .and_then(|details| self.dots(details.store.screenshot_urls.len())),
+                self.pages.details(id).and_then(|details| {
+                    self.dots(details.store.trailers.len(), item_count(details))
+                }),
             )
             .spacing(MEDIA_SPACING)
             .width(width)
     }
 
+    /// Another item stops the trailer; the zoom is only for screenshots.
     pub(super) fn show_screenshot(&mut self, index: usize) {
-        if index == self.screenshot {
+        if index == self.item {
             return;
         }
+        self.trailers.stop();
         self.browsing = true;
-        let shown = self.current_screenshot();
+        let shown = self.current_picture();
         if shown.is_some_and(|url| matches!(self.images.get(url), Some(Picture::Ready(_)))) {
             self.last_screenshot = shown.cloned();
         }
-        self.screenshot = index;
+        self.item = index;
+        if !matches!(self.current_item(), Some(Item::Screenshot(_))) {
+            self.zoomed = false;
+        }
     }
 
     pub(super) fn current_is_loaded(&self) -> bool {
@@ -313,13 +393,31 @@ impl Showcase {
             return true;
         };
         let header = self.images.get(&self.header_url(id));
-        let screenshot = self.current_screenshot().map(|url| self.images.get(url));
-        is_loaded(self.pages.get(id), header, screenshot)
+        let picture = self.current_picture().map(|url| self.images.get(url));
+        is_loaded(self.pages.get(id), header, picture)
+    }
+
+    pub(super) fn current_item(&self) -> Option<Item> {
+        item_of(self.pages.details(self.shown?)?, self.item)
     }
 
     pub(super) fn current_screenshot(&self) -> Option<&String> {
-        self.shown
-            .and_then(|id| self.screenshots(id).get(self.screenshot))
+        match self.current_item()? {
+            Item::Screenshot(index) => self.screenshots(self.shown?).get(index),
+            Item::Trailer(_) => None,
+        }
+    }
+
+    /// The poster of a trailer or the screenshot.
+    fn current_picture(&self) -> Option<&String> {
+        match self.current_item()? {
+            Item::Screenshot(_) => self.current_screenshot(),
+            Item::Trailer(index) => self.trailer(index)?.poster_url.as_ref(),
+        }
+    }
+
+    pub(super) fn trailer(&self, index: usize) -> Option<&Trailer> {
+        self.pages.details(self.shown?)?.store.trailers.get(index)
     }
 
     pub(super) fn load_images(
@@ -332,21 +430,21 @@ impl Showcase {
             return Task::none();
         };
 
-        let screenshots = self.screenshots(current);
-        let soon = next_screenshots(screenshots, self.screenshot);
+        let pictures = self.pictures(current);
+        let soon = next_screenshots(&pictures, self.item);
         let similar: Vec<String> = similar
             .iter()
             .map(|&id| self.gamepalate.header_url(id))
             .collect();
         let mut wanted = if self.current_is_loaded() {
             let later = if self.browsing {
-                other_screenshots(screenshots, self.screenshot)
+                other_screenshots(&pictures, self.item)
             } else {
                 Vec::new()
             };
             let next = next
                 .iter()
-                .map(|&id| (self.header_url(id), self.first_screenshot(id)))
+                .map(|&id| (self.header_url(id), self.first_picture(id)))
                 .collect();
             download_order(self.header_url(current), soon, later, next)
         } else {
@@ -366,9 +464,9 @@ impl Showcase {
                     .details(id)
                     .and_then(|details| details.store.header_url.clone()),
             );
-            kept.extend(self.first_screenshot(id));
+            kept.extend(self.first_picture(id));
         }
-        kept.extend(self.screenshots(current).iter().cloned());
+        kept.extend(pictures.iter().cloned());
         kept.extend(similar.iter().cloned());
         let mut similar = similar.into_iter();
         wanted.splice(1..1, similar.next());
@@ -408,12 +506,25 @@ impl Showcase {
             .map_or(&[], |details| details.store.screenshot_urls.as_slice())
     }
 
-    fn first_screenshot(&self, id: AppId) -> Option<String> {
-        self.screenshots(id).first().cloned()
+    fn pictures(&self, id: AppId) -> Vec<String> {
+        self.pages.details(id).map_or_else(Vec::new, pictures)
     }
 
-    pub(super) fn screenshot_count(&self) -> usize {
-        self.shown.map_or(0, |id| self.screenshots(id).len())
+    /// The poster of the first trailer, or the first screenshot.
+    fn first_picture(&self, id: AppId) -> Option<String> {
+        self.pictures(id).into_iter().next()
+    }
+
+    pub(super) fn item_count(&self) -> usize {
+        self.shown
+            .and_then(|id| self.pages.details(id))
+            .map_or(0, item_count)
+    }
+
+    fn trailer_count(&self) -> usize {
+        self.shown
+            .and_then(|id| self.pages.details(id))
+            .map_or(0, |details| details.store.trailers.len())
     }
 
     pub(super) fn header_url(&self, id: AppId) -> String {
@@ -464,34 +575,37 @@ impl Showcase {
         }
     }
 
-    fn screenshot<'a>(&self, id: AppId, width: f32, height: f32) -> Element<'a, Message> {
+    fn screenshot<'a>(
+        &'a self,
+        id: AppId,
+        width: f32,
+        height: f32,
+        scale: f32,
+    ) -> Element<'a, Message> {
         let content: Element<'a, Message> = match self.pages.get(id) {
             Some(Page::Ready(details)) => {
-                match details.store.screenshot_urls.get(self.screenshot) {
-                    Some(wanted) => {
-                        let (picture, opacity) = match self.shown(wanted) {
-                            Shown::Wanted => (self.images.get(wanted), 1.0),
-                            Shown::Thumbnail => (self.thumbnails.get(wanted), 1.0),
-                            Shown::Last(last) => (self.images.get(last), WAITING_OPACITY),
-                        };
-                        let ready = matches!(picture, Some(Picture::Ready(_)));
-                        let picture = framed(picture, width, height, opacity);
-                        let picture = if ready {
-                            mouse_area(picture)
-                                .on_press(Message::Zoom)
-                                .interaction(mouse::Interaction::ZoomIn)
-                                .into()
-                        } else {
-                            picture
-                        };
-                        let count = details.store.screenshot_urls.len();
-
-                        return mouse_area(stack![picture].push(self.arrows(count)))
-                            .on_enter(Message::Hover(true))
-                            .on_exit(Message::Hover(false))
-                            .into();
+                let picture = match item_of(details, self.item) {
+                    Some(Item::Trailer(index)) => {
+                        let trailer = &details.store.trailers[index];
+                        match self.trailers.player(index) {
+                            Some(player) => {
+                                playing(player, self.poster_image(trailer), width, height)
+                            }
+                            None => self.poster(trailer, width, height, scale),
+                        }
+                    }
+                    Some(Item::Screenshot(index)) => {
+                        self.zoomable(&details.store.screenshot_urls[index], width, height)
                     }
                     None => note("No screenshots"),
+                };
+                if item_count(details) == 0 {
+                    picture
+                } else {
+                    return mouse_area(stack![picture].push(self.arrows(item_count(details))))
+                        .on_enter(Message::Hover(true))
+                        .on_exit(Message::Hover(false))
+                        .into();
                 }
             }
             Some(Page::Missing) => note("Not on the Steam store"),
@@ -509,7 +623,8 @@ impl Showcase {
             .spacing(8)
             .align_x(Center)
             .into(),
-            Some(Page::Loading) | None => space().into(),
+            Some(Page::Loading(since)) => container(video::spinner(*since)).center(Fill).into(),
+            None => space().into(),
         };
 
         container(content)
@@ -519,12 +634,110 @@ impl Showcase {
             .into()
     }
 
+    /// A screenshot that opens in the zoom once it is there.
+    fn zoomable<'a>(&self, wanted: &String, width: f32, height: f32) -> Element<'a, Message> {
+        let (picture, opacity) = self.picture_shown(wanted);
+        let ready = matches!(picture, Some(Picture::Ready(_)));
+        let picture = framed(picture, width, height, opacity);
+        if ready {
+            mouse_area(picture)
+                .on_press(Message::Zoom)
+                .interaction(mouse::Interaction::ZoomIn)
+                .into()
+        } else {
+            picture
+        }
+    }
+
+    fn picture_shown(&self, wanted: &String) -> (Option<&Picture>, f32) {
+        match self.shown(wanted) {
+            Shown::Wanted => (self.images.get(wanted), 1.0),
+            Shown::Thumbnail => (self.thumbnails.get(wanted), 1.0),
+            Shown::Last(last) => (self.images.get(last), WAITING_OPACITY),
+        }
+    }
+
+    /// The poster of a trailer, as Steam shows it: a shade from the bottom, a large play icon and
+    /// the name. A click anywhere plays it.
+    fn poster<'a>(
+        &self,
+        trailer: &Trailer,
+        width: f32,
+        height: f32,
+        scale: f32,
+    ) -> Element<'a, Message> {
+        let picture = match &trailer.poster_url {
+            Some(url) => {
+                let (picture, opacity) = self.picture_shown(url);
+                framed(picture, width, height, opacity)
+            }
+            None => framed(None, width, height, 1.0),
+        };
+        let size = if self.hovered {
+            PLAY_HOVERED
+        } else {
+            PLAY_SIZE
+        };
+        let icon = |color: Color| text(PLAY).font(font::ICONS).size(size).color(color);
+        let play = tooltip(
+            stack![
+                container(icon(Color::BLACK.scale_alpha(0.4))).padding(padding::top(PLAY_SHADOW)),
+                icon(Color::WHITE),
+            ],
+            container(text("Play trailer").size(font::NOTE_SIZE))
+                .padding([6, 10])
+                .style(style::popup),
+            tooltip::Position::Bottom,
+        );
+        let name = container(
+            text(trailer.name.clone())
+                .size(TRAILER_NAME_SIZE)
+                .font(font::SEMIBOLD)
+                .color(Color::WHITE),
+        )
+        .padding(TRAILER_NAME_INSET)
+        .align_bottom(Fill)
+        .width(Fill);
+
+        mouse_area(stack![
+            picture,
+            container(space())
+                .width(Fill)
+                .height(Fill)
+                .style(style::poster_shade),
+            container(play).center(Fill),
+            name,
+            video::probe(scale, Message::Measured),
+        ])
+        .on_press(Message::PlayTrailer)
+        .interaction(mouse::Interaction::Pointer)
+        .into()
+    }
+
+    /// The poster under the trailer while it loads, half seen like a screenshot that comes.
+    fn poster_image<'a>(&self, trailer: &Trailer) -> Element<'a, video::Message> {
+        let picture = trailer
+            .poster_url
+            .as_ref()
+            .and_then(|url| self.images.get(url));
+        match picture {
+            Some(Picture::Ready(allocation)) => image(allocation.handle().clone())
+                .width(Fill)
+                .height(Fill)
+                .content_fit(ContentFit::Cover)
+                .border_radius(IMAGE_RADIUS)
+                .opacity(WAITING_OPACITY)
+                .into(),
+            _ => space().into(),
+        }
+    }
+
     fn arrows<'a>(&self, count: usize) -> Option<Element<'a, Message>> {
         if !self.hovered || count < 2 {
             return None;
         }
-        let previous = (self.screenshot > 0).then(|| arrow(LEFT, Message::PreviousScreenshot));
-        let next = (self.screenshot + 1 < count).then(|| arrow(RIGHT, Message::NextScreenshot));
+        let previous = (self.item > 0).then(|| arrow(LEFT, Message::PreviousScreenshot));
+        let next = (self.item + 1 < count).then(|| arrow(RIGHT, Message::NextScreenshot));
 
         Some(
             container(
@@ -554,7 +767,7 @@ impl Showcase {
         };
         let screenshot: Element<'_, Message> = match picture {
             Some(Picture::Ready(allocation)) => keyed_column([(
-                self.screenshot,
+                self.item,
                 image::viewer(allocation.handle().clone())
                     .width(Fill)
                     .height(Fill)
@@ -580,7 +793,7 @@ impl Showcase {
                     container(close).align_right(Fill).padding(8)
                 ]]
                 .push(
-                    self.dots(self.screenshot_count())
+                    self.dots(self.trailer_count(), self.item_count())
                         .map(|dots| container(dots).center_x(Fill)),
                 )
                 .spacing(8),
@@ -592,18 +805,31 @@ impl Showcase {
         ))
     }
 
-    fn dots<'a>(&self, count: usize) -> Option<Element<'a, Message>> {
+    /// A dot for each item, a small triangle for a trailer.
+    fn dots<'a>(&self, trailers: usize, count: usize) -> Option<Element<'a, Message>> {
         (count > 1).then(|| {
             row((0..count).map(|index| {
-                button(space().width(DOT_SIZE).height(DOT_SIZE))
-                    .padding(0)
-                    .style(style::dot(index == self.screenshot))
+                let current = index == self.item;
+                let dot = if index < trailers {
+                    button(
+                        text(PLAY)
+                            .font(font::ICONS)
+                            .size(TRAILER_DOT_GLYPH)
+                            .line_height(text::LineHeight::Absolute((DOT_SIZE + 1.0).into()))
+                            .width(DOT_SIZE + 1.0)
+                            .center(),
+                    )
+                    .style(style::trailer_dot(current))
+                } else {
+                    button(space().width(DOT_SIZE).height(DOT_SIZE)).style(style::dot(current))
+                };
+                dot.padding(0)
                     .on_press(Message::ShowScreenshot(index))
                     .into()
             }))
             .push(
                 container(
-                    text(format::screenshot_position(self.screenshot, count))
+                    text(format::screenshot_position(self.item, count))
                         .size(font::NOTE_SIZE)
                         .style(style::muted),
                 )
@@ -680,7 +906,11 @@ mod tests {
         assert!(is_loaded(Some(&Page::Failed(String::new())), failed, None));
         assert!(is_loaded(Some(&Page::Missing), ready, Some(failed)));
         assert!(!is_loaded(None, ready, None));
-        assert!(!is_loaded(Some(&Page::Loading), ready, None));
+        assert!(!is_loaded(
+            Some(&Page::Loading(std::time::Instant::now())),
+            ready,
+            None
+        ));
         assert!(!is_loaded(Some(&Page::Missing), loading, None));
         assert!(!is_loaded::<u8>(Some(&Page::Missing), None, None));
         assert!(!is_loaded(Some(&Page::Missing), ready, Some(loading)));
@@ -805,12 +1035,12 @@ mod tests {
         let thumbnail = |url: &str| (Version::Thumbnail, url.to_string());
 
         assert_eq!(
-            wanted_versions(&shots, 0, false, false, true),
+            wanted_versions(&shots, Some(0), false, false, true),
             [thumbnail("ss_0.jpg")]
         );
-        assert!(wanted_versions(&shots, 0, false, false, false).is_empty());
+        assert!(wanted_versions(&shots, Some(0), false, false, false).is_empty());
         assert_eq!(
-            wanted_versions(&shots, 1, true, true, true),
+            wanted_versions(&shots, Some(1), true, true, true),
             [
                 (Version::Original, "ss_1.jpg".to_string()),
                 thumbnail("ss_0.jpg"),
@@ -836,6 +1066,82 @@ mod tests {
 
         assert_eq!((width, height), (BLURRED_WIDTH, 179));
         assert!(blurred(b"not an image").is_none());
+    }
+
+    fn details(trailers: &[Option<&str>], screenshots: &[&str]) -> GameDetails {
+        GameDetails {
+            store: gamepalate_app::ItemDetails {
+                short_description: None,
+                developers: Vec::new(),
+                release_date: None,
+                header_url: None,
+                screenshot_urls: screenshots.iter().map(|url| url.to_string()).collect(),
+                trailers: trailers
+                    .iter()
+                    .enumerate()
+                    .map(|(index, poster)| Trailer {
+                        name: format!("Trailer {index}"),
+                        poster_url: poster.map(str::to_string),
+                        manifest_url: format!("https://video/{index}/dash_av1.mpd"),
+                    })
+                    .collect(),
+                player_categories: Vec::new(),
+                controller: None,
+                italian: None,
+                steam_deck: None,
+                is_early_access: false,
+            },
+            modes: Vec::new(),
+            deck: Vec::new(),
+            protondb: None,
+        }
+    }
+
+    #[test]
+    fn the_trailers_come_before_the_screenshots() {
+        let game = details(&[Some("poster 0"), Some("poster 1")], &["ss_0", "ss_1"]);
+
+        assert_eq!(item_of(&game, 0), Some(Item::Trailer(0)));
+        assert_eq!(item_of(&game, 1), Some(Item::Trailer(1)));
+        assert_eq!(item_of(&game, 2), Some(Item::Screenshot(0)));
+        assert_eq!(item_of(&game, 3), Some(Item::Screenshot(1)));
+        assert_eq!(item_of(&game, 4), None);
+        assert_eq!(item_at(0, 1, 0), Some(Item::Screenshot(0)));
+        assert_eq!(item_at(0, 0, 0), None);
+    }
+
+    #[test]
+    fn the_dots_count_trailers_and_screenshots_together() {
+        assert_eq!(
+            item_count(&details(&[Some("poster")], &["ss_0", "ss_1"])),
+            3
+        );
+        assert_eq!(item_count(&details(&[], &["ss_0"])), 1);
+        assert_eq!(next_index(2, 3), 2);
+    }
+
+    #[test]
+    fn the_poster_takes_the_place_of_the_first_screenshot() {
+        let game = details(&[Some("poster 0"), None], &["ss_0", "ss_1"]);
+        let pictures = pictures(&game);
+
+        assert_eq!(pictures, ["poster 0", "ss_0", "ss_1"]);
+        assert_eq!(
+            download_order(
+                "next header".to_string(),
+                &[],
+                Vec::new(),
+                vec![("header".to_string(), pictures.first().cloned())],
+            ),
+            ["next header", "header", "poster 0"]
+        );
+        assert_eq!(next_screenshots(&pictures, 0), ["poster 0", "ss_0", "ss_1"]);
+    }
+
+    #[test]
+    fn a_poster_has_no_thumbnail_or_original() {
+        assert!(thumbnail_screenshot("https://shared/store_trailers/1/poster.jpg").is_none());
+        assert!(original_screenshot("https://shared/store_trailers/1/poster.jpg").is_none());
     }
 
     #[test]

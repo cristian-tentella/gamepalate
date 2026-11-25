@@ -226,6 +226,32 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.handle(message);
+        self.hold_trailers();
+
+        task
+    }
+
+    /// Only the page in front plays a trailer: the search or a game over it stops it, and so
+    /// does setting Discover aside.
+    fn hold_trailers(&mut self) {
+        if let Some(parked) = &mut self.parked {
+            parked.discover.stop_trailer();
+        }
+        let search_open = self.search.is_open();
+        if search_open || self.game_page.is_some() {
+            match &mut self.screen {
+                Screen::Discover(screen) => screen.stop_trailer(),
+                Screen::Votes(screen) => screen.stop_trailer(),
+                _ => {}
+            }
+        }
+        if search_open && let Some(page) = &mut self.game_page {
+            page.stop_trailer();
+        }
+    }
+
+    fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Navigate(Page::Settings) if self.page() == Some(Page::Settings) => {
                 let back = self.back_page();
@@ -504,8 +530,8 @@ impl App {
         let account_open = self.account.is_open();
         let keys = !search_open && !account_open && self.game_page.is_none();
         let screen = match &self.screen {
-            Screen::Discover(_) => Discover::subscription(keys).map(Message::Discover),
-            Screen::Votes(_) => Votes::subscription(keys).map(Message::Votes),
+            Screen::Discover(screen) => screen.subscription(keys).map(Message::Discover),
+            Screen::Votes(screen) => screen.subscription(keys).map(Message::Votes),
             Screen::Library(_) => Library::subscription(keys).map(Message::Library),
             Screen::Profile(_) => Profile::subscription(keys).map(Message::Profile),
             Screen::Settings(screen) => screen.subscription(keys).map(Message::Settings),
@@ -514,10 +540,11 @@ impl App {
         };
         let search = self.search.subscription().map(Message::Search);
         let account = self.account.subscription().map(Message::Account);
-        let game_page = if self.game_page.is_some() {
-            GamePage::subscription(!search_open && !account_open).map(Message::GamePage)
-        } else {
-            Subscription::none()
+        let game_page = match &self.game_page {
+            Some(page) => page
+                .subscription(!search_open && !account_open)
+                .map(Message::GamePage),
+            None => Subscription::none(),
         };
 
         Subscription::batch([
@@ -809,7 +836,9 @@ impl App {
         let left = std::mem::replace(&mut self.screen, screen);
         if matches!(self.screen, Screen::Discover(_)) {
             self.parked = None;
-        } else if let (Screen::Discover(discover), Some(gamepalate)) = (left, &self.gamepalate) {
+        } else if let (Screen::Discover(mut discover), Some(gamepalate)) = (left, &self.gamepalate)
+        {
+            discover.stop_trailer();
             self.parked = Some(Parked {
                 discover,
                 revision: Some(gamepalate.revision()),

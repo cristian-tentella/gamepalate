@@ -18,6 +18,8 @@ const FULL_CONTROLLER: u32 = 28;
 const PARTIAL_CONTROLLER: u32 = 18;
 const SCREENSHOT_SIZE: &str = ".1920x1080";
 const THUMBNAIL_SIZE: &str = ".116x65";
+const TRAILERS_BASE_URL: &str = "https://video.akamai.steamstatic.com/store_trailers/";
+const DASH_AV1: &str = "dash_av1";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ItemDetails {
@@ -26,11 +28,19 @@ pub struct ItemDetails {
     pub release_date: Option<Timestamp>,
     pub header_url: Option<String>,
     pub screenshot_urls: Vec<String>,
+    pub trailers: Vec<Trailer>,
     pub player_categories: Vec<u32>,
     pub controller: Option<Controller>,
     pub italian: Option<Italian>,
     pub steam_deck: Option<SteamDeck>,
     pub is_early_access: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Trailer {
+    pub name: String,
+    pub poster_url: Option<String>,
+    pub manifest_url: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +80,7 @@ struct SteamDetails {
     release: Option<Release>,
     assets: Option<Assets>,
     screenshots: Option<Screenshots>,
+    trailers: Option<Trailers>,
     #[serde(default)]
     categories: Categories,
     #[serde(default)]
@@ -136,6 +147,28 @@ struct ScreenshotFile {
     ordinal: u32,
 }
 
+#[derive(Deserialize)]
+struct Trailers {
+    #[serde(default)]
+    highlights: Vec<SteamTrailer>,
+}
+
+#[derive(Deserialize)]
+struct SteamTrailer {
+    trailer_name: String,
+    trailer_url_format: Option<String>,
+    screenshot_full: Option<String>,
+    screenshot_medium: Option<String>,
+    #[serde(default)]
+    adaptive_trailers: Vec<AdaptiveTrailer>,
+}
+
+#[derive(Deserialize)]
+struct AdaptiveTrailer {
+    cdn_path: String,
+    encoding: String,
+}
+
 #[derive(Default, Deserialize)]
 struct Categories {
     #[serde(default)]
@@ -191,6 +224,7 @@ pub async fn get_item_details<S: Get>(
             "include_basic_info": true,
             "include_release": true,
             "include_screenshots": true,
+            "include_trailers": true,
             "include_platforms": true,
             "include_supported_languages": true,
         },
@@ -316,6 +350,16 @@ fn to_details(item: SteamDetails) -> ItemDetails {
                     .collect()
             })
             .unwrap_or_default(),
+        trailers: item
+            .trailers
+            .map(|trailers| {
+                trailers
+                    .highlights
+                    .into_iter()
+                    .filter_map(trailer)
+                    .collect()
+            })
+            .unwrap_or_default(),
         controller,
         player_categories: item.categories.supported_player_categoryids,
         italian: item
@@ -372,6 +416,23 @@ fn screenshot_url(filename: &str) -> String {
         url.push_str(query);
     }
     url
+}
+
+fn trailer(trailer: SteamTrailer) -> Option<Trailer> {
+    let manifest = trailer
+        .adaptive_trailers
+        .into_iter()
+        .find(|adaptive| adaptive.encoding == DASH_AV1)?;
+    let poster = trailer.screenshot_full.or(trailer.screenshot_medium);
+
+    Some(Trailer {
+        name: trailer.trailer_name,
+        poster_url: trailer
+            .trailer_url_format
+            .zip(poster)
+            .map(|(format, file)| asset_url(format, &file)),
+        manifest_url: format!("{TRAILERS_BASE_URL}{}", manifest.cdn_path),
+    })
 }
 
 fn header_url(assets: Assets) -> Option<String> {
@@ -433,6 +494,7 @@ mod tests {
                     format!("{ASSETS_BASE_URL}steam/apps/1369630/ss_1.1920x1080.jpg"),
                     format!("{ASSETS_BASE_URL}steam/apps/1369630/ss_2.1920x1080.jpg"),
                 ],
+                trailers: Vec::new(),
                 player_categories: vec![2],
                 controller: Some(Controller::Full),
                 italian: Some(Italian {
@@ -489,6 +551,7 @@ mod tests {
                 release_date: None,
                 header_url: None,
                 screenshot_urls: Vec::new(),
+                trailers: Vec::new(),
                 player_categories: Vec::new(),
                 controller: None,
                 italian: None,
@@ -695,5 +758,372 @@ mod tests {
             screenshot_url("steam/apps/1/ss_1.png?t=1"),
             format!("{ASSETS_BASE_URL}steam/apps/1/ss_1.png?t=1")
         );
+    }
+
+    fn trailers(trailers: Value) -> Vec<Trailer> {
+        one(json!({ "id": 1, "success": 1, "trailers": trailers }))
+            .unwrap()
+            .trailers
+    }
+
+    fn hades() -> Value {
+        json!({ "highlights": [
+            {
+                "trailer_name": "Hades - v1.0 Launch Trailer",
+                "trailer_url_format": "steam/apps/${FILENAME}?t=1600353465",
+                "screenshot_full": "256801252/movie_full.jpg",
+                "screenshot_medium": "256801252/movie.293x165.jpg",
+                "adaptive_trailers": [
+                    {
+                        "cdn_path": "1145360/312686/b0312c49135823cc34946e98148abfb8da71f0fb/1750627549/dash_av1.mpd",
+                        "encoding": "dash_av1"
+                    },
+                    {
+                        "cdn_path": "1145360/312686/b0312c49135823cc34946e98148abfb8da71f0fb/1750627549/dash_h264.mpd",
+                        "encoding": "dash_h264"
+                    },
+                    {
+                        "cdn_path": "1145360/312686/b0312c49135823cc34946e98148abfb8da71f0fb/1750627549/hls_264_master.m3u8",
+                        "encoding": "hls_h264"
+                    }
+                ]
+            },
+            {
+                "trailer_name": "Hades - v1.0 Gameplay Showcase",
+                "trailer_url_format": "steam/apps/${FILENAME}?t=1600353474",
+                "screenshot_full": "256801288/movie_full.jpg",
+                "screenshot_medium": "256801288/movie.293x165.jpg",
+                "adaptive_trailers": [
+                    {
+                        "cdn_path": "1145360/312747/37b96035b5c9c7b12455eadc7bbc7d2b3afbd2fd/1750627553/dash_av1.mpd",
+                        "encoding": "dash_av1"
+                    },
+                    {
+                        "cdn_path": "1145360/312747/37b96035b5c9c7b12455eadc7bbc7d2b3afbd2fd/1750627553/dash_h264.mpd",
+                        "encoding": "dash_h264"
+                    },
+                    {
+                        "cdn_path": "1145360/312747/37b96035b5c9c7b12455eadc7bbc7d2b3afbd2fd/1750627553/hls_264_master.m3u8",
+                        "encoding": "hls_h264"
+                    }
+                ]
+            },
+            {
+                "trailer_name": "Hades - Early Access Trailer",
+                "trailer_url_format": "steam/apps/${FILENAME}?t=1593023745",
+                "screenshot_full": "256759357/movie_full.jpg",
+                "screenshot_medium": "256759357/movie.293x165.jpg",
+                "adaptive_trailers": [
+                    {
+                        "cdn_path": "1145360/238757/421575a200646e7cc71ed0cde4553b92cb1b5261/1750627523/dash_av1.mpd",
+                        "encoding": "dash_av1"
+                    },
+                    {
+                        "cdn_path": "1145360/238757/421575a200646e7cc71ed0cde4553b92cb1b5261/1750627523/dash_h264.mpd",
+                        "encoding": "dash_h264"
+                    },
+                    {
+                        "cdn_path": "1145360/238757/421575a200646e7cc71ed0cde4553b92cb1b5261/1750627523/hls_264_master.m3u8",
+                        "encoding": "hls_h264"
+                    }
+                ]
+            }
+        ] })
+    }
+
+    #[test]
+    fn reads_the_highlighted_trailers_of_hades() {
+        let trailers = trailers(hades());
+
+        assert_eq!(trailers.len(), 3);
+        assert_eq!(
+            trailers[0],
+            Trailer {
+                name: "Hades - v1.0 Launch Trailer".to_string(),
+                poster_url: Some(format!(
+                    "{ASSETS_BASE_URL}steam/apps/256801252/movie_full.jpg?t=1600353465"
+                )),
+                manifest_url: "https://video.akamai.steamstatic.com/store_trailers/1145360/312686/b0312c49135823cc34946e98148abfb8da71f0fb/1750627549/dash_av1.mpd".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn keeps_the_order_of_the_six_trailers_of_baldurs_gate_3() {
+        let trailers = trailers(json!({ "highlights": [
+            {
+                "trailer_name": "Baldur's Gate 3 - Accolades Trailer",
+                "trailer_url_format": "steam/apps/${FILENAME}?t=1702007645",
+                "screenshot_full": "256987424/movie_full.jpg",
+                "screenshot_medium": "256987424/movie.293x165.jpg",
+                "adaptive_trailers": [
+                    {
+                        "cdn_path": "1086940/637951/59ca25b847b0e471638d1e2474acf71b068d57f0/1750615003/dash_av1.mpd",
+                        "encoding": "dash_av1"
+                    },
+                    {
+                        "cdn_path": "1086940/637951/59ca25b847b0e471638d1e2474acf71b068d57f0/1750615003/dash_h264.mpd",
+                        "encoding": "dash_h264"
+                    },
+                    {
+                        "cdn_path": "1086940/637951/59ca25b847b0e471638d1e2474acf71b068d57f0/1750615003/hls_264_master.m3u8",
+                        "encoding": "hls_h264"
+                    }
+                ]
+            },
+            {
+                "trailer_name": "Baldur's Gate 3 - Launch Trailer",
+                "trailer_url_format": "steam/apps/${FILENAME}?t=1695393579",
+                "screenshot_full": "256961600/movie_full.jpg",
+                "screenshot_medium": "256961600/movie.293x165.jpg",
+                "adaptive_trailers": [
+                    {
+                        "cdn_path": "1086940/593544/008e33be9c000c5fdb38e630f13b1d5917d4561d/1750615002/dash_av1.mpd",
+                        "encoding": "dash_av1"
+                    },
+                    {
+                        "cdn_path": "1086940/593544/008e33be9c000c5fdb38e630f13b1d5917d4561d/1750615002/dash_h264.mpd",
+                        "encoding": "dash_h264"
+                    },
+                    {
+                        "cdn_path": "1086940/593544/008e33be9c000c5fdb38e630f13b1d5917d4561d/1750615002/hls_264_master.m3u8",
+                        "encoding": "hls_h264"
+                    }
+                ]
+            },
+            {
+                "trailer_name": "Baldur's Gate 3 - Release Teaser",
+                "trailer_url_format": "steam/apps/${FILENAME}?t=1692294107",
+                "screenshot_full": "256957679/movie_full.jpg",
+                "screenshot_medium": "256957679/movie.293x165.jpg",
+                "adaptive_trailers": [
+                    {
+                        "cdn_path": "1086940/586640/b3d5692dc27af2874f96d23ff281523f26bd5476/1750614981/dash_av1.mpd",
+                        "encoding": "dash_av1"
+                    },
+                    {
+                        "cdn_path": "1086940/586640/b3d5692dc27af2874f96d23ff281523f26bd5476/1750614981/dash_h264.mpd",
+                        "encoding": "dash_h264"
+                    },
+                    {
+                        "cdn_path": "1086940/586640/b3d5692dc27af2874f96d23ff281523f26bd5476/1750614981/hls_264_master.m3u8",
+                        "encoding": "hls_h264"
+                    }
+                ]
+            },
+            {
+                "trailer_name": "Baldur's Gate 3 - First Look at the City",
+                "trailer_url_format": "steam/apps/${FILENAME}?t=1692294111",
+                "screenshot_full": "256952190/movie_full.jpg",
+                "screenshot_medium": "256952190/movie.293x165.jpg",
+                "adaptive_trailers": [
+                    {
+                        "cdn_path": "1086940/577019/052954500a03f7bfb69c9abf7c2969e00833b569/1750614972/dash_av1.mpd",
+                        "encoding": "dash_av1"
+                    },
+                    {
+                        "cdn_path": "1086940/577019/052954500a03f7bfb69c9abf7c2969e00833b569/1750614972/dash_h264.mpd",
+                        "encoding": "dash_h264"
+                    },
+                    {
+                        "cdn_path": "1086940/577019/052954500a03f7bfb69c9abf7c2969e00833b569/1750614972/hls_264_master.m3u8",
+                        "encoding": "hls_h264"
+                    }
+                ]
+            },
+            {
+                "trailer_name": "Baldur's Gate 3 - Release Date Reveal Trailer",
+                "trailer_url_format": "steam/apps/${FILENAME}?t=1692294115",
+                "screenshot_full": "256932354/movie_full.jpg",
+                "screenshot_medium": "256932354/movie.293x165.jpg",
+                "adaptive_trailers": [
+                    {
+                        "cdn_path": "1086940/542118/27157a92e289b26416759be7b45bdfcf159dfd49/1750614949/dash_av1.mpd",
+                        "encoding": "dash_av1"
+                    },
+                    {
+                        "cdn_path": "1086940/542118/27157a92e289b26416759be7b45bdfcf159dfd49/1750614949/dash_h264.mpd",
+                        "encoding": "dash_h264"
+                    },
+                    {
+                        "cdn_path": "1086940/542118/27157a92e289b26416759be7b45bdfcf159dfd49/1750614949/hls_264_master.m3u8",
+                        "encoding": "hls_h264"
+                    }
+                ]
+            },
+            {
+                "trailer_name": "Baldur's Gate 3 - The Game Awards Trailer",
+                "trailer_url_format": "steam/apps/${FILENAME}?t=1692294120",
+                "screenshot_full": "256920587/movie_full.jpg",
+                "screenshot_medium": "256920587/movie.293x165.jpg",
+                "adaptive_trailers": [
+                    {
+                        "cdn_path": "1086940/521182/53c2be911d121fc8ebda8bc9183e0fb55dbd53b7/1750614929/dash_av1.mpd",
+                        "encoding": "dash_av1"
+                    },
+                    {
+                        "cdn_path": "1086940/521182/53c2be911d121fc8ebda8bc9183e0fb55dbd53b7/1750614929/dash_h264.mpd",
+                        "encoding": "dash_h264"
+                    },
+                    {
+                        "cdn_path": "1086940/521182/53c2be911d121fc8ebda8bc9183e0fb55dbd53b7/1750614929/hls_264_master.m3u8",
+                        "encoding": "hls_h264"
+                    }
+                ]
+            }
+        ] }));
+
+        let names: Vec<_> = trailers
+            .iter()
+            .map(|trailer| trailer.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "Baldur's Gate 3 - Accolades Trailer",
+                "Baldur's Gate 3 - Launch Trailer",
+                "Baldur's Gate 3 - Release Teaser",
+                "Baldur's Gate 3 - First Look at the City",
+                "Baldur's Gate 3 - Release Date Reveal Trailer",
+                "Baldur's Gate 3 - The Game Awards Trailer",
+            ]
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_medium_poster_and_ignores_the_other_trailers_of_portal_2() {
+        let trailers = trailers(json!({
+            "highlights": [
+                {
+                    "trailer_name": "Portal 2 E3 Demo (Excursion Funnels)",
+                    "trailer_url_format": "steam/apps/${FILENAME}?t=1682715616",
+                    "screenshot_medium": "5787/movie.293x165.jpg",
+                    "adaptive_trailers": [
+                        {
+                            "cdn_path": "620/3746/0f4bee66d490b637707ac4fca3e850f2cc2d3b2a/1750108721/dash_av1.mpd",
+                            "encoding": "dash_av1"
+                        },
+                        {
+                            "cdn_path": "620/3746/0f4bee66d490b637707ac4fca3e850f2cc2d3b2a/1750108721/dash_h264.mpd",
+                            "encoding": "dash_h264"
+                        },
+                        {
+                            "cdn_path": "620/3746/0f4bee66d490b637707ac4fca3e850f2cc2d3b2a/1750108721/hls_264_master.m3u8",
+                            "encoding": "hls_h264"
+                        }
+                    ]
+                }
+            ],
+            "other_trailers": [
+                {
+                    "trailer_name": "Portal 2 Remix Trailer",
+                    "trailer_url_format": "steam/apps/${FILENAME}?t=1683129612",
+                    "screenshot_medium": "80822/movie.293x165.jpg",
+                    "adaptive_trailers": [
+                        {
+                            "cdn_path": "620/5096/2bbd128dd4e1d90aa6f688fb91e6665a301f48c5/1750108756/dash_av1.mpd",
+                            "encoding": "dash_av1"
+                        },
+                        {
+                            "cdn_path": "620/5096/2bbd128dd4e1d90aa6f688fb91e6665a301f48c5/1750108756/dash_h264.mpd",
+                            "encoding": "dash_h264"
+                        },
+                        {
+                            "cdn_path": "620/5096/2bbd128dd4e1d90aa6f688fb91e6665a301f48c5/1750108756/hls_264_master.m3u8",
+                            "encoding": "hls_h264"
+                        }
+                    ]
+                }
+            ]
+        }));
+
+        assert_eq!(trailers.len(), 1);
+        assert_eq!(
+            trailers[0].poster_url,
+            Some(format!(
+                "{ASSETS_BASE_URL}steam/apps/5787/movie.293x165.jpg?t=1682715616"
+            ))
+        );
+    }
+
+    #[test]
+    fn skips_a_trailer_without_av1() {
+        let trailers = trailers(json!({ "highlights": [
+            {
+                "trailer_name": "Hades - v1.0 Launch Trailer",
+                "trailer_url_format": "steam/apps/${FILENAME}?t=1600353465",
+                "screenshot_full": "256801252/movie_full.jpg",
+                "screenshot_medium": "256801252/movie.293x165.jpg",
+                "adaptive_trailers": [
+                    {
+                        "cdn_path": "1145360/312686/b0312c49135823cc34946e98148abfb8da71f0fb/1750627549/dash_av1.mpd",
+                        "encoding": "dash_av1"
+                    },
+                    {
+                        "cdn_path": "1145360/312686/b0312c49135823cc34946e98148abfb8da71f0fb/1750627549/dash_h264.mpd",
+                        "encoding": "dash_h264"
+                    },
+                    {
+                        "cdn_path": "1145360/312686/b0312c49135823cc34946e98148abfb8da71f0fb/1750627549/hls_264_master.m3u8",
+                        "encoding": "hls_h264"
+                    }
+                ]
+            },
+            {
+                "trailer_name": "Hades - v1.0 Gameplay Showcase",
+                "trailer_url_format": "steam/apps/${FILENAME}?t=1600353474",
+                "screenshot_full": "256801288/movie_full.jpg",
+                "screenshot_medium": "256801288/movie.293x165.jpg",
+                "adaptive_trailers": [
+                    {
+                        "cdn_path": "1145360/312747/37b96035b5c9c7b12455eadc7bbc7d2b3afbd2fd/1750627553/dash_h264.mpd",
+                        "encoding": "dash_h264"
+                    },
+                    {
+                        "cdn_path": "1145360/312747/37b96035b5c9c7b12455eadc7bbc7d2b3afbd2fd/1750627553/hls_264_master.m3u8",
+                        "encoding": "hls_h264"
+                    }
+                ]
+            },
+            {
+                "trailer_name": "Hades - Early Access Trailer",
+                "trailer_url_format": "steam/apps/${FILENAME}?t=1593023745",
+                "screenshot_full": "256759357/movie_full.jpg",
+                "screenshot_medium": "256759357/movie.293x165.jpg",
+                "adaptive_trailers": [
+                    {
+                        "cdn_path": "1145360/238757/421575a200646e7cc71ed0cde4553b92cb1b5261/1750627523/dash_av1.mpd",
+                        "encoding": "dash_av1"
+                    },
+                    {
+                        "cdn_path": "1145360/238757/421575a200646e7cc71ed0cde4553b92cb1b5261/1750627523/dash_h264.mpd",
+                        "encoding": "dash_h264"
+                    },
+                    {
+                        "cdn_path": "1145360/238757/421575a200646e7cc71ed0cde4553b92cb1b5261/1750627523/hls_264_master.m3u8",
+                        "encoding": "hls_h264"
+                    }
+                ]
+            }
+        ] }));
+
+        let names: Vec<_> = trailers
+            .iter()
+            .map(|trailer| trailer.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "Hades - v1.0 Launch Trailer",
+                "Hades - Early Access Trailer"
+            ]
+        );
+    }
+
+    #[test]
+    fn without_trailers_the_list_is_empty() {
+        let details = one(json!({ "id": 1, "success": 1 })).unwrap();
+
+        assert!(details.trailers.is_empty());
     }
 }

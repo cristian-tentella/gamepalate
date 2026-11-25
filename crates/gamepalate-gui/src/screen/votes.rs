@@ -223,6 +223,9 @@ impl Votes {
         if self.panel_open && acts_on_the_page(&message) {
             return Task::none();
         }
+        if stops_the_trailer(&message) {
+            self.showcase.stop_trailer();
+        }
         let task = self.handle(message);
 
         Task::batch([task, self.load()])
@@ -377,14 +380,21 @@ impl Votes {
         Task::none()
     }
 
-    pub fn subscription(keys: bool) -> Subscription<Message> {
+    pub fn subscription(&self, keys: bool) -> Subscription<Message> {
+        let trailer = self.showcase.subscription().map(Message::Showcase);
         if !keys {
-            return Subscription::none();
+            return trailer;
         }
         Subscription::batch([
             keyboard::listen().filter_map(key_message),
             event::listen_with(escape_message),
+            trailer,
         ])
+    }
+
+    /// A game or the search over Votes stops the trailer.
+    pub fn stop_trailer(&mut self) {
+        self.showcase.stop_trailer();
     }
 
     pub fn view(&self, scale: f32) -> Element<'_, Message> {
@@ -723,7 +733,7 @@ impl Votes {
                     .into(),
                 gallery: Box::new(move |width, height| {
                     showcase
-                        .gallery(game.id, width, height)
+                        .gallery(game.id, width, height, scale)
                         .map(Message::Showcase)
                 }),
                 header: Box::new(move |width, height| {
@@ -1342,6 +1352,11 @@ fn stopped_by_popup(message: &Message) -> bool {
     )
 }
 
+/// A vote moves on: the trailer stops even on the last game.
+fn stops_the_trailer(message: &Message) -> bool {
+    matches!(message, Message::Vote(_) | Message::Played | Message::Star)
+}
+
 fn acts_on_the_page(message: &Message) -> bool {
     matches!(
         message,
@@ -1360,6 +1375,8 @@ fn acts_on_the_page(message: &Message) -> bool {
                     | showcase::Message::ToggleReviews
                     | showcase::Message::ScrollUp
                     | showcase::Message::ScrollDown
+                    | showcase::Message::PlayOrPause
+                    | showcase::Message::SwitchMute
             )
     )
 }
@@ -1400,6 +1417,12 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         }
         Key::Character(character) if character.eq_ignore_ascii_case("f") => {
             Some(Message::ToggleFilters)
+        }
+        Key::Character(character) if character.eq_ignore_ascii_case("p") => {
+            Some(Message::Showcase(showcase::Message::PlayOrPause))
+        }
+        Key::Character(character) if character.eq_ignore_ascii_case("m") => {
+            Some(Message::Showcase(showcase::Message::SwitchMute))
         }
         Key::Character(character) if character.eq_ignore_ascii_case("d") => {
             Some(Message::Showcase(showcase::Message::ToggleAbout))
@@ -1518,6 +1541,18 @@ mod tests {
 
     fn ids(numbers: &[u32]) -> Vec<AppId> {
         numbers.iter().copied().map(AppId).collect()
+    }
+
+    #[test]
+    fn p_plays_or_pauses_the_trailer_and_m_mutes_it() {
+        assert!(matches!(
+            key_message(pressed(Key::Character("p".into()))),
+            Some(Message::Showcase(showcase::Message::PlayOrPause))
+        ));
+        assert!(matches!(
+            key_message(pressed(Key::Character("M".into()))),
+            Some(Message::Showcase(showcase::Message::SwitchMute))
+        ));
     }
 
     #[test]
@@ -1667,6 +1702,14 @@ mod tests {
         assert_eq!(count(&games, Filter::Starred, Shown::default()), 4);
         assert_eq!(count(&games, Filter::WouldTry, Shown::default()), 6);
         assert_eq!(count(&games, Filter::All, Shown::default()), 8);
+    }
+
+    #[test]
+    fn a_vote_stops_the_trailer() {
+        assert!(stops_the_trailer(&Message::Vote(Pick::Played)));
+        assert!(stops_the_trailer(&Message::Played));
+        assert!(stops_the_trailer(&Message::Star));
+        assert!(!stops_the_trailer(&Message::Next));
     }
 
     #[test]

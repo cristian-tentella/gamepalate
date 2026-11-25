@@ -1,5 +1,5 @@
 use iced::{
-    Border, Color, Element, Shadow, Theme, Vector, border,
+    Border, Color, Element, Shadow, Theme, Vector, border, gradient,
     overlay::menu,
     padding,
     theme::palette,
@@ -721,6 +721,50 @@ pub fn arrow(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+/// The control bar of a trailer: a pill like the gallery arrows, over the video.
+pub fn video_bar(theme: &Theme) -> container::Style {
+    let background = theme.extended_palette().background.base;
+
+    container::Style {
+        background: Some(background.color.scale_alpha(0.85).into()),
+        text_color: Some(background.text),
+        border: Border {
+            radius: 999.0.into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
+    }
+}
+
+/// The position of a trailer: the part already seen has the accent.
+pub fn video_position(theme: &Theme, status: slider::Status) -> slider::Style {
+    let palette = theme.extended_palette();
+    let handle = match status {
+        slider::Status::Active => palette.primary.base.color,
+        slider::Status::Hovered | slider::Status::Dragged => palette.primary.strong.color,
+    };
+
+    slider::Style {
+        rail: slider::Rail {
+            backgrounds: (
+                palette.primary.base.color.into(),
+                palette.background.strong.color.into(),
+            ),
+            width: 4.0,
+            border: Border {
+                radius: 2.0.into(),
+                ..Border::default()
+            },
+        },
+        handle: slider::Handle {
+            shape: slider::HandleShape::Circle { radius: 6.0 },
+            background: handle.into(),
+            border_width: 0.0,
+            border_color: Color::TRANSPARENT,
+        },
+    }
+}
+
 pub fn popup(theme: &Theme) -> container::Style {
     let background = theme.extended_palette().background;
 
@@ -854,25 +898,49 @@ pub fn picture(theme: &Theme) -> container::Style {
     }
 }
 
-pub fn dot(current: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |theme, status| {
-        let palette = theme.extended_palette();
-        let color = if current {
-            palette.primary.base.color
-        } else if matches!(status, button::Status::Hovered) {
-            faded(theme, 0.4)
-        } else {
-            palette.background.strong.color
-        };
+fn dot_color(theme: &Theme, current: bool, status: button::Status) -> Color {
+    let palette = theme.extended_palette();
+    if current {
+        palette.primary.base.color
+    } else if matches!(status, button::Status::Hovered) {
+        faded(theme, 0.4)
+    } else {
+        palette.background.strong.color
+    }
+}
 
-        button::Style {
-            background: Some(color.into()),
-            border: Border {
-                radius: 4.0.into(),
-                ..Border::default()
-            },
-            ..button::Style::default()
-        }
+pub fn dot(current: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| button::Style {
+        background: Some(dot_color(theme, current, status).into()),
+        border: Border {
+            radius: 4.0.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
+    }
+}
+
+/// The dot of a trailer: a small triangle drawn by the play glyph, in the colors of the dots.
+pub fn trailer_dot(current: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| button::Style {
+        text_color: dot_color(theme, current, status),
+        ..button::Style::default()
+    }
+}
+
+/// The shade at the bottom of a trailer's poster, the same in both themes: it lies on the picture.
+pub fn poster_shade(_theme: &Theme) -> container::Style {
+    let shade = gradient::Linear::new(0.0)
+        .add_stop(0.0, Color::BLACK.scale_alpha(0.6))
+        .add_stop(0.45, Color::TRANSPARENT);
+
+    container::Style {
+        background: Some(shade.into()),
+        border: Border {
+            radius: 8.0.into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
     }
 }
 
