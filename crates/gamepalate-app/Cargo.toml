@@ -1,14 +1,14 @@
 [package]
 name = "gamepalate-app"
-version = "0.29.0"
+version = "0.30.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 jiff = "0.2.38"
-gamepalate-core = { version = "0.29.0", path = "../gamepalate-core" }
-gamepalate-steam = { version = "0.29.0", path = "../gamepalate-steam" }
-gamepalate-store = { version = "0.29.0", path = "../gamepalate-store" }
+gamepalate-core = { version = "0.30.0", path = "../gamepalate-core" }
+gamepalate-steam = { version = "0.30.0", path = "../gamepalate-steam" }
+gamepalate-store = { version = "0.30.0", path = "../gamepalate-store" }
 dirs = "7.0.0"
 sys-locale = "0.3.2"
 futures = "0.3.34"
