@@ -16,7 +16,7 @@ use iced::{
 };
 
 use super::{
-    CLOSE, Message, Showcase, Shown, Version,
+    CLOSE, Message, PLAY, Showcase, Shown, Version,
     images::{Images, Picture},
     note,
     pages::Page,
@@ -38,7 +38,6 @@ const RIGHT: char = '\u{E5CC}';
 const ARROW_INSET: f32 = 12.0;
 const BLURRED_WIDTH: u32 = 320;
 const BLUR_SIGMA: f32 = 5.0;
-const PLAY: char = '\u{E037}';
 const PLAY_SIZE: f32 = 72.0;
 const PLAY_HOVERED: f32 = 80.0;
 const PLAY_SHADOW: f32 = 3.0;

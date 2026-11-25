@@ -21,7 +21,7 @@ const IDLE: Duration = Duration::from_millis(5);
 const TICK: Duration = Duration::from_millis(250);
 const VIEWS_LOGGED_EVERY: Duration = Duration::from_secs(1);
 pub const FULL_VOLUME: f32 = 1.0;
-/// The volume until the Utente picks one, and after unmuting a trailer turned down to zero.
+/// The volume until the user picks one, and after unmuting a trailer turned down to zero.
 pub const START_VOLUME: f32 = 0.25;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
