@@ -20,7 +20,11 @@ pub enum Block {
         height: u32,
     },
     Video {
-        url: String,
+        webm: Option<String>,
+        mp4: Option<String>,
+        poster: Option<String>,
+        width: u32,
+        height: u32,
     },
 }
 
@@ -242,9 +246,27 @@ struct Reader {
     video: Option<Video>,
 }
 
+#[derive(Default)]
 struct Video {
+    webm: Option<String>,
     mp4: Option<String>,
-    other: Option<String>,
+    poster: Option<String>,
+    width: u32,
+    height: u32,
+}
+
+impl Video {
+    fn source(&mut self, url: String, kind: Option<&str>) {
+        let path = url.split(['?', '#']).next().unwrap_or_default();
+        let is = |mime: &str, extension: &str| {
+            kind.map_or(path.ends_with(extension), |kind| kind.starts_with(mime))
+        };
+        if is("video/webm", ".webm") {
+            self.webm.get_or_insert(url);
+        } else if is("video/mp4", ".mp4") {
+            self.mp4.get_or_insert(url);
+        }
+    }
 }
 
 impl Reader {
@@ -320,24 +342,24 @@ impl Reader {
             }
             "video" => {
                 self.end_paragraph();
-                self.video = Some(Video {
-                    mp4: None,
-                    other: attribute("src").filter(|src| !src.is_empty()),
-                });
+                let size = |name| attribute(name).and_then(|value| value.parse().ok());
+                let mut video = Video {
+                    poster: attribute("poster").filter(|poster| !poster.is_empty()),
+                    width: size("width").unwrap_or(0),
+                    height: size("height").unwrap_or(0),
+                    ..Video::default()
+                };
+                if let Some(url) = attribute("src").filter(|src| !src.is_empty()) {
+                    video.source(url, attribute("type").as_deref());
+                }
+                self.video = Some(video);
             }
             "source" => {
-                if let (Some(video), Some(url)) = (&mut self.video, attribute("src")) {
-                    let is_mp4 = attribute("type")
-                        .is_some_and(|kind| kind.starts_with("video/mp4"))
-                        || url
-                            .split('?')
-                            .next()
-                            .is_some_and(|path| path.ends_with(".mp4"));
-                    if is_mp4 {
-                        video.mp4.get_or_insert(url);
-                    } else {
-                        video.other.get_or_insert(url);
-                    }
+                if let (Some(video), Some(url)) = (
+                    &mut self.video,
+                    attribute("src").filter(|src| !src.is_empty()),
+                ) {
+                    video.source(url, attribute("type").as_deref());
                 }
             }
             _ => {}
@@ -365,9 +387,15 @@ impl Reader {
             "ul" | "ol" => self.end_list(),
             "video" => {
                 if let Some(video) = self.video.take()
-                    && let Some(url) = video.mp4.or(video.other)
+                    && (video.webm.is_some() || video.mp4.is_some())
                 {
-                    self.blocks.push(Block::Video { url });
+                    self.blocks.push(Block::Video {
+                        webm: video.webm,
+                        mp4: video.mp4,
+                        poster: video.poster,
+                        width: video.width,
+                        height: video.height,
+                    });
                 }
                 self.breaks = 0;
             }
@@ -554,29 +582,96 @@ mod tests {
         );
     }
 
+    fn video(
+        webm: Option<&str>,
+        mp4: Option<&str>,
+        poster: Option<&str>,
+        size: (u32, u32),
+    ) -> Block {
+        Block::Video {
+            webm: webm.map(str::to_string),
+            mp4: mp4.map(str::to_string),
+            poster: poster.map(str::to_string),
+            width: size.0,
+            height: size.1,
+        }
+    }
+
     #[test]
-    fn a_video_gives_its_mp4() {
-        let html = r#"<span class="bb_img_ctn"><video class="bb_img" autoplay muted loop playsinline poster="https://cdn/v.poster.avif?t=1" width=600 height=338 ><source src="https://cdn/v.webm?t=1" type="video/webm; codecs=vp9"><source src="https://cdn/v.mp4?t=1" type="video/mp4"></video></span><br><br>Text."#;
+    fn a_video_keeps_its_sources_poster_and_size() {
+        let html = r#"<span class="bb_img_ctn"><video class="bb_img" autoplay muted loop playsinline poster="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1145360/extras/Hades_Steam_Page_GIF_01.poster.avif?t=1755636400" width=600 height=338 ><source src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1145360/extras/Hades_Steam_Page_GIF_01.webm?t=1755636400" type="video/webm; codecs=vp9"><source src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1145360/extras/Hades_Steam_Page_GIF_01.mp4?t=1755636400" type="video/mp4"></video></span><br><br>Text."#;
 
         assert_eq!(
             blocks(html),
             [
-                Block::Video {
-                    url: "https://cdn/v.mp4?t=1".to_string()
-                },
+                video(
+                    Some(
+                        "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1145360/extras/Hades_Steam_Page_GIF_01.webm?t=1755636400"
+                    ),
+                    Some(
+                        "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1145360/extras/Hades_Steam_Page_GIF_01.mp4?t=1755636400"
+                    ),
+                    Some(
+                        "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1145360/extras/Hades_Steam_Page_GIF_01.poster.avif?t=1755636400"
+                    ),
+                    (600, 338),
+                ),
                 paragraph("Text."),
             ]
         );
     }
 
     #[test]
-    fn a_video_with_only_webm_gives_the_webm() {
+    fn a_video_with_only_webm_keeps_the_webm() {
+        let html = r#"<video class="bb_img" autoplay muted loop playsinline poster="https://cdn/apps/1145350/extras/h2.poster.avif?t=2" width="616" height="347"><source src="https://cdn/apps/1145350/extras/h2.webm?t=2" type="video/webm; codecs=vp9"></video>"#;
+
         assert_eq!(
-            blocks(r#"<video><source src="https://cdn/v.webm" type="video/webm"></video>"#),
-            [Block::Video {
-                url: "https://cdn/v.webm".to_string()
-            }]
+            blocks(html),
+            [video(
+                Some("https://cdn/apps/1145350/extras/h2.webm?t=2"),
+                None,
+                Some("https://cdn/apps/1145350/extras/h2.poster.avif?t=2"),
+                (616, 347),
+            )]
         );
+    }
+
+    #[test]
+    fn a_video_with_only_mp4_keeps_the_mp4() {
+        let html = r#"<video class="bb_img" autoplay muted loop playsinline poster="https://cdn/apps/1091500/extras/cp.poster.avif?t=3" width=630 height=354><source src="https://cdn/apps/1091500/extras/cp.mp4?t=3" type="video/mp4; codecs=hvc1"></video>"#;
+
+        assert_eq!(
+            blocks(html),
+            [video(
+                None,
+                Some("https://cdn/apps/1091500/extras/cp.mp4?t=3"),
+                Some("https://cdn/apps/1091500/extras/cp.poster.avif?t=3"),
+                (630, 354),
+            )]
+        );
+    }
+
+    #[test]
+    fn the_src_of_the_tag_is_told_apart_by_its_extension() {
+        assert_eq!(
+            blocks(r#"<video src="https://cdn/v.webm?t=1"></video>"#),
+            [video(Some("https://cdn/v.webm?t=1"), None, None, (0, 0))]
+        );
+        assert_eq!(
+            blocks(r#"<video src="https://cdn/v.mp4"></video>"#),
+            [video(None, Some("https://cdn/v.mp4"), None, (0, 0))]
+        );
+    }
+
+    #[test]
+    fn a_video_without_sources_is_dropped() {
+        assert_eq!(
+            blocks(
+                r#"<video poster="https://cdn/v.poster.avif"><source src="https://cdn/v.ogv" type="video/ogg"></video>Text."#
+            ),
+            [paragraph("Text.")]
+        );
+        assert_eq!(blocks(r#"<video></video>"#), []);
     }
 
     #[test]
