@@ -186,17 +186,23 @@ fn is_software(renderer: &iced::Renderer) -> bool {
     matches!(renderer, iced::Renderer::Secondary(_))
 }
 
-/// The redraw the frames ask for after a redraw: none while nothing moves, the next vsync with wgpu,
-/// the next frame's time with tiny-skia, which has no vsync.
+/// Whether the frames ask for a redraw at the next frame's time rather than at every vsync:
+/// tiny-skia has no vsync, and a loop without sound is often a slow GIF (10–25 fps).
+fn paced(software: bool, source: &Source) -> bool {
+    software || !source.has_sound()
+}
+
+/// The redraw the frames ask for after a redraw: none while nothing moves, the next vsync,
+/// or the next frame's time when [`paced`].
 fn redraw(
-    software: bool,
+    paced: bool,
     state: &State,
     old_frame: bool,
     next_frame_at: Option<Instant>,
     now: Instant,
 ) -> Option<RedrawRequest> {
     let moving = matches!(state, State::Loading | State::Playing) || old_frame;
-    match (moving, software) {
+    match (moving, paced) {
         (false, _) => None,
         (true, false) => Some(RedrawRequest::NextFrame),
         (true, true) => Some(RedrawRequest::At(next_frame_at.unwrap_or(now + IDLE))),
@@ -564,7 +570,7 @@ impl<M> Widget<M, Theme, iced::Renderer> for Frames<'_> {
             return;
         }
         let request = redraw(
-            is_software(renderer),
+            paced(is_software(renderer), &self.player.source),
             &self.player.state(),
             self.player.shows_an_old_frame(),
             self.player.next_frame_at(),
@@ -837,7 +843,24 @@ mod tests {
     fn height(source: Source) -> u32 {
         match source {
             Source::Dash { height, .. } => height,
+            Source::Loop { .. } => 0,
         }
+    }
+
+    #[test]
+    fn a_loop_redraws_at_the_next_frame_with_wgpu_too() {
+        let trailer = Source::Dash {
+            manifest_url: "https://a/dash_av1.mpd".to_string(),
+            height: 720,
+        };
+        let description = Source::Loop {
+            url: "https://a/extras/b.webm".to_string(),
+        };
+
+        assert!(!paced(false, &trailer));
+        assert!(paced(true, &trailer));
+        assert!(paced(false, &description));
+        assert!(paced(true, &description));
     }
 
     #[test]

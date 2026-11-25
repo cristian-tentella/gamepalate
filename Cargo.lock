@@ -2037,9 +2037,11 @@ dependencies = [
  "iced",
  "image",
  "jiff",
+ "matroska-demuxer",
  "open",
  "re_mp4",
  "re_rav1d",
+ "rusty_vp9",
  "symphonia",
  "tauri-winres",
  "tempfile",
@@ -3286,6 +3288,12 @@ checksum = "62bb907fe88d54d8d9ce32a3cceab4218ed2f6b7d35617cafe9adf84e43919cb"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "matroska-demuxer"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cbf36668475a45a46bf8710e927e7458b7c387e7c46ddb5457ae0c71cf5e817"
 
 [[package]]
 name = "maybe-rayon"
@@ -5010,6 +5018,12 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "rusty_vp9"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46033a42db101a0d141e42e0ce93aa526dbd3ac1648acc787f07b52365a16d8d"
 
 [[package]]
 name = "same-file"

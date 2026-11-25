@@ -16,8 +16,10 @@ gamepalate-app = { version = "0.30.0", path = "../gamepalate-app" }
 iced = { version = "0.14.0", features = ["advanced", "image", "tokio"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 jiff = "0.2.38"
+matroska-demuxer = "0.8.1"
 open = "5.4.5"
 re_mp4 = "0.5.1"
+rusty_vp9 = "0.3.0"
 symphonia = { version = "0.6.1", default-features = false, features = ["aac", "isomp4"] }
 tokio = { version = "1", features = ["rt", "time"] }
 tracing = "0.1.44"
