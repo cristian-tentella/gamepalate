@@ -1,21 +1,23 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use gamepalate_app::Block;
 use iced::Subscription;
 
 use crate::video::{self, Options, Player, Source};
 
-/// The videos of the description in the About sheet, by the index of their block. Only the first
-/// one in sight starts by itself; the others start with a click. A video out of sight pauses and
-/// picks up where it was when it comes back.
+/// The videos of the description in the About sheet, by the index of their block. Every video
+/// with more than a quarter of its height in sight plays by itself; under that it pauses, and
+/// picks up where it was when it comes back. A video the user paused stays paused while the sheet
+/// is open.
 #[derive(Default)]
 pub(super) struct Loops {
     /// Whether the frames are drawn by tiny-skia, once the sheet has measured it.
     software: Option<bool>,
     /// The search or a game is over the screen.
     covered: bool,
-    in_sight: BTreeSet<usize>,
-    clicked: HashSet<usize>,
+    /// The videos with more than a quarter of their height in sight, from `sight`.
+    in_sight: HashSet<usize>,
+    /// The videos the user paused.
     paused: HashSet<usize>,
     players: BTreeMap<usize, Player>,
 }
@@ -25,12 +27,11 @@ impl Loops {
         self.software = Some(software);
     }
 
-    pub(super) fn shown(&mut self, index: usize) {
-        self.in_sight.insert(index);
-    }
-
-    pub(super) fn hidden(&mut self, index: usize) {
-        self.in_sight.remove(&index);
+    pub(super) fn sight(&mut self, index: usize, in_sight: bool) {
+        match in_sight {
+            true => self.in_sight.insert(index),
+            false => self.in_sight.remove(&index),
+        };
     }
 
     /// Drops the players under the search or a game; they come back with the next sync.
@@ -50,21 +51,16 @@ impl Loops {
         };
     }
 
-    /// The play button on the poster, or the pause button in the corner.
+    /// The pause button in the corner, or the play button on a video the user paused.
     fn toggle(&mut self, index: usize) {
-        if self.plays(index) {
-            self.paused.insert(index);
-            self.clicked.remove(&index);
-        } else {
-            self.paused.remove(&index);
-            self.clicked.insert(index);
-        }
+        match self.plays(index) {
+            true => self.paused.insert(index),
+            false => self.paused.remove(&index),
+        };
     }
 
     pub(super) fn plays(&self, index: usize) -> bool {
-        self.in_sight.contains(&index)
-            && !self.paused.contains(&index)
-            && (self.clicked.contains(&index) || self.in_sight.first() == Some(&index))
+        self.in_sight.contains(&index) && !self.paused.contains(&index)
     }
 
     pub(super) fn update(&mut self, index: usize, message: video::Message) {
@@ -166,22 +162,23 @@ mod tests {
     }
 
     #[test]
-    fn only_the_first_video_in_sight_starts_by_itself() {
+    fn every_video_in_sight_plays() {
         let mut loops = measured();
-        loops.shown(2);
-        loops.shown(3);
+        loops.sight(2, true);
+        loops.sight(3, true);
 
         loops.sync(Some(&blocks()));
 
-        assert_eq!(players(&loops), [2]);
+        assert_eq!(players(&loops), [2, 3]);
         assert!(loops.plays(2));
-        assert!(!loops.plays(3));
+        assert!(loops.plays(3));
+        assert!(!loops.plays(1));
     }
 
     #[test]
     fn nothing_plays_before_the_sheet_is_measured() {
         let mut loops = Loops::default();
-        loops.shown(1);
+        loops.sight(1, true);
 
         loops.sync(Some(&blocks()));
 
@@ -189,50 +186,68 @@ mod tests {
     }
 
     #[test]
-    fn when_the_first_leaves_the_next_one_starts_and_the_first_is_kept_paused() {
+    fn a_video_out_of_sight_pauses_and_comes_back() {
         let mut loops = measured();
-        loops.shown(1);
-        loops.shown(2);
+        loops.sight(1, true);
+        loops.sight(2, true);
         loops.sync(Some(&blocks()));
 
-        loops.hidden(1);
+        loops.sight(1, false);
         loops.sync(Some(&blocks()));
-
         assert_eq!(players(&loops), [1, 2]);
         assert!(!loops.plays(1));
         assert!(loops.plays(2));
 
-        loops.shown(1);
+        loops.sight(1, true);
         loops.sync(Some(&blocks()));
         assert!(loops.plays(1));
-        assert!(!loops.plays(2));
+        assert!(loops.plays(2));
     }
 
     #[test]
-    fn a_click_starts_another_video_and_a_second_click_pauses_it() {
+    fn a_video_never_in_sight_gets_no_player() {
         let mut loops = measured();
-        loops.shown(1);
-        loops.shown(3);
+        loops.sight(1, true);
+        loops.sight(3, false);
 
-        loops.update(3, video::Message::Toggle);
         loops.sync(Some(&blocks()));
-        assert_eq!(players(&loops), [1, 3]);
-        assert!(loops.plays(3));
 
-        loops.update(3, video::Message::Toggle);
-        assert!(!loops.plays(3));
+        assert_eq!(players(&loops), [1]);
+    }
+
+    #[test]
+    fn a_click_pauses_a_video_and_a_second_click_plays_it() {
+        let mut loops = measured();
+        loops.sight(1, true);
+        loops.sync(Some(&blocks()));
+
+        loops.update(1, video::Message::Toggle);
+        assert!(!loops.plays(1));
+
+        loops.update(1, video::Message::Toggle);
+        assert!(loops.plays(1));
+    }
+
+    #[test]
+    fn a_click_on_a_video_out_of_sight_changes_nothing() {
+        let mut loops = measured();
+        loops.sight(1, false);
+
+        loops.update(1, video::Message::Toggle);
+        loops.sight(1, true);
+
         assert!(loops.plays(1));
     }
 
     #[test]
     fn a_video_paused_by_the_user_does_not_start_again_by_itself() {
         let mut loops = measured();
-        loops.shown(1);
+        loops.sight(1, true);
         loops.sync(Some(&blocks()));
 
         loops.update(1, video::Message::Toggle);
-        loops.hidden(1);
-        loops.shown(1);
+        loops.sight(1, false);
+        loops.sight(1, true);
         loops.sync(Some(&blocks()));
 
         assert!(!loops.plays(1));
@@ -242,7 +257,7 @@ mod tests {
     #[test]
     fn a_video_without_a_webm_gets_no_player() {
         let mut loops = measured();
-        loops.shown(4);
+        loops.sight(4, true);
 
         loops.sync(Some(&blocks()));
 
@@ -252,7 +267,7 @@ mod tests {
     #[test]
     fn the_players_drop_while_covered_and_come_back_after() {
         let mut loops = measured();
-        loops.shown(1);
+        loops.sight(1, true);
         loops.sync(Some(&blocks()));
 
         loops.cover(true);
@@ -267,22 +282,22 @@ mod tests {
     #[test]
     fn no_player_without_the_sheet() {
         let mut loops = measured();
-        loops.shown(1);
-        loops.update(2, video::Message::Toggle);
+        loops.sight(1, true);
         loops.sync(Some(&blocks()));
+        loops.update(1, video::Message::Toggle);
 
         loops.sync(None);
 
         assert!(players(&loops).is_empty());
         assert!(loops.in_sight.is_empty());
-        assert!(loops.clicked.is_empty());
+        assert!(loops.paused.is_empty());
         assert_eq!(loops.software, Some(false));
     }
 
     #[test]
     fn a_new_game_forgets_the_players_and_the_choices() {
         let mut loops = measured();
-        loops.shown(1);
+        loops.sight(1, true);
         loops.sync(Some(&blocks()));
         loops.update(1, video::Message::Toggle);
 

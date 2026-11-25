@@ -7,6 +7,7 @@ mod media;
 mod pages;
 mod review_sheet;
 mod reviews;
+mod sight;
 mod tags;
 mod trailers;
 
@@ -232,8 +233,8 @@ pub enum Message {
     Measured(video::Surface),
     /// A video of the description, by the index of its block.
     Loop(usize, video::Message),
-    LoopShown(usize),
-    LoopHidden(usize),
+    /// Whether more than a quarter of the height of a video of the description shows.
+    LoopSight(usize, bool),
     LoopMeasured(video::Surface),
 }
 
@@ -379,8 +380,7 @@ impl Showcase {
             Message::Trailer(message) => self.trailers.update(message),
             Message::Measured(surface) => self.trailers.measured(surface),
             Message::Loop(index, message) => self.loops.update(index, message),
-            Message::LoopShown(index) => self.loops.shown(index),
-            Message::LoopHidden(index) => self.loops.hidden(index),
+            Message::LoopSight(index, in_sight) => self.loops.sight(index, in_sight),
             Message::LoopMeasured(surface) => self.loops.measured(surface.software),
         }
         if self.is_open() {

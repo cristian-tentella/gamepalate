@@ -3,12 +3,12 @@ use std::sync::Arc;
 use gamepalate_app::{AppId, Block, Span};
 use iced::{
     ContentFit, Element, Task, padding,
-    widget::{column, container, image, rich_text, row, sensor, space, span, stack, text},
+    widget::{column, container, image, rich_text, row, space, span, stack, text},
 };
 
 use super::{
     BODY_SIZE, MEASURE, Message, Popup, Showcase, descriptions::Description, images::Picture,
-    sheet_note,
+    sheet_note, sight::sight,
 };
 use crate::{font, style, video};
 
@@ -145,9 +145,8 @@ impl Showcase {
             .height(height);
 
         stack![
-            sensor(shown)
-                .on_show(move |_| Message::LoopShown(index))
-                .on_hide(Message::LoopHidden(index)),
+            shown,
+            sight(move |in_sight| Message::LoopSight(index, in_sight)),
             video::probe(1.0, Message::LoopMeasured),
         ]
         .into()
