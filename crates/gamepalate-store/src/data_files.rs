@@ -131,11 +131,11 @@ mod tests {
 
     use super::*;
 
-    fn starred_in(lists: &[u32]) -> Votes {
+    fn saved_in(lists: &[u32]) -> Votes {
         Votes::from([(
             AppId(620),
             Vote {
-                starred: true,
+                saved: true,
                 lists: lists.iter().copied().map(ListId).collect(),
                 ..Vote::new(VoteKind::WouldTry, "2026-11-25")
             },
@@ -146,8 +146,8 @@ mod tests {
     fn every_list_of_a_vote_is_in_the_lists_file() {
         let lists = Lists::from([(ListId(2), "Co-op".to_string())]);
 
-        assert!(check_lists(&starred_in(&[2]), &lists).is_ok());
-        let error = check_lists(&starred_in(&[2, 9]), &lists).unwrap_err();
+        assert!(check_lists(&saved_in(&[2]), &lists).is_ok());
+        let error = check_lists(&saved_in(&[2, 9]), &lists).unwrap_err();
         assert!(matches!(
             error,
             DataFilesError::UnknownList {

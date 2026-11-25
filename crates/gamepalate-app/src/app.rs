@@ -51,7 +51,7 @@ use crate::{
 };
 pub use browse::BrowseRow;
 pub use lists::ListError;
-pub use votes::{StarChange, StarError, VoteError, VotedGame};
+pub use votes::{SaveChange, SaveError, VoteError, VotedGame};
 
 pub(crate) const GUI_FILE: &str = "gui.toml";
 const FAMILIES_FILE: &str = "families.toml";

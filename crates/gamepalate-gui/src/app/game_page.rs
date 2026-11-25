@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use gamepalate_app::{
     AppId, DiscoverPlace, FamilyChange, GameStanding, GameView, Gamepalate, ListId, Lists,
-    StarChange, VoteKind,
+    SaveChange, VoteKind,
 };
 use iced::{
     Center, ContentFit, Element, Fill, Size, Subscription, Task,
@@ -21,9 +21,9 @@ use crate::{
     screen::{
         Toasts, discover,
         game::{self, Link, Pick, VOTE_HEIGHT},
+        save_menu::{self, NO_LISTS, SaveMenu},
         sentence,
         showcase::{self, Showcase},
-        star_menu::{self, NO_LISTS, StarMenu},
     },
     style,
 };
@@ -47,7 +47,7 @@ pub struct GamePage {
     backdrop: Option<image::Handle>,
     played: bool,
     changed: bool,
-    star_menu: StarMenu,
+    save_menu: SaveMenu,
 }
 
 #[derive(Clone, Debug)]
@@ -55,8 +55,8 @@ pub enum Message {
     Vote(Pick),
     Later,
     Played,
-    Star,
-    StarMenu(star_menu::Message),
+    Save,
+    SaveMenu(save_menu::Message),
     ListCreated(Result<ListId, String>),
     RemoveVote,
     AddToFamily(String),
@@ -82,7 +82,7 @@ pub enum Action {
 enum Status {
     Voted {
         pick: Pick,
-        starred: bool,
+        saved: bool,
         /// The names of the lists of the game, in the order of the lists.
         lists: String,
         day: String,
@@ -106,7 +106,7 @@ impl GamePage {
             backdrop,
             played: false,
             changed: false,
-            star_menu: StarMenu::new(gamepalate),
+            save_menu: SaveMenu::new(gamepalate),
         };
         let task = Task::batch([page.load(), page.find_place()]);
 
@@ -134,7 +134,7 @@ impl GamePage {
 
     pub fn use_gamepalate(&mut self, gamepalate: &Arc<Gamepalate>) -> Task<Message> {
         self.gamepalate = Arc::clone(gamepalate);
-        self.star_menu = StarMenu::new(gamepalate);
+        self.save_menu = SaveMenu::new(gamepalate);
         if let Some(game) = gamepalate.game_view(self.game.id) {
             self.game = game;
         }
@@ -145,7 +145,7 @@ impl GamePage {
         if self.showcase.is_open() && stopped_by_popup(&message) {
             return Action::Run(Task::none());
         }
-        self.star_menu.follow(&self.gamepalate);
+        self.save_menu.follow(&self.gamepalate);
         let task = match self.handle(message) {
             Action::Run(task) => task,
             close @ Action::Close { .. } => return close,
@@ -190,23 +190,23 @@ impl GamePage {
                     },
                 ),
             Message::Played => Task::none(),
-            Message::Star if offers_star(&self.game) => {
-                self.star_menu.open(&self.gamepalate, id);
+            Message::Save if offers_save(&self.game) => {
+                self.save_menu.open(&self.gamepalate, id);
                 Task::none()
             }
-            Message::Star => Task::none(),
-            Message::StarMenu(message) => {
-                let (starred, lists) = match &self.game.vote {
-                    Some(vote) => (vote.starred, vote.lists.clone()),
+            Message::Save => Task::none(),
+            Message::SaveMenu(message) => {
+                let (saved, lists) = match &self.game.vote {
+                    Some(vote) => (vote.saved, vote.lists.clone()),
                     None => (false, NO_LISTS.clone()),
                 };
-                let (action, task) = self.star_menu.update(message, starred, &lists);
-                let task = task.map(Message::StarMenu);
+                let (action, task) = self.save_menu.update(message, saved, &lists);
+                let task = task.map(Message::SaveMenu);
                 match action {
-                    Some(star_menu::Action::Star(change)) => {
-                        Task::batch([task, self.change_star(change)])
+                    Some(save_menu::Action::Save(change)) => {
+                        Task::batch([task, self.change_saved(change)])
                     }
-                    Some(star_menu::Action::Create(name)) => {
+                    Some(save_menu::Action::Create(name)) => {
                         let gamepalate = Arc::clone(&self.gamepalate);
                         let create = Task::perform(
                             async move {
@@ -222,11 +222,11 @@ impl GamePage {
                 }
             }
             Message::ListCreated(Ok(list)) => {
-                self.star_menu.created(&self.gamepalate);
-                self.change_star(StarChange::AddTo(list))
+                self.save_menu.created(&self.gamepalate);
+                self.change_saved(SaveChange::AddTo(list))
             }
             Message::ListCreated(Err(error)) => {
-                self.star_menu.refused(error);
+                self.save_menu.refused(error);
                 Task::none()
             }
             Message::RemoveVote if self.game.vote.is_some() => self.save(
@@ -299,18 +299,18 @@ impl GamePage {
         Action::Run(task)
     }
 
-    fn change_star(&mut self, change: StarChange) -> Task<Message> {
+    fn change_saved(&mut self, change: SaveChange) -> Task<Message> {
         let id = self.game.id;
         let text = match change {
-            StarChange::Star | StarChange::Unstar => {
-                format::star_toast(&self.game.name, change.gives_star())
+            SaveChange::Save | SaveChange::Unsave => {
+                format::save_toast(&self.game.name, change.saves())
             }
-            StarChange::AddTo(list) => format::list_toast(self.star_menu.name(list), true),
-            StarChange::RemoveFrom(list) => format::list_toast(self.star_menu.name(list), false),
+            SaveChange::AddTo(list) => format::list_toast(self.save_menu.name(list), true),
+            SaveChange::RemoveFrom(list) => format::list_toast(self.save_menu.name(list), false),
         };
         self.save(text, false, move |gamepalate| {
             gamepalate
-                .star(id, change, false, true)
+                .save(id, change, false, true)
                 .map_err(|error| error.to_string())
         })
     }
@@ -320,8 +320,8 @@ impl GamePage {
         if !keys {
             return trailer;
         }
-        if self.star_menu.is_open() {
-            return Subscription::batch([star_menu::keys().map(Message::StarMenu), trailer]);
+        if self.save_menu.is_open() {
+            return Subscription::batch([save_menu::keys().map(Message::SaveMenu), trailer]);
         }
         Subscription::batch([keyboard::listen().filter_map(key_message), trailer])
     }
@@ -422,11 +422,11 @@ impl GamePage {
     fn details(&self, size: Size, scale: f32) -> Element<'_, Message> {
         let game = &self.game;
         let status =
-            status(game, self.star_menu.lists(), jiff::Zoned::now().date()).map(|status| {
+            status(game, self.save_menu.lists(), jiff::Zoned::now().date()).map(|status| {
                 let spans = match status {
                     Status::Voted {
                         pick,
-                        starred,
+                        saved,
                         lists,
                         day,
                     } => {
@@ -434,8 +434,8 @@ impl GamePage {
                             span("Voted "),
                             span(format::pick(pick)).font(font::SEMIBOLD),
                         ];
-                        if starred {
-                            spans.push(span(" · Starred"));
+                        if saved {
+                            spans.push(span(" · Saved"));
                         }
                         if !lists.is_empty() {
                             spans.push(span(format!(" · {lists}")));
@@ -510,10 +510,10 @@ impl GamePage {
             self.gamepalate.would_try_hours(),
             self.gamepalate.elsewhere_hours(),
         );
-        let star = offers_star(game);
+        let save = offers_save(game);
         let vote_width = game::vote_width(
             width,
-            BESIDE_VOTES + if star { game::STAR_SPACE } else { 0.0 },
+            BESIDE_VOTES + if save { game::SAVE_SPACE } else { 0.0 },
         );
         let votes = game::vote_buttons(
             |key, pick| {
@@ -535,13 +535,13 @@ impl GamePage {
                 )
             },
             offers_played(game),
-            star.then(|| {
+            save.then(|| {
                 let vote = game.vote.as_ref();
-                self.star_menu.star(
-                    vote.is_some_and(|vote| vote.starred),
+                self.save_menu.save(
+                    vote.is_some_and(|vote| vote.saved),
                     vote.map_or(&NO_LISTS, |vote| &vote.lists),
-                    Some(Message::Star),
-                    Message::StarMenu,
+                    Some(Message::Save),
+                    Message::SaveMenu,
                 )
             }),
         )
@@ -660,8 +660,8 @@ fn offers_played(game: &GameView) -> bool {
     !game.in_library
 }
 
-/// A game you have cannot get a star.
-fn offers_star(game: &GameView) -> bool {
+/// A game you have cannot be saved.
+fn offers_save(game: &GameView) -> bool {
     !game.owned()
 }
 
@@ -677,7 +677,7 @@ fn status(game: &GameView, lists: &Lists, today: Date) -> Option<Status> {
     match &game.vote {
         Some(vote) if voted => Some(Status::Voted {
             pick: Pick::of(vote),
-            starred: vote.starred,
+            saved: vote.saved,
             lists: vote
                 .lists
                 .iter()
@@ -696,7 +696,7 @@ fn stopped_by_popup(message: &Message) -> bool {
         Message::Vote(_)
             | Message::Later
             | Message::Played
-            | Message::Star
+            | Message::Save
             | Message::RemoveVote
             | Message::AddToFamily(_)
             | Message::Open(_)
@@ -745,7 +745,7 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         Key::Character(key) if key.eq_ignore_ascii_case("j") => {
             Some(Message::Showcase(showcase::Message::ScrollDown))
         }
-        Key::Character(key) if game::star_key(key.as_str()) => Some(Message::Star),
+        Key::Character(key) if game::save_key(key.as_str()) => Some(Message::Save),
         Key::Character(key) => game::pick_key(key.as_str())
             .map(|pick| match pick {
                 Pick::Played => Message::Played,
@@ -831,18 +831,18 @@ mod tests {
     }
 
     #[test]
-    fn s_opens_the_star_menu_in_either_case_and_ctrl_s_does_nothing() {
+    fn s_opens_the_save_menu_in_either_case_and_ctrl_s_does_nothing() {
         for key in ["s", "S"] {
             assert!(matches!(
                 key_message(pressed(Key::Character(key.into()))),
-                Some(Message::Star)
+                Some(Message::Save)
             ));
         }
         assert!(key_message(pressed_with(Key::Character("s".into()), Modifiers::CTRL)).is_none());
     }
 
     #[test]
-    fn a_game_you_have_has_no_star() {
+    fn a_game_you_have_has_no_save() {
         let owned = found(Some(GameStanding::InLibrary { hours: 42.0 }), None);
         let elsewhere = found(Some(GameStanding::PlayedElsewhere), None);
         let unknown = found(None, None);
@@ -851,26 +851,26 @@ mod tests {
             Some(Vote::new(VoteKind::Later, "2026-11-10")),
         );
 
-        assert!(!offers_star(&owned) && !offers_star(&elsewhere));
-        assert!(offers_star(&unknown) && offers_star(&later));
+        assert!(!offers_save(&owned) && !offers_save(&elsewhere));
+        assert!(offers_save(&unknown) && offers_save(&later));
     }
 
     #[test]
-    fn the_status_says_when_the_vote_has_the_star() {
-        let starred = Vote {
-            starred: true,
+    fn the_status_says_when_the_vote_has_the_save() {
+        let saved = Vote {
+            saved: true,
             ..Vote::new(VoteKind::WouldTry, "2026-11-13")
         };
 
         assert_eq!(
             status(
-                &found(Some(GameStanding::WouldTry), Some(starred)),
+                &found(Some(GameStanding::WouldTry), Some(saved)),
                 &Lists::new(),
                 today()
             ),
             Some(Status::Voted {
                 pick: Pick::Vote(VoteKind::WouldTry),
-                starred: true,
+                saved: true,
                 lists: String::new(),
                 day: "today".to_string()
             })
@@ -885,7 +885,7 @@ mod tests {
             (ListId(7), "Steam Deck".to_string()),
         ]);
         let vote = Vote {
-            starred: true,
+            saved: true,
             lists: [ListId(5), ListId(2)].into(),
             ..Vote::new(VoteKind::WouldTry, "2026-11-13")
         };
@@ -898,7 +898,7 @@ mod tests {
             ),
             Some(Status::Voted {
                 pick: Pick::Vote(VoteKind::WouldTry),
-                starred: true,
+                saved: true,
                 lists: "Co-op, On sale".to_string(),
                 day: "today".to_string()
             })
@@ -951,7 +951,7 @@ mod tests {
         ))));
         assert!(stopped_by_popup(&Message::Later));
         assert!(stopped_by_popup(&Message::Played));
-        assert!(stopped_by_popup(&Message::Star));
+        assert!(stopped_by_popup(&Message::Save));
         assert!(stopped_by_popup(&Message::RemoveVote));
         assert!(stopped_by_popup(&Message::Open(Link::Eneba)));
         assert!(!stopped_by_popup(&Message::Back));
@@ -992,7 +992,7 @@ mod tests {
             ),
             Some(Status::Voted {
                 pick: Pick::Vote(VoteKind::NotForMe),
-                starred: false,
+                saved: false,
                 lists: String::new(),
                 day: "today".to_string()
             })
@@ -1008,7 +1008,7 @@ mod tests {
             ),
             Some(Status::Voted {
                 pick: Pick::Vote(VoteKind::WouldTry),
-                starred: false,
+                saved: false,
                 lists: String::new(),
                 day: "2 Nov".to_string()
             })

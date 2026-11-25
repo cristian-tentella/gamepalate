@@ -4,7 +4,6 @@ use gamepalate_core::{
     browse::{BrowseOptions, BrowseOrder, Choice},
     filters::FilterOptions,
     ids::AppId,
-    lists::ListId,
     search::SearchOptions,
 };
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
@@ -36,7 +35,9 @@ pub struct SavedWindow {
 pub enum VotesShow {
     #[default]
     WouldTry,
-    Starred,
+    // Called starred until 0.31.
+    #[serde(alias = "starred")]
+    Saved,
     // The two noes of 0.23 are one vote now.
     #[serde(alias = "not_this_game", alias = "not_my_genre")]
     NotForMe,
@@ -48,56 +49,12 @@ pub enum VotesShow {
 #[serde(rename_all = "snake_case")]
 enum SavedShow {
     WouldTry,
-    Starred,
+    #[serde(alias = "starred")]
+    Saved,
     Bets,
     #[serde(alias = "not_this_game", alias = "not_my_genre")]
     NotForMe,
     All,
-}
-
-/// The list the Starred segment of Votes shows: every starred game, one list, or the starred
-/// games in no list. A list that is gone is the GUI's to see.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(from = "SavedList", into = "SavedList")]
-pub enum StarredList {
-    #[default]
-    All,
-    List(ListId),
-    NoList,
-}
-
-impl StarredList {
-    fn is_all(&self) -> bool {
-        *self == StarredList::All
-    }
-}
-
-// In the file a list is its id, and no list is "no_list".
-#[derive(Serialize, Deserialize)]
-#[serde(untagged)]
-enum SavedList {
-    Id(u32),
-    Word(String),
-}
-
-impl From<SavedList> for StarredList {
-    fn from(saved: SavedList) -> StarredList {
-        match saved {
-            SavedList::Id(id) => StarredList::List(ListId(id)),
-            SavedList::Word(word) if word == "no_list" => StarredList::NoList,
-            SavedList::Word(_) => StarredList::All,
-        }
-    }
-}
-
-impl From<StarredList> for SavedList {
-    fn from(list: StarredList) -> SavedList {
-        match list {
-            StarredList::All => SavedList::Word("all".to_string()),
-            StarredList::List(id) => SavedList::Id(id.0),
-            StarredList::NoList => SavedList::Word("no_list".to_string()),
-        }
-    }
 }
 
 /// The order of the Votes list.
@@ -116,8 +73,6 @@ pub enum VotesOrder {
 #[serde(from = "SavedVotes")]
 pub struct VotesSettings {
     pub show: VotesShow,
-    #[serde(skip_serializing_if = "StarredList::is_all")]
-    pub list: StarredList,
     pub order: VotesOrder,
     pub hide_owned: bool,
     pub only_bets: bool,
@@ -128,7 +83,6 @@ impl Default for VotesSettings {
     fn default() -> VotesSettings {
         VotesSettings {
             show: VotesShow::default(),
-            list: StarredList::default(),
             order: VotesOrder::default(),
             hide_owned: true,
             only_bets: false,
@@ -143,8 +97,6 @@ struct SavedVotes {
     #[serde(deserialize_with = "or_default")]
     show: Option<SavedShow>,
     #[serde(deserialize_with = "or_default")]
-    list: StarredList,
-    #[serde(deserialize_with = "or_default")]
     order: VotesOrder,
     hide_owned: bool,
     only_bets: bool,
@@ -156,7 +108,6 @@ impl Default for SavedVotes {
         let votes = VotesSettings::default();
         SavedVotes {
             show: None,
-            list: votes.list,
             order: votes.order,
             hide_owned: votes.hide_owned,
             only_bets: votes.only_bets,
@@ -169,13 +120,12 @@ impl From<SavedVotes> for VotesSettings {
     fn from(saved: SavedVotes) -> VotesSettings {
         let show = match saved.show {
             None | Some(SavedShow::WouldTry) => VotesShow::WouldTry,
-            Some(SavedShow::Starred) => VotesShow::Starred,
+            Some(SavedShow::Saved) => VotesShow::Saved,
             Some(SavedShow::NotForMe) => VotesShow::NotForMe,
             Some(SavedShow::All | SavedShow::Bets) => VotesShow::All,
         };
         VotesSettings {
             show,
-            list: saved.list,
             order: saved.order,
             hide_owned: saved.hide_owned,
             only_bets: saved.only_bets || matches!(saved.show, Some(SavedShow::Bets)),
@@ -200,7 +150,8 @@ struct SavedBrowse {
     #[serde(deserialize_with = "or_none")]
     would_try: Option<Choice>,
     #[serde(deserialize_with = "or_none")]
-    starred: Option<Choice>,
+    #[serde(alias = "starred")]
+    saved: Option<Choice>,
     #[serde(deserialize_with = "or_none")]
     not_for_me: Option<Choice>,
     #[serde(deserialize_with = "or_none")]
@@ -220,7 +171,7 @@ impl From<SavedBrowse> for BrowseOptions {
             library: saved.library.unwrap_or(first.library),
             wished: saved.wished.unwrap_or(first.wished),
             would_try: saved.would_try.unwrap_or(first.would_try),
-            starred: saved.starred.unwrap_or(first.starred),
+            saved: saved.saved.unwrap_or(first.saved),
             not_for_me: saved.not_for_me.unwrap_or(first.not_for_me),
             later: saved.later.unwrap_or(first.later),
         }
@@ -320,7 +271,6 @@ mod tests {
             families_played: Some(vec![AppId(220), AppId(730)]),
             votes: VotesSettings {
                 show: VotesShow::NotForMe,
-                list: StarredList::default(),
                 order: VotesOrder::BestMatch,
                 hide_owned: false,
                 only_bets: true,
@@ -348,93 +298,84 @@ mod tests {
     }
 
     #[test]
-    fn the_starred_chip_is_saved_and_read_back() {
+    fn the_saved_chip_is_saved_and_read_back() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("gui.toml");
         let mut settings = GuiSettings::default();
-        settings.votes.show = VotesShow::Starred;
+        settings.votes.show = VotesShow::Saved;
 
         save_gui_settings(&path, &settings).unwrap();
 
         assert!(
             std::fs::read_to_string(&path)
                 .unwrap()
-                .contains("[votes]\nshow = \"starred\"\n")
+                .contains("[votes]\nshow = \"saved\"\n")
         );
-        assert_eq!(load_gui_settings(&path).votes.show, VotesShow::Starred);
+        assert_eq!(load_gui_settings(&path).votes.show, VotesShow::Saved);
     }
 
     #[test]
-    fn the_list_of_the_starred_segment_is_saved_and_read_back() {
+    fn an_old_saved_chip_opens_votes_on_saved() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("gui.toml");
-        let mut settings = GuiSettings::default();
-        settings.votes.show = VotesShow::Starred;
+        std::fs::write(
+            &path,
+            "[votes]
+show = \"starred\"
+order = \"price\"
+",
+        )
+        .unwrap();
 
-        for (list, line) in [
-            (
-                StarredList::List(ListId(2)),
-                "list = 2
-",
-            ),
-            (
-                StarredList::NoList,
-                "list = \"no_list\"
-",
-            ),
-        ] {
-            settings.votes.list = list;
+        let votes = load_gui_settings(&path).votes;
+
+        assert_eq!(votes.show, VotesShow::Saved);
+        assert_eq!(votes.order, VotesOrder::Price);
+    }
+
+    #[test]
+    fn a_list_chosen_in_saved_is_read_and_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.toml");
+
+        for list in ["list = 2", "list = \"no_list\"", "list = -3"] {
+            std::fs::write(
+                &path,
+                format!(
+                    "[votes]
+show = \"starred\"
+{list}
+order = \"price\"
+"
+                ),
+            )
+            .unwrap();
+
+            let settings = load_gui_settings(&path);
+            assert_eq!(settings.votes.show, VotesShow::Saved, "{list}");
+            assert_eq!(settings.votes.order, VotesOrder::Price, "{list}");
+
             save_gui_settings(&path, &settings).unwrap();
-
-            let text = std::fs::read_to_string(&path).unwrap();
-            assert!(text.contains(&format!(
-                "[votes]
-show = \"starred\"
-{line}"
-            )));
-            assert_eq!(load_gui_settings(&path).votes.list, list);
+            assert!(
+                !std::fs::read_to_string(&path).unwrap().contains("list"),
+                "{list}"
+            );
         }
     }
 
     #[test]
-    fn all_starred_leaves_the_list_out_of_the_file() {
+    fn an_old_saved_choice_of_browse_is_read_as_saved() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("gui.toml");
-
-        save_gui_settings(&path, &GuiSettings::default()).unwrap();
-
-        assert!(!std::fs::read_to_string(&path).unwrap().contains("list ="));
-        assert_eq!(load_gui_settings(&path).votes.list, StarredList::All);
-    }
-
-    #[test]
-    fn a_file_without_the_list_or_with_a_wrong_one_shows_all_starred() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("gui.toml");
-
-        for votes in [
-            "[votes]
-show = \"starred\"
-order = \"price\"
+        std::fs::write(
+            &path,
+            "[browse]
+starred = \"only\"
 ",
-            "[votes]
-show = \"starred\"
-list = \"someday\"
-order = \"price\"
-",
-            "[votes]
-show = \"starred\"
-list = -3
-order = \"price\"
-",
-        ] {
-            std::fs::write(&path, votes).unwrap();
+        )
+        .unwrap();
 
-            let votes = load_gui_settings(&path).votes;
-            assert_eq!(votes.list, StarredList::All);
-            assert_eq!(votes.show, VotesShow::Starred);
-            assert_eq!(votes.order, VotesOrder::Price);
-        }
+        assert_eq!(load_gui_settings(&path).browse.saved, Choice::Only);
     }
 
     #[test]
@@ -550,7 +491,7 @@ order = \"price\"",
                 library: Choice::Any,
                 wished: Choice::Only,
                 would_try: Choice::Only,
-                starred: Choice::Without,
+                saved: Choice::Without,
                 not_for_me: Choice::Any,
                 later: Choice::Without,
             },
@@ -563,7 +504,7 @@ order = \"price\"",
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("[browse]\n"));
         assert!(text.contains("order = \"price\"\n"));
-        assert!(text.contains("starred = \"hide\"\n"));
+        assert!(text.contains("saved = \"hide\"\n"));
         assert!(text.contains("would_try = \"only\"\n"));
         assert!(text.contains("[browse.filters]\n"));
     }

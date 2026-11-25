@@ -27,7 +27,7 @@ pub mod steam_client;
 pub mod tags;
 pub mod update;
 pub use app::{
-    BrowseRow, Gamepalate, ListError, OpenError, RecommendError, StarChange, StarError, VoteError,
+    BrowseRow, Gamepalate, ListError, OpenError, RecommendError, SaveChange, SaveError, VoteError,
     VotedGame,
 };
 pub use capsules::{CAPSULE_HEIGHT, CAPSULE_WIDTH, Capsule};
@@ -78,7 +78,7 @@ pub mod reviews {
 pub use gamepalate_store::config::{ConfigError, ConfigValue};
 pub use gamepalate_store::families_edit::NEW_FILE as NEW_FAMILIES_FILE;
 pub use gamepalate_store::gui::{
-    GuiSettings, SavedWindow, StarredList, ThemeChoice, VotesOrder, VotesSettings, VotesShow,
+    GuiSettings, SavedWindow, ThemeChoice, VotesOrder, VotesSettings, VotesShow,
 };
 pub use images::{DecodedImage, ImageKind, LoadImageError};
 pub use library::{

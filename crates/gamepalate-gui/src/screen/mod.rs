@@ -17,12 +17,12 @@ use crate::{font, style};
 pub mod discover;
 pub(crate) mod game;
 pub mod library;
-mod list_menu;
+mod list_edit;
 pub mod profile;
+pub(crate) mod save_menu;
 pub mod settings;
 pub mod setup;
 pub(crate) mod showcase;
-pub(crate) mod star_menu;
 mod steam_client;
 pub mod votes;
 

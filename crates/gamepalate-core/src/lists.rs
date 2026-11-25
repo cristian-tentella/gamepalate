@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-/// A list of starred games. A new list gets the highest id plus one, so the order of the ids is
+/// A list of saved games. A new list gets the highest id plus one, so the order of the ids is
 /// the order the lists were made in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ListId(pub u32);
@@ -18,9 +18,12 @@ pub enum ListNameError {
     Taken,
 }
 
-/// The id a new list gets.
-pub fn next_id(lists: &Lists) -> ListId {
-    ListId(lists.keys().next_back().map_or(1, |id| id.0 + 1))
+/// The id a new list gets, or `None` when the highest id is already the last one.
+pub fn next_id(lists: &Lists) -> Option<ListId> {
+    match lists.keys().next_back() {
+        Some(id) => id.0.checked_add(1).map(ListId),
+        None => Some(ListId(1)),
+    }
 }
 
 /// `name` without spaces around it, if a list can have it. `except` is the list being renamed,
@@ -60,8 +63,15 @@ mod tests {
 
     #[test]
     fn a_new_list_comes_after_the_highest_id() {
-        assert_eq!(next_id(&Lists::new()), ListId(1));
-        assert_eq!(next_id(&lists()), ListId(6));
+        assert_eq!(next_id(&Lists::new()), Some(ListId(1)));
+        assert_eq!(next_id(&lists()), Some(ListId(6)));
+    }
+
+    #[test]
+    fn there_is_no_id_after_the_last_one() {
+        let lists = Lists::from([(ListId(u32::MAX), "Written by hand".to_string())]);
+
+        assert_eq!(next_id(&lists), None);
     }
 
     #[test]

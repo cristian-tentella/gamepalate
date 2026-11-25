@@ -26,6 +26,8 @@ pub enum ListError {
     Taken,
     #[error("the list is gone")]
     Gone,
+    #[error("no new list fits after the list with the highest id in lists.toml")]
+    Full,
     #[error("could not save the lists in {}", path.display())]
     Lists {
         path: PathBuf,
@@ -57,7 +59,7 @@ fn saved(path: &Path, lists: Lists) -> Result<Lists, ListError> {
 /// Adds a list called `name` at the end, and gives its id.
 fn created_list(path: &Path, lists: &mut Lists, name: &str) -> Result<ListId, ListError> {
     let name = list_name(lists, name, None)?;
-    let id = next_id(lists);
+    let id = next_id(lists).ok_or(ListError::Full)?;
     let mut changed = lists.clone();
     changed.insert(id, name);
     *lists = saved(path, changed)?;
@@ -79,7 +81,7 @@ fn renamed_list(path: &Path, lists: &mut Lists, id: ListId, name: &str) -> Resul
 
 /// Takes the list `id` out of every vote, then out of `lists.toml`: an id in the votes is
 /// always in the lists, and a stop in between leaves at most a list without games. The games
-/// keep their star. Each of `votes` and `lists` changes once its file is saved.
+/// stay saved. Each of `votes` and `lists` changes once its file is saved.
 fn deleted_list(
     votes_path: &Path,
     lists_path: &Path,
@@ -109,7 +111,7 @@ fn deleted_list(
 }
 
 impl Gamepalate {
-    /// The lists of starred games, oldest first.
+    /// The lists of saved games, oldest first.
     pub fn lists(&self) -> Lists {
         self.lock_lists().clone()
     }
@@ -128,7 +130,7 @@ impl Gamepalate {
             .inspect_err(failed("could not rename the list"))
     }
 
-    /// Deletes the list. Its games keep their star. A list that is gone already changes nothing.
+    /// Deletes the list. Its games stay saved. A list that is gone already changes nothing.
     pub fn delete_list(&self, id: ListId) -> Result<(), ListError> {
         let mut votes = self.write_votes();
         let mut lists = self.write_lists();
@@ -183,6 +185,19 @@ mod tests {
 
         assert_eq!(id, ListId(1));
         assert_eq!(load_lists(&path).unwrap(), lists);
+    }
+
+    #[test]
+    fn no_list_is_made_after_an_id_that_cannot_grow() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(LISTS_FILE);
+        let mut lists = Lists::from([(ListId(u32::MAX), "Written by hand".to_string())]);
+
+        let error = created_list(&path, &mut lists, "Co-op").unwrap_err();
+
+        assert!(matches!(error, ListError::Full));
+        assert_eq!(lists.len(), 1);
+        assert!(!path.exists());
     }
 
     #[test]
@@ -244,9 +259,9 @@ mod tests {
         assert!(!path.exists());
     }
 
-    fn starred_in(lists: &[u32]) -> Vote {
+    fn saved_in(lists: &[u32]) -> Vote {
         Vote {
-            starred: true,
+            saved: true,
             lists: lists.iter().copied().map(ListId).collect(),
             ..Vote::new(VoteKind::WouldTry, "2026-11-25")
         }
@@ -254,14 +269,14 @@ mod tests {
 
     fn three_votes() -> Votes {
         Votes::from([
-            (AppId(10), starred_in(&[2, 5])),
-            (AppId(20), starred_in(&[2])),
-            (AppId(30), starred_in(&[5])),
+            (AppId(10), saved_in(&[2, 5])),
+            (AppId(20), saved_in(&[2])),
+            (AppId(30), saved_in(&[5])),
         ])
     }
 
     #[test]
-    fn a_deleted_list_leaves_every_vote_and_its_games_keep_the_star() {
+    fn a_deleted_list_leaves_every_vote_and_its_games_keep_the_save() {
         let dir = tempfile::tempdir().unwrap();
         let votes_path = dir.path().join("votes.toml");
         let lists_path = dir.path().join(LISTS_FILE);
@@ -280,7 +295,7 @@ mod tests {
 
         assert_eq!(votes[&AppId(10)].lists, BTreeSet::from([ListId(5)]));
         assert!(votes[&AppId(20)].lists.is_empty());
-        assert!(votes.values().all(|vote| vote.starred));
+        assert!(votes.values().all(|vote| vote.saved));
         assert_eq!(load_votes(&votes_path).unwrap().votes, votes);
         assert_eq!(
             load_lists(&lists_path).unwrap(),
@@ -293,7 +308,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let votes_path = dir.path().join("votes.toml");
         let lists_path = dir.path().join(LISTS_FILE);
-        let mut votes = Votes::from([(AppId(30), starred_in(&[5]))]);
+        let mut votes = Votes::from([(AppId(30), saved_in(&[5]))]);
         let mut lists = co_op();
 
         deleted_list(

@@ -6,7 +6,7 @@ use serde::Deserialize;
 use crate::atomic::write_atomically;
 
 const HEADER: &str = "\
-# The lists of starred games, oldest first. votes.toml puts a game in a list with its id.
+# The lists of saved games, oldest first. votes.toml puts a game in a list with its id.
 ";
 
 #[derive(Debug, thiserror::Error)]

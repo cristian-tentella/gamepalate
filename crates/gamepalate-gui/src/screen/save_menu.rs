@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use gamepalate_app::{AppId, Gamepalate, ListId, Lists, StarChange};
+use gamepalate_app::{AppId, Gamepalate, ListId, Lists, SaveChange};
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{Operation, Tree};
 use iced::advanced::{Clipboard, Renderer as _, Shell, Widget, mouse, overlay, renderer};
@@ -17,15 +17,15 @@ use crate::{font, style};
 
 const WIDTH: f32 = 240.0;
 const PADDING: f32 = 6.0;
-/// Between the star and the menu.
+/// Between the button and the menu.
 const GAP: f32 = 6.0;
-const FIELD: Id = Id::new("star-menu-name");
-/// The lists of a game without the star.
+const FIELD: Id = Id::new("save-menu-name");
+/// The lists of a game not saved.
 pub static NO_LISTS: BTreeSet<ListId> = BTreeSet::new();
 
-/// The menu of the star: the star alone, a box for each list, and a new list. It lists the lists
+/// The menu of Save: Save alone, a box for each list, and a new list. It lists the lists
 /// as they were when the facade last changed.
-pub struct StarMenu {
+pub struct SaveMenu {
     lists: Lists,
     revision: u64,
     open: Option<Open>,
@@ -58,22 +58,22 @@ pub enum Message {
 /// What the screen does with the game the menu is open for.
 #[derive(Debug, PartialEq)]
 pub enum Action {
-    Star(StarChange),
-    /// Make the list and put the game in it: first `create_list`, then [`StarMenu::created`] and
-    /// a star with `StarChange::AddTo`, so the list is written before the vote.
+    Save(SaveChange),
+    /// Make the list and put the game in it: first `create_list`, then [`SaveMenu::created`] and
+    /// Save with `SaveChange::AddTo`, so the list is written before the vote.
     Create(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Row {
-    Star,
+    Save,
     List(ListId),
     New,
 }
 
-impl StarMenu {
-    pub fn new(gamepalate: &Gamepalate) -> StarMenu {
-        StarMenu {
+impl SaveMenu {
+    pub fn new(gamepalate: &Gamepalate) -> SaveMenu {
+        SaveMenu {
             lists: gamepalate.lists(),
             revision: gamepalate.revision(),
             open: None,
@@ -140,11 +140,11 @@ impl StarMenu {
         }
     }
 
-    /// `starred` and `lists` are the star of the game as the screen knows it.
+    /// `saved` and `lists` are Save on the game as the screen knows it.
     pub fn update(
         &mut self,
         message: Message,
-        starred: bool,
+        saved: bool,
         lists: &BTreeSet<ListId>,
     ) -> (Option<Action>, Task<Message>) {
         let rows = self.rows();
@@ -198,25 +198,25 @@ impl StarMenu {
         };
 
         match rows[row] {
-            Row::Star => {
+            Row::Save => {
                 self.open = None;
-                let change = if starred {
-                    StarChange::Unstar
+                let change = if saved {
+                    SaveChange::Unsave
                 } else {
-                    StarChange::Star
+                    SaveChange::Save
                 };
-                (Some(Action::Star(change)), Task::none())
+                (Some(Action::Save(change)), Task::none())
             }
             Row::List(list) => {
                 if keyboard {
                     self.open = None;
                 }
                 let change = if lists.contains(&list) {
-                    StarChange::RemoveFrom(list)
+                    SaveChange::RemoveFrom(list)
                 } else {
-                    StarChange::AddTo(list)
+                    SaveChange::AddTo(list)
                 };
-                (Some(Action::Star(change)), Task::none())
+                (Some(Action::Save(change)), Task::none())
             }
             Row::New => {
                 open.naming = Some(Naming::default());
@@ -226,31 +226,31 @@ impl StarMenu {
     }
 
     fn rows(&self) -> Vec<Row> {
-        std::iter::once(Row::Star)
+        std::iter::once(Row::Save)
             .chain(self.lists.keys().map(|&list| Row::List(list)))
             .chain([Row::New])
             .collect()
     }
 
-    /// The star button, with the menu under it when it is open. `map` turns the menu's messages
+    /// The Save button, with the menu under it when it is open. `map` turns the menu's messages
     /// into the screen's.
-    pub fn star<'a, M: Clone + 'a>(
+    pub fn save<'a, M: Clone + 'a>(
         &'a self,
-        starred: bool,
+        saved: bool,
         lists: &BTreeSet<ListId>,
         on_press: Option<M>,
         map: impl Fn(Message) -> M + Clone + 'a,
     ) -> Element<'a, M> {
-        let button = game::star_button(starred, on_press);
+        let button = game::save_button(saved, on_press);
         let menu = self
             .open
             .as_ref()
-            .map(|open| self.menu(open, starred, lists).map(map.clone()));
+            .map(|open| self.menu(open, saved, lists).map(map.clone()));
 
         anchored(button, menu, map(Message::Close))
     }
 
-    fn menu(&self, open: &Open, starred: bool, lists: &BTreeSet<ListId>) -> Element<'_, Message> {
+    fn menu(&self, open: &Open, saved: bool, lists: &BTreeSet<ListId>) -> Element<'_, Message> {
         let rows = self.rows();
         let line =
             |index: usize, content: Element<'static, Message>| -> Element<'static, Message> {
@@ -263,11 +263,11 @@ impl StarMenu {
                     .into()
             };
 
-        let star = line(
+        let save = line(
             0,
             row![
-                text(font::STAR).font(font::ICONS).size(font::icon(9.0)),
-                text(if starred { "Unstar" } else { "Star" }).size(font::BAR_SIZE),
+                text(font::BOOKMARK).font(font::ICONS).size(font::icon(9.0)),
+                text(if saved { "Unsave" } else { "Save" }).size(font::BAR_SIZE),
             ]
             .spacing(8)
             .align_y(Center)
@@ -320,8 +320,12 @@ impl StarMenu {
             ),
         };
 
-        let lists_part = (!self.lists.is_empty()).then(|| column(boxes).spacing(2));
-        let mut menu = column![star, style::separator()].spacing(4);
+        let lists_part = (!self.lists.is_empty()).then(|| {
+            let title = container(text("Save to").size(font::NOTE_SIZE).style(style::muted))
+                .padding([2, 10]);
+            column![title].extend(boxes).spacing(2)
+        });
+        let mut menu = column![save, style::separator()].spacing(4);
         if let Some(lists_part) = lists_part {
             menu = menu.push(lists_part).push(style::separator());
         }
@@ -359,7 +363,7 @@ fn key_message(key: &Key) -> Option<Message> {
         Key::Named(Named::ArrowUp) => Some(Message::Up),
         Key::Named(Named::ArrowDown) => Some(Message::Down),
         Key::Named(Named::Enter) => Some(Message::Enter),
-        Key::Character(key) if game::star_key(key) => Some(Message::Close),
+        Key::Character(key) if game::save_key(key) => Some(Message::Close),
         _ => None,
     }
 }
@@ -648,8 +652,8 @@ mod tests {
     const CO_OP: ListId = ListId(2);
     const ON_SALE: ListId = ListId(5);
 
-    fn menu() -> StarMenu {
-        StarMenu {
+    fn menu() -> SaveMenu {
+        SaveMenu {
             lists: Lists::from([
                 (CO_OP, "Co-op".to_string()),
                 (ON_SALE, "On sale".to_string()),
@@ -663,11 +667,11 @@ mod tests {
         }
     }
 
-    fn press(menu: &mut StarMenu, message: Message) -> Option<Action> {
+    fn press(menu: &mut SaveMenu, message: Message) -> Option<Action> {
         menu.update(message, false, &BTreeSet::new()).0
     }
 
-    fn row(menu: &StarMenu) -> usize {
+    fn row(menu: &SaveMenu) -> usize {
         menu.open.as_ref().unwrap().row
     }
 
@@ -685,17 +689,17 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_the_first_row_stars_or_unstars_and_closes() {
+    fn enter_on_the_first_row_saves_or_unsaves_and_closes() {
         let mut menu = menu();
         assert_eq!(
             press(&mut menu, Message::Enter),
-            Some(Action::Star(StarChange::Star))
+            Some(Action::Save(SaveChange::Save))
         );
         assert!(!menu.is_open());
 
         let mut menu = self::menu();
         let (action, _) = menu.update(Message::Enter, true, &BTreeSet::from([CO_OP]));
-        assert_eq!(action, Some(Action::Star(StarChange::Unstar)));
+        assert_eq!(action, Some(Action::Save(SaveChange::Unsave)));
         assert!(!menu.is_open());
     }
 
@@ -705,7 +709,7 @@ mod tests {
         press(&mut menu, Message::Down);
         assert_eq!(
             press(&mut menu, Message::Enter),
-            Some(Action::Star(StarChange::AddTo(CO_OP)))
+            Some(Action::Save(SaveChange::AddTo(CO_OP)))
         );
         assert!(!menu.is_open());
 
@@ -713,22 +717,22 @@ mod tests {
         press(&mut menu, Message::Down);
         press(&mut menu, Message::Down);
         let (action, _) = menu.update(Message::Enter, true, &BTreeSet::from([ON_SALE]));
-        assert_eq!(action, Some(Action::Star(StarChange::RemoveFrom(ON_SALE))));
+        assert_eq!(action, Some(Action::Save(SaveChange::RemoveFrom(ON_SALE))));
         assert!(!menu.is_open());
     }
 
     #[test]
-    fn a_click_on_a_list_keeps_the_menu_open_and_one_on_the_star_closes_it() {
+    fn a_click_on_a_list_keeps_the_menu_open_and_one_on_the_save_closes_it() {
         let mut menu = menu();
         assert_eq!(
             press(&mut menu, Message::Click(2)),
-            Some(Action::Star(StarChange::AddTo(ON_SALE)))
+            Some(Action::Save(SaveChange::AddTo(ON_SALE)))
         );
         assert!(menu.is_open());
         assert_eq!(row(&menu), 2);
         assert_eq!(
             press(&mut menu, Message::Click(0)),
-            Some(Action::Star(StarChange::Star))
+            Some(Action::Save(SaveChange::Save))
         );
         assert!(!menu.is_open());
     }
@@ -765,7 +769,7 @@ mod tests {
         let mut menu = menu();
         press(&mut menu, Message::Click(3));
         menu.refused("A list with this name already exists".to_string());
-        let naming = |menu: &StarMenu| {
+        let naming = |menu: &SaveMenu| {
             menu.open
                 .as_ref()
                 .unwrap()
@@ -795,8 +799,8 @@ mod tests {
     }
 
     #[test]
-    fn without_lists_the_menu_has_the_star_and_new_list() {
-        let mut menu = StarMenu {
+    fn without_lists_the_menu_has_the_save_and_new_list() {
+        let mut menu = SaveMenu {
             lists: Lists::new(),
             ..menu()
         };
@@ -877,22 +881,22 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_goes_under_the_star_or_above_it_inside_the_window() {
+    fn the_menu_goes_under_the_save_or_above_it_inside_the_window() {
         let window = Size::new(1000.0, 700.0);
         let menu = Size::new(240.0, 200.0);
-        let star = |x, y| Rectangle::new(Point::new(x, y), Size::new(36.0, 36.0));
+        let save = |x, y| Rectangle::new(Point::new(x, y), Size::new(36.0, 36.0));
 
         assert_eq!(
-            place(star(400.0, 100.0), menu, window),
+            place(save(400.0, 100.0), menu, window),
             Point::new(400.0, 142.0)
         );
         assert_eq!(
-            place(star(400.0, 640.0), menu, window),
+            place(save(400.0, 640.0), menu, window),
             Point::new(400.0, 434.0)
         );
-        assert_eq!(place(star(900.0, 100.0), menu, window).x, 760.0);
+        assert_eq!(place(save(900.0, 100.0), menu, window).x, 760.0);
         assert_eq!(
-            place(star(0.0, 300.0), Size::new(240.0, 900.0), window),
+            place(save(0.0, 300.0), Size::new(240.0, 900.0), window),
             Point::new(0.0, 0.0)
         );
     }

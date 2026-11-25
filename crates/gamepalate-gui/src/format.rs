@@ -72,15 +72,6 @@ pub fn short_filters(summary: &str, most: usize) -> Option<String> {
     })
 }
 
-/// The name cut to `most` characters with …, or None when it fits as it is.
-pub fn short_name(name: &str, most: usize) -> Option<String> {
-    if name.chars().count() <= most {
-        return None;
-    }
-    let cut: String = name.chars().take(most.saturating_sub(1)).collect();
-    Some(format!("{}…", cut.trim_end()))
-}
-
 pub fn filters(options: &SearchOptions, currency: &Currency) -> Option<String> {
     let filters = &options.filters;
     let mut parts = Vec::new();
@@ -533,8 +524,8 @@ pub fn vote_removed(name: &str) -> String {
     format!("{name}: vote removed")
 }
 
-pub fn star_tip(starred: bool) -> &'static str {
-    if starred { "Starred · S" } else { "Star · S" }
+pub fn save_tip(saved: bool) -> &'static str {
+    if saved { "Saved · S" } else { "Save · S" }
 }
 
 /// The toast of a game put in a list or taken out of it.
@@ -546,11 +537,11 @@ pub fn list_toast(list: &str, added: bool) -> String {
     }
 }
 
-pub fn star_toast(name: &str, starred: bool) -> String {
-    if starred {
-        format!("{name}: starred")
+pub fn save_toast(name: &str, saved: bool) -> String {
+    if saved {
+        format!("{name}: saved")
     } else {
-        format!("{name}: star removed")
+        format!("{name}: no longer saved")
     }
 }
 
@@ -695,11 +686,11 @@ mod tests {
     }
 
     #[test]
-    fn the_star_says_whether_the_game_has_it() {
-        assert_eq!(star_tip(false), "Star · S");
-        assert_eq!(star_tip(true), "Starred · S");
-        assert_eq!(star_toast("Hades", true), "Hades: starred");
-        assert_eq!(star_toast("Hades", false), "Hades: star removed");
+    fn the_save_says_whether_the_game_has_it() {
+        assert_eq!(save_tip(false), "Save · S");
+        assert_eq!(save_tip(true), "Saved · S");
+        assert_eq!(save_toast("Hades", true), "Hades: saved");
+        assert_eq!(save_toast("Hades", false), "Hades: no longer saved");
         assert_eq!(list_toast("Co-op", true), "Added to Co-op");
         assert_eq!(list_toast("Co-op", false), "Removed from Co-op");
     }
@@ -836,20 +827,6 @@ mod tests {
         assert_eq!(
             short_filters("Without: Anime, Dating Sim, Noir", 10).as_deref(),
             Some("Without: A…")
-        );
-    }
-
-    #[test]
-    fn a_long_name_ends_with_dots_within_its_room() {
-        assert_eq!(short_name("Co-op", 12), None);
-        assert_eq!(short_name("Twelve chars", 12), None);
-        assert_eq!(
-            short_name("Quando scende sotto 10 €", 12).as_deref(),
-            Some("Quando scen…")
-        );
-        assert_eq!(
-            short_name("Per lo Steam Deck", 8).as_deref(),
-            Some("Per lo…")
         );
     }
 

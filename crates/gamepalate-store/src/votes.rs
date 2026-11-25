@@ -24,8 +24,8 @@ const HEADER: &str = "\
 # not_for_me  not for you, it leaves the recommendations
 # bet = true  the vote was given to a bet
 # searched = true  the vote was given to a game you looked up, not to a recommendation
-# starred = true  you are thinking of buying it (only on would_try)
-# lists = [..]   the lists of a starred game (ids from lists.toml)
+# saved = true  you are thinking of buying it (only on would_try)
+# lists = [..]   the lists of a saved game (ids from lists.toml)
 # at          when the vote was cast, in milliseconds since 1970 (for the last 24 hours and the 7 days of a later)
 ";
 
@@ -52,14 +52,17 @@ pub enum VotesError {
     #[error("the vote for {0} has searched = false, which can only be true")]
     SearchedNotTrue(u32),
 
-    #[error("the vote for {0} has starred = false, which can only be true")]
-    StarredNotTrue(u32),
+    #[error("the vote for {0} has saved = false, which can only be true")]
+    SavedNotTrue(u32),
 
-    #[error("the vote for {0} has starred = true, which only a would_try can have")]
-    StarredNotWouldTry(u32),
+    #[error("the vote for {0} has saved = true, which only a would_try can have")]
+    SavedNotWouldTry(u32),
 
-    #[error("the vote for {0} has lists, which only a game with starred = true can have")]
-    ListsNotStarred(u32),
+    #[error("the vote for {0} has lists, which only a game with saved = true can have")]
+    ListsNotSaved(u32),
+
+    #[error("the vote for {0} has both saved and starred, which are the same: keep saved")]
+    SavedTwice(u32),
 
     #[error("the vote for {0} has lists = [], which can only name some lists")]
     ListsEmpty(u32),
@@ -83,6 +86,8 @@ struct VoteEntry {
     #[allow(dead_code)]
     genre_ok: Option<bool>,
     searched: Option<bool>,
+    saved: Option<bool>,
+    // The name of `saved` until 0.31: read, and written as `saved`.
     starred: Option<bool>,
     lists: Option<Vec<u32>>,
 }
@@ -169,7 +174,7 @@ fn votes_text(votes: &Votes, name: impl Fn(AppId) -> Option<String>) -> String {
         } else {
             ""
         };
-        let starred = if vote.starred { ", starred = true" } else { "" };
+        let saved = if vote.saved { ", saved = true" } else { "" };
         let lists = if vote.lists.is_empty() {
             String::new()
         } else {
@@ -178,7 +183,7 @@ fn votes_text(votes: &Votes, name: impl Fn(AppId) -> Option<String>) -> String {
         };
         let _ = write!(
             text,
-            "{} = {{ vote = \"{}\", date = \"{}\"{at}{bet}{searched}{starred}{lists} }}",
+            "{} = {{ vote = \"{}\", date = \"{}\"{at}{bet}{searched}{saved}{lists} }}",
             id.0,
             kind_name(vote.kind),
             vote.date
@@ -236,17 +241,18 @@ fn vote_from_entry(appid: u32, entry: VoteEntry) -> Result<Option<Vote>, VotesEr
         Some(true) => true,
         Some(false) => return Err(VotesError::SearchedNotTrue(appid)),
     };
-    let starred = match entry.starred {
-        None => false,
-        Some(true) => true,
-        Some(false) => return Err(VotesError::StarredNotTrue(appid)),
+    let saved = match (entry.saved, entry.starred) {
+        (Some(_), Some(_)) => return Err(VotesError::SavedTwice(appid)),
+        (None, None) => false,
+        (Some(true), None) | (None, Some(true)) => true,
+        (Some(false), None) | (None, Some(false)) => return Err(VotesError::SavedNotTrue(appid)),
     };
-    if starred && !matches!(entry.vote.kind(), Some(VoteKind::WouldTry)) {
-        return Err(VotesError::StarredNotWouldTry(appid));
+    if saved && !matches!(entry.vote.kind(), Some(VoteKind::WouldTry)) {
+        return Err(VotesError::SavedNotWouldTry(appid));
     }
     let lists = match entry.lists {
         None => BTreeSet::new(),
-        Some(_) if !starred => return Err(VotesError::ListsNotStarred(appid)),
+        Some(_) if !saved => return Err(VotesError::ListsNotSaved(appid)),
         Some(lists) if lists.is_empty() => return Err(VotesError::ListsEmpty(appid)),
         Some(lists) => lists.into_iter().map(ListId).collect(),
     };
@@ -257,7 +263,7 @@ fn vote_from_entry(appid: u32, entry: VoteEntry) -> Result<Option<Vote>, VotesEr
         at: entry.at.map(Timestamp),
         bet,
         searched,
-        starred,
+        saved,
         lists,
     }))
 }
@@ -376,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn a_star_survives_saving_and_loading() {
+    fn a_saved_vote_of_old_is_read_and_written_as_saved() {
         let votes = parse_votes(
             r#"
             [votes]
@@ -387,24 +393,25 @@ mod tests {
         .unwrap()
         .votes;
 
-        assert!(votes[&AppId(1145360)].starred);
-        assert!(!votes[&AppId(620)].starred);
+        assert!(votes[&AppId(1145360)].saved);
+        assert!(!votes[&AppId(620)].saved);
         let text = votes_text(&votes, |_| None);
         assert!(text.contains(
-            "1145360 = { vote = \"would_try\", date = \"2026-11-16\", at = 1794835200000, starred = true }"
+            "1145360 = { vote = \"would_try\", date = \"2026-11-16\", at = 1794835200000, saved = true }"
         ));
+        assert!(!text.contains("starred"));
         assert!(text.contains("620 = { vote = \"would_try\", date = \"2026-11-16\" }"));
         assert_eq!(parse_votes(&text).unwrap().votes, votes);
     }
 
     #[test]
-    fn the_star_comes_after_the_other_signs() {
+    fn saved_comes_after_the_other_signs() {
         let votes = Votes::from([(
             AppId(10),
             Vote {
                 bet: true,
                 searched: true,
-                starred: true,
+                saved: true,
                 ..Vote::new(VoteKind::WouldTry, "2026-11-16")
             },
         )]);
@@ -412,44 +419,46 @@ mod tests {
         let text = votes_text(&votes, |_| None);
 
         assert!(text.contains(
-            "10 = { vote = \"would_try\", date = \"2026-11-16\", bet = true, searched = true, starred = true }"
+            "10 = { vote = \"would_try\", date = \"2026-11-16\", bet = true, searched = true, saved = true }"
         ));
     }
 
     #[test]
-    fn parse_votes_rejects_starred_false() {
-        let result = parse_votes(
-            r#"votes = { 10 = { vote = "would_try", date = "2026-10-07", starred = false } }"#,
-        );
-        assert!(matches!(result, Err(VotesError::StarredNotTrue(10))));
+    fn parse_votes_rejects_saved_false() {
+        for key in ["saved", "starred"] {
+            let result = parse_votes(&format!(
+                r#"votes = {{ 10 = {{ vote = "would_try", date = "2026-10-07", {key} = false }} }}"#
+            ));
+            assert!(matches!(result, Err(VotesError::SavedNotTrue(10))), "{key}");
+        }
     }
 
     #[test]
-    fn parse_votes_rejects_a_star_on_another_vote() {
+    fn parse_votes_rejects_saved_on_another_vote() {
         for kind in ["not_for_me", "later"] {
             let text = format!(
-                r#"votes = {{ 10 = {{ vote = "{kind}", date = "2026-10-07", starred = true }} }}"#
+                r#"votes = {{ 10 = {{ vote = "{kind}", date = "2026-10-07", saved = true }} }}"#
             );
             let error = parse_votes(&text).unwrap_err();
-            assert!(matches!(error, VotesError::StarredNotWouldTry(10)));
+            assert!(matches!(error, VotesError::SavedNotWouldTry(10)));
             assert!(error.to_string().contains("10"));
         }
     }
 
     #[test]
-    fn the_header_explains_the_star() {
+    fn the_header_explains_saved() {
         assert!(
-            HEADER.contains("# starred = true  you are thinking of buying it (only on would_try)")
+            HEADER.contains("# saved = true  you are thinking of buying it (only on would_try)")
         );
     }
 
     #[test]
-    fn the_lists_of_a_star_survive_saving_and_loading() {
+    fn the_lists_of_a_saved_game_survive_saving_and_loading() {
         let votes = parse_votes(
             r#"
             [votes]
-            1145360 = { vote = "would_try", date = "2026-11-16", at = 1794835200000, starred = true, lists = [5, 2] } # Disco Elysium
-            620 = { vote = "would_try", date = "2026-11-16", starred = true }
+            1145360 = { vote = "would_try", date = "2026-11-16", at = 1794835200000, saved = true, lists = [5, 2] } # Disco Elysium
+            620 = { vote = "would_try", date = "2026-11-16", saved = true }
             "#,
         )
         .unwrap()
@@ -462,30 +471,40 @@ mod tests {
         assert!(votes[&AppId(620)].lists.is_empty());
         let text = votes_text(&votes, |_| None);
         assert!(text.contains(
-            "1145360 = { vote = \"would_try\", date = \"2026-11-16\", at = 1794835200000, starred = true, lists = [2, 5] }"
+            "1145360 = { vote = \"would_try\", date = \"2026-11-16\", at = 1794835200000, saved = true, lists = [2, 5] }"
         ));
         assert!(
-            text.contains("620 = { vote = \"would_try\", date = \"2026-11-16\", starred = true }")
+            text.contains("620 = { vote = \"would_try\", date = \"2026-11-16\", saved = true }")
         );
         assert_eq!(parse_votes(&text).unwrap().votes, votes);
     }
 
     #[test]
-    fn parse_votes_rejects_lists_without_a_star() {
+    fn parse_votes_rejects_lists_without_saved() {
         for vote in [
             r#"vote = "would_try", date = "2026-10-07", lists = [2]"#,
             r#"vote = "not_for_me", date = "2026-10-07", lists = [2]"#,
         ] {
             let error = parse_votes(&format!("votes = {{ 10 = {{ {vote} }} }}")).unwrap_err();
-            assert!(matches!(error, VotesError::ListsNotStarred(10)));
+            assert!(matches!(error, VotesError::ListsNotSaved(10)));
             assert!(error.to_string().contains("10"));
         }
     }
 
     #[test]
+    fn a_vote_with_both_saved_and_saved_is_refused() {
+        let error = parse_votes(
+            r#"votes = { 10 = { vote = "would_try", date = "2026-10-07", saved = true, starred = true } }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(error, VotesError::SavedTwice(10)));
+        assert!(error.to_string().contains("10"));
+    }
+
+    #[test]
     fn parse_votes_rejects_empty_lists() {
         let result = parse_votes(
-            r#"votes = { 10 = { vote = "would_try", date = "2026-10-07", starred = true, lists = [] } }"#,
+            r#"votes = { 10 = { vote = "would_try", date = "2026-10-07", saved = true, lists = [] } }"#,
         );
         assert!(matches!(result, Err(VotesError::ListsEmpty(10))));
     }
@@ -493,7 +512,7 @@ mod tests {
     #[test]
     fn the_header_explains_the_lists() {
         assert!(
-            HEADER.contains("# lists = [..]   the lists of a starred game (ids from lists.toml)")
+            HEADER.contains("# lists = [..]   the lists of a saved game (ids from lists.toml)")
         );
     }
 

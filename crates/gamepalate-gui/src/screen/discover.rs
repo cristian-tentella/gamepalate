@@ -12,7 +12,7 @@ use std::{
 
 use gamepalate_app::{
     AppId, Blame, DiscoverMode, FilterOptions, Gamepalate, ListId, RecommendError, Recommendation,
-    RecommendedGame, SearchOptions, StarChange, VoteKind,
+    RecommendedGame, SaveChange, SearchOptions, VoteKind,
 };
 use iced::{
     Center, Element, Event, Fill, Length, Size, Subscription, Task, event,
@@ -31,9 +31,9 @@ use self::{
 use super::{
     Toasts,
     game::{self, Link, Pick, VOTE_HEIGHT},
+    save_menu::{self, NO_LISTS, SaveMenu},
     sentence,
     showcase::{self, Showcase},
-    star_menu::{self, NO_LISTS, StarMenu},
 };
 use crate::{font, format, style};
 
@@ -92,9 +92,9 @@ pub struct Discover {
     bet_every: usize,
     toasts: Toasts,
     played: Option<AppId>,
-    /// The games starred here and their lists, so Back finds them as they were left.
-    starred: HashMap<AppId, BTreeSet<ListId>>,
-    star_menu: StarMenu,
+    /// The games saved here and their lists, so Back finds them as they were left.
+    saved: HashMap<AppId, BTreeSet<ListId>>,
+    save_menu: SaveMenu,
     flash: Option<Flash>,
     timers_started: u64,
     showcase: Showcase,
@@ -129,10 +129,10 @@ pub enum Message {
     VoteSaved(Result<(), String>),
     Played,
     PlayedSaved(String, Result<bool, String>),
-    Star,
-    StarMenu(star_menu::Message),
-    /// The game, its lists before the change, whether it got a new star, and the result.
-    StarSaved(AppId, Option<BTreeSet<ListId>>, bool, Result<(), String>),
+    Save,
+    SaveMenu(save_menu::Message),
+    /// The game, its lists before the change, whether it was newly saved, and the result.
+    SaveDone(AppId, Option<BTreeSet<ListId>>, bool, Result<(), String>),
     ListCreated(AppId, Result<ListId, String>),
     Undo,
     Undone(Result<(), String>),
@@ -211,8 +211,8 @@ impl Discover {
             bet_every: gamepalate.bet_every(),
             toasts: Toasts::default(),
             played: None,
-            starred: HashMap::new(),
-            star_menu: StarMenu::new(gamepalate),
+            saved: HashMap::new(),
+            save_menu: SaveMenu::new(gamepalate),
             flash: None,
             timers_started: 0,
             showcase: Showcase::new(gamepalate),
@@ -226,7 +226,7 @@ impl Discover {
 
     pub fn use_gamepalate(&mut self, gamepalate: &Arc<Gamepalate>) {
         self.gamepalate = Arc::clone(gamepalate);
-        self.star_menu = StarMenu::new(gamepalate);
+        self.save_menu = SaveMenu::new(gamepalate);
         self.backlog_ranked = gamepalate.backlog_ranked();
     }
 
@@ -271,7 +271,7 @@ impl Discover {
             self.showcase.stop_trailer();
         }
         let task = self.handle(message);
-        self.star_menu.keep_for(self.current().map(|game| game.id));
+        self.save_menu.keep_for(self.current().map(|game| game.id));
         let has_reviews = self.current().is_some_and(|game| game.reviews.total > 0);
         self.showcase
             .follow(self.current().map(|game| game.id), has_reviews);
@@ -342,7 +342,7 @@ impl Discover {
             }
             Message::Later => {
                 if let Some(id) = self.current().map(|game| game.id) {
-                    self.starred.remove(&id);
+                    self.saved.remove(&id);
                 }
                 let save = self.current().map(|game| {
                     let gamepalate = Arc::clone(&self.gamepalate);
@@ -376,7 +376,7 @@ impl Discover {
                     let gamepalate = Arc::clone(&self.gamepalate);
                     let (id, bet) = (game.id, game.bet);
                     if kind != VoteKind::WouldTry {
-                        self.starred.remove(&id);
+                        self.saved.remove(&id);
                     }
                     let save = Task::perform(
                         async move {
@@ -404,7 +404,7 @@ impl Discover {
                     let (id, name) = (game.id, game.name.clone());
                     let gamepalate = Arc::clone(&self.gamepalate);
                     self.played = Some(id);
-                    self.starred.remove(&id);
+                    self.saved.remove(&id);
                     let save = Task::perform(
                         async move {
                             gamepalate
@@ -428,25 +428,25 @@ impl Discover {
                 self.played = None;
                 return self.show_toast(error);
             }
-            Message::Star => {
+            Message::Save => {
                 if let Some(id) = self.current().map(|game| game.id) {
-                    self.star_menu.open(&self.gamepalate, id);
+                    self.save_menu.open(&self.gamepalate, id);
                 }
             }
-            Message::StarMenu(message) => {
-                let Some(id) = self.star_menu.game() else {
+            Message::SaveMenu(message) => {
+                let Some(id) = self.save_menu.game() else {
                     return Task::none();
                 };
-                let lists = self.starred.get(&id);
+                let lists = self.saved.get(&id);
                 let (action, task) =
-                    self.star_menu
+                    self.save_menu
                         .update(message, lists.is_some(), lists.unwrap_or(&NO_LISTS));
-                let task = task.map(Message::StarMenu);
+                let task = task.map(Message::SaveMenu);
                 return match action {
-                    Some(star_menu::Action::Star(change)) => {
-                        Task::batch([task, self.change_star(id, change)])
+                    Some(save_menu::Action::Save(change)) => {
+                        Task::batch([task, self.change_saved(id, change)])
                     }
-                    Some(star_menu::Action::Create(name)) => {
+                    Some(save_menu::Action::Create(name)) => {
                         let gamepalate = Arc::clone(&self.gamepalate);
                         let create = Task::perform(
                             async move {
@@ -462,21 +462,21 @@ impl Discover {
                 };
             }
             Message::ListCreated(id, Ok(list)) => {
-                self.star_menu.created(&self.gamepalate);
+                self.save_menu.created(&self.gamepalate);
                 if self.current().is_some_and(|game| game.id == id) {
-                    return self.change_star(id, StarChange::AddTo(list));
+                    return self.change_saved(id, SaveChange::AddTo(list));
                 }
             }
-            Message::ListCreated(_, Err(error)) => self.star_menu.refused(error),
-            Message::StarSaved(_, _, true, Ok(())) => {
+            Message::ListCreated(_, Err(error)) => self.save_menu.refused(error),
+            Message::SaveDone(_, _, true, Ok(())) => {
                 self.votes_this_session += 1;
                 self.votes_last_day = self.gamepalate.votes_in_last_day();
             }
-            Message::StarSaved(_, _, false, Ok(())) => {}
-            Message::StarSaved(id, before, _, Err(error)) => {
+            Message::SaveDone(_, _, false, Ok(())) => {}
+            Message::SaveDone(id, before, _, Err(error)) => {
                 match before {
-                    Some(lists) => self.starred.insert(id, lists),
-                    None => self.starred.remove(&id),
+                    Some(lists) => self.saved.insert(id, lists),
+                    None => self.saved.remove(&id),
                 };
                 return self.show_toast(error);
             }
@@ -571,8 +571,8 @@ impl Discover {
         if !keys {
             return trailer;
         }
-        if self.star_menu.is_open() {
-            return Subscription::batch([star_menu::keys().map(Message::StarMenu), trailer]);
+        if self.save_menu.is_open() {
+            return Subscription::batch([save_menu::keys().map(Message::SaveMenu), trailer]);
         }
         Subscription::batch([
             keyboard::listen().filter_map(key_message),
@@ -786,10 +786,10 @@ impl Discover {
             Layout::Stacked(_) => width - game::LINKS_WIDTH,
         };
         let backlog = self.options.mode == DiscoverMode::Backlog;
-        let star_space = if backlog { 0.0 } else { game::STAR_SPACE };
+        let save_space = if backlog { 0.0 } else { game::SAVE_SPACE };
         let vote_width = game::vote_width(
             available,
-            star_space + if compact { 0.0 } else { HINT_WIDTH },
+            save_space + if compact { 0.0 } else { HINT_WIDTH },
         );
         let game = self.current();
         let hints = (!compact).then(|| {
@@ -833,12 +833,12 @@ impl Discover {
                 },
                 true,
                 Some({
-                    let lists = game.and_then(|game| self.starred.get(&game.id));
-                    self.star_menu.star(
+                    let lists = game.and_then(|game| self.saved.get(&game.id));
+                    self.save_menu.save(
                         lists.is_some(),
                         lists.unwrap_or(&NO_LISTS),
-                        game.is_some().then_some(Message::Star),
-                        Message::StarMenu,
+                        game.is_some().then_some(Message::Save),
+                        Message::SaveMenu,
                     )
                 }),
             )
@@ -857,35 +857,35 @@ impl Discover {
             .into()
     }
 
-    /// Saves the change to the star of `id`, the game shown. A game that gets the star moves on to
+    /// Saves the change to Save on `id`, the game shown. A game that is saved moves on to
     /// the next, as a vote does; a game that had it already stays.
-    fn change_star(&mut self, id: AppId, change: StarChange) -> Task<Message> {
+    fn change_saved(&mut self, id: AppId, change: SaveChange) -> Task<Message> {
         let Some(game) = self.current().filter(|game| game.id == id) else {
             return Task::none();
         };
         let (bet, name) = (game.bet, game.name.clone());
-        let before = self.starred.get(&id).cloned();
-        let new_star = moves_on(before.as_ref(), change);
+        let before = self.saved.get(&id).cloned();
+        let newly_saved = moves_on(before.as_ref(), change);
         let text = match change {
-            StarChange::Star | StarChange::Unstar => format::star_toast(&name, change.gives_star()),
-            StarChange::AddTo(list) => format::list_toast(self.star_menu.name(list), true),
-            StarChange::RemoveFrom(list) => format::list_toast(self.star_menu.name(list), false),
+            SaveChange::Save | SaveChange::Unsave => format::save_toast(&name, change.saves()),
+            SaveChange::AddTo(list) => format::list_toast(self.save_menu.name(list), true),
+            SaveChange::RemoveFrom(list) => format::list_toast(self.save_menu.name(list), false),
         };
-        change_starred(&mut self.starred, id, change);
+        change_saved_lists(&mut self.saved, id, change);
         let gamepalate = Arc::clone(&self.gamepalate);
         let save = Task::perform(
             async move {
                 gamepalate
-                    .star(id, change, bet, false)
+                    .save(id, change, bet, false)
                     .map_err(|error| error.to_string())
             },
-            move |result| Message::StarSaved(id, before.clone(), new_star, result),
+            move |result| Message::SaveDone(id, before.clone(), newly_saved, result),
         );
         let toast = self.show_toast(text);
-        if !new_star {
+        if !newly_saved {
             return Task::batch([save, toast]);
         }
-        self.star_menu.close();
+        self.save_menu.close();
         Task::batch([
             save,
             toast,
@@ -1407,26 +1407,26 @@ fn bar_edges(width: f32, content_width: f32) -> (f32, f32) {
     (left, (width - left - content_width).max(GAME_PADDING))
 }
 
-/// A game moves on when it gets the star, with a list or without; a change to a game that has
+/// A game moves on when it is saved, with a list or without; a change to a game that has
 /// it already, or one that takes it off, stays on the game.
-fn moves_on(lists_before: Option<&BTreeSet<ListId>>, change: StarChange) -> bool {
-    lists_before.is_none() && change.gives_star()
+fn moves_on(lists_before: Option<&BTreeSet<ListId>>, change: SaveChange) -> bool {
+    lists_before.is_none() && change.saves()
 }
 
-/// The games starred here after `change`, made as `Gamepalate::star` makes it.
-fn change_starred(starred: &mut HashMap<AppId, BTreeSet<ListId>>, id: AppId, change: StarChange) {
+/// The games saved here after `change`, made as `Gamepalate::save` makes it.
+fn change_saved_lists(saved: &mut HashMap<AppId, BTreeSet<ListId>>, id: AppId, change: SaveChange) {
     match change {
-        StarChange::Star => {
-            starred.entry(id).or_default();
+        SaveChange::Save => {
+            saved.entry(id).or_default();
         }
-        StarChange::Unstar => {
-            starred.remove(&id);
+        SaveChange::Unsave => {
+            saved.remove(&id);
         }
-        StarChange::AddTo(list) => {
-            starred.entry(id).or_default().insert(list);
+        SaveChange::AddTo(list) => {
+            saved.entry(id).or_default().insert(list);
         }
-        StarChange::RemoveFrom(list) => {
-            if let Some(lists) = starred.get_mut(&id) {
+        SaveChange::RemoveFrom(list) => {
+            if let Some(lists) = saved.get_mut(&id) {
                 lists.remove(&list);
             }
         }
@@ -1440,7 +1440,7 @@ fn after(duration: Duration, message: Message) -> Task<Message> {
 /// The Backlog has no verdicts: the number keys do nothing, and Space is still a Later.
 fn in_mode(mode: DiscoverMode, message: Message) -> Option<Message> {
     match message {
-        Message::Vote(_) | Message::Played | Message::Star if mode == DiscoverMode::Backlog => None,
+        Message::Vote(_) | Message::Played | Message::Save if mode == DiscoverMode::Backlog => None,
         message => Some(message),
     }
 }
@@ -1454,7 +1454,7 @@ fn stopped_by_popup(message: &Message) -> bool {
             | Message::Previous
             | Message::Vote(_)
             | Message::Played
-            | Message::Star
+            | Message::Save
             | Message::Open(_)
             | Message::ToggleFilters
     )
@@ -1464,7 +1464,7 @@ fn stopped_by_popup(message: &Message) -> bool {
 fn stops_the_trailer(message: &Message) -> bool {
     matches!(
         message,
-        Message::Later | Message::Vote(_) | Message::Played | Message::Star
+        Message::Later | Message::Vote(_) | Message::Played | Message::Save
     )
 }
 
@@ -1477,7 +1477,7 @@ fn acts_on_the_game(message: &Message) -> bool {
             | Message::Previous
             | Message::Vote(_)
             | Message::Played
-            | Message::Star
+            | Message::Save
             | Message::Open(_)
             | Message::Showcase(
                 showcase::Message::NextScreenshot
@@ -1545,7 +1545,7 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         Key::Character(key) if key.eq_ignore_ascii_case("j") => {
             Some(Message::Showcase(showcase::Message::ScrollDown))
         }
-        Key::Character(key) if game::star_key(key.as_str()) => Some(Message::Star),
+        Key::Character(key) if game::save_key(key.as_str()) => Some(Message::Save),
         Key::Character(key) => game::pick_key(key.as_str())
             .map(|pick| match pick {
                 Pick::Played => Message::Played,
@@ -1900,7 +1900,7 @@ mod tests {
         assert!(stops_the_trailer(&Message::Later));
         assert!(stops_the_trailer(&Message::Vote(Pick::Played)));
         assert!(stops_the_trailer(&Message::Played));
-        assert!(stops_the_trailer(&Message::Star));
+        assert!(stops_the_trailer(&Message::Save));
         assert!(!stops_the_trailer(&Message::Previous));
         assert!(!stops_the_trailer(&Message::Showcase(
             showcase::Message::ToggleAbout
@@ -1915,20 +1915,20 @@ mod tests {
     }
 
     #[test]
-    fn s_opens_the_star_menu_in_either_case_and_ctrl_s_does_nothing() {
+    fn s_opens_the_save_menu_in_either_case_and_ctrl_s_does_nothing() {
         for key in ["s", "S"] {
             assert!(matches!(
                 key_message(pressed(Key::Character(key.into()))),
-                Some(Message::Star)
+                Some(Message::Save)
             ));
         }
         assert!(key_message(with_ctrl(Key::Character("s".into()))).is_none());
     }
 
     #[test]
-    fn an_open_popup_or_panel_stops_the_star() {
-        assert!(stopped_by_popup(&Message::Star));
-        assert!(acts_on_the_game(&Message::Star));
+    fn an_open_popup_or_panel_stops_the_save() {
+        assert!(stopped_by_popup(&Message::Save));
+        assert!(acts_on_the_game(&Message::Save));
     }
 
     #[test]
@@ -1937,7 +1937,7 @@ mod tests {
             Message::Vote(Pick::Vote(VoteKind::WouldTry)),
             Message::Vote(Pick::Vote(VoteKind::NotForMe)),
             Message::Played,
-            Message::Star,
+            Message::Save,
         ] {
             assert!(in_mode(DiscoverMode::Backlog, message.clone()).is_none());
             assert!(in_mode(DiscoverMode::New, message).is_some());
@@ -2000,33 +2000,33 @@ mod tests {
     }
 
     #[test]
-    fn only_a_game_that_gets_the_star_moves_on() {
+    fn only_a_game_that_gets_the_save_moves_on() {
         let co_op = ListId(2);
         let none = BTreeSet::new();
         let in_co_op = BTreeSet::from([co_op]);
 
-        assert!(moves_on(None, StarChange::Star));
-        assert!(moves_on(None, StarChange::AddTo(co_op)));
-        assert!(!moves_on(Some(&none), StarChange::AddTo(co_op)));
-        assert!(!moves_on(Some(&in_co_op), StarChange::AddTo(ListId(5))));
-        assert!(!moves_on(Some(&in_co_op), StarChange::RemoveFrom(co_op)));
-        assert!(!moves_on(Some(&in_co_op), StarChange::Unstar));
+        assert!(moves_on(None, SaveChange::Save));
+        assert!(moves_on(None, SaveChange::AddTo(co_op)));
+        assert!(!moves_on(Some(&none), SaveChange::AddTo(co_op)));
+        assert!(!moves_on(Some(&in_co_op), SaveChange::AddTo(ListId(5))));
+        assert!(!moves_on(Some(&in_co_op), SaveChange::RemoveFrom(co_op)));
+        assert!(!moves_on(Some(&in_co_op), SaveChange::Unsave));
     }
 
     #[test]
-    fn back_finds_the_star_and_the_lists_as_they_were_left() {
+    fn back_finds_the_save_and_the_lists_as_they_were_left() {
         let (id, co_op, on_sale) = (AppId(10), ListId(2), ListId(5));
-        let mut starred = HashMap::new();
+        let mut saved = HashMap::new();
 
-        change_starred(&mut starred, id, StarChange::AddTo(co_op));
-        change_starred(&mut starred, id, StarChange::AddTo(on_sale));
-        assert_eq!(starred[&id], BTreeSet::from([co_op, on_sale]));
-        change_starred(&mut starred, id, StarChange::RemoveFrom(co_op));
-        change_starred(&mut starred, id, StarChange::RemoveFrom(on_sale));
-        assert_eq!(starred[&id], BTreeSet::new());
-        change_starred(&mut starred, id, StarChange::Unstar);
-        assert!(!starred.contains_key(&id));
-        change_starred(&mut starred, id, StarChange::Star);
-        assert_eq!(starred[&id], BTreeSet::new());
+        change_saved_lists(&mut saved, id, SaveChange::AddTo(co_op));
+        change_saved_lists(&mut saved, id, SaveChange::AddTo(on_sale));
+        assert_eq!(saved[&id], BTreeSet::from([co_op, on_sale]));
+        change_saved_lists(&mut saved, id, SaveChange::RemoveFrom(co_op));
+        change_saved_lists(&mut saved, id, SaveChange::RemoveFrom(on_sale));
+        assert_eq!(saved[&id], BTreeSet::new());
+        change_saved_lists(&mut saved, id, SaveChange::Unsave);
+        assert!(!saved.contains_key(&id));
+        change_saved_lists(&mut saved, id, SaveChange::Save);
+        assert_eq!(saved[&id], BTreeSet::new());
     }
 }
