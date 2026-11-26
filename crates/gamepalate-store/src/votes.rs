@@ -492,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn a_vote_with_both_saved_and_saved_is_refused() {
+    fn a_vote_with_both_saved_and_starred_is_refused() {
         let error = parse_votes(
             r#"votes = { 10 = { vote = "would_try", date = "2026-10-07", saved = true, starred = true } }"#,
         )
