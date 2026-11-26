@@ -13,7 +13,7 @@ pub struct Vote {
     pub searched: bool,
     /// The game is one you are thinking of buying. Only a Would try can have it.
     pub saved: bool,
-    /// The lists the saved game is in. Empty not saved.
+    /// The lists the saved game is in. Empty when the game is not saved.
     pub lists: BTreeSet<ListId>,
 }
 
