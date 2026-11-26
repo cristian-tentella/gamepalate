@@ -139,6 +139,7 @@ mod tests {
                 followed: Vec::new(),
             },
             votes: read.votes,
+            lists: Default::default(),
             off_catalog: OffCatalogGames::from([(
                 AppId(50),
                 OffCatalogGame {

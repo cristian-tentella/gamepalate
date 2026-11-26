@@ -23,7 +23,7 @@ pub struct BrowseRow {
     pub id: AppId,
     pub name: Arc<str>,
     pub standing: Option<GameStanding>,
-    pub starred: bool,
+    pub saved: bool,
     /// Without a discount that is already over.
     pub price: Price,
     pub reviews: Reviews,
@@ -88,7 +88,7 @@ fn browse(
                 id: game.id,
                 name: Arc::clone(&shown[listed.position as usize]),
                 standing: mark.and_then(|_| standings.of(game.id, now)),
-                starred: mark.is_some_and(|mark| mark.starred),
+                saved: mark.is_some_and(|mark| mark.saved),
                 price: game.price.as_of(now),
                 reviews: game.reviews,
             }
@@ -260,15 +260,15 @@ mod tests {
         }
     }
 
-    fn vote(kind: VoteKind, at: i64, starred: bool) -> Vote {
+    fn vote(kind: VoteKind, at: i64, saved: bool) -> Vote {
         Vote {
             at: Some(Timestamp(NOW.0 + at)),
-            starred,
+            saved,
             ..Vote::new(kind, "2026-11-17")
         }
     }
 
-    /// Six games: 1 is in the Library, 2 in the wishlist, 3 has a star, 4 a Not for me, 5 is
+    /// Six games: 1 is in the Library, 2 in the wishlist, 3 is saved, 4 a Not for me, 5 is
     /// played elsewhere and 6 has a Later. Four are on sale.
     fn fixture() -> Fixture {
         let games = vec![
@@ -350,10 +350,10 @@ mod tests {
         assert_eq!(only(|o| o.library = Choice::Only), [1, 5]);
         assert_eq!(only(|o| o.wished = Choice::Only), [2]);
         assert_eq!(only(|o| o.would_try = Choice::Only), [3]);
-        assert_eq!(only(|o| o.starred = Choice::Only), [3]);
+        assert_eq!(only(|o| o.saved = Choice::Only), [3]);
         assert_eq!(only(|o| o.not_for_me = Choice::Only), [4]);
         assert_eq!(only(|o| o.later = Choice::Only), [6]);
-        assert_eq!(only(|o| o.starred = Choice::Without), [1, 2, 6, 4, 5]);
+        assert_eq!(only(|o| o.saved = Choice::Without), [1, 2, 6, 4, 5]);
         assert_eq!(
             only(|o| {
                 o.would_try = Choice::Only;
@@ -384,7 +384,7 @@ mod tests {
         let standing = |id: u32| {
             rows.iter()
                 .find(|row| row.id.0 == id)
-                .map(|row| (row.standing, row.starred))
+                .map(|row| (row.standing, row.saved))
                 .unwrap()
         };
 
@@ -556,10 +556,10 @@ mod tests {
             .map(|id| {
                 let kind =
                     [VoteKind::WouldTry, VoteKind::NotForMe, VoteKind::Later][id as usize % 3];
-                let starred = id % 7 == 0 && kind == VoteKind::WouldTry;
+                let saved = id % 7 == 0 && kind == VoteKind::WouldTry;
                 (
                     AppId(id * 290),
-                    vote(kind, -i64::from(id) * DAY_MS / 40, starred),
+                    vote(kind, -i64::from(id) * DAY_MS / 40, saved),
                 )
             })
             .collect();

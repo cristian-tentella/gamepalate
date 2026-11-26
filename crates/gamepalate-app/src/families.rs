@@ -871,6 +871,7 @@ games = [
                     followed: Vec::new(),
                 },
                 votes: Votes::new(),
+                lists: Default::default(),
                 off_catalog: BTreeMap::new(),
                 known_converted: None,
             }

@@ -78,7 +78,7 @@ pub struct BrowseOptions {
     /// The wishlist and the followed games.
     pub wished: Choice,
     pub would_try: Choice,
-    pub starred: Choice,
+    pub saved: Choice,
     pub not_for_me: Choice,
     pub later: Choice,
 }
@@ -95,7 +95,7 @@ impl Default for BrowseOptions {
             library: Choice::Without,
             wished: Choice::Any,
             would_try: Choice::Any,
-            starred: Choice::Any,
+            saved: Choice::Any,
             not_for_me: Choice::Without,
             later: Choice::Any,
         }
@@ -110,7 +110,7 @@ impl BrowseOptions {
             && self
                 .would_try
                 .allows(mark.vote.is_some_and(VoteKind::is_yes))
-            && self.starred.allows(mark.starred)
+            && self.saved.allows(mark.saved)
             && self
                 .not_for_me
                 .allows(mark.vote.is_some_and(VoteKind::is_no))
@@ -131,7 +131,7 @@ pub struct Mark {
     pub wished: bool,
     /// The vote that still counts: a Later that is over is none.
     pub vote: Option<VoteKind>,
-    pub starred: bool,
+    pub saved: bool,
 }
 
 /// The marks of the few games that have any, so a game of the catalog costs one lookup.
@@ -147,7 +147,7 @@ pub fn marks(context: &FilterContext, now: Timestamp) -> HashMap<AppId, Mark> {
         if let Some(vote) = standing(context.votes, id, now) {
             let mark = marks.entry(id).or_default();
             mark.vote = Some(vote.kind);
-            mark.starred = vote.starred;
+            mark.saved = vote.saved;
         }
     }
     marks
@@ -294,7 +294,7 @@ mod tests {
         for choice in [
             options.wished,
             options.would_try,
-            options.starred,
+            options.saved,
             options.later,
         ] {
             assert_eq!(choice, Choice::Any);
@@ -337,14 +337,14 @@ mod tests {
         let would_try = mark(Some(VoteKind::WouldTry));
         let later = mark(Some(VoteKind::Later));
         let not_for_me = mark(Some(VoteKind::NotForMe));
-        let starred = Mark {
-            starred: true,
+        let saved = Mark {
+            saved: true,
             ..would_try
         };
 
         let options = only(|options| options.would_try = Choice::Only);
         assert!(options.allows(would_try));
-        assert!(options.allows(starred));
+        assert!(options.allows(saved));
         assert!(!options.allows(later));
         assert!(!options.allows(not_for_me));
         assert!(!options.allows(Mark::default()));
@@ -357,12 +357,12 @@ mod tests {
         assert!(options.allows(not_for_me));
         assert!(!options.allows(later));
 
-        let options = only(|options| options.starred = Choice::Only);
-        assert!(options.allows(starred));
+        let options = only(|options| options.saved = Choice::Only);
+        assert!(options.allows(saved));
         assert!(!options.allows(would_try));
 
-        let options = only(|options| options.starred = Choice::Without);
-        assert!(!options.allows(starred));
+        let options = only(|options| options.saved = Choice::Without);
+        assert!(!options.allows(saved));
         assert!(options.allows(would_try));
         assert!(options.allows(Mark::default()));
     }
@@ -411,10 +411,10 @@ mod tests {
         assert!(only(|options| options.later = Choice::Without).allows_unmarked());
     }
 
-    fn vote(kind: VoteKind, at: Option<i64>, starred: bool) -> Vote {
+    fn vote(kind: VoteKind, at: Option<i64>, saved: bool) -> Vote {
         Vote {
             at: at.map(Timestamp),
-            starred,
+            saved,
             ..Vote::new(kind, "2026-11-01")
         }
     }
@@ -468,7 +468,7 @@ mod tests {
         assert_eq!(marks[&AppId(3)].vote, Some(VoteKind::WouldTry));
         assert!(marks[&AppId(4)].wished);
         assert_eq!(marks[&AppId(6)].vote, Some(VoteKind::WouldTry));
-        assert!(marks[&AppId(6)].starred);
+        assert!(marks[&AppId(6)].saved);
         assert_eq!(marks[&AppId(7)].vote, Some(VoteKind::NotForMe));
         assert_eq!(marks[&AppId(8)].vote, Some(VoteKind::Later));
         assert!(!marks.contains_key(&AppId(9)), "a Later that is over");

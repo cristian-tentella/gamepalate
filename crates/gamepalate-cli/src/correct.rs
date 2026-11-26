@@ -452,6 +452,7 @@ mod tests {
                 followed: Vec::new(),
             },
             votes: Votes::new(),
+            lists: Default::default(),
             off_catalog: OffCatalogGames::new(),
             known_converted: None,
         }

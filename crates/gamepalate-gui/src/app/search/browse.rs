@@ -53,7 +53,7 @@ const KINDS: [Kind; 6] = [
     Kind::Library,
     Kind::Wishlist,
     Kind::WouldTry,
-    Kind::Starred,
+    Kind::Saved,
     Kind::NotForMe,
     Kind::Later,
 ];
@@ -90,7 +90,7 @@ pub enum Kind {
     Library,
     Wishlist,
     WouldTry,
-    Starred,
+    Saved,
     NotForMe,
     Later,
 }
@@ -101,7 +101,7 @@ impl Kind {
             Kind::Library => "Library",
             Kind::Wishlist => "Wishlist",
             Kind::WouldTry => "Would try",
-            Kind::Starred => "Starred",
+            Kind::Saved => "Saved",
             Kind::NotForMe => "Not for me",
             Kind::Later => "Later",
         }
@@ -133,7 +133,7 @@ impl Kind {
             Kind::Library => options.library,
             Kind::Wishlist => options.wished,
             Kind::WouldTry => options.would_try,
-            Kind::Starred => options.starred,
+            Kind::Saved => options.saved,
             Kind::NotForMe => options.not_for_me,
             Kind::Later => options.later,
         }
@@ -144,7 +144,7 @@ impl Kind {
             Kind::Library => &mut options.library,
             Kind::Wishlist => &mut options.wished,
             Kind::WouldTry => &mut options.would_try,
-            Kind::Starred => &mut options.starred,
+            Kind::Saved => &mut options.saved,
             Kind::NotForMe => &mut options.not_for_me,
             Kind::Later => &mut options.later,
         };
@@ -321,15 +321,15 @@ impl Browse {
     pub(super) fn game_changed(&mut self, gamepalate: &Gamepalate, id: AppId) {
         self.revision = Some(gamepalate.revision());
         if let Some(view) = gamepalate.game_view(id) {
-            let starred = view.vote.as_ref().is_some_and(|vote| vote.starred);
-            self.update_row(id, view.standing, starred);
+            let saved = view.vote.as_ref().is_some_and(|vote| vote.saved);
+            self.update_row(id, view.standing, saved);
         }
     }
 
-    fn update_row(&mut self, id: AppId, standing: Option<GameStanding>, starred: bool) {
+    fn update_row(&mut self, id: AppId, standing: Option<GameStanding>, saved: bool) {
         if let Some(row) = self.rows.iter_mut().find(|row| row.id == id) {
             row.standing = standing;
-            row.starred = starred;
+            row.saved = saved;
         }
     }
 
@@ -949,8 +949,8 @@ impl Browse {
         };
         let standing = game.standing.map(|standing| {
             row![]
-                .push(game.starred.then(|| {
-                    text(font::STAR)
+                .push(game.saved.then(|| {
+                    text(font::BOOKMARK)
                         .font(font::ICONS)
                         .size(font::icon(font::NOTE_SIZE))
                         .style(style::muted)
@@ -1266,7 +1266,7 @@ mod tests {
                 id: AppId(id),
                 name: Arc::from(format!("Game {id}")),
                 standing: None,
-                starred: false,
+                saved: false,
                 price: Price {
                     original_cents: 1999,
                     discount: None,
@@ -1588,12 +1588,12 @@ mod tests {
     #[test]
     fn the_tooltip_of_a_chip_says_the_next_click() {
         assert_eq!(
-            Kind::Starred.advice(Choice::Any),
-            ["Show only Starred".to_string(), String::new()]
+            Kind::Saved.advice(Choice::Any),
+            ["Show only Saved".to_string(), String::new()]
         );
         assert_eq!(
-            Kind::Starred.advice(Choice::Only)[0],
-            "Hide Starred".to_string()
+            Kind::Saved.advice(Choice::Only)[0],
+            "Hide Saved".to_string()
         );
         assert_eq!(
             Kind::Library.advice(Choice::Without),
@@ -1671,7 +1671,7 @@ mod tests {
                 "Library",
                 "Wishlist",
                 "Would try",
-                "Starred",
+                "Saved",
                 "Not for me",
                 "Later"
             ]
@@ -1822,8 +1822,8 @@ mod tests {
         browse.update_row(AppId(4), Some(GameStanding::WouldTry), true);
 
         assert_eq!(browse.rows[3].standing, Some(GameStanding::WouldTry));
-        assert!(browse.rows[3].starred);
-        assert!(browse.rows[2].standing.is_none() && !browse.rows[4].starred);
+        assert!(browse.rows[3].saved);
+        assert!(browse.rows[2].standing.is_none() && !browse.rows[4].saved);
         assert_eq!(
             browse.rows.iter().map(|row| row.id).collect::<Vec<_>>(),
             ids
@@ -1831,7 +1831,7 @@ mod tests {
         assert_eq!(browse.selected, Some(3));
 
         browse.update_row(AppId(4), None, false);
-        assert!(browse.rows[3].standing.is_none() && !browse.rows[3].starred);
+        assert!(browse.rows[3].standing.is_none() && !browse.rows[3].saved);
     }
 
     #[test]

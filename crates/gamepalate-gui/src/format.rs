@@ -524,15 +524,24 @@ pub fn vote_removed(name: &str) -> String {
     format!("{name}: vote removed")
 }
 
-pub fn star_tip(starred: bool) -> &'static str {
-    if starred { "Unstar · S" } else { "Star · S" }
+pub fn save_tip(saved: bool) -> &'static str {
+    if saved { "Saved · S" } else { "Save · S" }
 }
 
-pub fn star_toast(name: &str, starred: bool) -> String {
-    if starred {
-        format!("{name}: starred")
+/// The toast of a game put in a list or taken out of it.
+pub fn list_toast(list: &str, added: bool) -> String {
+    if added {
+        format!("Added to {list}")
     } else {
-        format!("{name}: star removed")
+        format!("Removed from {list}")
+    }
+}
+
+pub fn save_toast(name: &str, saved: bool) -> String {
+    if saved {
+        format!("{name}: saved")
+    } else {
+        format!("{name}: no longer saved")
     }
 }
 
@@ -677,11 +686,13 @@ mod tests {
     }
 
     #[test]
-    fn the_star_says_what_the_next_press_does() {
-        assert_eq!(star_tip(false), "Star · S");
-        assert_eq!(star_tip(true), "Unstar · S");
-        assert_eq!(star_toast("Hades", true), "Hades: starred");
-        assert_eq!(star_toast("Hades", false), "Hades: star removed");
+    fn the_save_says_whether_the_game_has_it() {
+        assert_eq!(save_tip(false), "Save · S");
+        assert_eq!(save_tip(true), "Saved · S");
+        assert_eq!(save_toast("Hades", true), "Hades: saved");
+        assert_eq!(save_toast("Hades", false), "Hades: no longer saved");
+        assert_eq!(list_toast("Co-op", true), "Added to Co-op");
+        assert_eq!(list_toast("Co-op", false), "Removed from Co-op");
     }
 
     #[test]

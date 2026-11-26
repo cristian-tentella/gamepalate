@@ -7,8 +7,8 @@ use std::{
 };
 
 use gamepalate_app::{
-    AppId, Currency, DiscoverMode, FilterOptions, Gamepalate, Price, SearchOptions, Vote, VoteKind,
-    VotedGame, VotesOrder, VotesSettings, VotesShow,
+    AppId, Currency, DiscoverMode, FilterOptions, Gamepalate, ListId, Lists, Price, SaveChange,
+    SearchOptions, Vote, VoteKind, VotedGame, VotesOrder, VotesSettings, VotesShow,
 };
 use iced::{
     Center, Element, Event, Fill, Size, Subscription, Task, event,
@@ -28,6 +28,8 @@ use super::{
     Toasts,
     discover::filters::{self, Action, Panel},
     game::{self, Link, Pick, VOTE_HEIGHT},
+    list_edit::{self, ListEdit},
+    save_menu::{self, SaveMenu},
     sentence,
     showcase::{self, Showcase},
 };
@@ -35,7 +37,7 @@ use crate::{font, format, style};
 
 // Two rows of two equal segments: four in one row would not fit the 340 px of the list.
 const FILTERS: [Filter; 4] = [
-    Filter::Starred,
+    Filter::Saved,
     Filter::WouldTry,
     Filter::NotForMe,
     Filter::All,
@@ -62,8 +64,9 @@ const FIRST_HEIGHT: f32 = 1_500.0;
 const SIGN_SIZE: f32 = 11.0;
 const SIGN_WIDTH: f32 = 18.0;
 const NO_VOTES: &str = "No votes yet. Vote in Discover with keys 1–3.";
-const NO_STARRED: &str = "No starred games";
-const STARRED_HINT: &str = "Press S on a game you are thinking of buying";
+const NO_SAVED: &str = "No saved games";
+const SAVED_HINT: &str = "Press S on a game you are thinking of buying";
+const NO_LIST: &str = "No list";
 
 pub struct Votes {
     gamepalate: Arc<Gamepalate>,
@@ -82,22 +85,51 @@ pub struct Votes {
     search: String,
     matches: Option<HashMap<AppId, f64>>,
     matching: u64,
-    rows: Vec<AppId>,
+    rows: Vec<Line>,
+    // Always on a game, when there is one.
     selected: usize,
     viewport: Option<(f32, f32)>,
     toasts: Toasts,
     played: Option<AppId>,
     showcase: Showcase,
+    save_menu: SaveMenu,
+    list_edit: ListEdit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Filter {
-    /// The Would try votes with the star.
-    Starred,
+    /// The saved Would try votes.
+    Saved,
     WouldTry,
     NotForMe,
     /// Every vote, the Laters too.
     All,
+}
+
+/// A line of the list: a game, or in Saved the title of a section and the note of an empty list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Line {
+    Game(AppId, Section),
+    Title(Section),
+    Empty(ListId),
+}
+
+/// The part of the list a game line is in. Saved has a section for each list and one for the
+/// games in none; the other segments, and Saved without lists, have only `Whole`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Section {
+    Whole,
+    List(ListId),
+    NoList,
+}
+
+impl Line {
+    fn game(self) -> Option<AppId> {
+        match self {
+            Line::Game(id, _) => Some(id),
+            Line::Title(_) | Line::Empty(_) => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -128,7 +160,12 @@ pub enum Message {
     VoteSaved(Result<(), String>),
     Played,
     PlayedSaved(AppId, String, Result<bool, String>),
-    Star,
+    Save,
+    SaveMenu(save_menu::Message),
+    ListCreated(AppId, Result<ListId, String>),
+    ListEdit(list_edit::Message),
+    ListRenamed(Result<(), String>),
+    ListDeleted(Result<(), String>),
     Undo,
     Undone(Result<(), String>),
     SettingsSaved(Result<(), String>),
@@ -182,6 +219,8 @@ impl Votes {
             toasts: Toasts::default(),
             played: None,
             showcase: Showcase::new(gamepalate),
+            save_menu: SaveMenu::new(gamepalate),
+            list_edit: ListEdit::default(),
         };
         votes.rows = votes.shown_rows();
         let toast = error.map_or_else(Task::none, |error| votes.show_toast(error));
@@ -197,13 +236,18 @@ impl Votes {
         };
         votes.filter = filter;
         votes.rows = votes.shown_rows();
-        votes.selected = votes.rows.iter().position(|&row| row == id).unwrap_or(0);
-        votes.viewport = Some((votes.selected as f32 * ROW_HEIGHT, FIRST_HEIGHT));
+        votes.selected = votes
+            .rows
+            .iter()
+            .position(|line| line.game() == Some(id))
+            .unwrap_or_else(|| first_game(&votes.rows));
+        let top = line_top(&votes.rows, votes.selected) as f32 * ROW_HEIGHT;
+        votes.viewport = Some((top, FIRST_HEIGHT));
         let scroll = operation::scroll_to(
             LIST,
             AbsoluteOffset {
                 x: None,
-                y: Some(votes.selected as f32 * ROW_HEIGHT),
+                y: Some(top),
             },
         );
         let load = votes.load();
@@ -227,6 +271,7 @@ impl Votes {
             self.showcase.stop_trailer();
         }
         let task = self.handle(message);
+        self.save_menu.keep_for(self.current().map(|game| game.id));
 
         Task::batch([task, self.load()])
     }
@@ -269,7 +314,7 @@ impl Votes {
             Message::FocusSearch => return operation::focus(SEARCH),
             Message::Select(index) => self.selected = index,
             Message::Previous => {
-                self.selected = self.selected.saturating_sub(1);
+                self.selected = previous_game(&self.rows, self.selected);
                 return self.reveal();
             }
             Message::Next => return self.next(),
@@ -292,22 +337,96 @@ impl Votes {
                     return Task::batch([save, self.show_toast(text), self.next()]);
                 }
             }
-            Message::Star => {
-                if let Some(game) = self.current().filter(|game| may_star(game)) {
-                    let (id, starred) = (game.id, !game.vote.starred);
-                    let text = format::star_toast(&game.name, starred);
-                    let gamepalate = Arc::clone(&self.gamepalate);
-                    let save = Task::perform(
-                        async move {
-                            gamepalate
-                                .star(id, starred, false, false)
-                                .map_err(|error| error.to_string())
-                        },
-                        Message::VoteSaved,
-                    );
-                    return Task::batch([save, self.show_toast(text)]);
+            Message::Save => {
+                if let Some(id) = self
+                    .current()
+                    .filter(|game| may_save(game))
+                    .map(|game| game.id)
+                {
+                    self.save_menu.open(&self.gamepalate, id);
                 }
             }
+            Message::SaveMenu(message) => {
+                let Some(game) = self
+                    .current()
+                    .filter(|game| self.save_menu.game() == Some(game.id))
+                else {
+                    return Task::none();
+                };
+                let (id, saved, lists) = (game.id, game.vote.saved, game.vote.lists.clone());
+                let (action, task) = self.save_menu.update(message, saved, &lists);
+                let task = task.map(Message::SaveMenu);
+                return match action {
+                    Some(save_menu::Action::Save(change)) => {
+                        Task::batch([task, self.change_saved(id, change)])
+                    }
+                    Some(save_menu::Action::Create(name)) => {
+                        let gamepalate = Arc::clone(&self.gamepalate);
+                        let create = Task::perform(
+                            async move {
+                                gamepalate
+                                    .create_list(&name)
+                                    .map_err(|error| sentence(&error.to_string()))
+                            },
+                            move |result| Message::ListCreated(id, result),
+                        );
+                        Task::batch([task, create])
+                    }
+                    None => task,
+                };
+            }
+            Message::ListCreated(id, Ok(list)) => {
+                self.save_menu.created(&self.gamepalate);
+                return self.change_saved(id, SaveChange::AddTo(list));
+            }
+            Message::ListCreated(_, Err(error)) => self.save_menu.refused(error),
+            Message::ListEdit(message) => {
+                let games = &self.games;
+                let (action, task) =
+                    self.list_edit
+                        .update(message, self.save_menu.lists(), |list| {
+                            games_in(games, list)
+                        });
+                let task = task.map(Message::ListEdit);
+                let gamepalate = Arc::clone(&self.gamepalate);
+                return match action {
+                    Some(list_edit::Action::Rename(list, name)) => {
+                        let rename = Task::perform(
+                            async move {
+                                gamepalate
+                                    .rename_list(list, &name)
+                                    .map_err(|error| sentence(&error.to_string()))
+                            },
+                            Message::ListRenamed,
+                        );
+                        Task::batch([task, rename])
+                    }
+                    Some(list_edit::Action::Delete(list)) => {
+                        let delete = Task::perform(
+                            async move {
+                                gamepalate
+                                    .delete_list(list)
+                                    .map_err(|error| sentence(&error.to_string()))
+                            },
+                            Message::ListDeleted,
+                        );
+                        Task::batch([task, delete])
+                    }
+                    None => task,
+                };
+            }
+            Message::ListRenamed(Ok(())) => {
+                self.save_menu.follow(&self.gamepalate);
+                self.list_edit.renamed();
+                return self.refresh();
+            }
+            Message::ListRenamed(Err(error)) => self.list_edit.refused(error),
+            Message::ListDeleted(Ok(())) => {
+                self.save_menu.follow(&self.gamepalate);
+                self.games = by_id(self.gamepalate.voted_games());
+                return self.refresh();
+            }
+            Message::ListDeleted(Err(error)) => return self.show_toast(error),
             Message::VoteSaved(Ok(())) => {
                 self.games = by_id(self.gamepalate.voted_games());
                 // A game voted into another kind leaves the list of this filter at once.
@@ -385,6 +504,12 @@ impl Votes {
         if !keys {
             return trailer;
         }
+        if self.save_menu.is_open() {
+            return Subscription::batch([save_menu::keys().map(Message::SaveMenu), trailer]);
+        }
+        if self.list_edit.is_open() {
+            return Subscription::batch([list_edit::keys().map(Message::ListEdit), trailer]);
+        }
         Subscription::batch([
             keyboard::listen().filter_map(key_message),
             event::listen_with(escape_message),
@@ -450,27 +575,23 @@ impl Votes {
         let segment = |index: usize| -> Element<'_, Message> {
             let filter = FILTERS[index];
             let count = format::count(count(&self.games, filter, self.shown()) as u32);
-            let segment = button(container(segment_label(filter, count)).center(Fill))
-                .width(Fill)
-                .height(Fill)
-                .padding([0, 4])
-                .style(style::segment(
-                    !searching && filter == self.filter,
-                    segment_place(index),
-                ))
-                .on_press(Message::Filter(filter));
-            if filter == Filter::Starred {
-                tooltip(
-                    segment,
-                    container(text(filter_label(filter)).size(font::NOTE_SIZE))
-                        .padding([6, 10])
-                        .style(style::popup),
-                    tooltip::Position::Bottom,
+            button(
+                container(
+                    text(format!("{} {count}", filter_label(filter)))
+                        .size(font::NOTE_SIZE)
+                        .wrapping(Wrapping::None),
                 )
-                .into()
-            } else {
-                segment.into()
-            }
+                .center(Fill),
+            )
+            .width(Fill)
+            .height(Fill)
+            .padding([0, 4])
+            .style(style::segment(
+                !searching && filter == self.filter,
+                segment_place(index),
+            ))
+            .on_press(Message::Filter(filter))
+            .into()
         };
         let segments = |first: usize| {
             row![
@@ -556,7 +677,9 @@ impl Votes {
             });
 
         let sorting = self.order == Order::BestMatch && self.matches.is_none();
-        let body: Element<'_, Message> = if sorting || self.rows.is_empty() {
+        let has_games = self.rows.iter().any(|line| line.game().is_some());
+        // Without games Saved can still have the sections of its empty lists, under the note.
+        let note = (sorting || !has_games).then(|| {
             let note = if sorting {
                 "Sorting…".to_string()
             } else {
@@ -574,8 +697,8 @@ impl Votes {
                     .style(style::link)
                     .on_press(Message::ResetFilters)
             });
-            let hint = (note == NO_STARRED)
-                .then(|| text(STARRED_HINT).size(font::NOTE_SIZE).style(style::muted));
+            let hint = (note == NO_SAVED)
+                .then(|| text(SAVED_HINT).size(font::NOTE_SIZE).style(style::muted));
             container(
                 column![text(note).size(font::NOTE_SIZE).style(style::muted)]
                     .push(hint)
@@ -583,18 +706,14 @@ impl Votes {
                     .spacing(8),
             )
             .padding(16)
-            .into()
-        } else {
+        });
+        let lines = (!sorting && !self.rows.is_empty()).then(|| {
             let (offset, height) = self.viewport.unwrap_or((0.0, FIRST_HEIGHT));
             let count = self.rows.len();
             let range = shown(offset, height, count);
             let above = rows_height(range.start);
             let below = rows_height(count - range.end);
-            let built = range.clone().filter_map(|index| {
-                self.games
-                    .get(&self.rows[index])
-                    .map(|game| self.list_row(index, game))
-            });
+            let built = range.clone().filter_map(|index| self.line(index));
             scrollable(
                 container(
                     column![space().height(above)]
@@ -606,8 +725,8 @@ impl Votes {
             .id(LIST)
             .on_scroll(Message::Scrolled)
             .height(Fill)
-            .into()
-        };
+        });
+        let body = column![].push(note).push(lines);
 
         let measured = sensor(column![filters, search, tools].spacing(10))
             .on_show(Message::ToolsMeasured)
@@ -623,6 +742,62 @@ impl Votes {
             body,
         ]
         .into()
+    }
+
+    fn line(&self, index: usize) -> Option<Element<'_, Message>> {
+        let note = |line: String| text(line).size(font::NOTE_SIZE).wrapping(Wrapping::None);
+        let fixed = |content: Element<'static, Message>| {
+            container(content)
+                .width(Fill)
+                .height(ROW_HEIGHT)
+                .padding([0, 12])
+                .center_y(ROW_HEIGHT)
+                .clip(true)
+        };
+        match self.rows.get(index)? {
+            Line::Game(id, _) => self.games.get(id).map(|game| self.list_row(index, game)),
+            &Line::Title(section) => {
+                let name = match section {
+                    Section::List(list) => self.lists().get(&list)?.as_str(),
+                    Section::NoList | Section::Whole => NO_LIST,
+                };
+                let games = self
+                    .rows
+                    .iter()
+                    .filter(|line| matches!(line, Line::Game(_, of) if *of == section))
+                    .count();
+                let title = fixed(
+                    text(section_title(name, games))
+                        .size(font::BAR_SIZE)
+                        .font(font::SEMIBOLD)
+                        .wrapping(Wrapping::None)
+                        .into(),
+                );
+                Some(match section {
+                    Section::List(list) => self.list_edit.title(
+                        mouse_area(title)
+                            .on_right_press(Message::ListEdit(list_edit::Message::Open(list)))
+                            .into(),
+                        list,
+                        name,
+                        games_in(&self.games, list),
+                        Message::ListEdit,
+                    ),
+                    Section::NoList | Section::Whole => title.into(),
+                })
+            }
+            Line::Empty(list) => {
+                let name = self.lists().get(list)?;
+                Some(
+                    fixed(
+                        note(format!("No games in {name}"))
+                            .style(style::muted)
+                            .into(),
+                    )
+                    .into(),
+                )
+            }
+        }
     }
 
     fn list_row<'a>(&self, index: usize, game: &'a VotedGame) -> Element<'a, Message> {
@@ -642,8 +817,8 @@ impl Votes {
         });
         let later =
             (sign == Some(Sign::Later)).then(|| note("Later ·".to_string()).style(style::muted));
-        let star = shows_star(self.filter, &game.vote).then(|| {
-            text(font::STAR)
+        let save = shows_saved(self.filter, &game.vote).then(|| {
+            text(font::BOOKMARK)
                 .font(font::ICONS)
                 .size(font::icon(SIGN_SIZE))
                 .style(style::muted)
@@ -651,7 +826,7 @@ impl Votes {
         let name = container(
             row![]
                 .push(later)
-                .push(star)
+                .push(save)
                 .push(
                     text(&game.name)
                         .size(font::BAR_SIZE)
@@ -771,8 +946,8 @@ impl Votes {
             self.gamepalate.would_try_hours(),
             self.gamepalate.elsewhere_hours(),
         );
-        let star = game.is_some_and(may_star);
-        let vote_width = game::vote_width(width, if star { game::STAR_SPACE } else { 0.0 });
+        let save = game.is_some_and(may_save);
+        let vote_width = game::vote_width(width, if save { game::SAVE_SPACE } else { 0.0 });
         let votes = game::vote_buttons(
             |key, pick| {
                 let message = match pick {
@@ -791,29 +966,56 @@ impl Votes {
                 )
             },
             true,
-            game.filter(|game| may_star(game))
-                .map(|game| game::star_button(game.vote.starred, Some(Message::Star))),
+            game.filter(|game| may_save(game)).map(|game| {
+                self.save_menu.save(
+                    game.vote.saved,
+                    &game.vote.lists,
+                    Some(Message::Save),
+                    Message::SaveMenu,
+                )
+            }),
         )
         .width(Fill);
 
         container(votes).center_y(Fill).into()
     }
 
+    /// Saves the change to Save on `id`. The game stays selected.
+    fn change_saved(&mut self, id: AppId, change: SaveChange) -> Task<Message> {
+        let Some(game) = self.games.get(&id) else {
+            return Task::none();
+        };
+        let text = match change {
+            SaveChange::Save | SaveChange::Unsave => format::save_toast(&game.name, change.saves()),
+            SaveChange::AddTo(list) => format::list_toast(self.save_menu.name(list), true),
+            SaveChange::RemoveFrom(list) => format::list_toast(self.save_menu.name(list), false),
+        };
+        let gamepalate = Arc::clone(&self.gamepalate);
+        let save = Task::perform(
+            async move {
+                gamepalate
+                    .save(id, change, false, false)
+                    .map_err(|error| error.to_string())
+            },
+            Message::VoteSaved,
+        );
+        Task::batch([save, self.show_toast(text)])
+    }
+
     fn current(&self) -> Option<&VotedGame> {
         self.rows
             .get(self.selected)
-            .and_then(|id| self.games.get(id))
+            .and_then(|line| line.game())
+            .and_then(|id| self.games.get(&id))
     }
 
     fn next(&mut self) -> Task<Message> {
-        if self.selected + 1 < self.rows.len() {
-            self.selected += 1;
-        }
+        self.selected = next_game(&self.rows, self.selected);
         self.reveal()
     }
 
     fn refresh(&mut self) -> Task<Message> {
-        let selected = self.current().map(|game| game.id);
+        let selected = self.rows.get(self.selected).copied();
         self.rows = self.shown_rows();
         self.selected = kept_selection(&self.rows, selected, self.selected);
 
@@ -822,7 +1024,7 @@ impl Votes {
 
     fn restart(&mut self) -> Task<Message> {
         self.rows = self.shown_rows();
-        self.selected = 0;
+        self.selected = first_game(&self.rows);
         self.viewport = Some(scrolled_to(self.viewport, 0.0));
 
         operation::scroll_to(
@@ -840,6 +1042,10 @@ impl Votes {
             only_bets: self.only_bets,
             passing: self.passing.as_ref(),
         }
+    }
+
+    fn lists(&self) -> &Lists {
+        self.save_menu.lists()
     }
 
     /// True when Bets only or a filter of the panel is on.
@@ -899,15 +1105,17 @@ impl Votes {
         self.hide_owned && count(&self.games, self.filter, Shown::default()) > 0
     }
 
-    fn shown_rows(&self) -> Vec<AppId> {
-        rows(
+    fn shown_rows(&self) -> Vec<Line> {
+        let rows = rows(
             &self.games,
             self.filter,
             self.order,
             self.shown(),
             &self.search,
             self.matches.as_ref(),
-        )
+        );
+        let sections = self.filter == Filter::Saved && self.search.trim().is_empty();
+        lines(&rows, &self.games, sections.then(|| self.lists()))
     }
 
     fn find_matches(&mut self) -> Task<Message> {
@@ -925,7 +1133,8 @@ impl Votes {
             return Task::none();
         };
 
-        match scroll_target(self.selected, offset, height) {
+        let top = line_top(&self.rows, self.selected);
+        match scroll_target(top, self.selected, offset, height) {
             Some(y) => {
                 self.viewport = Some(scrolled_to(self.viewport, y));
                 operation::scroll_to(
@@ -947,10 +1156,15 @@ impl Votes {
             .is_some_and(|reviews| reviews.total > 0);
         self.showcase
             .follow(self.current().map(|game| game.id), has_reviews);
-        let end = (self.selected + showcase::AHEAD + 1).min(self.rows.len());
-        let start = self.selected.saturating_sub(showcase::BEHIND).min(end);
-        let upcoming = &self.rows[self.selected.min(end)..end];
-        let nearby = &self.rows[start..end];
+        let ids: Vec<AppId> = self.rows.iter().filter_map(|line| line.game()).collect();
+        let selected = self.rows[..self.selected.min(self.rows.len())]
+            .iter()
+            .filter(|line| line.game().is_some())
+            .count();
+        let end = (selected + showcase::AHEAD + 1).min(ids.len());
+        let start = selected.saturating_sub(showcase::BEHIND).min(end);
+        let upcoming = &ids[selected.min(end)..end];
+        let nearby = &ids[start..end];
 
         self.showcase
             .load(upcoming, nearby, &[])
@@ -965,17 +1179,17 @@ impl Votes {
 impl Filter {
     fn keeps(self, vote: &Vote) -> bool {
         match self {
-            Filter::Starred => vote.kind == VoteKind::WouldTry && vote.starred,
+            Filter::Saved => vote.kind == VoteKind::WouldTry && vote.saved,
             Filter::WouldTry => vote.kind == VoteKind::WouldTry,
             Filter::NotForMe => vote.kind == VoteKind::NotForMe,
             Filter::All => true,
         }
     }
 
-    /// The segment of a vote; a Later has none of its own, so it shows in All. A starred vote
-    /// goes to Starred, the segment that tells most about it.
+    /// The segment of a vote; a Later has none of its own, so it shows in All. A saved vote
+    /// goes to Saved, the segment that tells most about it.
     fn of(vote: &Vote) -> Filter {
-        [Filter::Starred, Filter::WouldTry, Filter::NotForMe]
+        [Filter::Saved, Filter::WouldTry, Filter::NotForMe]
             .into_iter()
             .find(|filter| filter.keeps(vote))
             .unwrap_or(Filter::All)
@@ -999,27 +1213,10 @@ pub(super) fn by_id(games: Vec<VotedGame>) -> BTreeMap<AppId, VotedGame> {
 
 fn filter_label(filter: Filter) -> &'static str {
     match filter {
-        Filter::Starred => "Starred",
+        Filter::Saved => "Saved",
         Filter::WouldTry => format::pick(Pick::Vote(VoteKind::WouldTry)),
         Filter::NotForMe => format::pick(Pick::Vote(VoteKind::NotForMe)),
         Filter::All => "All",
-    }
-}
-
-/// What a segment says: the star and the count for Starred, the name and the count for the rest.
-fn segment_label<'a>(filter: Filter, count: String) -> Element<'a, Message> {
-    let note = |line: String| text(line).size(font::NOTE_SIZE).wrapping(Wrapping::None);
-    match filter {
-        Filter::Starred => row![
-            text(font::STAR)
-                .font(font::ICONS)
-                .size(font::icon(SIGN_SIZE)),
-            note(count)
-        ]
-        .spacing(4)
-        .align_y(Center)
-        .into(),
-        filter => note(format!("{} {count}", filter_label(filter))).into(),
     }
 }
 
@@ -1053,9 +1250,9 @@ fn vote_sign(filter: Filter, vote: &Vote) -> Option<Sign> {
     })
 }
 
-/// The small star before a name: in Would try and in All, where the segment does not say it.
-fn shows_star(filter: Filter, vote: &Vote) -> bool {
-    vote.starred && matches!(filter, Filter::WouldTry | Filter::All)
+/// The small bookmark before a name: in Would try and in All, where the segment does not say it.
+fn shows_saved(filter: Filter, vote: &Vote) -> bool {
+    vote.saved && matches!(filter, Filter::WouldTry | Filter::All)
 }
 
 fn price_text(price: Option<Price>, currency: &Currency) -> String {
@@ -1070,7 +1267,7 @@ fn opening_chip(saved: &VotesSettings, chosen: Option<Filter>) -> (Filter, Votes
 impl From<VotesShow> for Filter {
     fn from(show: VotesShow) -> Filter {
         match show {
-            VotesShow::Starred => Filter::Starred,
+            VotesShow::Saved => Filter::Saved,
             VotesShow::WouldTry => Filter::WouldTry,
             VotesShow::NotForMe => Filter::NotForMe,
             VotesShow::All => Filter::All,
@@ -1081,7 +1278,7 @@ impl From<VotesShow> for Filter {
 impl From<Filter> for VotesShow {
     fn from(filter: Filter) -> VotesShow {
         match filter {
-            Filter::Starred => VotesShow::Starred,
+            Filter::Saved => VotesShow::Saved,
             Filter::WouldTry => VotesShow::WouldTry,
             Filter::NotForMe => VotesShow::NotForMe,
             Filter::All => VotesShow::All,
@@ -1174,16 +1371,111 @@ impl Shown<'_> {
 fn count(games: &BTreeMap<AppId, VotedGame>, filter: Filter, shown: Shown) -> usize {
     games
         .values()
-        .filter(|game| filter.keeps(&game.vote) && shown.keeps(game))
+        .filter(|game| in_segment(filter, shown, game))
         .count()
 }
 
-/// Where the selection goes once the rows change: on the same game if it is still
-/// there, otherwise on the row that took its place.
-fn kept_selection(rows: &[AppId], selected: Option<AppId>, index: usize) -> usize {
+fn in_segment(filter: Filter, shown: Shown, game: &VotedGame) -> bool {
+    filter.keeps(&game.vote) && shown.keeps(game)
+}
+
+/// Where the selection goes once the lines change: on the same line if it is still there, then
+/// on the same game in another section, otherwise on the game that took its place.
+fn kept_selection(lines: &[Line], selected: Option<Line>, index: usize) -> usize {
+    let game = selected.and_then(Line::game);
     selected
-        .and_then(|id| rows.iter().position(|&row| row == id))
-        .unwrap_or_else(|| index.min(rows.len().saturating_sub(1)))
+        .and_then(|selected| lines.iter().position(|&line| line == selected))
+        .or_else(|| game.and_then(|id| lines.iter().position(|line| line.game() == Some(id))))
+        .unwrap_or_else(|| {
+            let index = index.min(lines.len().saturating_sub(1));
+            let after = lines[index..].iter().position(|line| line.game().is_some());
+            after
+                .map(|after| index + after)
+                .unwrap_or_else(|| previous_game(lines, index))
+        })
+}
+
+/// The lines of the list. With `lists`, Saved shows a section for each list, in their order,
+/// and then the games in none: a game in two lists has a line in each. A list without games
+/// keeps its title, so it can be renamed or deleted; one whose games are all hidden does not.
+fn lines(rows: &[AppId], games: &BTreeMap<AppId, VotedGame>, lists: Option<&Lists>) -> Vec<Line> {
+    let Some(lists) = lists.filter(|lists| !lists.is_empty()) else {
+        return rows
+            .iter()
+            .map(|&id| Line::Game(id, Section::Whole))
+            .collect();
+    };
+    let lists_of = |id: &AppId| games.get(id).map(|game| &game.vote.lists);
+    let mut lines = Vec::new();
+    for &list in lists.keys() {
+        let section = Section::List(list);
+        let shown: Vec<Line> = rows
+            .iter()
+            .filter(|id| lists_of(id).is_some_and(|lists| lists.contains(&list)))
+            .map(|&id| Line::Game(id, section))
+            .collect();
+        if !shown.is_empty() {
+            lines.push(Line::Title(section));
+            lines.extend(shown);
+        } else if games_in(games, list) == 0 {
+            lines.extend([Line::Title(section), Line::Empty(list)]);
+        }
+    }
+    let no_list: Vec<Line> = rows
+        .iter()
+        .filter(|id| lists_of(id).is_some_and(BTreeSet::is_empty))
+        .map(|&id| Line::Game(id, Section::NoList))
+        .collect();
+    if !no_list.is_empty() {
+        lines.push(Line::Title(Section::NoList));
+        lines.extend(no_list);
+    }
+    lines
+}
+
+/// The saved games in `list`, whatever Votes shows.
+fn games_in(games: &BTreeMap<AppId, VotedGame>, list: ListId) -> usize {
+    games
+        .values()
+        .filter(|game| game.vote.saved && game.vote.lists.contains(&list))
+        .count()
+}
+
+fn section_title(name: &str, games: usize) -> String {
+    format!("{name} · {}", format::count(games as u32))
+}
+
+fn first_game(lines: &[Line]) -> usize {
+    lines
+        .iter()
+        .position(|line| line.game().is_some())
+        .unwrap_or(0)
+}
+
+/// The game after `index`; the last one stays.
+fn next_game(lines: &[Line], index: usize) -> usize {
+    lines
+        .iter()
+        .enumerate()
+        .skip(index + 1)
+        .find(|(_, line)| line.game().is_some())
+        .map_or(index, |(next, _)| next)
+}
+
+/// The game before `index`; the first one stays.
+fn previous_game(lines: &[Line], index: usize) -> usize {
+    lines[..index.min(lines.len())]
+        .iter()
+        .rposition(|line| line.game().is_some())
+        .unwrap_or(index)
+}
+
+/// The first line to bring into view with the line at `index`: the title right above it too.
+fn line_top(lines: &[Line], index: usize) -> usize {
+    match index.checked_sub(1).and_then(|above| lines.get(above)) {
+        Some(Line::Title(_)) => index - 1,
+        _ => index,
+    }
 }
 
 fn rows(
@@ -1199,7 +1491,7 @@ fn rows(
         .values()
         .filter(|game| {
             if search.is_empty() {
-                filter.keeps(&game.vote) && shown.keeps(game)
+                in_segment(filter, shown, game)
             } else {
                 game.name.to_lowercase().contains(&search)
             }
@@ -1275,17 +1567,17 @@ fn empty_text(
     } else if filtered {
         match filter {
             Filter::All => "No votes match the filters".to_string(),
-            Filter::Starred => "No starred games match the filters".to_string(),
+            Filter::Saved => "No saved games match the filters".to_string(),
             _ => format!("No {} votes match the filters", filter_label(filter)),
         }
     } else if owned_hidden {
         match filter {
             Filter::All => "You own all your voted games".to_string(),
-            Filter::Starred => "You own all your starred games".to_string(),
+            Filter::Saved => "You own all your saved games".to_string(),
             _ => format!("You own all your {} games", filter_label(filter)),
         }
-    } else if filter == Filter::Starred {
-        NO_STARRED.to_string()
+    } else if filter == Filter::Saved {
+        NO_SAVED.to_string()
     } else {
         format!("No {} votes", filter_label(filter))
     }
@@ -1317,9 +1609,10 @@ fn rows_height(rows: usize) -> f32 {
     rows as f32 * ROW_HEIGHT
 }
 
-fn scroll_target(index: usize, offset: f32, height: f32) -> Option<f32> {
-    let top = index as f32 * ROW_HEIGHT;
-    let bottom = top + ROW_HEIGHT;
+/// Where to scroll so the lines from `first` to `index` are in sight, if they are not.
+fn scroll_target(first: usize, index: usize, offset: f32, height: f32) -> Option<f32> {
+    let top = first as f32 * ROW_HEIGHT;
+    let bottom = (index + 1) as f32 * ROW_HEIGHT;
 
     if top < offset {
         Some(top)
@@ -1330,8 +1623,8 @@ fn scroll_target(index: usize, offset: f32, height: f32) -> Option<f32> {
     }
 }
 
-/// A game you have cannot get a star, and S leaves it alone.
-fn may_star(game: &VotedGame) -> bool {
+/// A game you have cannot be saved, and S leaves it alone.
+fn may_save(game: &VotedGame) -> bool {
     !game.owned
 }
 
@@ -1350,7 +1643,7 @@ fn stopped_by_popup(message: &Message) -> bool {
             | Message::Next
             | Message::Vote(_)
             | Message::Played
-            | Message::Star
+            | Message::Save
             | Message::Open(_)
             | Message::FocusSearch
             | Message::ToggleFilters
@@ -1359,7 +1652,7 @@ fn stopped_by_popup(message: &Message) -> bool {
 
 /// A vote moves on: the trailer stops even on the last game.
 fn stops_the_trailer(message: &Message) -> bool {
-    matches!(message, Message::Vote(_) | Message::Played | Message::Star)
+    matches!(message, Message::Vote(_) | Message::Played | Message::Save)
 }
 
 fn acts_on_the_page(message: &Message) -> bool {
@@ -1369,7 +1662,7 @@ fn acts_on_the_page(message: &Message) -> bool {
             | Message::Next
             | Message::Vote(_)
             | Message::Played
-            | Message::Star
+            | Message::Save
             | Message::Open(_)
             | Message::FocusSearch
             | Message::Showcase(
@@ -1444,7 +1737,7 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         Key::Character(character) if character.eq_ignore_ascii_case("j") => {
             Some(Message::Showcase(showcase::Message::ScrollDown))
         }
-        Key::Character(character) if game::star_key(&character) => Some(Message::Star),
+        Key::Character(character) if game::save_key(&character) => Some(Message::Save),
         Key::Character(character) => game::pick_key(&character)
             .map(|pick| match pick {
                 Pick::Played => Message::Played,
@@ -1591,17 +1884,26 @@ mod tests {
         assert_eq!(rows, ids(&[1, 4]));
     }
 
+    fn whole(numbers: &[u32]) -> Vec<Line> {
+        lines(&ids(numbers), &games(), None)
+    }
+
     #[test]
     fn the_selection_stays_on_its_game_when_the_rows_change() {
-        assert_eq!(kept_selection(&ids(&[1, 4]), Some(AppId(4)), 2), 1);
+        let four = Some(game(4, Section::Whole));
+
+        assert_eq!(kept_selection(&whole(&[1, 4]), four, 2), 1);
     }
 
     #[test]
     fn a_selected_game_that_left_the_list_gives_its_place_to_the_next() {
-        assert_eq!(kept_selection(&ids(&[2, 4]), Some(AppId(1)), 1), 1);
-        assert_eq!(kept_selection(&ids(&[2, 1]), Some(AppId(4)), 2), 1);
-        assert_eq!(kept_selection(&[], Some(AppId(4)), 2), 0);
-        assert_eq!(kept_selection(&ids(&[2, 1]), None, 0), 0);
+        let one = Some(game(1, Section::Whole));
+        let four = Some(game(4, Section::Whole));
+
+        assert_eq!(kept_selection(&whole(&[2, 4]), one, 1), 1);
+        assert_eq!(kept_selection(&whole(&[2, 1]), four, 2), 1);
+        assert_eq!(kept_selection(&[], four, 2), 0);
+        assert_eq!(kept_selection(&whole(&[2, 1]), None, 0), 0);
     }
 
     #[test]
@@ -1668,35 +1970,35 @@ mod tests {
         assert_eq!(segment_place(1), style::Segment::TopRight);
         assert_eq!(segment_place(2), style::Segment::BottomLeft);
         assert_eq!(segment_place(3), style::Segment::BottomRight);
-        assert_eq!(FILTERS[0], Filter::Starred);
+        assert_eq!(FILTERS[0], Filter::Saved);
     }
 
-    fn starred(mut game: VotedGame) -> VotedGame {
-        game.vote.starred = true;
+    fn saved(mut game: VotedGame) -> VotedGame {
+        game.vote.saved = true;
         game
     }
 
-    fn with_stars() -> BTreeMap<AppId, VotedGame> {
+    fn with_saved() -> BTreeMap<AppId, VotedGame> {
         let mut games = games();
-        let mut owned = starred(voted(6, "Hades", VoteKind::WouldTry, "2026-10-05", false));
+        let mut owned = saved(voted(6, "Hades", VoteKind::WouldTry, "2026-10-05", false));
         owned.owned = true;
         games.extend(by_id(vec![
-            starred(voted(7, "Tunic", VoteKind::WouldTry, "2026-10-25", true)),
-            starred(voted(8, "Celeste", VoteKind::WouldTry, "2026-10-30", false)),
+            saved(voted(7, "Tunic", VoteKind::WouldTry, "2026-10-25", true)),
+            saved(voted(8, "Celeste", VoteKind::WouldTry, "2026-10-30", false)),
             owned,
         ]));
-        games.get_mut(&AppId(2)).unwrap().vote.starred = true;
+        games.get_mut(&AppId(2)).unwrap().vote.saved = true;
         games
     }
 
     #[test]
-    fn the_starred_segment_keeps_the_would_try_votes_with_the_star() {
-        let games = with_stars();
+    fn the_saved_segment_keeps_the_would_try_votes_with_the_save() {
+        let games = with_saved();
 
         assert_eq!(
             rows(
                 &games,
-                Filter::Starred,
+                Filter::Saved,
                 Order::Newest,
                 Shown::default(),
                 "",
@@ -1704,39 +2006,175 @@ mod tests {
             ),
             ids(&[8, 7, 2, 6])
         );
-        assert_eq!(count(&games, Filter::Starred, Shown::default()), 4);
+        assert_eq!(count(&games, Filter::Saved, Shown::default()), 4);
         assert_eq!(count(&games, Filter::WouldTry, Shown::default()), 6);
         assert_eq!(count(&games, Filter::All, Shown::default()), 8);
+    }
+
+    const CO_OP: ListId = ListId(2);
+    const ON_SALE: ListId = ListId(5);
+
+    fn some_lists() -> Lists {
+        Lists::from([
+            (CO_OP, "Co-op".to_string()),
+            (ON_SALE, "On sale".to_string()),
+        ])
+    }
+
+    /// Tunic and Hades in Co-op, Tunic in On sale too; Satisfactory and Celeste in no list.
+    fn with_lists() -> BTreeMap<AppId, VotedGame> {
+        let mut games = with_saved();
+        let mut put = |id: u32, lists: &[ListId]| {
+            games.get_mut(&AppId(id)).unwrap().vote.lists = lists.iter().copied().collect();
+        };
+        put(7, &[CO_OP, ON_SALE]);
+        put(6, &[CO_OP]);
+        games
+    }
+
+    fn saved_lines(games: &BTreeMap<AppId, VotedGame>, lists: &Lists) -> Vec<Line> {
+        let rows = rows(
+            games,
+            Filter::Saved,
+            Order::Newest,
+            Shown::default(),
+            "",
+            None,
+        );
+        lines(&rows, games, Some(lists))
+    }
+
+    fn game(id: u32, section: Section) -> Line {
+        Line::Game(AppId(id), section)
+    }
+
+    #[test]
+    fn saved_shows_a_section_for_each_list_and_no_list_last() {
+        use Section::{List, NoList};
+
+        assert_eq!(
+            saved_lines(&with_lists(), &some_lists()),
+            vec![
+                Line::Title(List(CO_OP)),
+                game(7, List(CO_OP)),
+                game(6, List(CO_OP)),
+                Line::Title(List(ON_SALE)),
+                game(7, List(ON_SALE)),
+                Line::Title(NoList),
+                game(8, NoList),
+                game(2, NoList),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_list_without_games_keeps_its_title() {
+        let mut lists = some_lists();
+        lists.insert(ListId(9), "Later".to_string());
+        let lines = saved_lines(&with_lists(), &lists);
+
+        assert_eq!(
+            lines[lines.len() - 5..lines.len() - 3],
+            [
+                Line::Title(Section::List(ListId(9))),
+                Line::Empty(ListId(9))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_list_whose_games_are_all_hidden_leaves_no_section() {
+        let games = with_lists();
+        let rows = ids(&[8, 6]);
+
+        assert_eq!(
+            lines(&rows, &games, Some(&some_lists())),
+            vec![
+                Line::Title(Section::List(CO_OP)),
+                game(6, Section::List(CO_OP)),
+                Line::Title(Section::NoList),
+                game(8, Section::NoList),
+            ]
+        );
+    }
+
+    #[test]
+    fn without_lists_there_are_no_sections() {
+        let games = with_lists();
+        let rows = ids(&[8, 7]);
+        let whole = vec![game(8, Section::Whole), game(7, Section::Whole)];
+
+        assert_eq!(lines(&rows, &games, None), whole);
+        assert_eq!(lines(&rows, &games, Some(&Lists::new())), whole);
+    }
+
+    #[test]
+    fn the_title_counts_the_games_of_its_list() {
+        let games = with_lists();
+
+        assert_eq!(games_in(&games, CO_OP), 2);
+        assert_eq!(games_in(&games, ON_SALE), 1);
+        assert_eq!(section_title("Co-op", 2), "Co-op · 2");
+    }
+
+    #[test]
+    fn the_arrows_skip_the_titles() {
+        let lines = saved_lines(&with_lists(), &some_lists());
+
+        assert_eq!(first_game(&lines), 1);
+        assert_eq!(next_game(&lines, 2), 4);
+        assert_eq!(previous_game(&lines, 4), 2);
+        assert_eq!(next_game(&lines, 7), 7);
+        assert_eq!(previous_game(&lines, 1), 1);
+    }
+
+    #[test]
+    fn the_first_game_of_a_section_brings_its_title_into_view() {
+        let lines = saved_lines(&with_lists(), &some_lists());
+
+        assert_eq!(line_top(&lines, 1), 0);
+        assert_eq!(line_top(&lines, 2), 2);
+        assert_eq!(line_top(&lines, 6), 5);
+    }
+
+    #[test]
+    fn the_selection_follows_its_game_into_another_section() {
+        use Section::{List, NoList};
+        let lines = saved_lines(&with_lists(), &some_lists());
+
+        assert_eq!(kept_selection(&lines, Some(game(7, List(ON_SALE))), 0), 4);
+        // Taken out of its lists, the game is in No list
+        assert_eq!(kept_selection(&lines, Some(game(6, NoList)), 0), 2);
     }
 
     #[test]
     fn a_vote_stops_the_trailer() {
         assert!(stops_the_trailer(&Message::Vote(Pick::Played)));
         assert!(stops_the_trailer(&Message::Played));
-        assert!(stops_the_trailer(&Message::Star));
+        assert!(stops_the_trailer(&Message::Save));
         assert!(!stops_the_trailer(&Message::Next));
     }
 
     #[test]
-    fn the_starred_count_follows_hide_owned_bets_only_and_the_filters() {
-        let games = with_stars();
+    fn the_saved_count_follows_hide_owned_bets_only_and_the_filters() {
+        let games = with_saved();
         let passing = set(&[2, 8]);
 
-        assert_eq!(count(&games, Filter::Starred, HIDE_OWNED), 3);
-        assert_eq!(count(&games, Filter::Starred, BETS_ONLY), 2);
-        assert_eq!(count(&games, Filter::Starred, passing_only(&passing)), 2);
+        assert_eq!(count(&games, Filter::Saved, HIDE_OWNED), 3);
+        assert_eq!(count(&games, Filter::Saved, BETS_ONLY), 2);
+        assert_eq!(count(&games, Filter::Saved, passing_only(&passing)), 2);
         assert_eq!(
-            rows(&games, Filter::Starred, Order::Newest, HIDE_OWNED, "", None),
+            rows(&games, Filter::Saved, Order::Newest, HIDE_OWNED, "", None),
             ids(&[8, 7, 2])
         );
         assert_eq!(
-            rows(&games, Filter::Starred, Order::Newest, BETS_ONLY, "", None),
+            rows(&games, Filter::Saved, Order::Newest, BETS_ONLY, "", None),
             ids(&[7, 2])
         );
         assert_eq!(
             rows(
                 &games,
-                Filter::Starred,
+                Filter::Saved,
                 Order::Price,
                 passing_only(&passing),
                 "",
@@ -1747,12 +2185,12 @@ mod tests {
     }
 
     #[test]
-    fn a_game_that_loses_the_star_leaves_the_starred_segment() {
-        let mut games = with_stars();
-        games.get_mut(&AppId(7)).unwrap().vote.starred = false;
+    fn a_game_that_loses_the_save_leaves_the_saved_segment() {
+        let mut games = with_saved();
+        games.get_mut(&AppId(7)).unwrap().vote.saved = false;
         let rows = rows(
             &games,
-            Filter::Starred,
+            Filter::Saved,
             Order::Newest,
             Shown::default(),
             "",
@@ -1760,15 +2198,16 @@ mod tests {
         );
 
         assert_eq!(rows, ids(&[8, 2, 6]));
-        assert_eq!(kept_selection(&rows, Some(AppId(7)), 1), 1);
+        let lines = lines(&rows, &games, None);
+        assert_eq!(kept_selection(&lines, Some(game(7, Section::Whole)), 1), 1);
     }
 
     #[test]
-    fn a_starred_vote_opens_on_the_starred_segment() {
+    fn a_saved_vote_opens_on_the_saved_segment() {
         let mut vote = Vote::new(VoteKind::WouldTry, "2026-11-16");
-        vote.starred = true;
+        vote.saved = true;
 
-        assert_eq!(Filter::of(&vote), Filter::Starred);
+        assert_eq!(Filter::of(&vote), Filter::Saved);
         assert_eq!(
             Filter::of(&Vote::new(VoteKind::WouldTry, "2026-11-16")),
             Filter::WouldTry
@@ -1776,41 +2215,35 @@ mod tests {
     }
 
     #[test]
-    fn the_small_star_shows_only_in_would_try_and_in_all() {
+    fn the_small_save_shows_only_in_would_try_and_in_all() {
         let mut vote = Vote::new(VoteKind::WouldTry, "2026-11-16");
         let plain = vote.clone();
-        vote.starred = true;
+        vote.saved = true;
 
-        assert!(shows_star(Filter::WouldTry, &vote));
-        assert!(shows_star(Filter::All, &vote));
-        assert!(!shows_star(Filter::Starred, &vote));
-        assert!(!shows_star(Filter::NotForMe, &vote));
-        assert!(!shows_star(Filter::WouldTry, &plain));
-        assert!(!shows_star(Filter::All, &plain));
+        assert!(shows_saved(Filter::WouldTry, &vote));
+        assert!(shows_saved(Filter::All, &vote));
+        assert!(!shows_saved(Filter::Saved, &vote));
+        assert!(!shows_saved(Filter::NotForMe, &vote));
+        assert!(!shows_saved(Filter::WouldTry, &plain));
+        assert!(!shows_saved(Filter::All, &plain));
     }
 
     #[test]
-    fn the_starred_segment_says_why_it_is_empty() {
+    fn the_saved_segment_says_why_it_is_empty() {
+        assert_eq!(empty_text(false, Filter::Saved, false, false, ""), NO_SAVED);
         assert_eq!(
-            empty_text(false, Filter::Starred, false, false, ""),
-            NO_STARRED
+            empty_text(false, Filter::Saved, true, false, ""),
+            "No saved games match the filters"
         );
         assert_eq!(
-            empty_text(false, Filter::Starred, true, false, ""),
-            "No starred games match the filters"
+            empty_text(false, Filter::Saved, false, true, ""),
+            "You own all your saved games"
         );
         assert_eq!(
-            empty_text(false, Filter::Starred, false, true, ""),
-            "You own all your starred games"
-        );
-        assert_eq!(
-            empty_text(false, Filter::Starred, false, false, "hades"),
+            empty_text(false, Filter::Saved, false, false, "hades"),
             "No votes match \"hades\""
         );
-        assert_eq!(
-            empty_text(true, Filter::Starred, false, false, ""),
-            NO_VOTES
-        );
+        assert_eq!(empty_text(true, Filter::Saved, false, false, ""), NO_VOTES);
     }
 
     #[test]
@@ -2178,9 +2611,11 @@ mod tests {
 
     #[test]
     fn scrolls_only_to_bring_the_row_into_view() {
-        assert_eq!(scroll_target(2, 0.0, 320.0), None);
-        assert_eq!(scroll_target(2, 100.0, 320.0), Some(64.0));
-        assert_eq!(scroll_target(12, 0.0, 320.0), Some(96.0));
+        assert_eq!(scroll_target(2, 2, 0.0, 320.0), None);
+        assert_eq!(scroll_target(2, 2, 100.0, 320.0), Some(64.0));
+        assert_eq!(scroll_target(12, 12, 0.0, 320.0), Some(96.0));
+        // With the title above it, the line needs one row more
+        assert_eq!(scroll_target(3, 4, 100.0, 320.0), Some(96.0));
     }
 
     #[test]
@@ -2370,27 +2805,27 @@ mod tests {
     }
 
     #[test]
-    fn s_stars_the_game_in_either_case_and_ctrl_s_does_nothing() {
+    fn s_opens_the_save_menu_in_either_case_and_ctrl_s_does_nothing() {
         for key in ["s", "S"] {
             assert!(matches!(
                 key_message(pressed(Key::Character(key.into()))),
-                Some(Message::Star)
+                Some(Message::Save)
             ));
         }
         assert!(key_message(pressed_with(Key::Character("s".into()), Modifiers::CTRL)).is_none());
     }
 
     #[test]
-    fn a_game_you_have_cannot_get_a_star() {
+    fn a_game_you_have_cannot_get_a_save() {
         let mut game = voted(1, "Hades", VoteKind::WouldTry, "2026-10-01", false);
-        assert!(may_star(&game));
+        assert!(may_save(&game));
         game.owned = true;
-        assert!(!may_star(&game));
+        assert!(!may_save(&game));
     }
 
     #[test]
-    fn an_open_popup_stops_the_star() {
-        assert!(stopped_by_popup(&Message::Star));
+    fn an_open_popup_stops_the_save() {
+        assert!(stopped_by_popup(&Message::Save));
     }
 
     #[test]
@@ -2398,7 +2833,7 @@ mod tests {
         let number = key_message(pressed(Key::Character("1".into()))).unwrap();
 
         assert!(acts_on_the_page(&number));
-        assert!(acts_on_the_page(&Message::Star));
+        assert!(acts_on_the_page(&Message::Save));
         for message in [
             Message::Next,
             Message::Previous,

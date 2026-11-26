@@ -16,6 +16,7 @@ pub mod game;
 pub mod game_vector;
 pub mod ids;
 pub mod incremental;
+pub mod lists;
 pub mod off_catalog;
 pub mod opinion;
 pub mod profile;

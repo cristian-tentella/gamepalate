@@ -11,6 +11,7 @@ use gamepalate_core::{
     filters::{FilterContext, FilterOptions, chosen_filters, first_failed, owned_games},
     game::{Price, Reviews},
     ids::AppId,
+    lists::{ListId, Lists},
     off_catalog::OffCatalogGames,
     search::SearchInputs,
     taste::game_name,
@@ -37,16 +38,36 @@ pub struct VotedGame {
 #[derive(Debug, thiserror::Error)]
 #[error("could not save the vote in {}", path.display())]
 pub struct VoteError {
-    path: PathBuf,
+    pub(super) path: PathBuf,
     #[source]
-    source: VotesError,
+    pub(super) source: VotesError,
 }
 
-/// Why a star was not saved.
+/// What changes in Save on a game.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveChange {
+    Save,
+    /// Unsaves the game, and takes it out of every list.
+    Unsave,
+    /// Puts the game in the list, which saves it.
+    AddTo(ListId),
+    /// Takes the game out of the list. It stays saved.
+    RemoveFrom(ListId),
+}
+
+impl SaveChange {
+    pub fn saves(self) -> bool {
+        matches!(self, SaveChange::Save | SaveChange::AddTo(_))
+    }
+}
+
+/// Why Save did not change.
 #[derive(Debug, thiserror::Error)]
-pub enum StarError {
-    #[error("a game you have cannot be starred")]
+pub enum SaveError {
+    #[error("a game you have cannot be saved")]
     Owned,
+    #[error("the list is gone")]
+    NoList,
     #[error(transparent)]
     Vote(#[from] VoteError),
 }
@@ -67,38 +88,63 @@ fn saved_vote(
     Ok(changed)
 }
 
-/// The votes with the star put on `id` or taken off it. A star needs a Would try: the game gets
-/// `new_vote`, a Would try, when it has none that counts. A game you have cannot get a star.
-/// Without a change, or with an error, nothing is saved.
-fn saved_star(
+/// The votes with `change` made to Save on `id`. Save needs a Would try: the game gets
+/// `new_vote`, a Would try, when it has none that counts. Unsaving takes the game out of
+/// its lists; leaving its last list keeps it saved. A game you have cannot be saved, nor put in a
+/// list. Without a change, or with an error, nothing is saved.
+#[allow(clippy::too_many_arguments)]
+fn saved_change(
     path: &Path,
     votes: &Votes,
+    lists: &Lists,
     id: AppId,
-    starred: bool,
+    change: SaveChange,
     owned: bool,
     new_vote: Vote,
     name: impl Fn(AppId) -> Option<String>,
-) -> Result<Votes, StarError> {
-    if starred && owned {
-        return Err(StarError::Owned);
+) -> Result<Votes, SaveError> {
+    if change.saves() && owned {
+        return Err(SaveError::Owned);
+    }
+    if let SaveChange::AddTo(list) = change
+        && !lists.contains_key(&list)
+    {
+        return Err(SaveError::NoList);
     }
     let now = new_vote.at.unwrap_or(Timestamp(0));
     let mut changed = votes.clone();
     match standing(votes, id, now) {
         Some(vote) if vote.kind == VoteKind::WouldTry => {
-            if vote.starred == starred {
+            let mut saved = vote.clone();
+            match change {
+                SaveChange::Save => saved.saved = true,
+                SaveChange::Unsave => {
+                    saved.saved = false;
+                    saved.lists.clear();
+                }
+                SaveChange::AddTo(list) => {
+                    saved.saved = true;
+                    saved.lists.insert(list);
+                }
+                SaveChange::RemoveFrom(list) => {
+                    saved.lists.remove(&list);
+                }
+            }
+            if saved == *vote {
                 return Ok(changed);
             }
-            if let Some(vote) = changed.get_mut(&id) {
-                vote.starred = starred;
-            }
+            changed.insert(id, saved);
         }
-        _ if starred => cast(
+        _ if change.saves() => cast(
             &mut changed,
             id,
             Vote {
                 kind: VoteKind::WouldTry,
-                starred: true,
+                saved: true,
+                lists: match change {
+                    SaveChange::AddTo(list) => [list].into(),
+                    _ => Default::default(),
+                },
                 ..new_vote
             },
         ),
@@ -187,12 +233,10 @@ impl Gamepalate {
             &votes,
             id,
             Vote {
-                kind,
-                date,
                 at: Some(at),
                 bet,
                 searched,
-                starred: false,
+                ..Vote::new(kind, &date)
             },
             |id| self.saved_name(id),
         )
@@ -200,21 +244,24 @@ impl Gamepalate {
         Ok(())
     }
 
-    /// Puts the star on a game, or takes it off. A star needs a Would try: a game with another
-    /// vote or none gets one, with `bet` and `searched` as `vote` would give it. Taking the star
-    /// off leaves the Would try. A game you have cannot get a star, and nothing is saved.
-    pub fn star(
+    /// Saves a game or unsaves it, or puts the game in a list or takes it out. A
+    /// Save needs a Would try: a game with another vote or none gets one, with `bet` and
+    /// `searched` as `vote` would give it. Unsaving leaves the Would try and empties
+    /// the lists; leaving the last list keeps it saved. A game you have cannot be saved nor put in a
+    /// list, and nothing is saved.
+    pub fn save(
         &self,
         id: AppId,
-        starred: bool,
+        change: SaveChange,
         bet: bool,
         searched: bool,
-    ) -> Result<(), StarError> {
-        let owned = starred
+    ) -> Result<(), SaveError> {
+        let owned = change.saves()
             && self.with_inputs(|inputs| {
                 owned_games(inputs.signals, inputs.corrections).contains(&id)
             });
         let mut votes = self.write_votes();
+        let lists = self.lock_lists();
         let now = jiff::Zoned::now();
         let new_vote = Vote {
             at: Some(Timestamp(now.timestamp().as_millisecond())),
@@ -222,16 +269,17 @@ impl Gamepalate {
             searched,
             ..Vote::new(VoteKind::WouldTry, &now.date().to_string())
         };
-        *votes = saved_star(
+        *votes = saved_change(
             &self.data_dir.join("votes.toml"),
             &votes,
+            &lists,
             id,
-            starred,
+            change,
             owned,
             new_vote,
             |id| self.saved_name(id),
         )
-        .inspect_err(failed("could not save the star"))?;
+        .inspect_err(failed("could not change the saved game"))?;
         Ok(())
     }
 
@@ -245,7 +293,7 @@ impl Gamepalate {
         Ok(())
     }
 
-    fn saved_name(&self, id: AppId) -> Option<String> {
+    pub(super) fn saved_name(&self, id: AppId) -> Option<String> {
         let name = game_name(id, &self.files.catalog, &self.files.off_catalog);
         (name != format!("#{}", id.0)).then_some(name)
     }
@@ -396,18 +444,34 @@ mod tests {
 
     const NOW: i64 = 1_794_835_200_000;
 
-    fn star_in(
+    fn save_in(
         path: &Path,
         votes: &Votes,
-        starred: bool,
+        saved: bool,
         owned: bool,
         searched: bool,
-    ) -> Result<Votes, StarError> {
-        saved_star(
+    ) -> Result<Votes, SaveError> {
+        let change = if saved {
+            SaveChange::Save
+        } else {
+            SaveChange::Unsave
+        };
+        change_in(path, votes, change, owned, searched)
+    }
+
+    fn change_in(
+        path: &Path,
+        votes: &Votes,
+        change: SaveChange,
+        owned: bool,
+        searched: bool,
+    ) -> Result<Votes, SaveError> {
+        saved_change(
             path,
             votes,
+            &two_lists(),
             AppId(620),
-            starred,
+            change,
             owned,
             Vote {
                 at: Some(Timestamp(NOW)),
@@ -419,27 +483,27 @@ mod tests {
         )
     }
 
-    fn voted_as(kind: VoteKind, starred: bool) -> Votes {
+    fn voted_as(kind: VoteKind, saved: bool) -> Votes {
         Votes::from([(
             AppId(620),
             Vote {
                 at: Some(Timestamp(NOW - 1000)),
-                starred,
+                saved,
                 ..Vote::new(kind, "2026-11-15")
             },
         )])
     }
 
     #[test]
-    fn a_star_on_a_game_without_a_vote_gives_a_would_try() {
+    fn a_save_on_a_game_without_a_vote_gives_a_would_try() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("votes.toml");
 
-        let votes = star_in(&path, &Votes::new(), true, false, true).unwrap();
+        let votes = save_in(&path, &Votes::new(), true, false, true).unwrap();
 
         let vote = &votes[&AppId(620)];
         assert_eq!(vote.kind, VoteKind::WouldTry);
-        assert!(vote.starred && vote.searched);
+        assert!(vote.saved && vote.searched);
         assert_eq!(vote.at, Some(Timestamp(NOW)));
         assert_eq!(
             gamepalate_store::votes::load_votes(&path).unwrap().votes,
@@ -448,72 +512,68 @@ mod tests {
         assert!(
             std::fs::read_to_string(&path)
                 .unwrap()
-                .contains("searched = true, starred = true } # Portal 2")
+                .contains("searched = true, saved = true } # Portal 2")
         );
     }
 
     #[test]
-    fn a_star_from_a_recommendation_keeps_the_bet() {
+    fn a_save_from_a_recommendation_keeps_the_bet() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("votes.toml");
 
-        let votes = star_in(&path, &Votes::new(), true, false, false).unwrap();
+        let votes = save_in(&path, &Votes::new(), true, false, false).unwrap();
 
         assert!(votes[&AppId(620)].bet);
         assert!(!votes[&AppId(620)].searched);
     }
 
     #[test]
-    fn a_star_turns_a_not_for_me_and_a_later_into_a_would_try() {
+    fn a_save_turns_a_not_for_me_and_a_later_into_a_would_try() {
         for kind in [VoteKind::NotForMe, VoteKind::Later] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("votes.toml");
 
-            let votes = star_in(&path, &voted_as(kind, false), true, false, false).unwrap();
+            let votes = save_in(&path, &voted_as(kind, false), true, false, false).unwrap();
 
             let vote = &votes[&AppId(620)];
             assert_eq!(vote.kind, VoteKind::WouldTry);
-            assert!(vote.starred);
+            assert!(vote.saved);
             assert_eq!(vote.at, Some(Timestamp(NOW)));
         }
     }
 
     #[test]
-    fn a_star_on_a_would_try_keeps_the_vote_as_it_was() {
+    fn a_save_on_a_would_try_keeps_the_vote_as_it_was() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("votes.toml");
         let before = voted_as(VoteKind::WouldTry, false);
 
-        let votes = star_in(&path, &before, true, false, true).unwrap();
+        let votes = save_in(&path, &before, true, false, true).unwrap();
 
         assert_eq!(
             votes[&AppId(620)],
             Vote {
-                starred: true,
+                saved: true,
                 ..before[&AppId(620)].clone()
             }
         );
     }
 
     #[test]
-    fn taking_the_star_off_leaves_the_would_try() {
+    fn taking_the_save_off_leaves_the_would_try() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("votes.toml");
         let before = voted_as(VoteKind::WouldTry, true);
 
-        let votes = star_in(&path, &before, false, false, false).unwrap();
+        let votes = save_in(&path, &before, false, false, false).unwrap();
 
         assert_eq!(votes[&AppId(620)].kind, VoteKind::WouldTry);
-        assert!(!votes[&AppId(620)].starred);
-        assert!(
-            !std::fs::read_to_string(&path)
-                .unwrap()
-                .contains(", starred")
-        );
+        assert!(!votes[&AppId(620)].saved);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains(", saved"));
     }
 
     #[test]
-    fn taking_the_star_off_a_game_without_one_saves_nothing() {
+    fn taking_the_save_off_a_game_without_one_saves_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("votes.toml");
 
@@ -522,67 +582,264 @@ mod tests {
             voted_as(VoteKind::WouldTry, false),
             voted_as(VoteKind::NotForMe, false),
         ] {
-            let votes = star_in(&path, &before, false, false, false).unwrap();
+            let votes = save_in(&path, &before, false, false, false).unwrap();
             assert_eq!(votes, before);
         }
         assert!(!path.exists());
     }
 
     #[test]
-    fn a_star_on_a_starred_game_saves_nothing() {
+    fn a_save_on_a_saved_game_saves_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("votes.toml");
         let before = voted_as(VoteKind::WouldTry, true);
 
-        assert_eq!(star_in(&path, &before, true, false, false).unwrap(), before);
+        assert_eq!(save_in(&path, &before, true, false, false).unwrap(), before);
         assert!(!path.exists());
     }
 
     #[test]
-    fn a_game_you_have_gets_no_star_and_nothing_is_saved() {
+    fn a_game_you_have_gets_no_save_and_nothing_is_saved() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("votes.toml");
 
         for before in [Votes::new(), voted_as(VoteKind::WouldTry, false)] {
-            let error = star_in(&path, &before, true, true, false).unwrap_err();
-            assert!(matches!(error, StarError::Owned));
+            let error = save_in(&path, &before, true, true, false).unwrap_err();
+            assert!(matches!(error, SaveError::Owned));
         }
         assert!(!path.exists());
     }
 
     #[test]
-    fn a_game_you_have_can_lose_its_star() {
+    fn a_game_you_have_can_lose_its_save() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("votes.toml");
         let before = voted_as(VoteKind::WouldTry, true);
 
-        let votes = star_in(&path, &before, false, true, false).unwrap();
+        let votes = save_in(&path, &before, false, true, false).unwrap();
 
-        assert!(!votes[&AppId(620)].starred);
+        assert!(!votes[&AppId(620)].saved);
     }
 
     #[test]
-    fn removing_the_vote_takes_the_star_too() {
+    fn removing_the_vote_takes_the_save_too() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("votes.toml");
-        let votes = star_in(&path, &Votes::new(), true, false, false).unwrap();
+        let votes = save_in(&path, &Votes::new(), true, false, false).unwrap();
 
         let votes = remove_vote(&path, &votes, AppId(620), |_| None).unwrap();
 
         assert!(votes.is_empty());
+        assert!(!std::fs::read_to_string(&path).unwrap().contains(", saved"));
+    }
+
+    fn two_lists() -> Lists {
+        Lists::from([
+            (ListId(2), "Co-op".to_string()),
+            (ListId(5), "On sale".to_string()),
+        ])
+    }
+
+    fn in_lists(lists: &[u32]) -> Votes {
+        let mut votes = voted_as(VoteKind::WouldTry, true);
+        if let Some(vote) = votes.get_mut(&AppId(620)) {
+            vote.lists = lists.iter().copied().map(ListId).collect();
+        }
+        votes
+    }
+
+    fn lists_of(votes: &Votes) -> Vec<ListId> {
+        votes[&AppId(620)].lists.iter().copied().collect()
+    }
+
+    #[test]
+    fn a_list_on_a_game_without_a_vote_gives_a_saved_would_try() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        let votes = change_in(
+            &path,
+            &Votes::new(),
+            SaveChange::AddTo(ListId(2)),
+            false,
+            true,
+        )
+        .unwrap();
+
+        let vote = &votes[&AppId(620)];
+        assert_eq!(vote.kind, VoteKind::WouldTry);
+        assert!(vote.saved && vote.searched);
+        assert_eq!(lists_of(&votes), [ListId(2)]);
         assert!(
-            !std::fs::read_to_string(&path)
+            std::fs::read_to_string(&path)
                 .unwrap()
-                .contains(", starred")
+                .contains("saved = true, lists = [2] } # Portal 2")
+        );
+        assert_eq!(
+            gamepalate_store::votes::load_votes(&path).unwrap().votes,
+            votes
         );
     }
 
     #[test]
-    fn a_star_that_cannot_be_saved_names_the_file() {
+    fn a_list_turns_a_not_for_me_into_a_saved_would_try() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        let votes = change_in(
+            &path,
+            &voted_as(VoteKind::NotForMe, false),
+            SaveChange::AddTo(ListId(5)),
+            false,
+            false,
+        )
+        .unwrap();
+
+        let vote = &votes[&AppId(620)];
+        assert_eq!(vote.kind, VoteKind::WouldTry);
+        assert!(vote.saved && vote.bet);
+        assert_eq!(vote.at, Some(Timestamp(NOW)));
+        assert_eq!(lists_of(&votes), [ListId(5)]);
+    }
+
+    #[test]
+    fn a_list_saves_a_would_try_and_keeps_the_vote_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+        let before = voted_as(VoteKind::WouldTry, false);
+
+        let votes = change_in(&path, &before, SaveChange::AddTo(ListId(2)), false, true).unwrap();
+
+        assert_eq!(
+            votes[&AppId(620)],
+            Vote {
+                saved: true,
+                lists: [ListId(2)].into(),
+                ..before[&AppId(620)].clone()
+            }
+        );
+    }
+
+    #[test]
+    fn a_second_list_adds_to_the_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        let votes = change_in(
+            &path,
+            &in_lists(&[2]),
+            SaveChange::AddTo(ListId(5)),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(lists_of(&votes), [ListId(2), ListId(5)]);
+    }
+
+    #[test]
+    fn leaving_the_last_list_keeps_the_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        let votes = change_in(
+            &path,
+            &in_lists(&[2]),
+            SaveChange::RemoveFrom(ListId(2)),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert!(votes[&AppId(620)].saved);
+        assert!(votes[&AppId(620)].lists.is_empty());
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains(", lists =")
+        );
+    }
+
+    #[test]
+    fn taking_the_save_off_empties_the_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        let votes = change_in(&path, &in_lists(&[2, 5]), SaveChange::Unsave, false, false).unwrap();
+
+        assert_eq!(votes[&AppId(620)].kind, VoteKind::WouldTry);
+        assert!(!votes[&AppId(620)].saved);
+        assert!(votes[&AppId(620)].lists.is_empty());
+    }
+
+    #[test]
+    fn a_list_change_that_changes_nothing_saves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        for (before, change) in [
+            (in_lists(&[2]), SaveChange::AddTo(ListId(2))),
+            (in_lists(&[2]), SaveChange::RemoveFrom(ListId(5))),
+            (in_lists(&[2]), SaveChange::Save),
+            (Votes::new(), SaveChange::RemoveFrom(ListId(2))),
+            (
+                voted_as(VoteKind::NotForMe, false),
+                SaveChange::RemoveFrom(ListId(2)),
+            ),
+        ] {
+            let votes = change_in(&path, &before, change, false, false).unwrap();
+            assert_eq!(votes, before);
+        }
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_list_that_is_gone_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        let error = change_in(
+            &path,
+            &Votes::new(),
+            SaveChange::AddTo(ListId(9)),
+            false,
+            false,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, SaveError::NoList));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_game_you_have_gets_no_list_and_nothing_is_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("votes.toml");
+
+        for before in [Votes::new(), in_lists(&[2])] {
+            let error =
+                change_in(&path, &before, SaveChange::AddTo(ListId(5)), true, false).unwrap_err();
+            assert!(matches!(error, SaveError::Owned));
+        }
+        assert!(!path.exists());
+
+        let votes = change_in(
+            &path,
+            &in_lists(&[2]),
+            SaveChange::RemoveFrom(ListId(2)),
+            true,
+            false,
+        )
+        .unwrap();
+        assert!(votes[&AppId(620)].lists.is_empty());
+    }
+
+    #[test]
+    fn a_save_that_cannot_be_saved_names_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing").join("votes.toml");
 
-        let error = star_in(&path, &Votes::new(), true, false, false).unwrap_err();
+        let error = save_in(&path, &Votes::new(), true, false, false).unwrap_err();
 
         assert_eq!(
             error.to_string(),

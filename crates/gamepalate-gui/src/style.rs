@@ -1135,6 +1135,10 @@ pub fn primary(theme: &Theme, status: button::Status) -> button::Style {
     rounded(button::primary(theme, status))
 }
 
+pub fn danger(theme: &Theme, status: button::Status) -> button::Style {
+    rounded(button::danger(theme, status))
+}
+
 pub fn secondary(theme: &Theme, status: button::Status) -> button::Style {
     rounded(button::secondary(theme, status))
 }

@@ -261,7 +261,7 @@ pub struct GameView {
 
 impl GameView {
     /// In the library, borrowed, played recently or played elsewhere: a game you have, which
-    /// cannot get a star.
+    /// cannot be saved.
     pub fn owned(&self) -> bool {
         self.in_library || self.played_elsewhere
     }
