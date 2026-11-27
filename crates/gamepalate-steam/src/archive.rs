@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     ffi::OsString,
     fs,
     io::{self, Read, Write},
@@ -6,7 +7,12 @@ use std::{
 };
 
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
-use gamepalate_core::{ids::AppId, region::Region, timestamp::Timestamp};
+use gamepalate_core::{
+    catalog::TagFrequencies,
+    ids::{AppId, TagId},
+    region::Region,
+    timestamp::Timestamp,
+};
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -66,9 +72,19 @@ struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     first: Option<Vec<u32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    first_tags: Option<FirstTags>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     completed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     failed_at: Option<String>,
+}
+
+/// The tag frequencies of the starter catalog, kept with the first part so
+/// that a resume weighs the tags as the first run did.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct FirstTags {
+    games: u32,
+    tags: BTreeMap<u32, u32>,
 }
 
 #[derive(Serialize)]
@@ -119,9 +135,12 @@ impl Archive {
         let full = completed
             .first()
             .is_none_or(|latest| latest.region != region);
-        let first = match completed.is_empty() {
-            true => self.unfinished_first()?,
-            false => None,
+        let (first, first_tags) = match completed.is_empty() {
+            true => match self.unfinished_first()? {
+                Some((first, tags)) => (Some(first), tags),
+                None => (None, None),
+            },
+            false => (None, None),
         };
 
         fs::create_dir_all(&self.root)?;
@@ -137,6 +156,7 @@ impl Archive {
             renewed_apps: None,
             next_expiry: None,
             first,
+            first_tags,
             completed_at: None,
             failed_at: None,
         };
@@ -156,11 +176,11 @@ impl Archive {
         Ok(self.completed()?.is_empty() && self.unfinished_first()?.is_some())
     }
 
-    fn unfinished_first(&self) -> io::Result<Option<Vec<u32>>> {
+    fn unfinished_first(&self) -> io::Result<Option<(Vec<u32>, Option<FirstTags>)>> {
         Ok(self
             .updates_newest_first()?
             .into_iter()
-            .find_map(|(_, manifest)| manifest.first))
+            .find_map(|(_, manifest)| Some((manifest.first?, manifest.first_tags))))
     }
 
     pub fn completed(&self) -> io::Result<Vec<ArchivedUpdate>> {
@@ -305,8 +325,25 @@ impl UpdateFolder {
         Some(first.iter().copied().map(AppId).collect())
     }
 
-    pub fn set_first(&mut self, apps: &[AppId]) -> io::Result<()> {
+    /// The tag frequencies of the starter catalog the first part came with.
+    pub fn first_tags(&self) -> Option<TagFrequencies> {
+        let first_tags = self.manifest.first_tags.as_ref()?;
+        Some(TagFrequencies {
+            games: first_tags.games,
+            tags: first_tags
+                .tags
+                .iter()
+                .map(|(&id, &count)| (TagId(id), count))
+                .collect(),
+        })
+    }
+
+    pub fn set_first(&mut self, apps: &[AppId], tags: Option<&TagFrequencies>) -> io::Result<()> {
         self.manifest.first = Some(apps.iter().map(|app| app.0).collect());
+        self.manifest.first_tags = tags.map(|tags| FirstTags {
+            games: tags.games,
+            tags: tags.tags.iter().map(|(id, &count)| (id.0, count)).collect(),
+        });
         write_manifest(&self.dir, &self.manifest)
     }
 
@@ -1335,7 +1372,7 @@ mod tests {
         assert!(!update.resumed());
         assert_eq!(update.first(), None);
 
-        update.set_first(&apps(&[730, 440])).unwrap();
+        update.set_first(&apps(&[730, 440]), None).unwrap();
         let dir = update.dir().to_path_buf();
         drop(update);
 
@@ -1346,6 +1383,64 @@ mod tests {
         assert_eq!(resumed.dir(), dir);
         assert!(resumed.resumed());
         assert_eq!(resumed.first(), Some(apps(&[730, 440])));
+    }
+
+    fn tags(games: u32, counts: &[(u32, u32)]) -> TagFrequencies {
+        TagFrequencies {
+            games,
+            tags: counts
+                .iter()
+                .map(|&(id, count)| (TagId(id), count))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_resumed_update_keeps_the_tags_of_its_first_part() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        let mut update = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
+        assert_eq!(update.first_tags(), None);
+
+        let frequencies = tags(121034, &[(19, 48211), (492, 30877)]);
+        update
+            .set_first(&apps(&[730, 440]), Some(&frequencies))
+            .unwrap();
+        let dir = update.dir().to_path_buf();
+        drop(update);
+
+        assert_eq!(
+            read_manifest(&dir)["firstTags"],
+            json!({ "games": 121034, "tags": { "19": 48211, "492": 30877 } })
+        );
+        let resumed = archive
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
+            .unwrap();
+        assert!(resumed.resumed());
+        assert_eq!(resumed.first_tags(), Some(frequencies.clone()));
+
+        let next = archive
+            .start_update(Timestamp(NOW.0 + 2 * DAY), 24, Region::ITALY, false)
+            .unwrap();
+        assert!(!next.resumed());
+        assert_eq!(next.first_tags(), Some(frequencies));
+    }
+
+    #[test]
+    fn a_first_part_without_tags_writes_none() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        let mut update = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
+        update.set_first(&apps(&[730]), None).unwrap();
+        let dir = update.dir().to_path_buf();
+        drop(update);
+
+        assert_eq!(read_manifest(&dir).get("firstTags"), None);
+        let resumed = archive
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
+            .unwrap();
+        assert_eq!(resumed.first(), Some(apps(&[730])));
+        assert_eq!(resumed.first_tags(), None);
     }
 
     #[test]
@@ -1362,7 +1457,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
         let mut expired = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
-        expired.set_first(&apps(&[730, 440])).unwrap();
+        expired.set_first(&apps(&[730, 440]), None).unwrap();
         let dir = expired.dir().to_path_buf();
 
         let next = archive
@@ -1381,7 +1476,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::new(root.path().to_path_buf());
         let mut first = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
-        first.set_first(&apps(&[730])).unwrap();
+        first.set_first(&apps(&[730]), None).unwrap();
         first.complete(Timestamp(NOW.0 + HOUR)).unwrap();
 
         let next = archive
@@ -1399,7 +1494,7 @@ mod tests {
 
         let mut update = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
         assert!(!archive.provisional().unwrap());
-        update.set_first(&apps(&[730])).unwrap();
+        update.set_first(&apps(&[730]), None).unwrap();
         assert!(archive.provisional().unwrap());
 
         update.complete(Timestamp(NOW.0 + HOUR)).unwrap();

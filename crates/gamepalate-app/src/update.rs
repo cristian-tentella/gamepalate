@@ -7,13 +7,14 @@ use std::{
 
 use futures::{Stream, StreamExt, stream};
 use gamepalate_core::{
-    catalog::{Catalog, Freshness, compute_idf},
+    catalog::{Catalog, Freshness, TagFrequencies, compute_idf},
     config::Config,
     currency::Currency,
     ids::AppId,
     incremental::{KnownApps, changed_apps},
     region::Region,
     renewal::{Answers, Band, Renewal},
+    starter::StarterCatalog,
     store_item::StoreItem,
     timestamp::Timestamp,
 };
@@ -37,7 +38,7 @@ use crate::{
     lock::{LockError, UpdateLock},
     log::failed,
     new_version::releases_url,
-    popular::first_part,
+    starter::first_part,
 };
 
 const CONCURRENCY: usize = 4;
@@ -173,6 +174,7 @@ struct BuiltCatalog {
 
 struct FirstPart {
     apps: Vec<AppId>,
+    tags: Option<TagFrequencies>,
     stop: bool,
 }
 
@@ -202,7 +204,7 @@ pub async fn renew_catalog<S: Get + Sync>(
     logged_update(data_dir, steam, config, true, NO_FIRST_PART, progress).await
 }
 
-const NO_FIRST_PART: Option<future::Ready<Option<Vec<AppId>>>> = None;
+const NO_FIRST_PART: Option<future::Ready<Option<StarterCatalog>>> = None;
 
 /// With `first_part` the update stops after the first part and leaves the
 /// rest to a resume. Only a new full update awaits the future.
@@ -211,7 +213,7 @@ async fn logged_update<S: Get + Sync>(
     steam: &S,
     config: &Config,
     renewal: bool,
-    first_part: Option<impl Future<Output = Option<Vec<AppId>>>>,
+    first_part: Option<impl Future<Output = Option<StarterCatalog>>>,
     progress: impl FnMut(Progress),
 ) -> Result<Updated, UpdateError> {
     let _lock = UpdateLock::take(data_dir).map_err(|error| match error {
@@ -265,7 +267,7 @@ async fn update_with<S: Get + Sync>(
     steam: &S,
     config: &Config,
     renewal: bool,
-    first_part: Option<impl Future<Output = Option<Vec<AppId>>>>,
+    first_part: Option<impl Future<Output = Option<StarterCatalog>>>,
     mut progress: impl FnMut(Progress),
 ) -> Result<Updated, UpdateError> {
     let archive = archive(data_dir);
@@ -296,11 +298,17 @@ async fn update_with<S: Get + Sync>(
         && update_full
         && !update.resumed()
         && update.first().is_none()
-        && let Some(apps) = first_part.await
+        && let Some(starter) = first_part.await
     {
-        update.set_first(&apps).map_err(UpdateError::Start)?;
+        update
+            .set_first(&starter.apps, starter.tags.as_ref())
+            .map_err(UpdateError::Start)?;
     }
-    let first = update.first().map(|apps| FirstPart { apps, stop });
+    let first = update.first().map(|apps| FirstPart {
+        apps,
+        tags: update.first_tags(),
+        stop,
+    });
 
     let asking = match update.renewal() {
         true => Asking::Renewal(config.renewal_requests as usize * BATCH_SIZE),
@@ -367,8 +375,8 @@ async fn update_with<S: Get + Sync>(
     })
 }
 
-/// The download of the first run. With the list of popular apps of the
-/// release it stops after the first part, and a resume does the rest.
+/// The download of the first run. With the starter catalog of the release
+/// it stops after the first part, and a resume does the rest.
 pub async fn download_catalog(
     data_dir: &Path,
     progress: impl FnMut(Progress),
@@ -522,7 +530,7 @@ async fn build_catalog<S: Get>(
         Some(first) => put_first(&first.apps, asked),
         None => (asked, 0),
     };
-    let stopped = first_apps > 0 && first.is_some_and(|first| first.stop);
+    let stopped = first_apps > 0 && first.as_ref().is_some_and(|first| first.stop);
     let (first_part, rest) = asked.split_at(first_apps);
     let (first_batches, rest_batches): (Vec<&[AppId]>, Vec<&[AppId]>) = match &archived {
         Some(batches) => (Vec::new(), batches.iter().map(Vec::as_slice).collect()),
@@ -592,7 +600,14 @@ async fn build_catalog<S: Get>(
         .unwrap_or_else(Currency::italian);
 
     let games = known.into_games();
-    let idf = compute_idf(&games);
+    let idf = match first.and_then(|first| first.tags).filter(|_| stopped) {
+        Some(tags) => tags.idf_for(&games),
+        None if stopped => {
+            tracing::info!("no tags in the starter catalog, weighing them on the first part");
+            compute_idf(&games)
+        }
+        None => compute_idf(&games),
+    };
     let freshness = Freshness {
         prices_updated_at: now,
         tags_updated_at,
@@ -668,7 +683,7 @@ impl BuiltCatalog {
 mod tests {
     use std::{fs, sync::Mutex};
 
-    use gamepalate_core::ids::TagId;
+    use gamepalate_core::{catalog::idf_from, ids::TagId};
     use gamepalate_store::catalog::load_catalog;
     use serde_json::{Value, json};
 
@@ -1692,7 +1707,7 @@ mod tests {
     async fn download_with(
         data_dir: &Path,
         steam: &FakeSteam,
-        first_part: impl Future<Output = Option<Vec<AppId>>>,
+        first_part: impl Future<Output = Option<StarterCatalog>>,
         progress: impl FnMut(Progress),
     ) -> Result<Updated, UpdateError> {
         logged_update(
@@ -1706,16 +1721,40 @@ mod tests {
         .await
     }
 
+    fn starter(apps: &[u32], tags: Option<&TagFrequencies>) -> Option<StarterCatalog> {
+        Some(StarterCatalog {
+            apps: app_ids(apps),
+            tags: tags.cloned(),
+        })
+    }
+
     async fn download(
         data_dir: &Path,
         steam: &FakeSteam,
         first: Option<&[u32]>,
     ) -> Result<Updated, UpdateError> {
-        let first = first.map(app_ids);
+        let first = first.and_then(|apps| starter(apps, None));
         download_with(data_dir, steam, future::ready(first), |_| {}).await
     }
 
-    async fn not_asked_again() -> Option<Vec<AppId>> {
+    async fn download_tagged(
+        data_dir: &Path,
+        steam: &FakeSteam,
+        first: &[u32],
+        tags: &TagFrequencies,
+    ) -> Result<Updated, UpdateError> {
+        let first = starter(first, Some(tags));
+        download_with(data_dir, steam, future::ready(first), |_| {}).await
+    }
+
+    fn whole_catalog_tags() -> TagFrequencies {
+        TagFrequencies {
+            games: 120_000,
+            tags: [(TagId(19), 90_000), (TagId(21), 400), (TagId(492), 30_000)].into(),
+        }
+    }
+
+    async fn not_asked_again() -> Option<StarterCatalog> {
         panic!("a resumed update must not read the first part again")
     }
 
@@ -1757,7 +1796,59 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_provisional_catalog_weighs_the_tags_on_its_own_games() {
+    async fn the_provisional_catalog_weighs_the_tags_with_the_starter_catalog() {
+        let data = tempfile::tempdir().unwrap();
+        let tags = whole_catalog_tags();
+        download_tagged(
+            data.path(),
+            &FakeSteam::new(&apps(12)),
+            &[3, 6, 9, 1],
+            &tags,
+        )
+        .await
+        .unwrap();
+        let provisional = load_catalog(&data.path().join("catalog.sqlite")).unwrap();
+
+        run_update(data.path(), &FakeSteam::new(&apps(12)))
+            .await
+            .unwrap();
+        let complete = load_catalog(&data.path().join("catalog.sqlite")).unwrap();
+
+        assert_eq!(provisional.idf, idf_from(&tags));
+        assert_ne!(provisional.idf, compute_idf(provisional.games()));
+        assert_eq!(
+            manifests(data.path())[0]["firstTags"],
+            json!({ "games": 120_000, "tags": { "19": 90_000, "21": 400, "492": 30_000 } })
+        );
+        assert_eq!(complete.idf, compute_idf(complete.games()));
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_first_part_keeps_the_tags_of_the_starter_catalog() {
+        let data = tempfile::tempdir().unwrap();
+        let tags = TagFrequencies {
+            games: 120_000,
+            tags: [(TagId(21), 400)].into(),
+        };
+        let interrupted = FakeSteam::failing(&apps(600), Failure::DownAfterOneBatch);
+        download_tagged(data.path(), &interrupted, &range(51, 400), &tags)
+            .await
+            .unwrap_err();
+
+        let steam = FakeSteam::new(&apps(600));
+        let updated = download_with(data.path(), &steam, not_asked_again(), |_| {})
+            .await
+            .unwrap();
+
+        assert!(updated.provisional);
+        let provisional = load_catalog(&data.path().join("catalog.sqlite")).unwrap();
+        assert_eq!(provisional.idf, tags.idf_for(provisional.games()));
+        assert_eq!(provisional.idf[&TagId(19)], 120_000_f64.ln());
+        assert_ne!(provisional.idf, compute_idf(provisional.games()));
+    }
+
+    #[tokio::test]
+    async fn without_tags_the_provisional_catalog_weighs_them_on_its_own_games() {
         let data = tempfile::tempdir().unwrap();
         download(data.path(), &FakeSteam::new(&apps(12)), Some(&[3, 6, 9, 1]))
             .await
@@ -1806,7 +1897,7 @@ mod tests {
         download_with(
             data.path(),
             &FakeSteam::new(&apps(600)),
-            future::ready(Some(app_ids(&range(1, 300)))),
+            future::ready(starter(&range(1, 300), None)),
             |progress| first_time.push(progress),
         )
         .await
@@ -1917,7 +2008,7 @@ mod tests {
                 false,
             )
             .unwrap()
-            .set_first(&app_ids(&range(1, 700)))
+            .set_first(&app_ids(&range(1, 700)), None)
             .unwrap();
 
         let steam = FakeSteam::out_of_order(&apps(1300));

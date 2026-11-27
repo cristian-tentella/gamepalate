@@ -1,8 +1,8 @@
 use std::{collections::HashSet, time::Duration};
 
 use gamepalate_core::{
-    ids::{AppId, SteamId},
-    popular::{PopularAppsError, parse_popular_apps},
+    ids::SteamId,
+    starter::{StarterCatalog, StarterCatalogError, parse_starter_catalog},
 };
 use gamepalate_steam::{
     signals::get_owned_games,
@@ -13,11 +13,11 @@ use tokio::time::timeout;
 
 use crate::{log::failed, new_version::release_asset_url};
 
-const FILE: &str = "popular-apps.txt";
+const FILE: &str = "starter-catalog.txt";
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, thiserror::Error)]
-enum PopularError {
+enum StarterError {
     #[error("{url} is not a valid address")]
     Url { url: String },
 
@@ -41,21 +41,22 @@ enum PopularError {
     Empty { url: String },
 
     #[error(transparent)]
-    File(#[from] PopularAppsError),
+    File(#[from] StarterCatalogError),
 }
 
 /// The apps a first download asks before the others: the Library, then the
-/// popular apps of the release. Without the list there is no first part.
+/// popular apps of the starter catalog of the release, with its tag
+/// frequencies. Without the starter catalog there is no first part.
 pub(crate) async fn first_part<S: Get, F: Fetch>(
     steam: &S,
     fetch: &F,
     releases_url: &str,
     steam_id: Option<SteamId>,
-) -> Option<Vec<AppId>> {
-    let popular = popular_apps(fetch, releases_url)
+) -> Option<StarterCatalog> {
+    let starter = starter_catalog(fetch, releases_url)
         .await
         .inspect_err(failed(
-            "could not read the popular apps, downloading the catalog at once",
+            "could not read the starter catalog, downloading the catalog at once",
         ))
         .ok()?;
     let library = match steam_id {
@@ -68,24 +69,28 @@ pub(crate) async fn first_part<S: Get, F: Fetch>(
     };
 
     let mut seen = HashSet::new();
-    Some(
-        library
+    Some(StarterCatalog {
+        apps: library
             .into_iter()
-            .chain(popular)
+            .chain(starter.apps)
             .filter(|app| seen.insert(*app))
             .collect(),
-    )
+        tags: starter.tags,
+    })
 }
 
-async fn popular_apps<F: Fetch>(fetch: &F, releases_url: &str) -> Result<Vec<AppId>, PopularError> {
+async fn starter_catalog<F: Fetch>(
+    fetch: &F,
+    releases_url: &str,
+) -> Result<StarterCatalog, StarterError> {
     let url = release_asset_url(releases_url, FILE);
     let bytes = timeout(TIMEOUT, download(fetch, &url))
         .await
-        .map_err(|_| PopularError::TimedOut { url: url.clone() })??;
+        .map_err(|_| StarterError::TimedOut { url: url.clone() })??;
 
-    let apps = parse_popular_apps(&bytes)?;
-    if apps.is_empty() {
-        return Err(PopularError::Empty { url });
+    let starter = parse_starter_catalog(&bytes)?;
+    if starter.apps.is_empty() {
+        return Err(StarterError::Empty { url });
     }
     if let Some(comment) = String::from_utf8_lossy(&bytes)
         .lines()
@@ -94,14 +99,14 @@ async fn popular_apps<F: Fetch>(fetch: &F, releases_url: &str) -> Result<Vec<App
     {
         tracing::info!("{comment}");
     }
-    Ok(apps)
+    Ok(starter)
 }
 
-async fn download<F: Fetch>(fetch: &F, url: &str) -> Result<Vec<u8>, PopularError> {
-    let parsed = Url::parse(url).map_err(|_| PopularError::Url {
+async fn download<F: Fetch>(fetch: &F, url: &str) -> Result<Vec<u8>, StarterError> {
+    let parsed = Url::parse(url).map_err(|_| StarterError::Url {
         url: url.to_string(),
     })?;
-    let network = |source| PopularError::Network {
+    let network = |source| StarterError::Network {
         url: url.to_string(),
         source,
     };
@@ -112,7 +117,7 @@ async fn download<F: Fetch>(fetch: &F, url: &str) -> Result<Vec<u8>, PopularErro
         .map_err(network)?;
     let status = response.status();
     if !status.is_success() {
-        return Err(PopularError::Status {
+        return Err(StarterError::Status {
             url: url.to_string(),
             status,
         });
@@ -124,6 +129,10 @@ async fn download<F: Fetch>(fetch: &F, url: &str) -> Result<Vec<u8>, PopularErro
 mod tests {
     use std::{future, sync::Mutex};
 
+    use gamepalate_core::{
+        catalog::TagFrequencies,
+        ids::{AppId, TagId},
+    };
     use gamepalate_steam::transport::SteamError;
     use serde_json::{Value, json};
 
@@ -211,8 +220,8 @@ mod tests {
         }
     }
 
-    fn ids(apps: Option<Vec<AppId>>) -> Option<Vec<u32>> {
-        apps.map(|apps| apps.into_iter().map(|app| app.0).collect())
+    fn ids(starter: Option<StarterCatalog>) -> Option<Vec<u32>> {
+        starter.map(|starter| starter.apps.into_iter().map(|app| app.0).collect())
     }
 
     async fn first(steam: &FakeSteam, github: &FakeGithub) -> Option<Vec<u32>> {
@@ -221,20 +230,50 @@ mod tests {
 
     #[tokio::test]
     async fn the_library_comes_first_then_the_popular_apps_without_doubles() {
-        let github = FakeGithub::file("# gamepalate popular apps\n730\n440\n570\n");
+        let github = FakeGithub::file("# gamepalate starter catalog\n[apps]\n730\n440\n570\n");
 
         let first = first(&library(&[440, 10]), &github).await;
 
         assert_eq!(first, Some(vec![440, 10, 730, 570]));
         assert_eq!(
             *github.asked.lock().unwrap(),
-            ["https://example.test/dl/popular-apps.txt"]
+            ["https://example.test/dl/starter-catalog.txt"]
         );
     }
 
     #[tokio::test]
+    async fn the_tags_of_the_file_come_with_the_first_part() {
+        let github = FakeGithub::file("[apps]\n730\n[tags]\ngames 120\n19 48\n492 30\n");
+
+        let starter = first_part(&library(&[10]), &github, RELEASES, Some(STEAM_ID))
+            .await
+            .unwrap();
+
+        assert_eq!(starter.apps, [AppId(10), AppId(730)]);
+        assert_eq!(
+            starter.tags,
+            Some(TagFrequencies {
+                games: 120,
+                tags: [(TagId(19), 48), (TagId(492), 30)].into(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_without_tags_gives_a_first_part_without_tags() {
+        let github = FakeGithub::file("[apps]\n730\n");
+
+        let starter = first_part(&library(&[]), &github, RELEASES, Some(STEAM_ID))
+            .await
+            .unwrap();
+
+        assert_eq!(starter.apps, [AppId(730)]);
+        assert_eq!(starter.tags, None);
+    }
+
+    #[tokio::test]
     async fn without_the_library_the_first_part_is_the_file() {
-        let github = FakeGithub::file("730\n440\n");
+        let github = FakeGithub::file("[apps]\n730\n440\n");
 
         assert_eq!(
             first(&FakeSteam { owned: None }, &github).await,
@@ -255,7 +294,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_discarded_file_gives_no_first_part() {
-        for text in ["730\nhello\n", "# only a comment\n", ""] {
+        for text in [
+            "[apps]\n730\nhello\n",
+            "730\n440\n",
+            "[apps]\n730\n[tags]\ngames 10\n19 3\n19 4\n",
+            "[apps]\n730\n[tags]\n19 3\n",
+            "[apps]\n[tags]\ngames 10\n",
+            "# only a comment\n",
+            "",
+        ] {
             let github = FakeGithub::file(text);
 
             assert_eq!(first(&library(&[10]), &github).await, None, "{text:?}");
@@ -264,7 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_file_too_large_gives_no_first_part() {
-        let text = "730\n".repeat(300_000);
+        let text = format!("[apps]\n{}", "730\n".repeat(300_000));
 
         assert_eq!(first(&library(&[10]), &FakeGithub::file(&text)).await, None);
     }
@@ -274,9 +321,9 @@ mod tests {
         let github = FakeGithub::new(Answer::Never);
         let started = tokio::time::Instant::now();
 
-        let error = popular_apps(&github, RELEASES).await.unwrap_err();
+        let error = starter_catalog(&github, RELEASES).await.unwrap_err();
 
-        assert!(matches!(error, PopularError::TimedOut { .. }));
+        assert!(matches!(error, StarterError::TimedOut { .. }));
         assert_eq!(started.elapsed(), TIMEOUT);
         assert_eq!(first(&library(&[10]), &github).await, None);
     }
