@@ -7,7 +7,7 @@ use gamepalate_app::{
     SteamError,
     refresh::RefreshError,
     setup::error_chain,
-    update::{Progress, UpdateError},
+    update::{BATCH_SIZE, Progress, UpdateError},
 };
 
 use crate::format;
@@ -28,11 +28,37 @@ pub enum Stage {
     Writing,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FirstPart {
+    done: usize,
+    total: usize,
+    apps: usize,
+}
+
+impl FirstPart {
+    pub fn arrived(&self) -> usize {
+        (self.done * BATCH_SIZE).min(self.apps)
+    }
+
+    pub fn apps(&self) -> usize {
+        self.apps
+    }
+
+    pub fn finished(&self) -> bool {
+        self.done >= self.total
+    }
+
+    pub fn fraction(&self) -> f32 {
+        self.done as f32 / self.total.max(1) as f32
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Tracker {
     stage: Stage,
     batches: VecDeque<Instant>,
     archived: usize,
+    first: Option<FirstPart>,
 }
 
 impl Tracker {
@@ -40,7 +66,14 @@ impl Tracker {
         self.stage
     }
 
+    pub fn first_part(&self) -> Option<FirstPart> {
+        self.first
+    }
+
     pub fn advance(&mut self, progress: Progress, now: Instant) {
+        if let Progress::FirstPart { done, total, apps } = progress {
+            self.first = Some(FirstPart { done, total, apps });
+        }
         match progress {
             Progress::Resumed { responses, .. } => self.archived = responses,
             Progress::ReadingApps => self.stage = Stage::Reading,
@@ -245,6 +278,60 @@ mod tests {
         assert_eq!(tracker.fraction(), 1.0);
         assert_eq!(tracker.percent().as_deref(), Some("100%"));
         assert!(!tracker.resuming());
+    }
+
+    #[test]
+    fn the_first_part_counts_the_apps_of_the_finished_batches() {
+        let mut tracker = Tracker::default();
+        let now = Instant::now();
+        assert_eq!(tracker.first_part(), None);
+
+        let mut first_part = |done| {
+            tracker.advance(
+                Progress::FirstPart {
+                    done,
+                    total: 28,
+                    apps: 7128,
+                },
+                now,
+            );
+            tracker.first_part().unwrap()
+        };
+
+        let start = first_part(0);
+        assert_eq!((start.arrived(), start.apps()), (0, 7128));
+        assert!(!start.finished());
+
+        let half = first_part(14);
+        assert_eq!(half.arrived(), 14 * BATCH_SIZE);
+        assert_eq!(half.fraction(), 0.5);
+
+        let shorter_last = first_part(27);
+        assert_eq!(shorter_last.arrived(), 7020);
+        assert!(!shorter_last.finished());
+
+        let end = first_part(28);
+        assert_eq!(end.arrived(), 7128);
+        assert!(end.finished());
+
+        tracker.advance(Progress::Writing, now);
+        assert_eq!(tracker.first_part(), Some(end));
+    }
+
+    #[test]
+    fn todays_download_has_no_first_part() {
+        let mut tracker = Tracker::default();
+        let now = Instant::now();
+        tracker.advance(Progress::ReadingApps, now);
+        tracker.advance(
+            Progress::StoreData {
+                done: 3,
+                total: 757,
+            },
+            now,
+        );
+
+        assert_eq!(tracker.first_part(), None);
     }
 
     #[test]

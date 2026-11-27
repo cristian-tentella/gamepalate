@@ -35,7 +35,7 @@ use super::library::hours;
 use crate::{
     app::theme::theme,
     font, format,
-    progress::{Stage, Tracker, update_error_text},
+    progress::{FirstPart, Stage, Tracker, update_error_text},
     style,
 };
 
@@ -67,7 +67,11 @@ pub(crate) const PROFILE_PLACEHOLDER: &str = "Steam profile address or Steam ID"
 const FIND_STEAM_ID: &str = "Open your profile on steamcommunity.com and copy the address";
 const DROP_CATALOG: &str = "Have a catalog file? Drop it on this window.";
 const CATALOG_ABOUT: &str = "Tags, reviews and prices for every game on Steam";
-const CATALOG_TIME: &str = "The download takes about 20 minutes";
+const POPULAR_GAMES: &str = "Popular games";
+const POPULAR_TIME: &str = "About a minute";
+const EVERYTHING_ELSE: &str = "Everything else";
+const EVERYTHING_ELSE_TIME: &str = "15-25 minutes, while you use gamepalate";
+const AFTER_OPENING: &str = "After gamepalate opens";
 const DROP_ASK: &str = "Already have a catalog.sqlite?";
 const DROP_HINT: &str = "Drop it on this window to skip the download";
 const ZONE_HEIGHT: f32 = 96.0;
@@ -1122,8 +1126,10 @@ impl Setup {
             Page::Account => ("Steam account", Some(ACCOUNT_ABOUT)),
             Page::Key => ("Steam Web API key", Some(KEY_ABOUT)),
             Page::Catalog if self.download.running => {
+                let tracker = &self.download.tracker;
+                let percent = tracker.percent().filter(|_| tracker.first_part().is_none());
                 return row![container(page_title("Downloading the Steam catalog")).width(Fill)]
-                    .push(self.download.tracker.percent().map(page_title))
+                    .push(percent.map(page_title))
                     .align_y(Center)
                     .into();
             }
@@ -1551,7 +1557,7 @@ impl Setup {
                         link("Change", Message::ChangeRegion)
                     ]
                     .spacing(8),
-                    note(CATALOG_TIME),
+                    column(lines_before().map(part_line)).spacing(8),
                 ]
                 .spacing(8)
                 .into(),
@@ -1583,16 +1589,28 @@ impl Setup {
 
     fn progress_view(&self) -> Element<'_, Message> {
         let tracker = &self.download.tracker;
-
-        column![
-            progress_bar(0.0..=1.0, tracker.fraction())
+        let resume = note(resume_note(self.first_run.resume_within_hours));
+        let bar = |fraction| {
+            progress_bar(0.0..=1.0, fraction)
                 .girth(10)
                 .length(Fill)
-                .style(style::meter),
-            note(resume_note(self.first_run.resume_within_hours)),
-        ]
-        .spacing(8)
-        .into()
+                .style(style::meter)
+        };
+
+        match tracker.first_part() {
+            Some(first) => {
+                let [popular, rest] = lines_during(first);
+                column![
+                    part_line(popular),
+                    bar(first.fraction()),
+                    part_line(rest),
+                    resume
+                ]
+                .spacing(8)
+                .into()
+            }
+            None => column![bar(tracker.fraction()), resume].spacing(8).into(),
+        }
     }
 }
 
@@ -2018,6 +2036,75 @@ fn imported_note(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PartLine {
+    icon: char,
+    name: &'static str,
+    time: String,
+    waiting: bool,
+}
+
+fn lines_before() -> [PartLine; 2] {
+    [
+        PartLine {
+            icon: font::BOLT,
+            name: POPULAR_GAMES,
+            time: POPULAR_TIME.to_string(),
+            waiting: false,
+        },
+        PartLine {
+            icon: font::SCHEDULE,
+            name: EVERYTHING_ELSE,
+            time: EVERYTHING_ELSE_TIME.to_string(),
+            waiting: true,
+        },
+    ]
+}
+
+fn lines_during(first: FirstPart) -> [PartLine; 2] {
+    let count = |apps: usize| format::count(u32::try_from(apps).unwrap_or(u32::MAX));
+    [
+        PartLine {
+            icon: if first.finished() {
+                font::CHECK
+            } else {
+                font::DOWNLOADING
+            },
+            name: POPULAR_GAMES,
+            time: format!("{} of {}", count(first.arrived()), count(first.apps())),
+            waiting: false,
+        },
+        PartLine {
+            icon: font::SCHEDULE,
+            name: EVERYTHING_ELSE,
+            time: AFTER_OPENING.to_string(),
+            waiting: true,
+        },
+    ]
+}
+
+fn part_line<'a>(line: PartLine) -> Element<'a, Message> {
+    let icon = text(line.icon)
+        .font(font::ICONS)
+        .size(font::icon(font::BAR_SIZE))
+        .style(if line.waiting {
+            style::muted
+        } else {
+            style::accent
+        });
+    let name = text(line.name).size(font::INFO_SIZE);
+    let name = if line.waiting {
+        name.style(style::muted)
+    } else {
+        name
+    };
+
+    row![icon, container(name).width(Fill), note(line.time)]
+        .spacing(8)
+        .align_y(Center)
+        .into()
+}
+
 fn download_status(stage: Stage, left: Option<Duration>, resuming: bool) -> String {
     match (stage, left) {
         _ if resuming => "Picking up where it left off".to_string(),
@@ -2110,7 +2197,7 @@ fn link(label: &str, message: Message) -> Element<'_, Message> {
 mod tests {
     use std::path::PathBuf;
 
-    use gamepalate_app::{PendingUpdate, SteamId};
+    use gamepalate_app::{PendingUpdate, SteamId, update::Progress};
 
     use super::*;
 
@@ -3553,6 +3640,110 @@ mod tests {
         assert_eq!(setup.page, Page::Catalog);
         let config = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
         assert!(config.contains("US"), "{config}");
+    }
+
+    fn first_part(done: usize) -> FirstPart {
+        let mut tracker = Tracker::default();
+        tracker.advance(
+            Progress::FirstPart {
+                done,
+                total: 28,
+                apps: 7128,
+            },
+            Instant::now(),
+        );
+        tracker.first_part().unwrap()
+    }
+
+    fn parts(lines: [PartLine; 2]) -> [(char, &'static str, String, bool); 2] {
+        lines.map(|line| (line.icon, line.name, line.time, line.waiting))
+    }
+
+    #[test]
+    fn before_the_download_the_page_shows_the_two_parts() {
+        assert_eq!(
+            parts(lines_before()),
+            [
+                (
+                    font::BOLT,
+                    "Popular games",
+                    "About a minute".to_string(),
+                    false
+                ),
+                (
+                    font::SCHEDULE,
+                    "Everything else",
+                    "15-25 minutes, while you use gamepalate".to_string(),
+                    true
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_first_part_counts_the_popular_games() {
+        let popular = |done| {
+            let [popular, _] = lines_during(first_part(done));
+            (popular.icon, popular.time)
+        };
+
+        assert_eq!(popular(0), (font::DOWNLOADING, "0 of 7,128".to_string()));
+        assert_eq!(
+            popular(14),
+            (font::DOWNLOADING, "3,640 of 7,128".to_string())
+        );
+        assert_eq!(
+            popular(27),
+            (font::DOWNLOADING, "7,020 of 7,128".to_string())
+        );
+        assert_eq!(popular(28), (font::CHECK, "7,128 of 7,128".to_string()));
+
+        let [_, rest] = lines_during(first_part(14));
+        assert_eq!(
+            (rest.icon, rest.name, rest.time.as_str(), rest.waiting),
+            (
+                font::SCHEDULE,
+                "Everything else",
+                "After gamepalate opens",
+                true
+            )
+        );
+    }
+
+    #[test]
+    fn without_a_first_part_the_download_page_is_the_old_one() {
+        let mut setup = Setup::new(without_catalog(), None);
+        setup.page = Page::Catalog;
+        setup.download.running = true;
+        setup.update(Message::Progress(Progress::StoreData {
+            done: 312,
+            total: 757,
+        }));
+
+        assert_eq!(setup.download.tracker.first_part(), None);
+        assert_eq!(setup.download.tracker.percent().as_deref(), Some("42%"));
+
+        setup.update(Message::Progress(Progress::FirstPart {
+            done: 3,
+            total: 28,
+            apps: 7128,
+        }));
+        assert!(setup.download.tracker.first_part().is_some());
+    }
+
+    #[test]
+    fn after_the_first_part_the_setup_goes_to_the_profile_without_downloading_again() {
+        let provisional = FirstRun {
+            signals: Part::Missing,
+            pending_update: Some(PendingUpdate {
+                started_at: Timestamp(0),
+                responses: 28,
+            }),
+            ..first_run()
+        };
+
+        assert_eq!(page_from(Page::Catalog, &provisional), Page::Profile);
+        assert!(!downloads_at_start(&provisional));
     }
 
     #[test]

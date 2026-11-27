@@ -17,11 +17,12 @@ use gamepalate_core::{
     store_item::StoreItem,
     timestamp::Timestamp,
 };
+pub use gamepalate_steam::items::BATCH_SIZE;
 use gamepalate_steam::{
     apps::get_app_list,
     archive::{Archive, ArchivedUpdate, PendingUpdate},
     chain::{ChainError, chain, rotate},
-    items::{BATCH_SIZE, archived_asked, archived_batches, get_items},
+    items::{archived_asked, archived_batches, get_items},
     tags::get_tags,
     transport::{Get, SteamError, Transport},
 };
