@@ -7,6 +7,7 @@ mod families;
 mod format;
 mod names;
 mod new_version;
+mod popular;
 mod profile;
 mod rebuild;
 mod recommend;
@@ -73,6 +74,8 @@ enum Command {
     ExportCatalog(catalog_file::ExportArgs),
     /// Replace catalog.sqlite with one from a zip file or a catalog.sqlite
     ImportCatalog(catalog_file::ImportArgs),
+    /// Write the list of popular apps from catalog.sqlite, for the releases of gamepalate
+    PopularApps(popular::PopularAppsArgs),
     /// Check GitHub for a new version of gamepalate, and install it with --install
     NewVersion(new_version::NewVersionArgs),
 }
@@ -162,6 +165,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Rebuild => rebuild::run(&data_dir)?,
         Command::ExportCatalog(args) => catalog_file::export(&args, &data_dir)?,
         Command::ImportCatalog(args) => catalog_file::import(&args, &data_dir)?,
+        Command::PopularApps(args) => popular::run(&args, &data_dir)?,
         Command::NewVersion(args) => new_version::run(&args, &data_dir)?,
     }
 

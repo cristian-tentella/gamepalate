@@ -19,6 +19,7 @@ pub mod incremental;
 pub mod lists;
 pub mod off_catalog;
 pub mod opinion;
+pub mod popular;
 pub mod profile;
 pub mod quality;
 pub mod ranking;
