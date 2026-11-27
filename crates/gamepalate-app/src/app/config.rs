@@ -41,10 +41,14 @@ impl Gamepalate {
             steam_client_accounts: self.files.config.signals.steam_client_accounts,
             steam_client_present: steam_client_present(),
             steam_client_file: steam_client_file_of(&self.data_dir),
-            catalog_games: self.files.catalog.games().len(),
+            catalog_games: self.catalog_games(),
             tags_updated_at: self.files.catalog.freshness.tags_updated_at,
             config: self.files.config,
         }
+    }
+
+    pub fn catalog_games(&self) -> usize {
+        self.files.catalog.games().len()
     }
 
     pub fn would_try_hours(&self) -> f64 {

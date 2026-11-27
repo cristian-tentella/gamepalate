@@ -34,6 +34,7 @@ const PLACEHOLDER: &str = "Search games";
 const BROWSE_PLACEHOLDER: &str = "Filter by name";
 const HINT: &str = "Type at least 3 letters, an appid or a store link";
 const NO_GAMES: &str = "No games found";
+const MISSING_GAMES: &str = "The catalog is still downloading, so some games are missing";
 const BROWSE_KEYS: &str = "PgUp PgDn · Ctrl+Home Ctrl+End";
 pub const TIP: &str = "Search games (Ctrl+K)";
 pub const LENS: char = '\u{E8B6}';
@@ -64,6 +65,8 @@ pub struct Search {
     capsules: Images<image::Allocation, AppId>,
     mode: Mode,
     browse: Browse,
+    /// The catalog has the popular games only, while the rest downloads.
+    provisional: bool,
 }
 
 /// The panel finds a game by name, or browses the whole catalog in a table. Tab goes from one to
@@ -299,6 +302,14 @@ impl Search {
         self.browse.mark_stale();
     }
 
+    pub fn set_provisional(&mut self, provisional: bool) {
+        self.provisional = provisional;
+    }
+
+    fn missing_note(&self) -> Option<&'static str> {
+        self.provisional.then_some(MISSING_GAMES)
+    }
+
     pub fn close(&mut self) {
         self.state = State::Closed;
         self.selected = None;
@@ -389,7 +400,7 @@ impl Search {
         if self.mode == Mode::Browse {
             let sheet = sheet_size(size);
             return container(opaque(
-                container(self.browse.view(self.field(), sheet)).style(style::popup),
+                container(self.browse.view(self.head(), sheet)).style(style::popup),
             ))
             .center(Fill)
             .into();
@@ -404,6 +415,31 @@ impl Search {
         .padding(padding::top(top))
         .center_x(Fill)
         .into()
+    }
+
+    /// The field, and under it the line that says the catalog is still downloading.
+    fn head(&self) -> Element<'_, Message> {
+        let note = self.missing_note().map(|note| {
+            column![
+                style::separator(),
+                container(
+                    row![
+                        text(font::DOWNLOADING)
+                            .font(font::ICONS)
+                            .size(font::icon(font::NOTE_SIZE))
+                            .style(style::muted),
+                        text(note).size(font::NOTE_SIZE).style(style::muted),
+                    ]
+                    .spacing(8)
+                    .align_y(Center),
+                )
+                .width(Fill)
+                .padding([6, 16])
+                .style(style::weak_band),
+            ]
+        });
+
+        column![self.field()].push(note).into()
     }
 
     /// The field, with the way to the other mode and Esc on its right.
@@ -464,7 +500,7 @@ impl Search {
     }
 
     fn panel(&self, max_height: f32) -> Element<'_, Message> {
-        let field = self.field();
+        let field = self.head();
 
         let body: Element<'_, Message> = if self.found.is_empty() {
             let note = if self.text.trim().chars().count() < MIN_SEARCH_CHARS {
@@ -1076,5 +1112,31 @@ mod tests {
             standing_text(GameStanding::Later { days_left: 1 }),
             "Later · back in 1 day"
         );
+    }
+
+    #[test]
+    fn search_and_browse_say_some_games_are_missing_while_the_catalog_downloads() {
+        for count in [0, 3] {
+            let mut search = open_with(count);
+            search.set_provisional(true);
+            for mode in [Mode::Find, Mode::Browse] {
+                search.mode = mode;
+                assert_eq!(
+                    search.missing_note(),
+                    Some("The catalog is still downloading, so some games are missing")
+                );
+                assert!(search.view(AREA).is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn the_whole_catalog_has_no_line_about_missing_games() {
+        let mut search = open_with(3);
+        assert_eq!(search.missing_note(), None);
+
+        search.set_provisional(true);
+        search.set_provisional(false);
+        assert_eq!(search.missing_note(), None);
     }
 }

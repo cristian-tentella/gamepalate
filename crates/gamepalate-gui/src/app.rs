@@ -24,7 +24,7 @@ use gamepalate_app::{
 use iced::{
     Center, ContentFit, Element, Fill, Right, Shrink, Size, Subscription, Task, Theme, Top,
     keyboard::{self, Key},
-    padding,
+    padding, time,
     widget::{button, column, container, image, mouse_area, row, space, stack, text, tooltip},
     window,
 };
@@ -33,8 +33,8 @@ use crate::{
     font, format,
     new_version::{NewVersions, Problem},
     screen::{
-        Discover, Library, Profile, Screen, Settings, Votes, discover, library, profile, settings,
-        setup, votes,
+        Discover, Library, Profile, Screen, Settings, Toasts, Votes, discover, library, profile,
+        settings, setup, votes,
     },
     smooth::smooth,
     style,
@@ -45,7 +45,10 @@ use frame::{
     window_button,
 };
 use game_page::GamePage;
-use refresh::{Refresh, data_times, refresh_button, refresh_dot, refresh_tooltip, second_line};
+use refresh::{
+    Refresh, SPIN_TICK, Spinner, data_times, refresh_button, refresh_dot, refresh_tooltip,
+    second_line,
+};
 use search::Search;
 use theme::{choice, light, theme, theme_button, toggled};
 
@@ -78,6 +81,11 @@ pub struct App {
     renewal_due: bool,
     never_updated: bool,
     startup_error: Option<String>,
+    /// The catalog has the games of the first part only, while the rest downloads.
+    provisional: bool,
+    spin: f32,
+    spinner: Option<Spinner>,
+    toasts: Toasts,
     new_versions: NewVersions,
     downloaded: Option<Downloaded>,
     installed: Option<Installed>,
@@ -145,6 +153,8 @@ pub enum Message {
     Refreshed(Start, Result<Option<Arc<Gamepalate>>, String>),
     CancelRefresh,
     DismissRefreshError,
+    Spin,
+    HideToast(u64),
     HideFamiliesNotice,
     OpenProfileFromNotice,
     Reopened(Result<Arc<Gamepalate>, String>),
@@ -181,6 +191,10 @@ impl App {
             renewal_due: false,
             never_updated: false,
             startup_error: None,
+            provisional: false,
+            spin: 0.0,
+            spinner: None,
+            toasts: Toasts::default(),
             new_versions: NewVersions::new(target, check_for_new_versions),
             downloaded: None,
             installed: None,
@@ -465,7 +479,10 @@ impl App {
                 match screen.update(message) {
                     setup::Action::None => Task::none(),
                     setup::Action::Run(task) => task.map(Message::Setup),
-                    setup::Action::Open(gamepalate) => self.opened(*gamepalate),
+                    setup::Action::Open(gamepalate) => {
+                        let opened = self.opened(*gamepalate);
+                        Task::batch([opened, self.read_archive(Start::Startup)])
+                    }
                     setup::Action::Theme(choice) => {
                         self.theme = theme(choice);
                         Task::none()
@@ -484,7 +501,9 @@ impl App {
             | Message::Entered(_)
             | Message::Refreshed(..)
             | Message::CancelRefresh
-            | Message::DismissRefreshError => self.update_refresh(message),
+            | Message::DismissRefreshError
+            | Message::Spin
+            | Message::HideToast(_) => self.update_refresh(message),
             Message::HideFamiliesNotice => {
                 self.families_notice = None;
                 Task::none()
@@ -561,6 +580,12 @@ impl App {
             None => Subscription::none(),
         };
 
+        let spin = if self.second_part() {
+            time::every(SPIN_TICK).map(|_| Message::Spin)
+        } else {
+            Subscription::none()
+        };
+
         Subscription::batch([
             window::resize_events().map(|(_, size)| Message::Resized(size)),
             window::events().filter_map(rescaled),
@@ -570,6 +595,7 @@ impl App {
             search,
             account,
             game_page,
+            spin,
         ])
     }
 
@@ -625,6 +651,9 @@ impl App {
                             .then(|| search_button(self.search.is_open())),
                     )
                     .push(self.gamepalate.as_deref().map(|gamepalate| {
+                        if let Some(button) = self.second_part_button() {
+                            return button;
+                        }
                         refresh_button(
                             &self.refresh,
                             refresh_tooltip(
@@ -709,7 +738,8 @@ impl App {
                 self.account
                     .view(area)
                     .map(|account| account.map(Message::Account)),
-            );
+            )
+            .push(self.toasts.view(Message::HideToast(0)));
 
         let app = column![
             bar,
@@ -1099,13 +1129,20 @@ fn with_dot<'a>(button: button::Button<'a, Message>, dot: bool) -> Element<'a, M
     if !dot {
         return button.into();
     }
+    badged(button, style::badge)
+}
+
+fn badged<'a>(
+    button: button::Button<'a, Message>,
+    badge: fn(&Theme) -> container::Style,
+) -> Element<'a, Message> {
     stack![
         button,
         container(
             container(space())
                 .width(DOT_SIZE)
                 .height(DOT_SIZE)
-                .style(style::badge)
+                .style(badge)
         )
         .width(Fill)
         .height(Fill)

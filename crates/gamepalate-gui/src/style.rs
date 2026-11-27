@@ -552,6 +552,21 @@ pub fn playable(theme: &Theme) -> text::Style {
     text::Style { color: Some(color) }
 }
 
+pub fn primary_badge(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(theme.extended_palette().primary.base.color.into()),
+        ..badge(theme)
+    }
+}
+
+/// A line on the weak background, such as the one over Browse while the catalog downloads.
+pub fn weak_band(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(theme.extended_palette().background.weak.color.into()),
+        ..container::Style::default()
+    }
+}
+
 pub fn badge(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(theme.extended_palette().success.base.color.into()),
