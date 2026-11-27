@@ -15,6 +15,9 @@ use crate::format;
 const RECENT_BATCHES: usize = 20;
 const MIN_BATCHES: usize = 10;
 const READING_SHARE: f32 = 0.02;
+/// Steam does not say how many apps GetAppList has: 202,642 on 27 November
+/// 2026. Look at it again from time to time.
+pub const STEAM_APPS_ESTIMATE: usize = 200_000;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub enum Stage {
@@ -53,12 +56,37 @@ impl FirstPart {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Listing {
+    read: usize,
+    first_part: bool,
+}
+
+impl Listing {
+    pub fn read(&self) -> usize {
+        self.read
+    }
+
+    pub fn first_part(&self) -> bool {
+        self.first_part
+    }
+
+    pub fn over_estimate(&self) -> bool {
+        self.read > STEAM_APPS_ESTIMATE
+    }
+
+    pub fn fraction(&self) -> f32 {
+        (self.read as f32 / STEAM_APPS_ESTIMATE as f32).min(1.0)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Tracker {
     stage: Stage,
     batches: VecDeque<Instant>,
     archived: usize,
     first: Option<FirstPart>,
+    listing: Option<Listing>,
 }
 
 impl Tracker {
@@ -70,13 +98,21 @@ impl Tracker {
         self.first
     }
 
+    /// The list of Steam games, while it is being read.
+    pub fn listing(&self) -> Option<Listing> {
+        self.listing.filter(|_| self.stage == Stage::Reading)
+    }
+
     pub fn advance(&mut self, progress: Progress, now: Instant) {
         if let Progress::FirstPart { done, total, apps } = progress {
             self.first = Some(FirstPart { done, total, apps });
         }
         match progress {
             Progress::Resumed { responses, .. } => self.archived = responses,
-            Progress::ReadingApps => self.stage = Stage::Reading,
+            Progress::ReadingApps { read, first_part } => {
+                self.stage = Stage::Reading;
+                self.listing = Some(Listing { read, first_part });
+            }
             Progress::Renewing { .. } => {}
             Progress::FirstPart { done, total, .. } | Progress::StoreData { done, total } => {
                 self.stage = Stage::StoreData { done, total };
@@ -252,7 +288,7 @@ mod tests {
         let now = Instant::now();
         assert_eq!(tracker.percent(), None);
 
-        tracker.advance(Progress::ReadingApps, now);
+        tracker.advance(reading(0, false), now);
         assert_eq!(tracker.fraction(), 0.0);
         assert_eq!(tracker.percent(), None);
 
@@ -318,11 +354,49 @@ mod tests {
         assert_eq!(tracker.first_part(), Some(end));
     }
 
+    fn reading(read: usize, first_part: bool) -> Progress {
+        Progress::ReadingApps { read, first_part }
+    }
+
+    #[test]
+    fn the_list_of_games_fills_against_the_estimate() {
+        let mut tracker = Tracker::default();
+        let now = Instant::now();
+        assert_eq!(tracker.listing(), None);
+
+        tracker.advance(reading(0, true), now);
+        let start = tracker.listing().unwrap();
+        assert_eq!(start.fraction(), 0.0);
+        assert!(start.first_part());
+
+        tracker.advance(reading(STEAM_APPS_ESTIMATE / 2, true), now);
+        let half = tracker.listing().unwrap();
+        assert_eq!(half.fraction(), 0.5);
+        assert!(!half.over_estimate());
+
+        tracker.advance(reading(212_000, true), now);
+        let over = tracker.listing().unwrap();
+        assert_eq!(over.fraction(), 1.0);
+        assert!(over.over_estimate());
+        assert_eq!(over.read(), 212_000);
+        assert_eq!(tracker.fraction(), 0.0);
+
+        tracker.advance(
+            Progress::FirstPart {
+                done: 0,
+                total: 28,
+                apps: 7128,
+            },
+            now,
+        );
+        assert_eq!(tracker.listing(), None);
+    }
+
     #[test]
     fn todays_download_has_no_first_part() {
         let mut tracker = Tracker::default();
         let now = Instant::now();
-        tracker.advance(Progress::ReadingApps, now);
+        tracker.advance(reading(0, false), now);
         tracker.advance(
             Progress::StoreData {
                 done: 3,

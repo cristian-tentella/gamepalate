@@ -388,7 +388,13 @@ mod tests {
         assert_eq!(game_ids(dir.path()), [10, 11]);
         let reading = load_reading(&dir.path().join("signals.json")).unwrap();
         assert_eq!(reading.read_at, NOW);
-        assert_eq!(steps.first(), Some(&Step::Catalog(Progress::ReadingApps)));
+        assert_eq!(
+            steps.first(),
+            Some(&Step::Catalog(Progress::ReadingApps {
+                read: 0,
+                first_part: false
+            }))
+        );
         assert_eq!(
             &steps[steps.len() - 2..],
             [Step::Catalog(Progress::Writing), Step::Signals]

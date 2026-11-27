@@ -76,7 +76,7 @@ fn print_progress(progress: Progress) {
             integer(apps as u64),
             integer(requests as u64)
         ),
-        Progress::ReadingApps
+        Progress::ReadingApps { .. }
         | Progress::FirstPart { done: 0, .. }
         | Progress::StoreData { done: 0, .. } => {}
         Progress::FirstPart { done, total, .. } => {

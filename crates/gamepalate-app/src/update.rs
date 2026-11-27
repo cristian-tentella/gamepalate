@@ -20,7 +20,7 @@ use gamepalate_core::{
 };
 pub use gamepalate_steam::items::BATCH_SIZE;
 use gamepalate_steam::{
-    apps::get_app_list,
+    apps::{get_app_list, get_app_list_with},
     archive::{Archive, ArchivedUpdate, PendingUpdate},
     chain::{ChainError, chain, rotate},
     items::{archived_asked, archived_batches, get_items},
@@ -51,7 +51,12 @@ pub enum Progress {
         started_at: Timestamp,
         responses: usize,
     },
-    ReadingApps,
+    /// The apps of GetAppList read so far, after each page. `first_part`
+    /// says that a first part will follow the list.
+    ReadingApps {
+        read: usize,
+        first_part: bool,
+    },
     Renewing {
         apps: usize,
         requests: usize,
@@ -497,9 +502,16 @@ async fn build_catalog<S: Get>(
     first: Option<FirstPart>,
     progress: &mut impl FnMut(Progress),
 ) -> Result<BuiltCatalog, SteamError> {
-    progress(Progress::ReadingApps);
+    let first_part = first.as_ref().is_some_and(|first| !first.apps.is_empty());
+    progress(Progress::ReadingApps {
+        read: 0,
+        first_part,
+    });
     let tags = get_tags(steam).await?;
-    let apps = get_app_list(steam).await?;
+    let apps = get_app_list_with(steam, &mut |read| {
+        progress(Progress::ReadingApps { read, first_part })
+    })
+    .await?;
     let ids: Vec<AppId> = apps.iter().map(|app| app.id).collect();
     let current = apps.iter().map(|app| (app.id, app.price_change_number));
     let (renewal, asked, archived) = match asking {
@@ -706,6 +718,7 @@ mod tests {
         countries: Mutex<Vec<String>>,
         slow_first_batch: bool,
         batches: Mutex<Vec<Batch>>,
+        page_size: usize,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq)]
@@ -724,6 +737,14 @@ mod tests {
                 countries: Mutex::new(Vec::new()),
                 slow_first_batch: false,
                 batches: Mutex::new(Vec::new()),
+                page_size: usize::MAX,
+            }
+        }
+
+        fn paged(apps: &[(u32, u64)], page_size: usize) -> FakeSteam {
+            FakeSteam {
+                page_size,
+                ..FakeSteam::new(apps)
             }
         }
 
@@ -768,15 +789,33 @@ mod tests {
                 "IStoreService/GetTagList/v1" => {
                     Ok(json!({ "response": { "tags": [{ "tagid": 19, "name": "Action" }] } }))
                 }
-                "IStoreService/GetAppList/v1" => Ok(json!({ "response": { "apps": self
-                    .apps
-                    .iter()
-                    .map(|(appid, price_change_number)| json!({
-                        "appid": appid,
-                        "last_modified": 1,
-                        "price_change_number": price_change_number,
-                    }))
-                    .collect::<Vec<_>>() } })),
+                "IStoreService/GetAppList/v1" => {
+                    let start = params
+                        .iter()
+                        .find(|(name, _)| *name == "last_appid")
+                        .map_or(0, |(_, last)| {
+                            let last: u32 = last.parse().unwrap();
+                            self.apps
+                                .iter()
+                                .position(|(appid, _)| *appid == last)
+                                .unwrap()
+                                + 1
+                        });
+                    let page: Vec<_> = self.apps[start..].iter().take(self.page_size).collect();
+                    let more = start + page.len() < self.apps.len();
+                    Ok(json!({ "response": {
+                        "apps": page
+                            .iter()
+                            .map(|(appid, price_change_number)| json!({
+                                "appid": appid,
+                                "last_modified": 1,
+                                "price_change_number": price_change_number,
+                            }))
+                            .collect::<Vec<_>>(),
+                        "have_more_results": more,
+                        "last_appid": page.last().map(|(appid, _)| appid),
+                    } }))
+                }
                 ITEMS => {
                     let input: Value = serde_json::from_str(params[0].1).unwrap();
                     let ids: Vec<u32> = input["ids"]
@@ -938,12 +977,19 @@ mod tests {
     async fn a_full_update_tells_the_list_then_each_batch_then_the_writing() {
         let data = tempfile::tempdir().unwrap();
 
-        let events = events(data.path(), &FakeSteam::new(&apps(600))).await;
+        let events = events(data.path(), &FakeSteam::paged(&apps(600), 250)).await;
 
+        let reading = |read| Progress::ReadingApps {
+            read,
+            first_part: false,
+        };
         assert_eq!(
             events,
             [
-                Progress::ReadingApps,
+                reading(0),
+                reading(250),
+                reading(500),
+                reading(600),
                 Progress::StoreData { done: 0, total: 3 },
                 Progress::StoreData { done: 1, total: 3 },
                 Progress::StoreData { done: 2, total: 3 },
@@ -973,7 +1019,13 @@ mod tests {
             events[0],
             Progress::Resumed { responses, .. } if responses == archived
         ));
-        assert_eq!(events[1], Progress::ReadingApps);
+        assert_eq!(
+            events[1],
+            Progress::ReadingApps {
+                read: 0,
+                first_part: false
+            }
+        );
     }
 
     #[tokio::test]
@@ -1591,15 +1643,19 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(events[0], Progress::ReadingApps);
+        let reading = |read| Progress::ReadingApps {
+            read,
+            first_part: false,
+        };
+        assert_eq!(events[..2], [reading(0), reading(600)]);
         assert_eq!(
-            events[1],
+            events[2],
             Progress::Renewing {
                 apps: 260,
                 requests: 1
             }
         );
-        assert_eq!(events[2], Progress::StoreData { done: 0, total: 1 });
+        assert_eq!(events[3], Progress::StoreData { done: 0, total: 1 });
     }
 
     #[tokio::test]
@@ -1891,6 +1947,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_first_part_starts_with_the_list_read_page_by_page() {
+        let data = tempfile::tempdir().unwrap();
+        let mut events = Vec::new();
+
+        download_with(
+            data.path(),
+            &FakeSteam::paged(&apps(600), 250),
+            future::ready(starter(&range(1, 300), None)),
+            |progress| events.push(progress),
+        )
+        .await
+        .unwrap();
+
+        let reading = |read| Progress::ReadingApps {
+            read,
+            first_part: true,
+        };
+        assert_eq!(
+            events[..5],
+            [
+                reading(0),
+                reading(250),
+                reading(500),
+                reading(600),
+                Progress::FirstPart {
+                    done: 0,
+                    total: 2,
+                    apps: 300
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn the_resume_counts_only_the_requests_of_the_rest() {
         let data = tempfile::tempdir().unwrap();
         let mut first_time = Vec::new();
@@ -1910,10 +2000,15 @@ mod tests {
             total: 2,
             apps: 300,
         };
+        let reading = |read| Progress::ReadingApps {
+            read,
+            first_part: true,
+        };
         assert_eq!(
             first_time,
             [
-                Progress::ReadingApps,
+                reading(0),
+                reading(600),
                 first_part(0),
                 first_part(1),
                 first_part(2),
@@ -1924,7 +2019,8 @@ mod tests {
         assert_eq!(
             events[1..],
             [
-                Progress::ReadingApps,
+                reading(0),
+                reading(600),
                 first_part(0),
                 first_part(1),
                 first_part(2),

@@ -35,7 +35,7 @@ use super::library::hours;
 use crate::{
     app::theme::theme,
     font, format,
-    progress::{FirstPart, Stage, Tracker, update_error_text},
+    progress::{FirstPart, Listing, STEAM_APPS_ESTIMATE, Stage, Tracker, update_error_text},
     style,
 };
 
@@ -72,6 +72,7 @@ const POPULAR_TIME: &str = "About a minute";
 const EVERYTHING_ELSE: &str = "Everything else";
 const EVERYTHING_ELSE_TIME: &str = "15-25 minutes, while you use gamepalate";
 const AFTER_OPENING: &str = "After gamepalate opens";
+const STEAM_GAMES: &str = "List of Steam games";
 const DROP_ASK: &str = "Already have a catalog.sqlite?";
 const DROP_HINT: &str = "Drop it on this window to skip the download";
 const ZONE_HEIGHT: f32 = 96.0;
@@ -1597,8 +1598,8 @@ impl Setup {
                 .style(style::meter)
         };
 
-        match tracker.first_part() {
-            Some(first) => {
+        match (tracker.first_part(), tracker.listing()) {
+            (Some(first), _) => {
                 let [popular, rest] = lines_during(first);
                 column![
                     part_line(popular),
@@ -1609,7 +1610,15 @@ impl Setup {
                 .spacing(8)
                 .into()
             }
-            None => column![bar(tracker.fraction()), resume].spacing(8).into(),
+            (None, Some(listing)) => {
+                let mut lines = lines_reading(listing).into_iter().map(part_line);
+                column![lines.next(), bar(listing.fraction())]
+                    .extend(lines)
+                    .push(resume)
+                    .spacing(8)
+                    .into()
+            }
+            (None, None) => column![bar(tracker.fraction()), resume].spacing(8).into(),
         }
     }
 }
@@ -2081,6 +2090,42 @@ fn lines_during(first: FirstPart) -> [PartLine; 2] {
             waiting: true,
         },
     ]
+}
+
+fn lines_reading(listing: Listing) -> Vec<PartLine> {
+    let count = |apps: usize| format::count(u32::try_from(apps).unwrap_or(u32::MAX));
+    let read = if listing.over_estimate() {
+        count(listing.read())
+    } else {
+        format!(
+            "{} of about {}",
+            count(listing.read()),
+            count(STEAM_APPS_ESTIMATE)
+        )
+    };
+    let mut lines = vec![PartLine {
+        icon: font::DOWNLOADING,
+        name: STEAM_GAMES,
+        time: read,
+        waiting: false,
+    }];
+    if listing.first_part() {
+        lines.extend([
+            PartLine {
+                icon: font::BOLT,
+                name: POPULAR_GAMES,
+                time: POPULAR_TIME.to_string(),
+                waiting: true,
+            },
+            PartLine {
+                icon: font::SCHEDULE,
+                name: EVERYTHING_ELSE,
+                time: AFTER_OPENING.to_string(),
+                waiting: true,
+            },
+        ]);
+    }
+    lines
 }
 
 fn part_line<'a>(line: PartLine) -> Element<'a, Message> {
@@ -3708,6 +3753,62 @@ mod tests {
                 true
             )
         );
+    }
+
+    fn listing(read: usize, first_part: bool) -> Listing {
+        let mut tracker = Tracker::default();
+        tracker.advance(Progress::ReadingApps { read, first_part }, Instant::now());
+        tracker.listing().unwrap()
+    }
+
+    #[test]
+    fn the_list_of_steam_games_counts_against_the_estimate() {
+        let read = |apps| lines_reading(listing(apps, true))[0].time.clone();
+
+        assert_eq!(read(0), "0 of about 200,000");
+        assert_eq!(read(150_000), "150,000 of about 200,000");
+        assert_eq!(read(200_000), "200,000 of about 200,000");
+        assert_eq!(read(212_000), "212,000");
+    }
+
+    #[test]
+    fn with_a_first_part_the_list_comes_before_the_two_parts() {
+        let lines: Vec<_> = lines_reading(listing(50_000, true))
+            .into_iter()
+            .map(|line| (line.icon, line.name, line.time, line.waiting))
+            .collect();
+
+        assert_eq!(
+            lines,
+            [
+                (
+                    font::DOWNLOADING,
+                    "List of Steam games",
+                    "50,000 of about 200,000".to_string(),
+                    false
+                ),
+                (
+                    font::BOLT,
+                    "Popular games",
+                    "About a minute".to_string(),
+                    true
+                ),
+                (
+                    font::SCHEDULE,
+                    "Everything else",
+                    "After gamepalate opens".to_string(),
+                    true
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn without_a_first_part_the_list_is_alone() {
+        let lines = lines_reading(listing(50_000, false));
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].name, "List of Steam games");
     }
 
     #[test]

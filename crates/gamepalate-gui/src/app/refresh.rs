@@ -589,7 +589,10 @@ mod tests {
         refreshing.advance(Step::Signals, now);
 
         refreshing.advance(
-            Step::Renewal(gamepalate_app::update::Progress::ReadingApps),
+            Step::Renewal(gamepalate_app::update::Progress::ReadingApps {
+                read: 0,
+                first_part: false,
+            }),
             now,
         );
         assert_eq!(refreshing_text(&refreshing), "Renewing tags and reviews…");
