@@ -76,7 +76,15 @@ fn print_progress(progress: Progress) {
             integer(apps as u64),
             integer(requests as u64)
         ),
-        Progress::ReadingApps | Progress::StoreData { done: 0, .. } => {}
+        Progress::ReadingApps { .. }
+        | Progress::FirstPart { done: 0, .. }
+        | Progress::StoreData { done: 0, .. } => {}
+        Progress::FirstPart { done, total, .. } => {
+            eprint!("\rPopular games: {done} of {total} requests");
+            if done == total {
+                eprintln!();
+            }
+        }
         Progress::StoreData { done, total } => eprint!("\rStore data: {done} of {total} requests"),
         Progress::Writing => eprintln!(),
     }

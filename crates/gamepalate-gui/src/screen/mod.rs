@@ -79,6 +79,7 @@ pub(crate) struct Toasts {
 
 struct Toast {
     id: u64,
+    icon: Option<char>,
     text: String,
     undo: bool,
 }
@@ -90,11 +91,42 @@ impl Toasts {
         undo: bool,
         hide: fn(u64) -> M,
     ) -> Task<M> {
+        self.show_toast(None, text, undo, hide)
+    }
+
+    pub(crate) fn show_with_icon<M: Send + 'static>(
+        &mut self,
+        icon: char,
+        text: String,
+        hide: fn(u64) -> M,
+    ) -> Task<M> {
+        self.show_toast(Some(icon), text, false, hide)
+    }
+
+    fn show_toast<M: Send + 'static>(
+        &mut self,
+        icon: Option<char>,
+        text: String,
+        undo: bool,
+        hide: fn(u64) -> M,
+    ) -> Task<M> {
         self.shown += 1;
         let id = self.shown;
-        self.current = Some(Toast { id, text, undo });
+        self.current = Some(Toast {
+            id,
+            icon,
+            text,
+            undo,
+        });
 
         Task::perform(tokio::time::sleep(TOAST_DURATION), move |_| hide(id))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shown(&self) -> Option<(Option<char>, &str)> {
+        self.current
+            .as_ref()
+            .map(|toast| (toast.icon, toast.text.as_str()))
     }
 
     pub(crate) fn hide(&mut self, id: u64) {
@@ -111,9 +143,16 @@ impl Toasts {
                     .style(style::toast_link)
                     .on_press(undo)
             });
+            let icon = toast.icon.map(|icon| {
+                text(icon)
+                    .font(font::ICONS)
+                    .size(font::icon(font::NOTE_SIZE))
+            });
             container(
                 container(
-                    row![text(&toast.text)]
+                    row![]
+                        .push(icon)
+                        .push(text(&toast.text))
                         .push(undo)
                         .spacing(14)
                         .align_y(Center),
@@ -154,6 +193,20 @@ fn create_missing(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_toast_can_have_an_icon_before_its_text() {
+        let mut toasts = Toasts::default();
+
+        let _ = toasts.show_with_icon(font::CHECK, "Catalog complete".to_string(), |id| id);
+        assert_eq!(
+            toasts.shown(),
+            Some((Some(font::CHECK), "Catalog complete"))
+        );
+
+        let _ = toasts.show("Hades: saved".to_string(), true, |id| id);
+        assert_eq!(toasts.shown(), Some((None, "Hades: saved")));
+    }
 
     #[test]
     fn an_error_starts_with_a_capital() {

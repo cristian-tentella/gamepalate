@@ -22,6 +22,7 @@ pub mod region;
 pub mod settings;
 pub mod setup;
 pub mod signals;
+mod starter;
 mod steam_account;
 pub mod steam_client;
 pub mod tags;

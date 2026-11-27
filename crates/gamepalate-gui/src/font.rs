@@ -25,6 +25,9 @@ pub const BOOKMARK: char = '\u{E866}';
 pub const CHECK: char = '\u{E668}';
 pub const BLOCK: char = '\u{E14B}';
 pub const DASH: char = '\u{E15B}';
+pub const BOLT: char = '\u{EA0B}';
+pub const SCHEDULE: char = '\u{E8B5}';
+pub const DOWNLOADING: char = '\u{F001}';
 
 pub const REGULAR: Font = Font::with_name("Atkinson Hyperlegible Next");
 pub const SEMIBOLD: Font = Font {

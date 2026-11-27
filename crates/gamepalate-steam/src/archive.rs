@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     ffi::OsString,
     fs,
     io::{self, Read, Write},
@@ -6,7 +7,12 @@ use std::{
 };
 
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
-use gamepalate_core::{region::Region, timestamp::Timestamp};
+use gamepalate_core::{
+    catalog::TagFrequencies,
+    ids::{AppId, TagId},
+    region::Region,
+    timestamp::Timestamp,
+};
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -26,6 +32,7 @@ pub struct UpdateFolder {
     dir: PathBuf,
     manifest: Manifest,
     started_at: Timestamp,
+    resumed: bool,
     resumed_responses: usize,
 }
 
@@ -63,9 +70,21 @@ struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     next_expiry: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    first: Option<Vec<u32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    first_tags: Option<FirstTags>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     completed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     failed_at: Option<String>,
+}
+
+/// The tag frequencies of the starter catalog, kept with the first part so
+/// that a resume weighs the tags as the first run did.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct FirstTags {
+    games: u32,
+    tags: BTreeMap<u32, u32>,
 }
 
 #[derive(Serialize)]
@@ -107,19 +126,28 @@ impl Archive {
                 dir,
                 manifest,
                 started_at: pending.started_at,
+                resumed: true,
                 resumed_responses: pending.responses,
             });
         }
+
+        let completed = self.completed()?;
+        let full = completed
+            .first()
+            .is_none_or(|latest| latest.region != region);
+        let (first, first_tags) = match completed.is_empty() {
+            true => match self.unfinished_first()? {
+                Some((first, tags)) => (Some(first), tags),
+                None => (None, None),
+            },
+            false => (None, None),
+        };
 
         fs::create_dir_all(&self.root)?;
         let last = self.folder_numbers()?.into_iter().max().unwrap_or(0);
         let dir = self.root.join(format!("{:0FOLDER_DIGITS$}", last + 1));
         fs::create_dir(&dir)?;
 
-        let full = self
-            .completed()?
-            .first()
-            .is_none_or(|latest| latest.region != region);
         let manifest = Manifest {
             started_at: iso(now),
             full,
@@ -127,6 +155,8 @@ impl Archive {
             renewal: renewal && !full,
             renewed_apps: None,
             next_expiry: None,
+            first,
+            first_tags,
             completed_at: None,
             failed_at: None,
         };
@@ -135,8 +165,36 @@ impl Archive {
             dir,
             manifest,
             started_at: now,
+            resumed: false,
             resumed_responses: 0,
         })
+    }
+
+    /// Whether the Catalog holds only the first part of a download: no
+    /// update completed yet, and one of them kept the order of a first part.
+    pub fn provisional(&self) -> io::Result<bool> {
+        Ok(self.completed()?.is_empty() && self.unfinished_first()?.is_some())
+    }
+
+    /// Drops the order of the first part from the updates that did not
+    /// complete, so that a Catalog put in its place is not provisional. Their
+    /// responses stay for a resume.
+    pub fn forget_first(&self) -> io::Result<()> {
+        for (dir, mut manifest) in self.updates_newest_first()? {
+            if manifest.completed_at.is_none() && manifest.first.is_some() {
+                manifest.first = None;
+                manifest.first_tags = None;
+                write_manifest(&dir, &manifest)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn unfinished_first(&self) -> io::Result<Option<(Vec<u32>, Option<FirstTags>)>> {
+        Ok(self
+            .updates_newest_first()?
+            .into_iter()
+            .find_map(|(_, manifest)| Some((manifest.first?, manifest.first_tags))))
     }
 
     pub fn completed(&self) -> io::Result<Vec<ArchivedUpdate>> {
@@ -268,8 +326,39 @@ impl UpdateFolder {
         self.started_at
     }
 
+    pub fn resumed(&self) -> bool {
+        self.resumed
+    }
+
     pub fn resumed_responses(&self) -> usize {
         self.resumed_responses
+    }
+
+    pub fn first(&self) -> Option<Vec<AppId>> {
+        let first = self.manifest.first.as_ref()?;
+        Some(first.iter().copied().map(AppId).collect())
+    }
+
+    /// The tag frequencies of the starter catalog the first part came with.
+    pub fn first_tags(&self) -> Option<TagFrequencies> {
+        let first_tags = self.manifest.first_tags.as_ref()?;
+        Some(TagFrequencies {
+            games: first_tags.games,
+            tags: first_tags
+                .tags
+                .iter()
+                .map(|(&id, &count)| (TagId(id), count))
+                .collect(),
+        })
+    }
+
+    pub fn set_first(&mut self, apps: &[AppId], tags: Option<&TagFrequencies>) -> io::Result<()> {
+        self.manifest.first = Some(apps.iter().map(|app| app.0).collect());
+        self.manifest.first_tags = tags.map(|tags| FirstTags {
+            games: tags.games,
+            tags: tags.tags.iter().map(|(id, &count)| (id.0, count)).collect(),
+        });
+        write_manifest(&self.dir, &self.manifest)
     }
 
     pub fn full(&self) -> bool {
@@ -1283,6 +1372,192 @@ mod tests {
         assert_eq!(resumed.dir(), dir);
         assert!(resumed.renewal());
         assert_eq!(resumed.started_at(), Timestamp(NOW.0 + HOUR));
+    }
+
+    fn apps(ids: &[u32]) -> Vec<AppId> {
+        ids.iter().copied().map(AppId).collect()
+    }
+
+    #[test]
+    fn a_resumed_update_keeps_the_order_of_its_first_part() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        let mut update = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
+        assert!(!update.resumed());
+        assert_eq!(update.first(), None);
+
+        update.set_first(&apps(&[730, 440]), None).unwrap();
+        let dir = update.dir().to_path_buf();
+        drop(update);
+
+        assert_eq!(read_manifest(&dir)["first"], json!([730, 440]));
+        let resumed = archive
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
+            .unwrap();
+        assert_eq!(resumed.dir(), dir);
+        assert!(resumed.resumed());
+        assert_eq!(resumed.first(), Some(apps(&[730, 440])));
+    }
+
+    fn tags(games: u32, counts: &[(u32, u32)]) -> TagFrequencies {
+        TagFrequencies {
+            games,
+            tags: counts
+                .iter()
+                .map(|&(id, count)| (TagId(id), count))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_resumed_update_keeps_the_tags_of_its_first_part() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        let mut update = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
+        assert_eq!(update.first_tags(), None);
+
+        let frequencies = tags(121034, &[(19, 48211), (492, 30877)]);
+        update
+            .set_first(&apps(&[730, 440]), Some(&frequencies))
+            .unwrap();
+        let dir = update.dir().to_path_buf();
+        drop(update);
+
+        assert_eq!(
+            read_manifest(&dir)["firstTags"],
+            json!({ "games": 121034, "tags": { "19": 48211, "492": 30877 } })
+        );
+        let resumed = archive
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
+            .unwrap();
+        assert!(resumed.resumed());
+        assert_eq!(resumed.first_tags(), Some(frequencies.clone()));
+
+        let next = archive
+            .start_update(Timestamp(NOW.0 + 2 * DAY), 24, Region::ITALY, false)
+            .unwrap();
+        assert!(!next.resumed());
+        assert_eq!(next.first_tags(), Some(frequencies));
+    }
+
+    #[test]
+    fn a_first_part_without_tags_writes_none() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        let mut update = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
+        update.set_first(&apps(&[730]), None).unwrap();
+        let dir = update.dir().to_path_buf();
+        drop(update);
+
+        assert_eq!(read_manifest(&dir).get("firstTags"), None);
+        let resumed = archive
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
+            .unwrap();
+        assert_eq!(resumed.first(), Some(apps(&[730])));
+        assert_eq!(resumed.first_tags(), None);
+    }
+
+    #[test]
+    fn an_update_without_a_first_part_writes_none() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        let dir = completed_update(&archive, NOW);
+
+        assert_eq!(read_manifest(&dir).get("first"), None);
+    }
+
+    #[test]
+    fn a_new_full_update_keeps_the_first_part_of_one_too_old_to_resume() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        let mut expired = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
+        expired.set_first(&apps(&[730, 440]), None).unwrap();
+        let dir = expired.dir().to_path_buf();
+
+        let next = archive
+            .start_update(Timestamp(NOW.0 + 2 * DAY), 24, Region::ITALY, false)
+            .unwrap();
+
+        assert_ne!(next.dir(), dir);
+        assert!(!next.resumed());
+        assert!(next.full());
+        assert_eq!(next.first(), Some(apps(&[730, 440])));
+        assert_eq!(read_manifest(next.dir())["first"], json!([730, 440]));
+    }
+
+    #[test]
+    fn after_a_completed_update_a_new_one_has_no_first_part() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        let mut first = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
+        first.set_first(&apps(&[730]), None).unwrap();
+        first.complete(Timestamp(NOW.0 + HOUR)).unwrap();
+
+        let next = archive
+            .start_update(Timestamp(NOW.0 + 2 * HOUR), 24, Region::ITALY, false)
+            .unwrap();
+
+        assert_eq!(next.first(), None);
+    }
+
+    #[test]
+    fn the_catalog_is_provisional_until_an_update_with_a_first_part_completes() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().join("archive"));
+        assert!(!archive.provisional().unwrap());
+
+        let mut update = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
+        assert!(!archive.provisional().unwrap());
+        update.set_first(&apps(&[730]), None).unwrap();
+        assert!(archive.provisional().unwrap());
+
+        update.complete(Timestamp(NOW.0 + HOUR)).unwrap();
+        assert!(!archive.provisional().unwrap());
+    }
+
+    #[test]
+    fn forgetting_the_first_part_leaves_the_updates_and_their_responses() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        let mut update = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
+        update
+            .set_first(&apps(&[730]), Some(&tags(100, &[(19, 40)])))
+            .unwrap();
+        let dir = update.dir().to_path_buf();
+        drop(update);
+        fs::write(dir.join("unrelated.txt"), "kept").unwrap();
+
+        archive.forget_first().unwrap();
+
+        assert!(!archive.provisional().unwrap());
+        let manifest = read_manifest(&dir);
+        assert_eq!(manifest.get("first"), None);
+        assert_eq!(manifest.get("firstTags"), None);
+        assert!(dir.join("unrelated.txt").exists());
+        let resumed = archive
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
+            .unwrap();
+        assert_eq!(resumed.dir(), dir);
+        assert_eq!(resumed.first(), None);
+    }
+
+    #[test]
+    fn forgetting_the_first_part_of_an_empty_archive_does_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().join("archive"));
+
+        archive.forget_first().unwrap();
+
+        assert!(!root.path().join("archive").exists());
+    }
+
+    #[test]
+    fn an_interrupted_update_without_a_first_part_is_not_provisional() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
+
+        assert!(!archive.provisional().unwrap());
     }
 
     #[test]

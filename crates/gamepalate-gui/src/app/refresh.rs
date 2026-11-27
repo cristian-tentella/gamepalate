@@ -1,22 +1,30 @@
-use std::{path::Path, sync::Arc, time::Instant};
+use std::{
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use gamepalate_app::{
     Gamepalate, PendingUpdate, Region, Timestamp,
     refresh::{Plan, Step, refresh, startup_plan},
-    update::{archive_state, wall_clock},
+    update::{ArchiveState, archive_state, wall_clock},
 };
 use iced::{
-    Center, Element, Task,
+    Center, Color, Element, Radians, Task,
+    advanced::graphics::text::{cosmic_text, font_system, to_attributes},
     futures::{
         SinkExt,
         channel::mpsc,
         future::{AbortHandle, Abortable, Aborted},
     },
     stream, task,
-    widget::{button, container, progress_bar, row, space, text, tooltip},
+    widget::{button, column, container, image, progress_bar, row, space, text, tooltip},
 };
 
-use super::{App, BAR_ICON_SCALE, Message, Start, bar_icon, frame::CLOSE, with_dot, with_tooltip};
+use super::{
+    App, BAR_ICON_SCALE, Message, Start, badged, bar_button, bar_icon, frame::CLOSE, icon_text,
+    with_dot, with_tooltip,
+};
 use crate::{
     font, format,
     progress::{self, Stage, Tracker},
@@ -28,6 +36,20 @@ const REFRESH: char = '\u{E5D5}';
 const NEVER_UPDATED: &str =
     "Your catalog doesn't update on its own. Download it from Steam, 15-25 minutes.";
 const CANCEL: char = '\u{E5CD}';
+const SECOND_PART: &str = "Downloading the rest of the catalog";
+const UNTIL_THEN: &str = "Until then Browse and search show the popular games only";
+const CLICK_TO_PAUSE: &str = "Click to pause";
+pub(super) const SPIN_TICK: Duration = Duration::from_millis(50);
+const SPIN_TURN: Duration = Duration::from_millis(1500);
+
+/// ⟳ drawn once as a picture, since only pictures turn in iced.
+#[derive(Debug)]
+pub(super) struct Spinner {
+    color: Color,
+    scale: f32,
+    handle: image::Handle,
+    side: f32,
+}
 
 #[derive(Debug, Default)]
 pub(super) enum Refresh {
@@ -89,8 +111,20 @@ impl Drop for AbortOnDrop {
     }
 }
 
-pub(super) fn reopens_the_screen(start: Start) -> bool {
-    start == Start::Button
+/// ⟳ opens the page again on the new catalog, except at the end of the first download: Discover
+/// keeps the game shown and its queue.
+pub(super) fn reopens_the_screen(start: Start, provisional: bool) -> bool {
+    start == Start::Button && !provisional
+}
+
+/// A catalog from someone else never updates by itself. The one of the first part has no
+/// completed update either, but its rest downloads at every start.
+fn never_updated(state: &ArchiveState) -> bool {
+    state.updated_at.is_none() && !state.provisional
+}
+
+fn complete_text(games: usize) -> String {
+    format!("Catalog complete, {} games", format::count(games as u32))
 }
 
 impl Refreshing {
@@ -160,6 +194,71 @@ fn refreshing_count(refreshing: &Refreshing) -> Option<String> {
         Some(left) => format!("{count} · {}", format::time_left(left)),
         None => count,
     })
+}
+
+/// The tip of ⟳ while the rest of the first download comes in: the first line, then the muted
+/// ones.
+fn second_part_lines(refreshing: &Refreshing) -> (&'static str, Vec<String>) {
+    let mut muted: Vec<String> = refreshing_count(refreshing).into_iter().collect();
+    muted.push(UNTIL_THEN.to_string());
+    if refreshing.can_cancel() {
+        muted.push(CLICK_TO_PAUSE.to_string());
+    }
+    (SECOND_PART, muted)
+}
+
+fn spin_step(angle: f32) -> f32 {
+    let step = std::f32::consts::TAU * SPIN_TICK.as_secs_f32() / SPIN_TURN.as_secs_f32();
+    (angle + step) % std::f32::consts::TAU
+}
+
+/// The icon as a square picture, its ink centred so that it turns in place. `size` is in pixels
+/// of the screen.
+fn icon_picture(icon: char, size: f32, color: Color) -> Option<(image::Handle, u32)> {
+    let mut system = font_system().write().ok()?;
+    let system = system.raw();
+    let mut buffer = cosmic_text::Buffer::new(system, cosmic_text::Metrics::new(size, size));
+    buffer.set_text(
+        system,
+        &icon.to_string(),
+        &to_attributes(font::ICONS),
+        cosmic_text::Shaping::Advanced,
+        None,
+    );
+    buffer.shape_until_scroll(system, false);
+    let key = buffer
+        .layout_runs()
+        .next()?
+        .glyphs
+        .first()?
+        .physical((0.0, 0.0), 1.0)
+        .cache_key;
+    let glyph = cosmic_text::SwashCache::new().get_image_uncached(system, key)?;
+    let cosmic_text::SwashContent::Mask = glyph.content else {
+        return None;
+    };
+    let (width, height) = (glyph.placement.width, glyph.placement.height);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let side = width.max(height);
+    let (left, top) = ((side - width) / 2, (side - height) / 2);
+    let [red, green, blue, alpha] = color.into_rgba8();
+    let mut pixels = vec![0; (side * side * 4) as usize];
+    for y in 0..height {
+        for x in 0..width {
+            let ink = glyph.data[(y * width + x) as usize];
+            let at = (((y + top) * side + x + left) * 4) as usize;
+            pixels[at..at + 4].copy_from_slice(&[
+                red,
+                green,
+                blue,
+                (u16::from(ink) * u16::from(alpha) / 255) as u8,
+            ]);
+        }
+    }
+
+    Some((image::Handle::from_rgba(side, side, pixels), side))
 }
 
 pub(super) fn refresh_tooltip(
@@ -279,13 +378,15 @@ impl App {
             Message::ArchiveRead(start, result) => match result {
                 Ok(state) => {
                     self.renewal_due = state.renewal_due;
-                    self.never_updated = state.updated_at.is_none();
-                    match start {
+                    self.never_updated = never_updated(&state);
+                    let notice = self.set_provisional(state.provisional);
+                    let run = match start {
                         Start::Startup => {
                             self.run_refresh(startup_plan(&state, wall_clock()), Start::Startup)
                         }
                         Start::Button => Task::none(),
-                    }
+                    };
+                    Task::batch([notice, run])
                 }
                 Err(error) => {
                     if start == Start::Startup {
@@ -324,7 +425,7 @@ impl App {
                         return read;
                     }
                 };
-                if !reopens_the_screen(start) {
+                if !reopens_the_screen(start, self.provisional) {
                     let entered = self.enter(gamepalate);
                     return Task::batch([read, entered]);
                 }
@@ -349,6 +450,29 @@ impl App {
                 }
                 Task::none()
             }
+            Message::Spin => {
+                self.spin = spin_step(self.spin);
+                let color = self.theme.extended_palette().background.base.text;
+                let stale = self
+                    .spinner
+                    .as_ref()
+                    .is_none_or(|spinner| spinner.color != color || spinner.scale != self.scale);
+                if stale {
+                    let size = font::icon(14.0) * BAR_ICON_SCALE * self.scale;
+                    self.spinner =
+                        icon_picture(REFRESH, size, color).map(|(handle, side)| Spinner {
+                            color,
+                            scale: self.scale,
+                            handle,
+                            side: side as f32 / self.scale,
+                        });
+                }
+                Task::none()
+            }
+            Message::HideToast(id) => {
+                self.toasts.hide(id);
+                Task::none()
+            }
             Message::DismissRefreshError => {
                 if matches!(self.refresh, Refresh::Failed(_)) {
                     self.refresh = Refresh::Idle;
@@ -359,7 +483,65 @@ impl App {
         }
     }
 
+    /// The rest of the first download is coming in: the bar shows it on ⟳ alone.
+    pub(super) fn second_part(&self) -> bool {
+        self.provisional && matches!(self.refresh, Refresh::Running(..))
+    }
+
+    /// Whether the catalog is the one of the first part. When the whole one takes its place, a
+    /// notice says how many games it has.
+    fn set_provisional(&mut self, provisional: bool) -> Task<Message> {
+        let completed = self.provisional && !provisional;
+        self.provisional = provisional;
+        self.search.set_provisional(provisional);
+        match &self.gamepalate {
+            Some(gamepalate) if completed => self.toasts.show_with_icon(
+                font::CHECK,
+                complete_text(gamepalate.catalog_games()),
+                Message::HideToast,
+            ),
+            _ => Task::none(),
+        }
+    }
+
+    /// ⟳ turning, with the dot in the primary colour. A click pauses the download as on any
+    /// update.
+    pub(super) fn second_part_button(&self) -> Option<Element<'_, Message>> {
+        let Refresh::Running(refreshing, ..) = &self.refresh else {
+            return None;
+        };
+        let icon: Element<'_, Message> = match &self.spinner {
+            Some(spinner) => image(spinner.handle.clone())
+                .width(spinner.side)
+                .height(spinner.side)
+                .rotation(Radians(self.spin))
+                .into(),
+            None => icon_text(REFRESH),
+        };
+        let message = refreshing.can_cancel().then_some(Message::CancelRefresh);
+        let (first, muted) = second_part_lines(refreshing);
+        let tip = column![text(first).size(font::NOTE_SIZE)]
+            .extend(
+                muted
+                    .into_iter()
+                    .map(|line| text(line).size(font::NOTE_SIZE).style(style::muted).into()),
+            )
+            .spacing(2);
+
+        Some(
+            tooltip(
+                badged(bar_button(icon, message), style::primary_badge),
+                container(tip).padding([6, 10]).style(style::popup),
+                tooltip::Position::Bottom,
+            )
+            .into(),
+        )
+    }
+
     pub(super) fn status(&self) -> Element<'_, Message> {
+        if self.second_part() {
+            return space().into();
+        }
         let refreshing = match &self.refresh {
             Refresh::Idle => return space().into(),
             Refresh::Failed(error) => return refresh_failed(error),
@@ -589,7 +771,10 @@ mod tests {
         refreshing.advance(Step::Signals, now);
 
         refreshing.advance(
-            Step::Renewal(gamepalate_app::update::Progress::ReadingApps),
+            Step::Renewal(gamepalate_app::update::Progress::ReadingApps {
+                read: 0,
+                first_part: false,
+            }),
             now,
         );
         assert_eq!(refreshing_text(&refreshing), "Renewing tags and reviews…");
@@ -621,8 +806,98 @@ mod tests {
 
     #[test]
     fn only_the_button_opens_the_screen_again() {
-        assert!(reopens_the_screen(Start::Button));
-        assert!(!reopens_the_screen(Start::Startup));
+        assert!(reopens_the_screen(Start::Button, false));
+        assert!(!reopens_the_screen(Start::Startup, false));
+    }
+
+    #[test]
+    fn the_end_of_the_first_download_keeps_the_game_shown_in_discover() {
+        assert!(!reopens_the_screen(Start::Button, true));
+        assert!(!reopens_the_screen(Start::Startup, true));
+    }
+
+    #[test]
+    fn the_tip_of_the_second_part_says_the_count_after_the_first_request() {
+        let mut refreshing = Refreshing::Catalog(Tracker::default());
+        assert_eq!(
+            second_part_lines(&refreshing),
+            (
+                "Downloading the rest of the catalog",
+                vec![
+                    "Until then Browse and search show the popular games only".to_string(),
+                    "Click to pause".to_string(),
+                ]
+            )
+        );
+
+        refreshing.advance(store_data(312, 735), Instant::now());
+        assert_eq!(
+            second_part_lines(&refreshing),
+            (
+                "Downloading the rest of the catalog",
+                vec![
+                    "312 of 735".to_string(),
+                    "Until then Browse and search show the popular games only".to_string(),
+                    "Click to pause".to_string(),
+                ]
+            )
+        );
+    }
+
+    #[test]
+    fn the_tip_of_the_second_part_offers_to_pause_only_while_it_can() {
+        let mut refreshing = Refreshing::Catalog(Tracker::default());
+        refreshing.advance(
+            Step::Catalog(gamepalate_app::update::Progress::Writing),
+            Instant::now(),
+        );
+
+        let (_, muted) = second_part_lines(&refreshing);
+        assert!(!muted.contains(&"Click to pause".to_string()));
+    }
+
+    #[test]
+    fn the_spin_goes_round_in_a_turn_and_a_half_a_second() {
+        let ticks = (SPIN_TURN.as_millis() / SPIN_TICK.as_millis()) as usize;
+        let mut angle = 0.0;
+        for _ in 0..ticks / 2 {
+            angle = spin_step(angle);
+        }
+        assert!((angle - std::f32::consts::PI).abs() < 1e-3);
+        for _ in 0..ticks / 2 {
+            angle = spin_step(angle);
+        }
+        assert!(angle < 1e-3 || (std::f32::consts::TAU - angle) < 1e-3);
+    }
+
+    #[test]
+    fn the_refresh_icon_becomes_a_square_picture_with_ink_in_it() {
+        font_system()
+            .write()
+            .unwrap()
+            .load_font(std::borrow::Cow::Borrowed(font::ICONS_BYTES));
+
+        let (_, side) = icon_picture(REFRESH, 40.0, Color::BLACK).unwrap();
+
+        assert!((20..=40).contains(&side), "{side}");
+    }
+
+    #[test]
+    fn the_catalog_of_the_first_part_does_not_say_it_never_updates() {
+        let state = |provisional| ArchiveState {
+            pending: true,
+            updated_at: None,
+            renewal_due: false,
+            provisional,
+        };
+
+        assert!(never_updated(&state(false)));
+        assert!(!never_updated(&state(true)));
+    }
+
+    #[test]
+    fn the_notice_says_how_many_games_the_whole_catalog_has() {
+        assert_eq!(complete_text(120_300), "Catalog complete, 120,300 games");
     }
 
     #[test]

@@ -63,7 +63,10 @@ impl Plan {
 
 pub fn startup_plan(state: &ArchiveState, now: Timestamp) -> Plan {
     let Some(updated_at) = state.updated_at else {
-        return Plan::NOTHING;
+        return Plan {
+            prices: state.provisional,
+            renewal: false,
+        };
     };
 
     Plan {
@@ -385,7 +388,13 @@ mod tests {
         assert_eq!(game_ids(dir.path()), [10, 11]);
         let reading = load_reading(&dir.path().join("signals.json")).unwrap();
         assert_eq!(reading.read_at, NOW);
-        assert_eq!(steps.first(), Some(&Step::Catalog(Progress::ReadingApps)));
+        assert_eq!(
+            steps.first(),
+            Some(&Step::Catalog(Progress::ReadingApps {
+                read: 0,
+                first_part: false
+            }))
+        );
         assert_eq!(
             &steps[steps.len() - 2..],
             [Step::Catalog(Progress::Writing), Step::Signals]
@@ -662,6 +671,7 @@ mod tests {
             pending,
             updated_at: updated_minutes_ago.map(|minutes| Timestamp(NOW.0 - minutes * 60_000)),
             renewal_due,
+            provisional: false,
         }
     }
 
@@ -678,6 +688,7 @@ mod tests {
             prices_at: NOW,
             renewal: None,
             rotate_error: None,
+            provisional: false,
         }
     }
 
@@ -717,6 +728,21 @@ mod tests {
             startup_plan(&state(true, Some(5), true), NOW),
             plan(true, true)
         );
+    }
+
+    #[test]
+    fn the_startup_finishes_a_provisional_catalog() {
+        let provisional = ArchiveState {
+            provisional: true,
+            ..state(true, None, false)
+        };
+        assert_eq!(startup_plan(&provisional, NOW), plan(true, false));
+
+        let expired = ArchiveState {
+            provisional: true,
+            ..state(false, None, true)
+        };
+        assert_eq!(startup_plan(&expired, NOW), plan(true, false));
     }
 
     #[test]
