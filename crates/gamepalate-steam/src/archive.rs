@@ -6,7 +6,7 @@ use std::{
 };
 
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
-use gamepalate_core::{region::Region, timestamp::Timestamp};
+use gamepalate_core::{ids::AppId, region::Region, timestamp::Timestamp};
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -26,6 +26,7 @@ pub struct UpdateFolder {
     dir: PathBuf,
     manifest: Manifest,
     started_at: Timestamp,
+    resumed: bool,
     resumed_responses: usize,
 }
 
@@ -62,6 +63,8 @@ struct Manifest {
     renewed_apps: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     next_expiry: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    first: Option<Vec<u32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -107,19 +110,25 @@ impl Archive {
                 dir,
                 manifest,
                 started_at: pending.started_at,
+                resumed: true,
                 resumed_responses: pending.responses,
             });
         }
+
+        let completed = self.completed()?;
+        let full = completed
+            .first()
+            .is_none_or(|latest| latest.region != region);
+        let first = match completed.is_empty() {
+            true => self.unfinished_first()?,
+            false => None,
+        };
 
         fs::create_dir_all(&self.root)?;
         let last = self.folder_numbers()?.into_iter().max().unwrap_or(0);
         let dir = self.root.join(format!("{:0FOLDER_DIGITS$}", last + 1));
         fs::create_dir(&dir)?;
 
-        let full = self
-            .completed()?
-            .first()
-            .is_none_or(|latest| latest.region != region);
         let manifest = Manifest {
             started_at: iso(now),
             full,
@@ -127,6 +136,7 @@ impl Archive {
             renewal: renewal && !full,
             renewed_apps: None,
             next_expiry: None,
+            first,
             completed_at: None,
             failed_at: None,
         };
@@ -135,8 +145,22 @@ impl Archive {
             dir,
             manifest,
             started_at: now,
+            resumed: false,
             resumed_responses: 0,
         })
+    }
+
+    /// Whether the Catalog holds only the first part of a download: no
+    /// update completed yet, and one of them kept the order of a first part.
+    pub fn provisional(&self) -> io::Result<bool> {
+        Ok(self.completed()?.is_empty() && self.unfinished_first()?.is_some())
+    }
+
+    fn unfinished_first(&self) -> io::Result<Option<Vec<u32>>> {
+        Ok(self
+            .updates_newest_first()?
+            .into_iter()
+            .find_map(|(_, manifest)| manifest.first))
     }
 
     pub fn completed(&self) -> io::Result<Vec<ArchivedUpdate>> {
@@ -268,8 +292,22 @@ impl UpdateFolder {
         self.started_at
     }
 
+    pub fn resumed(&self) -> bool {
+        self.resumed
+    }
+
     pub fn resumed_responses(&self) -> usize {
         self.resumed_responses
+    }
+
+    pub fn first(&self) -> Option<Vec<AppId>> {
+        let first = self.manifest.first.as_ref()?;
+        Some(first.iter().copied().map(AppId).collect())
+    }
+
+    pub fn set_first(&mut self, apps: &[AppId]) -> io::Result<()> {
+        self.manifest.first = Some(apps.iter().map(|app| app.0).collect());
+        write_manifest(&self.dir, &self.manifest)
     }
 
     pub fn full(&self) -> bool {
@@ -1283,6 +1321,98 @@ mod tests {
         assert_eq!(resumed.dir(), dir);
         assert!(resumed.renewal());
         assert_eq!(resumed.started_at(), Timestamp(NOW.0 + HOUR));
+    }
+
+    fn apps(ids: &[u32]) -> Vec<AppId> {
+        ids.iter().copied().map(AppId).collect()
+    }
+
+    #[test]
+    fn a_resumed_update_keeps_the_order_of_its_first_part() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        let mut update = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
+        assert!(!update.resumed());
+        assert_eq!(update.first(), None);
+
+        update.set_first(&apps(&[730, 440])).unwrap();
+        let dir = update.dir().to_path_buf();
+        drop(update);
+
+        assert_eq!(read_manifest(&dir)["first"], json!([730, 440]));
+        let resumed = archive
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
+            .unwrap();
+        assert_eq!(resumed.dir(), dir);
+        assert!(resumed.resumed());
+        assert_eq!(resumed.first(), Some(apps(&[730, 440])));
+    }
+
+    #[test]
+    fn an_update_without_a_first_part_writes_none() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        let dir = completed_update(&archive, NOW);
+
+        assert_eq!(read_manifest(&dir).get("first"), None);
+    }
+
+    #[test]
+    fn a_new_full_update_keeps_the_first_part_of_one_too_old_to_resume() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        let mut expired = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
+        expired.set_first(&apps(&[730, 440])).unwrap();
+        let dir = expired.dir().to_path_buf();
+
+        let next = archive
+            .start_update(Timestamp(NOW.0 + 2 * DAY), 24, Region::ITALY, false)
+            .unwrap();
+
+        assert_ne!(next.dir(), dir);
+        assert!(!next.resumed());
+        assert!(next.full());
+        assert_eq!(next.first(), Some(apps(&[730, 440])));
+        assert_eq!(read_manifest(next.dir())["first"], json!([730, 440]));
+    }
+
+    #[test]
+    fn after_a_completed_update_a_new_one_has_no_first_part() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        let mut first = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
+        first.set_first(&apps(&[730])).unwrap();
+        first.complete(Timestamp(NOW.0 + HOUR)).unwrap();
+
+        let next = archive
+            .start_update(Timestamp(NOW.0 + 2 * HOUR), 24, Region::ITALY, false)
+            .unwrap();
+
+        assert_eq!(next.first(), None);
+    }
+
+    #[test]
+    fn the_catalog_is_provisional_until_an_update_with_a_first_part_completes() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().join("archive"));
+        assert!(!archive.provisional().unwrap());
+
+        let mut update = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
+        assert!(!archive.provisional().unwrap());
+        update.set_first(&apps(&[730])).unwrap();
+        assert!(archive.provisional().unwrap());
+
+        update.complete(Timestamp(NOW.0 + HOUR)).unwrap();
+        assert!(!archive.provisional().unwrap());
+    }
+
+    #[test]
+    fn an_interrupted_update_without_a_first_part_is_not_provisional() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
+
+        assert!(!archive.provisional().unwrap());
     }
 
     #[test]
