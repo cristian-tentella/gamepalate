@@ -45,7 +45,7 @@ impl Tracker {
             Progress::Resumed { responses, .. } => self.archived = responses,
             Progress::ReadingApps => self.stage = Stage::Reading,
             Progress::Renewing { .. } => {}
-            Progress::StoreData { done, total } => {
+            Progress::FirstPart { done, total, .. } | Progress::StoreData { done, total } => {
                 self.stage = Stage::StoreData { done, total };
                 if done > self.archived {
                     self.batches.push_back(now);

@@ -1,10 +1,11 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    future::{self, Future},
     io,
     path::{Path, PathBuf},
 };
 
-use futures::StreamExt;
+use futures::{Stream, StreamExt, stream};
 use gamepalate_core::{
     catalog::{Catalog, Freshness, compute_idf},
     config::Config,
@@ -20,7 +21,7 @@ use gamepalate_steam::{
     apps::get_app_list,
     archive::{Archive, ArchivedUpdate, PendingUpdate},
     chain::{ChainError, chain, rotate},
-    items::{BATCH_SIZE, archived_asked, archived_batches, batch_count, item_batches},
+    items::{BATCH_SIZE, archived_asked, archived_batches, get_items},
     tags::get_tags,
     transport::{Get, SteamError, Transport},
 };
@@ -28,11 +29,14 @@ use gamepalate_store::{
     catalog::{CatalogError, write_catalog},
     config::{ConfigError, load_config},
 };
+use reqwest::Client;
 
 use crate::{
     account::steam_api_key,
     lock::{LockError, UpdateLock},
     log::failed,
+    new_version::releases_url,
+    popular::first_part,
 };
 
 const CONCURRENCY: usize = 4;
@@ -50,6 +54,13 @@ pub enum Progress {
         apps: usize,
         requests: usize,
     },
+    /// The requests of the first part, which asks `apps` appids. The
+    /// `StoreData` after it count only the requests of the rest.
+    FirstPart {
+        done: usize,
+        total: usize,
+        apps: usize,
+    },
     StoreData {
         done: usize,
         total: usize,
@@ -66,6 +77,8 @@ pub struct Updated {
     pub prices_at: Timestamp,
     pub renewal: Option<Renewal>,
     pub rotate_error: Option<ChainError>,
+    /// The Catalog has only the first part, and the update is still pending.
+    pub provisional: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -73,6 +86,7 @@ pub struct ArchiveState {
     pub pending: bool,
     pub updated_at: Option<Timestamp>,
     pub renewal_due: bool,
+    pub provisional: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -153,6 +167,12 @@ struct BuiltCatalog {
     price_change_numbers: HashMap<AppId, u64>,
     renewal: Option<Renewal>,
     next_expiry: Option<Timestamp>,
+    stopped: bool,
+}
+
+struct FirstPart {
+    apps: Vec<AppId>,
+    stop: bool,
 }
 
 pub fn archive(data_dir: &Path) -> Archive {
@@ -169,7 +189,7 @@ pub async fn update_catalog<S: Get + Sync>(
     config: &Config,
     progress: impl FnMut(Progress),
 ) -> Result<Updated, UpdateError> {
-    logged_update(data_dir, steam, config, false, progress).await
+    logged_update(data_dir, steam, config, false, NO_FIRST_PART, progress).await
 }
 
 pub async fn renew_catalog<S: Get + Sync>(
@@ -178,14 +198,19 @@ pub async fn renew_catalog<S: Get + Sync>(
     config: &Config,
     progress: impl FnMut(Progress),
 ) -> Result<Updated, UpdateError> {
-    logged_update(data_dir, steam, config, true, progress).await
+    logged_update(data_dir, steam, config, true, NO_FIRST_PART, progress).await
 }
 
+const NO_FIRST_PART: Option<future::Ready<Option<Vec<AppId>>>> = None;
+
+/// With `first_part` the update stops after the first part and leaves the
+/// rest to a resume. Only a new full update awaits the future.
 async fn logged_update<S: Get + Sync>(
     data_dir: &Path,
     steam: &S,
     config: &Config,
     renewal: bool,
+    first_part: Option<impl Future<Output = Option<Vec<AppId>>>>,
     progress: impl FnMut(Progress),
 ) -> Result<Updated, UpdateError> {
     let _lock = UpdateLock::take(data_dir).map_err(|error| match error {
@@ -193,9 +218,13 @@ async fn logged_update<S: Get + Sync>(
         LockError::Io(source) => UpdateError::Lock(source),
     })?;
     tracing::info!("update started");
-    let updated = update_with(data_dir, steam, config, renewal, progress)
+    let updated = update_with(data_dir, steam, config, renewal, first_part, progress)
         .await
         .inspect_err(failed("update stopped"))?;
+    if updated.provisional {
+        tracing::info!("first part done, {} games", updated.games);
+        return Ok(updated);
+    }
     if let Some(error) = &updated.rotate_error {
         failed("could not remove the old updates")(error);
     }
@@ -235,6 +264,7 @@ async fn update_with<S: Get + Sync>(
     steam: &S,
     config: &Config,
     renewal: bool,
+    first_part: Option<impl Future<Output = Option<Vec<AppId>>>>,
     mut progress: impl FnMut(Progress),
 ) -> Result<Updated, UpdateError> {
     let archive = archive(data_dir);
@@ -260,6 +290,17 @@ async fn update_with<S: Get + Sync>(
         });
     }
 
+    let stop = first_part.is_some();
+    if let Some(first_part) = first_part
+        && update_full
+        && !update.resumed()
+        && update.first().is_none()
+        && let Some(apps) = first_part.await
+    {
+        update.set_first(&apps).map_err(UpdateError::Start)?;
+    }
+    let first = update.first().map(|apps| FirstPart { apps, stop });
+
     let asking = match update.renewal() {
         true => Asking::Renewal(config.renewal_requests as usize * BATCH_SIZE),
         false => Asking::Changed,
@@ -270,6 +311,7 @@ async fn update_with<S: Get + Sync>(
         &earlier,
         config.region,
         asking,
+        first,
         &mut progress,
     )
     .await;
@@ -289,6 +331,18 @@ async fn update_with<S: Get + Sync>(
         }
     };
     built.write(data_dir)?;
+    if built.stopped {
+        return Ok(Updated {
+            full: update_full,
+            games: built.catalog.games().len(),
+            apps: built.apps,
+            asked: built.asked,
+            prices_at: now,
+            renewal: None,
+            rotate_error: None,
+            provisional: true,
+        });
+    }
     if let Some(renewal) = &built.renewal {
         update.set_renewed_apps(renewal.renewed_apps());
     }
@@ -308,17 +362,31 @@ async fn update_with<S: Get + Sync>(
         prices_at: now,
         renewal: built.renewal,
         rotate_error,
+        provisional: false,
     })
 }
 
+/// The download of the first run. With the list of popular apps of the
+/// release it stops after the first part, and a resume does the rest.
 pub async fn download_catalog(
     data_dir: &Path,
     progress: impl FnMut(Progress),
 ) -> Result<Updated, UpdateError> {
     let config = update_config(data_dir)?;
     let transport = Transport::new(steam_api_key())?;
+    let client = Client::new();
+    let releases_url = releases_url();
+    let first_part = first_part(&transport, &client, &releases_url, config.steam_id);
 
-    update_catalog(data_dir, &transport, &config, progress).await
+    logged_update(
+        data_dir,
+        &transport,
+        &config,
+        false,
+        Some(first_part),
+        progress,
+    )
+    .await
 }
 
 pub(crate) fn update_config(data_dir: &Path) -> Result<Config, UpdateError> {
@@ -361,6 +429,9 @@ pub fn archive_state(data_dir: &Path, now: Timestamp) -> Result<ArchiveState, Up
         pending: pending_update(data_dir, &config).is_some(),
         updated_at,
         renewal_due: renewal_due(data_dir, config.region, now)?,
+        provisional: archive(data_dir)
+            .provisional()
+            .map_err(UpdateError::Archive)?,
     })
 }
 
@@ -370,16 +441,14 @@ pub async fn rebuild_catalog(data_dir: &Path) -> Result<Rebuilt, UpdateError> {
         return Err(UpdateError::NoCompletedUpdate);
     };
 
-    let mut asked = Vec::new();
-    for batch in archived_asked(latest)? {
-        asked.extend(batch?);
-    }
+    let batches = archived_asked(latest)?.collect::<Result<_, _>>()?;
     let built = build_catalog(
         latest,
         latest.started_at(),
         earlier,
         latest.region(),
-        Asking::Archived(asked),
+        Asking::Archived(batches),
+        None,
         &mut |_| {},
     )
     .await?;
@@ -406,8 +475,8 @@ enum Asking {
     Changed,
     /// The changed apps plus expired ones, up to this many apps in all.
     Renewal(usize),
-    /// Exactly these apps: what an archived update really asked.
-    Archived(Vec<AppId>),
+    /// Exactly these batches: what an archived update really asked.
+    Archived(Vec<Vec<AppId>>),
 }
 
 async fn build_catalog<S: Get>(
@@ -416,6 +485,7 @@ async fn build_catalog<S: Get>(
     earlier: &[ArchivedUpdate],
     region: Region,
     asking: Asking,
+    first: Option<FirstPart>,
     progress: &mut impl FnMut(Progress),
 ) -> Result<BuiltCatalog, SteamError> {
     progress(Progress::ReadingApps);
@@ -423,8 +493,8 @@ async fn build_catalog<S: Get>(
     let apps = get_app_list(steam).await?;
     let ids: Vec<AppId> = apps.iter().map(|app| app.id).collect();
     let current = apps.iter().map(|app| (app.id, app.price_change_number));
-    let (renewal, asked) = match asking {
-        Asking::Archived(asked) => (None, asked),
+    let (renewal, asked, archived) = match asking {
+        Asking::Archived(batches) => (None, batches.concat(), Some(batches)),
         asking => {
             let changed = match earlier.first() {
                 None => ids.clone(),
@@ -441,37 +511,71 @@ async fn build_catalog<S: Get>(
                 Asking::Renewal(max_apps) => {
                     let renewal = answers(earlier)?.choose(&ids, &changed, now, max_apps);
                     let asked = renewal.asked.clone();
-                    (Some(renewal), asked)
+                    (Some(renewal), asked, None)
                 }
-                _ => (None, changed),
+                _ => (None, changed, None),
             }
         }
     };
+    let (asked, first_apps) = match &first {
+        Some(first) => put_first(&first.apps, asked),
+        None => (asked, 0),
+    };
+    let stopped = first_apps > 0 && first.is_some_and(|first| first.stop);
+    let (first_part, rest) = asked.split_at(first_apps);
+    let (first_batches, rest_batches): (Vec<&[AppId]>, Vec<&[AppId]>) = match &archived {
+        Some(batches) => (Vec::new(), batches.iter().map(Vec::as_slice).collect()),
+        None => (
+            first_part.chunks(BATCH_SIZE).collect(),
+            rest.chunks(BATCH_SIZE).collect(),
+        ),
+    };
 
-    let total = batch_count(asked.len());
-    if let Some(renewal) = &renewal {
-        progress(Progress::Renewing {
-            apps: renewal.renewed_apps(),
-            requests: total,
-        });
-    }
-    progress(Progress::StoreData { done: 0, total });
     let mut items: Vec<StoreItem> = Vec::new();
-    let mut stream = item_batches(steam, &asked, LANGUAGE, region.as_str(), CONCURRENCY);
-    let mut done = 0;
-    while let Some(batch) = stream.next().await {
-        items.extend(batch?);
-        done += 1;
-        progress(Progress::StoreData { done, total });
+    if first_apps > 0 {
+        let total = first_batches.len();
+        let apps = first_apps;
+        progress(Progress::FirstPart {
+            done: 0,
+            total,
+            apps,
+        });
+        let mut stream = batches(steam, first_batches, region.as_str());
+        let mut done = 0;
+        while let Some(batch) = stream.next().await {
+            items.extend(batch?);
+            done += 1;
+            progress(Progress::FirstPart { done, total, apps });
+        }
     }
+    let asked = if stopped {
+        first_part
+    } else {
+        let total = rest_batches.len();
+        if let Some(renewal) = &renewal {
+            progress(Progress::Renewing {
+                apps: renewal.renewed_apps(),
+                requests: total,
+            });
+        }
+        progress(Progress::StoreData { done: 0, total });
+        let mut stream = batches(steam, rest_batches, region.as_str());
+        let mut done = 0;
+        while let Some(batch) = stream.next().await {
+            items.extend(batch?);
+            done += 1;
+            progress(Progress::StoreData { done, total });
+        }
+        &asked[..]
+    };
     progress(Progress::Writing);
 
     let mut prices = Vec::new();
     let mut known = KnownApps::new(ids.iter().copied(), now);
     let mut answers = Answers::default();
     prices.extend(formatted_prices(&items));
-    answers.add(now, &asked, &items);
-    known.add(&asked, items);
+    answers.add(now, asked, &items);
+    known.add(asked, items);
     let mut tags_updated_at = now;
     for update in earlier {
         for batch in archived_batches(update)? {
@@ -503,7 +607,33 @@ async fn build_catalog<S: Get>(
             .collect(),
         renewal,
         next_expiry: answers.next_expiry(&ids, now),
+        stopped,
     })
+}
+
+/// The apps of the first part that are asked anyway, in their order, then
+/// the others in theirs; and how many the first part has.
+fn put_first(first: &[AppId], asked: Vec<AppId>) -> (Vec<AppId>, usize) {
+    let listed: HashSet<AppId> = asked.iter().copied().collect();
+    let mut taken = HashSet::new();
+    let mut ordered: Vec<AppId> = first
+        .iter()
+        .copied()
+        .filter(|app| listed.contains(app) && taken.insert(*app))
+        .collect();
+    let first_apps = ordered.len();
+    ordered.extend(asked.into_iter().filter(|app| !taken.contains(app)));
+    (ordered, first_apps)
+}
+
+fn batches<'a, S: Get>(
+    steam: &'a S,
+    batches: Vec<&'a [AppId]>,
+    country_code: &'a str,
+) -> impl Stream<Item = Result<Vec<StoreItem>, SteamError>> + 'a {
+    stream::iter(batches)
+        .map(move |batch| get_items(steam, batch, LANGUAGE, country_code))
+        .buffer_unordered(CONCURRENCY)
 }
 
 fn answers(earlier: &[ArchivedUpdate]) -> Result<Answers, SteamError> {
@@ -537,6 +667,7 @@ impl BuiltCatalog {
 mod tests {
     use std::{fs, sync::Mutex};
 
+    use gamepalate_core::ids::TagId;
     use gamepalate_store::catalog::load_catalog;
     use serde_json::{Value, json};
 
@@ -557,6 +688,14 @@ mod tests {
         formatted_price: Option<&'static str>,
         asked_items: Mutex<Vec<u32>>,
         countries: Mutex<Vec<String>>,
+        slow_first_batch: bool,
+        batches: Mutex<Vec<Batch>>,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Batch {
+        Asked(u32),
+        Answered(u32),
     }
 
     impl FakeSteam {
@@ -567,7 +706,20 @@ mod tests {
                 formatted_price: None,
                 asked_items: Mutex::new(Vec::new()),
                 countries: Mutex::new(Vec::new()),
+                slow_first_batch: false,
+                batches: Mutex::new(Vec::new()),
             }
+        }
+
+        fn out_of_order(apps: &[(u32, u64)]) -> FakeSteam {
+            FakeSteam {
+                slow_first_batch: true,
+                ..FakeSteam::new(apps)
+            }
+        }
+
+        fn batches(&self) -> Vec<Batch> {
+            self.batches.lock().unwrap().clone()
         }
 
         fn failing(apps: &[(u32, u64)], failure: Failure) -> FakeSteam {
@@ -629,6 +781,12 @@ mod tests {
                         asked.extend(&ids);
                         earlier
                     };
+                    if self.slow_first_batch {
+                        self.batches.lock().unwrap().push(Batch::Asked(ids[0]));
+                        let wait = if earlier_batches == 0 { 10 } else { 1 };
+                        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                        self.batches.lock().unwrap().push(Batch::Answered(ids[0]));
+                    }
                     let failure = match self.failure {
                         Some(Failure::DownAfterOneBatch) if earlier_batches == 0 => None,
                         Some(Failure::DownAfterOneBatch) => Some(Failure::Down),
@@ -663,7 +821,11 @@ mod tests {
             "name": format!("Game {appid}"),
             "type": 0,
             "release": { "steam_release_date": 1_600_000_000 },
-            "tags": [{ "tagid": 19, "weight": 100 }],
+            "tags": if appid.is_multiple_of(3) {
+                json!([{ "tagid": 19, "weight": 100 }, { "tagid": 21, "weight": 50 }])
+            } else {
+                json!([{ "tagid": 19, "weight": 100 }])
+            },
             "basic_info": {
                 "developers": [{ "name": format!("Studio {appid}") }],
                 "franchises": [{ "name": "Saga" }],
@@ -1125,6 +1287,7 @@ mod tests {
             &earlier,
             Region::ITALY,
             Asking::Changed,
+            None,
             &mut |_| {},
         )
         .await
@@ -1491,7 +1654,8 @@ mod tests {
             ArchiveState {
                 pending: false,
                 updated_at: None,
-                renewal_due: false
+                renewal_due: false,
+                provisional: false,
             }
         );
 
@@ -1518,5 +1682,394 @@ mod tests {
 
         assert!(run_update(data.path(), &steam).await.unwrap().full);
         assert!(!run_update(data.path(), &steam).await.unwrap().full);
+    }
+
+    fn app_ids(ids: &[u32]) -> Vec<AppId> {
+        ids.iter().copied().map(AppId).collect()
+    }
+
+    async fn download_with(
+        data_dir: &Path,
+        steam: &FakeSteam,
+        first_part: impl Future<Output = Option<Vec<AppId>>>,
+        progress: impl FnMut(Progress),
+    ) -> Result<Updated, UpdateError> {
+        logged_update(
+            data_dir,
+            steam,
+            &Config::default(),
+            false,
+            Some(first_part),
+            progress,
+        )
+        .await
+    }
+
+    async fn download(
+        data_dir: &Path,
+        steam: &FakeSteam,
+        first: Option<&[u32]>,
+    ) -> Result<Updated, UpdateError> {
+        let first = first.map(app_ids);
+        download_with(data_dir, steam, future::ready(first), |_| {}).await
+    }
+
+    async fn not_asked_again() -> Option<Vec<AppId>> {
+        panic!("a resumed update must not read the first part again")
+    }
+
+    fn range(from: u32, to: u32) -> Vec<u32> {
+        (from..=to).collect()
+    }
+
+    fn provisional(data_dir: &Path) -> bool {
+        archive_state(data_dir, wall_clock()).unwrap().provisional
+    }
+
+    #[test]
+    fn the_first_part_comes_first_without_doubles_nor_unlisted_apps() {
+        let (asked, first_apps) = put_first(&app_ids(&[5, 3, 99, 5, 1]), app_ids(&range(1, 6)));
+
+        assert_eq!(asked, app_ids(&[5, 3, 1, 2, 4, 6]));
+        assert_eq!(first_apps, 3);
+    }
+
+    #[tokio::test]
+    async fn the_first_download_stops_after_the_first_part() {
+        let data = tempfile::tempdir().unwrap();
+        let steam = FakeSteam::new(&apps(12));
+
+        let updated = download(data.path(), &steam, Some(&[12, 3, 99, 6, 9]))
+            .await
+            .unwrap();
+
+        assert_eq!(steam.asked_items(), [12, 3, 6, 9]);
+        assert!(updated.provisional);
+        assert_eq!((updated.games, updated.apps, updated.asked), (4, 12, 4));
+        assert_eq!(sorted(game_ids(data.path())), [3, 6, 9, 12]);
+        let manifest = &manifests(data.path())[0];
+        assert_eq!(manifest["first"], json!([12, 3, 99, 6, 9]));
+        assert_eq!(manifest.get("completedAt"), None);
+        assert!(provisional(data.path()));
+        assert!(pending_update(data.path(), &Config::default()).is_some());
+        assert!(data.path().join("catalog.bin").exists());
+    }
+
+    #[tokio::test]
+    async fn the_provisional_catalog_weighs_the_tags_on_its_own_games() {
+        let data = tempfile::tempdir().unwrap();
+        download(data.path(), &FakeSteam::new(&apps(12)), Some(&[3, 6, 9, 1]))
+            .await
+            .unwrap();
+        let provisional = load_catalog(&data.path().join("catalog.sqlite")).unwrap();
+
+        run_update(data.path(), &FakeSteam::new(&apps(12)))
+            .await
+            .unwrap();
+        let complete = load_catalog(&data.path().join("catalog.sqlite")).unwrap();
+
+        assert_eq!(provisional.idf, compute_idf(provisional.games()));
+        assert_eq!(complete.idf, compute_idf(complete.games()));
+        assert_ne!(provisional.idf[&TagId(21)], complete.idf[&TagId(21)]);
+    }
+
+    #[tokio::test]
+    async fn the_resume_asks_only_the_rest_and_completes_the_catalog() {
+        let data = tempfile::tempdir().unwrap();
+        download(
+            data.path(),
+            &FakeSteam::new(&apps(600)),
+            Some(&range(301, 600)),
+        )
+        .await
+        .unwrap();
+
+        let steam = FakeSteam::new(&apps(600));
+        let updated = run_update(data.path(), &steam).await.unwrap();
+
+        assert_eq!(steam.asked_items(), range(1, 300));
+        assert!(!updated.provisional);
+        assert_eq!((updated.games, updated.asked), (600, 600));
+        assert_eq!(game_ids(data.path()).len(), 600);
+        let manifests = manifests(data.path());
+        assert_eq!(manifests.len(), 1);
+        assert!(manifests[0].get("completedAt").is_some());
+        assert!(!provisional(data.path()));
+        assert_eq!(pending_update(data.path(), &Config::default()), None);
+    }
+
+    #[tokio::test]
+    async fn the_resume_counts_only_the_requests_of_the_rest() {
+        let data = tempfile::tempdir().unwrap();
+        let mut first_time = Vec::new();
+        download_with(
+            data.path(),
+            &FakeSteam::new(&apps(600)),
+            future::ready(Some(app_ids(&range(1, 300)))),
+            |progress| first_time.push(progress),
+        )
+        .await
+        .unwrap();
+
+        let events = events(data.path(), &FakeSteam::new(&apps(600))).await;
+
+        let first_part = |done| Progress::FirstPart {
+            done,
+            total: 2,
+            apps: 300,
+        };
+        assert_eq!(
+            first_time,
+            [
+                Progress::ReadingApps,
+                first_part(0),
+                first_part(1),
+                first_part(2),
+                Progress::Writing,
+            ]
+        );
+        assert!(matches!(events[0], Progress::Resumed { .. }));
+        assert_eq!(
+            events[1..],
+            [
+                Progress::ReadingApps,
+                first_part(0),
+                first_part(1),
+                first_part(2),
+                Progress::StoreData { done: 0, total: 2 },
+                Progress::StoreData { done: 1, total: 2 },
+                Progress::StoreData { done: 2, total: 2 },
+                Progress::Writing,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_first_part_resumes_with_its_order_and_stops_again() {
+        let data = tempfile::tempdir().unwrap();
+        let interrupted = FakeSteam::failing(&apps(600), Failure::DownAfterOneBatch);
+        download(data.path(), &interrupted, Some(&range(51, 400)))
+            .await
+            .unwrap_err();
+        let first_batch = interrupted.asked_items()[..260].to_vec();
+        assert_eq!(first_batch, range(51, 310));
+
+        let steam = FakeSteam::new(&apps(600));
+        let updated = download_with(data.path(), &steam, not_asked_again(), |_| {})
+            .await
+            .unwrap();
+
+        assert_eq!(steam.asked_items(), range(311, 400));
+        assert!(updated.provisional);
+        assert_eq!(sorted(game_ids(data.path())), range(51, 400));
+        assert_eq!(manifests(data.path())[0]["first"], json!(range(51, 400)));
+    }
+
+    #[tokio::test]
+    async fn a_resume_keeps_the_first_part_even_if_the_list_changed() {
+        let data = tempfile::tempdir().unwrap();
+        let interrupted = FakeSteam::failing(&apps(600), Failure::DownAfterOneBatch);
+        download(data.path(), &interrupted, Some(&range(51, 400)))
+            .await
+            .unwrap_err();
+
+        let steam = FakeSteam::new(&apps(600));
+        download(data.path(), &steam, Some(&range(1, 600)))
+            .await
+            .unwrap();
+
+        assert_eq!(steam.asked_items(), range(311, 400));
+        assert_eq!(manifests(data.path())[0]["first"], json!(range(51, 400)));
+    }
+
+    #[tokio::test]
+    async fn a_first_part_already_archived_writes_the_provisional_catalog_at_once() {
+        let data = tempfile::tempdir().unwrap();
+        download(
+            data.path(),
+            &FakeSteam::new(&apps(600)),
+            Some(&range(1, 300)),
+        )
+        .await
+        .unwrap();
+        fs::remove_file(data.path().join("catalog.sqlite")).unwrap();
+
+        let steam = FakeSteam::new(&apps(600));
+        let updated = download_with(data.path(), &steam, not_asked_again(), |_| {})
+            .await
+            .unwrap();
+
+        assert!(steam.asked_items().is_empty());
+        assert!(updated.provisional);
+        assert_eq!(game_ids(data.path()).len(), 300);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_batch_of_the_rest_starts_before_the_first_part_is_done() {
+        let data = tempfile::tempdir().unwrap();
+        let config = Config::default();
+        archive(data.path())
+            .start_update(
+                wall_clock(),
+                config.prices_max_age_hours,
+                config.region,
+                false,
+            )
+            .unwrap()
+            .set_first(&app_ids(&range(1, 700)))
+            .unwrap();
+
+        let steam = FakeSteam::out_of_order(&apps(1300));
+        run_update(data.path(), &steam).await.unwrap();
+
+        let batches = steam.batches();
+        let rest_started = batches
+            .iter()
+            .position(|batch| *batch == Batch::Asked(701))
+            .unwrap();
+        for first in [1, 261, 521] {
+            let answered = batches
+                .iter()
+                .position(|batch| *batch == Batch::Answered(first))
+                .unwrap();
+            assert!(answered < rest_started, "{batches:?}");
+        }
+        assert!(
+            batches
+                .iter()
+                .position(|batch| *batch == Batch::Answered(261))
+                < batches
+                    .iter()
+                    .position(|batch| *batch == Batch::Answered(1))
+        );
+    }
+
+    #[tokio::test]
+    async fn without_the_list_the_first_download_is_whole() {
+        let data = tempfile::tempdir().unwrap();
+        let steam = FakeSteam::new(&apps(600));
+
+        let updated = download(data.path(), &steam, None).await.unwrap();
+
+        assert_eq!(steam.asked_items().len(), 600);
+        assert!(!updated.provisional);
+        let manifest = &manifests(data.path())[0];
+        assert_eq!(manifest.get("first"), None);
+        assert!(manifest.get("completedAt").is_some());
+        assert!(!provisional(data.path()));
+    }
+
+    #[tokio::test]
+    async fn an_update_without_a_first_part_resumes_as_before() {
+        let data = tempfile::tempdir().unwrap();
+        let interrupted = FakeSteam::failing(&apps(600), Failure::DownAfterOneBatch);
+        run_update(data.path(), &interrupted).await.unwrap_err();
+
+        let steam = FakeSteam::new(&apps(600));
+        let updated = download_with(data.path(), &steam, not_asked_again(), |_| {})
+            .await
+            .unwrap();
+
+        assert_eq!(steam.asked_items().len(), 600 - 260);
+        assert!(!updated.provisional);
+        assert_eq!(manifests(data.path())[0].get("first"), None);
+        assert!(manifests(data.path())[0].get("completedAt").is_some());
+    }
+
+    #[tokio::test]
+    async fn the_update_and_the_renewal_never_read_a_first_part() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(data.path(), &FakeSteam::new(&apps(3)))
+            .await
+            .unwrap();
+
+        let steam = FakeSteam::new(&apps(3));
+        let updated = download_with(data.path(), &steam, not_asked_again(), |_| {})
+            .await
+            .unwrap();
+
+        assert!(!updated.provisional);
+        assert_eq!(manifests(data.path())[1].get("first"), None);
+    }
+
+    #[tokio::test]
+    async fn an_imported_catalog_with_a_stopped_update_is_not_provisional() {
+        let data = tempfile::tempdir().unwrap();
+        let interrupted = FakeSteam::failing(&apps(600), Failure::DownAfterOneBatch);
+
+        run_update(data.path(), &interrupted).await.unwrap_err();
+
+        let state = archive_state(data.path(), wall_clock()).unwrap();
+        assert!(state.pending);
+        assert_eq!(state.updated_at, None);
+        assert!(!state.provisional);
+    }
+
+    #[tokio::test]
+    async fn a_first_part_too_old_to_resume_stays_provisional_until_the_whole_catalog() {
+        let data = tempfile::tempdir().unwrap();
+        download(
+            data.path(),
+            &FakeSteam::new(&apps(600)),
+            Some(&range(1, 300)),
+        )
+        .await
+        .unwrap();
+        backdate(data.path(), "000001", 2);
+
+        let state = archive_state(data.path(), wall_clock()).unwrap();
+        assert!(!state.pending);
+        assert!(state.provisional);
+
+        let steam = FakeSteam::new(&apps(600));
+        let updated = run_update(data.path(), &steam).await.unwrap();
+
+        assert_eq!(steam.asked_items().len(), 600);
+        assert_eq!(steam.asked_items()[..300], range(1, 300));
+        let manifest: Value = serde_json::from_slice(
+            &fs::read(update_dir(data.path(), "000002").join("update.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["first"], json!(range(1, 300)));
+        assert!(manifest.get("completedAt").is_some());
+        assert!(!updated.provisional);
+        assert!(!provisional(data.path()));
+    }
+
+    #[tokio::test]
+    async fn rebuild_after_a_catalog_in_two_parts() {
+        let data = tempfile::tempdir().unwrap();
+        download(
+            data.path(),
+            &FakeSteam::new(&apps(600)),
+            Some(&range(301, 400)),
+        )
+        .await
+        .unwrap();
+        run_update(data.path(), &FakeSteam::new(&apps(600)))
+            .await
+            .unwrap();
+        let catalog = data.path().join("catalog.sqlite");
+        let updated = data.path().join("updated.sqlite");
+        fs::rename(&catalog, &updated).unwrap();
+
+        rebuild_catalog(data.path()).await.unwrap();
+
+        assert_eq!(
+            load_catalog(&catalog).unwrap().games(),
+            load_catalog(&updated).unwrap().games()
+        );
+    }
+
+    #[tokio::test]
+    async fn rebuild_after_an_update_with_a_last_batch_that_is_not_full() {
+        let data = tempfile::tempdir().unwrap();
+        run_update(data.path(), &FakeSteam::new(&apps(600)))
+            .await
+            .unwrap();
+
+        let rebuilt = rebuild_catalog(data.path()).await.unwrap();
+
+        assert_eq!(rebuilt.games, 600);
     }
 }

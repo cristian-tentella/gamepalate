@@ -15,6 +15,7 @@ mod lock;
 pub mod log;
 pub mod names;
 pub mod new_version;
+mod popular;
 pub mod profile;
 pub mod ready;
 pub mod refresh;
