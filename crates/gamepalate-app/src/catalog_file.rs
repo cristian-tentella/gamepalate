@@ -135,6 +135,9 @@ pub async fn import_catalog(
     }
     let mut catalog = result?;
     catalog.archive = place_archive(file, data_dir, catalog.region, replace_archive).await;
+    if let Err(error) = archive(data_dir).forget_first() {
+        tracing::warn!("the first part of an unfinished download is still in the archive: {error}");
+    }
     Ok(catalog)
 }
 
@@ -792,6 +795,34 @@ mod tests {
             .unwrap();
         let state = archive_state(data.path(), Timestamp(PRICES_AT)).unwrap();
         assert_eq!(state.updated_at, Some(Timestamp(PRICES_AT)));
+    }
+
+    #[tokio::test]
+    async fn a_catalog_imported_over_a_first_part_is_not_provisional() {
+        let source = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let mut first = Archive::new(data.path().join("archive"))
+            .start_update(Timestamp(PRICES_AT), 24, Region::ITALY, false)
+            .unwrap();
+        first.set_first(&[AppId(730)], None).unwrap();
+        drop(first);
+        assert!(
+            archive_state(data.path(), Timestamp(PRICES_AT))
+                .unwrap()
+                .provisional
+        );
+        let loose = source.path().join("catalog.sqlite");
+        write(&loose, &catalog(&["Alpha"], PRICES_AT));
+
+        import_catalog(data.path(), &loose, false).await.unwrap();
+
+        let state = archive_state(data.path(), Timestamp(PRICES_AT)).unwrap();
+        assert!(!state.provisional);
+        let resumed = Archive::new(data.path().join("archive"))
+            .start_update(Timestamp(PRICES_AT), 24, Region::ITALY, false)
+            .unwrap();
+        assert!(resumed.resumed());
+        assert_eq!(resumed.first(), None);
     }
 
     const KEY: &str = "0123456789ABCDEF0123456789ABCDEF";

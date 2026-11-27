@@ -176,6 +176,20 @@ impl Archive {
         Ok(self.completed()?.is_empty() && self.unfinished_first()?.is_some())
     }
 
+    /// Drops the order of the first part from the updates that did not
+    /// complete, so that a Catalog put in its place is not provisional. Their
+    /// responses stay for a resume.
+    pub fn forget_first(&self) -> io::Result<()> {
+        for (dir, mut manifest) in self.updates_newest_first()? {
+            if manifest.completed_at.is_none() && manifest.first.is_some() {
+                manifest.first = None;
+                manifest.first_tags = None;
+                write_manifest(&dir, &manifest)?;
+            }
+        }
+        Ok(())
+    }
+
     fn unfinished_first(&self) -> io::Result<Option<(Vec<u32>, Option<FirstTags>)>> {
         Ok(self
             .updates_newest_first()?
@@ -1499,6 +1513,42 @@ mod tests {
 
         update.complete(Timestamp(NOW.0 + HOUR)).unwrap();
         assert!(!archive.provisional().unwrap());
+    }
+
+    #[test]
+    fn forgetting_the_first_part_leaves_the_updates_and_their_responses() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().to_path_buf());
+        let mut update = archive.start_update(NOW, 24, Region::ITALY, false).unwrap();
+        update
+            .set_first(&apps(&[730]), Some(&tags(100, &[(19, 40)])))
+            .unwrap();
+        let dir = update.dir().to_path_buf();
+        drop(update);
+        fs::write(dir.join("unrelated.txt"), "kept").unwrap();
+
+        archive.forget_first().unwrap();
+
+        assert!(!archive.provisional().unwrap());
+        let manifest = read_manifest(&dir);
+        assert_eq!(manifest.get("first"), None);
+        assert_eq!(manifest.get("firstTags"), None);
+        assert!(dir.join("unrelated.txt").exists());
+        let resumed = archive
+            .start_update(Timestamp(NOW.0 + HOUR), 24, Region::ITALY, false)
+            .unwrap();
+        assert_eq!(resumed.dir(), dir);
+        assert_eq!(resumed.first(), None);
+    }
+
+    #[test]
+    fn forgetting_the_first_part_of_an_empty_archive_does_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::new(root.path().join("archive"));
+
+        archive.forget_first().unwrap();
+
+        assert!(!root.path().join("archive").exists());
     }
 
     #[test]
