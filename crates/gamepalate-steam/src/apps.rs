@@ -42,6 +42,14 @@ struct AppListPage {
 }
 
 pub async fn get_app_list<S: Get>(transport: &S) -> Result<Vec<AppListEntry>, SteamError> {
+    get_app_list_with(transport, &mut |_| {}).await
+}
+
+/// Tells `read` how many apps arrived so far, after each page.
+pub async fn get_app_list_with<S: Get>(
+    transport: &S,
+    read: &mut impl FnMut(usize),
+) -> Result<Vec<AppListEntry>, SteamError> {
     let mut entries = Vec::new();
     let mut last_appid: Option<u32> = None;
 
@@ -61,6 +69,7 @@ pub async fn get_app_list<S: Get>(transport: &S) -> Result<Vec<AppListEntry>, St
             started.elapsed()
         );
         entries.extend(page.entries);
+        read(entries.len());
 
         match page.next {
             Some(next) => last_appid = Some(next),
@@ -98,6 +107,59 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    struct PagedSteam {
+        pages: Vec<Vec<u32>>,
+    }
+
+    impl Get for PagedSteam {
+        async fn get(
+            &self,
+            endpoint: &str,
+            params: &[(&str, &str)],
+            _needs_key: bool,
+        ) -> Result<Value, SteamError> {
+            assert_eq!(endpoint, ENDPOINT);
+            let after = params
+                .iter()
+                .find(|(name, _)| *name == "last_appid")
+                .map(|(_, value)| value.parse::<u32>().unwrap());
+            let index = match after {
+                None => 0,
+                Some(after) => {
+                    self.pages
+                        .iter()
+                        .position(|page| page.last() == Some(&after))
+                        .unwrap()
+                        + 1
+                }
+            };
+            let page = &self.pages[index];
+            Ok(json!({ "response": {
+                "apps": page
+                    .iter()
+                    .map(|appid| json!({ "appid": appid, "last_modified": 1, "price_change_number": 1 }))
+                    .collect::<Vec<_>>(),
+                "have_more_results": index + 1 < self.pages.len(),
+                "last_appid": page.last(),
+            } }))
+        }
+    }
+
+    #[tokio::test]
+    async fn tells_the_apps_read_after_each_page() {
+        let steam = PagedSteam {
+            pages: vec![vec![1, 2, 3], vec![4, 5, 6], vec![7]],
+        };
+        let mut read = Vec::new();
+
+        let entries = get_app_list_with(&steam, &mut |apps| read.push(apps))
+            .await
+            .unwrap();
+
+        assert_eq!(read, [3, 6, 7]);
+        assert_eq!(entries.len(), 7);
+    }
 
     #[test]
     fn reads_the_apps_of_a_page() {
