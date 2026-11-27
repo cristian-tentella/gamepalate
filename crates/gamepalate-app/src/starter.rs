@@ -2,7 +2,9 @@ use std::{collections::HashSet, time::Duration};
 
 use gamepalate_core::{
     ids::SteamId,
-    starter::{StarterCatalog, StarterCatalogError, parse_starter_catalog},
+    starter::{
+        STARTER_CATALOG_MAX_BYTES, StarterCatalog, StarterCatalogError, parse_starter_catalog,
+    },
 };
 use gamepalate_steam::{
     signals::get_owned_games,
@@ -122,7 +124,15 @@ async fn download<F: Fetch>(fetch: &F, url: &str) -> Result<Vec<u8>, StarterErro
             status,
         });
     }
-    Ok(response.bytes().await.map_err(network)?.to_vec())
+    let mut response = response;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(network)? {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() > STARTER_CATALOG_MAX_BYTES {
+            return Err(StarterCatalogError::TooLarge { bytes: bytes.len() }.into());
+        }
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]
