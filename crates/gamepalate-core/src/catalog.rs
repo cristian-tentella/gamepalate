@@ -49,17 +49,50 @@ impl Catalog {
 }
 
 pub fn compute_idf(games: &[Game]) -> BTreeMap<TagId, f64> {
-    let mut document_frequency: BTreeMap<TagId, u32> = BTreeMap::new();
+    idf_from(&tag_frequencies(games))
+}
+
+/// How many games a catalog has, and in how many of them each tag weighs
+/// more than zero: what the IDF is made of.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TagFrequencies {
+    pub games: u32,
+    pub tags: BTreeMap<TagId, u32>,
+}
+
+impl TagFrequencies {
+    /// The IDF of these frequencies, with the tags of `games` that they
+    /// miss counted in no game.
+    pub fn idf_for(&self, games: &[Game]) -> BTreeMap<TagId, f64> {
+        let mut frequencies = self.clone();
+        for tag in games.iter().flat_map(|game| &game.tags) {
+            if tag.weight > 0.0 {
+                frequencies.tags.entry(tag.id).or_insert(0);
+            }
+        }
+        idf_from(&frequencies)
+    }
+}
+
+pub fn tag_frequencies(games: &[Game]) -> TagFrequencies {
+    let mut tags: BTreeMap<TagId, u32> = BTreeMap::new();
     for tag in games.iter().flat_map(|game| &game.tags) {
         if tag.weight > 0.0 {
-            *document_frequency.entry(tag.id).or_default() += 1;
+            *tags.entry(tag.id).or_default() += 1;
         }
     }
+    TagFrequencies {
+        games: u32::try_from(games.len()).unwrap_or(u32::MAX),
+        tags,
+    }
+}
 
-    let total = games.len() as f64;
-    document_frequency
-        .into_iter()
-        .map(|(id, df)| (id, (total / (1.0 + f64::from(df))).ln().max(0.0)))
+pub fn idf_from(frequencies: &TagFrequencies) -> BTreeMap<TagId, f64> {
+    let total = f64::from(frequencies.games);
+    frequencies
+        .tags
+        .iter()
+        .map(|(&id, &df)| (id, (total / (1.0 + f64::from(df))).ln().max(0.0)))
         .collect()
 }
 
@@ -157,6 +190,41 @@ mod tests {
         let games = [game_with_tags(1, &[(2, 1.0), (5, 0.0)])];
 
         assert!(!compute_idf(&games).contains_key(&TagId(5)));
+    }
+
+    #[test]
+    fn the_idf_from_the_frequencies_is_the_idf_of_the_games() {
+        let games = [
+            game_with_tags(1, &[(2, 0.5), (5, 0.5), (7, 0.0)]),
+            game_with_tags(2, &[(2, 1.0), (9, 0.2)]),
+            game_with_tags(3, &[(9, 0.4)]),
+            game_with_tags(4, &[]),
+        ];
+
+        let frequencies = tag_frequencies(&games);
+
+        assert_eq!(frequencies.games, 4);
+        assert_eq!(
+            frequencies.tags,
+            BTreeMap::from([(TagId(2), 2), (TagId(5), 1), (TagId(9), 2)])
+        );
+        assert_eq!(idf_from(&frequencies), compute_idf(&games));
+    }
+
+    #[test]
+    fn a_tag_the_frequencies_miss_counts_in_no_game() {
+        let frequencies = TagFrequencies {
+            games: 100,
+            tags: BTreeMap::from([(TagId(2), 9), (TagId(3), 49)]),
+        };
+        let games = [game_with_tags(1, &[(2, 1.0), (5, 0.5), (6, 0.0)])];
+
+        let idf = frequencies.idf_for(&games);
+
+        assert_eq!(idf[&TagId(2)], 10.0_f64.ln());
+        assert_eq!(idf[&TagId(3)], 2.0_f64.ln());
+        assert_eq!(idf[&TagId(5)], 100.0_f64.ln());
+        assert!(!idf.contains_key(&TagId(6)));
     }
 
     #[test]
