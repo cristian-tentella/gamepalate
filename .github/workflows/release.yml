@@ -89,5 +89,14 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: sha256sum * > SHA256SUMS.txt
+      - name: Popular apps
+        run: |
+          if [ -f dist/popular-apps.txt ]; then
+            echo "popular-apps.txt is already in dist"
+          elif gh release download --repo "$GITHUB_REPOSITORY" --pattern popular-apps.txt --dir dist; then
+            echo "popular-apps.txt carried over from the latest release: $(head -n 1 dist/popular-apps.txt)"
+          else
+            echo "::warning::popular-apps.txt not found in the latest release, attach it to the draft by hand"
+          fi
       - name: Draft the release
         run: gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --draft --generate-notes --title "gamepalate $TAG"
