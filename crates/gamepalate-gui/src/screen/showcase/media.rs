@@ -36,6 +36,7 @@ const ROW_HEIGHT: f32 = THUMBNAIL_HEIGHT + 2.0 * RING_ROOM;
 const ROW_GAP: f32 = 8.0;
 /// The fade at an edge of the row with thumbnails hidden past it.
 const FADE_WIDTH: f32 = 40.0;
+const WHEEL_LINE: f32 = 60.0;
 /// How far the thumbnail shown stays from the edges of the row.
 const ROW_MARGIN: f32 = 8.0;
 const THUMBNAIL_PLAY: f32 = 27.0;
@@ -142,6 +143,22 @@ fn thumbnail_left(index: usize) -> f32 {
 
 fn row_width(count: usize) -> f32 {
     count as f32 * (THUMBNAIL_WIDTH + 2.0 * RING_ROOM)
+}
+
+/// Whether the row has more thumbnails than it shows, so the wheel over it scrolls it.
+fn row_overflows(viewport: f32, content: f32) -> bool {
+    content > viewport + 0.5
+}
+
+/// How far the wheel scrolls the row sideways: down or right goes on, up or left goes back.
+/// A notch is `WHEEL_LINE` pixels, like a notch on the scrollables of iced; the page's smooth
+/// scrolling already turns notches into pixels.
+fn wheel_to_row(delta: mouse::ScrollDelta) -> f32 {
+    let along = |x: f32, y: f32| if y.abs() >= x.abs() { y } else { x };
+    match delta {
+        mouse::ScrollDelta::Lines { x, y } => -along(x, y) * WHEEL_LINE,
+        mouse::ScrollDelta::Pixels { x, y } => -along(x, y),
+    }
 }
 
 /// Whether the row fades at its left and at its right edge: only where thumbnails are hidden.
@@ -938,19 +955,24 @@ impl Showcase {
                 self.row_thumbnail(index, url.as_deref(), trailer)
             });
         let scrolled = self.row_scroll[which as usize];
-        let (left, right) = match (width, scrolled) {
-            (Some(width), _) => row_fades(
+        let measures = match (width, scrolled) {
+            (Some(width), _) => Some((
                 scrolled.map_or(0.0, |viewport| viewport.absolute_offset().x),
                 width,
                 row_width(item_count(details)),
-            ),
-            (None, Some(viewport)) => row_fades(
+            )),
+            (None, Some(viewport)) => Some((
                 viewport.absolute_offset().x,
                 viewport.bounds().width,
                 viewport.content_bounds().width,
-            ),
-            (None, None) => (false, false),
+            )),
+            (None, None) => None,
         };
+        let (left, right) = measures.map_or((false, false), |(offset, viewport, content)| {
+            row_fades(offset, viewport, content)
+        });
+        let overflows =
+            measures.is_some_and(|(_, viewport, content)| row_overflows(viewport, content));
         let row = scrollable(row(thumbnails))
             .direction(scrollable::Direction::Horizontal(
                 scrollable::Scrollbar::hidden(),
@@ -967,18 +989,25 @@ impl Showcase {
             })
         };
 
-        Some(
-            stack![
-                keyed_column([(id, row.into())]),
-                row![]
-                    .push(fade(left, true))
-                    .push(space::horizontal())
-                    .push(fade(right, false))
-                    .width(Fill),
-            ]
-            .width(width.map_or(Length::Shrink, Length::Fixed))
-            .into(),
-        )
+        let row = stack![
+            keyed_column([(id, row.into())]),
+            row![]
+                .push(fade(left, true))
+                .push(space::horizontal())
+                .push(fade(right, false))
+                .width(Fill),
+        ]
+        .width(width.map_or(Length::Shrink, Length::Fixed));
+
+        // The wheel that the row itself leaves, the vertical one, scrolls it sideways; a row
+        // that fits leaves the wheel to the page.
+        Some(if overflows {
+            mouse_area(row)
+                .on_scroll(move |delta| Message::RowWheel(which, wheel_to_row(delta)))
+                .into()
+        } else {
+            row.into()
+        })
     }
 
     fn row_thumbnail<'a>(
@@ -1383,6 +1412,24 @@ mod tests {
         assert_eq!(row_fades(400.0, 600.0, 1000.0), (true, false));
         assert_eq!(row_fades(399.8, 600.0, 1000.0), (true, false));
         assert_eq!(row_width(20), thumbnail_left(20) - RING_ROOM);
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_row_only_when_it_overflows() {
+        assert!(row_overflows(600.0, 1000.0));
+        assert!(!row_overflows(600.0, 600.0));
+        assert!(!row_overflows(600.0, 400.0));
+    }
+
+    #[test]
+    fn the_wheel_down_moves_the_row_on() {
+        use mouse::ScrollDelta::{Lines, Pixels};
+
+        assert_eq!(wheel_to_row(Lines { x: 0.0, y: -1.0 }), WHEEL_LINE);
+        assert_eq!(wheel_to_row(Lines { x: 0.0, y: 2.0 }), -2.0 * WHEEL_LINE);
+        assert_eq!(wheel_to_row(Pixels { x: 0.0, y: -35.0 }), 35.0);
+        assert_eq!(wheel_to_row(Pixels { x: -12.0, y: 3.0 }), 12.0);
+        assert_eq!(wheel_to_row(Lines { x: 1.0, y: 0.0 }), -WHEEL_LINE);
     }
 
     #[test]

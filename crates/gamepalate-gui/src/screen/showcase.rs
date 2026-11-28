@@ -230,6 +230,7 @@ pub enum Message {
     ToggleFeatures,
     Hover(bool),
     RowScrolled(media::Row, scrollable::Viewport),
+    RowWheel(media::Row, f32),
     PlayTrailer,
     PlayOrPause,
     SwitchMute,
@@ -378,6 +379,12 @@ impl Showcase {
             Message::ToggleFeatures => self.features_open = !self.features_open,
             Message::Hover(hovered) => self.hovered = hovered,
             Message::RowScrolled(row, viewport) => self.row_scroll[row as usize] = Some(viewport),
+            Message::RowWheel(row, x) => {
+                return operation::scroll_by(
+                    self.row_ids[row as usize].clone(),
+                    AbsoluteOffset { x, y: 0.0 },
+                );
+            }
             Message::PlayTrailer => self.play_trailer(),
             Message::PlayOrPause => self.play_or_pause(),
             Message::SwitchMute => {
