@@ -6,6 +6,7 @@ mod format;
 mod new_version;
 mod progress;
 mod screen;
+mod sideways;
 mod smooth;
 mod style;
 mod video;

@@ -23,7 +23,7 @@ use super::{
     note,
     pages::Page,
 };
-use crate::{font, style, video};
+use crate::{font, sideways::sideways, style, video};
 
 const SCREENSHOTS_AHEAD: usize = 2;
 const MEDIA_SPACING: f32 = 14.0;
@@ -36,7 +36,6 @@ const ROW_HEIGHT: f32 = THUMBNAIL_HEIGHT + 2.0 * RING_ROOM;
 const ROW_GAP: f32 = 8.0;
 /// The fade at an edge of the row with thumbnails hidden past it.
 const FADE_WIDTH: f32 = 40.0;
-const WHEEL_LINE: f32 = 60.0;
 /// How far the thumbnail shown stays from the edges of the row.
 const ROW_MARGIN: f32 = 8.0;
 const THUMBNAIL_PLAY: f32 = 27.0;
@@ -148,17 +147,6 @@ fn row_width(count: usize) -> f32 {
 /// Whether the row has more thumbnails than it shows, so the wheel over it scrolls it.
 fn row_overflows(viewport: f32, content: f32) -> bool {
     content > viewport + 0.5
-}
-
-/// How far the wheel scrolls the row sideways: down or right goes on, up or left goes back.
-/// A notch is `WHEEL_LINE` pixels, like a notch on the scrollables of iced; the page's smooth
-/// scrolling already turns notches into pixels.
-fn wheel_to_row(delta: mouse::ScrollDelta) -> f32 {
-    let along = |x: f32, y: f32| if y.abs() >= x.abs() { y } else { x };
-    match delta {
-        mouse::ScrollDelta::Lines { x, y } => -along(x, y) * WHEEL_LINE,
-        mouse::ScrollDelta::Pixels { x, y } => -along(x, y),
-    }
 }
 
 /// Whether the row fades at its left and at its right edge: only where thumbnails are hidden.
@@ -999,12 +987,10 @@ impl Showcase {
         ]
         .width(width.map_or(Length::Shrink, Length::Fixed));
 
-        // The wheel that the row itself leaves, the vertical one, scrolls it sideways; a row
-        // that fits leaves the wheel to the page.
+        // Over a row with hidden thumbnails the vertical wheel scrolls it sideways, like
+        // Shift+wheel; a row that fits leaves the wheel to the page.
         Some(if overflows {
-            mouse_area(row)
-                .on_scroll(move |delta| Message::RowWheel(which, wheel_to_row(delta)))
-                .into()
+            sideways(row).into()
         } else {
             row.into()
         })
@@ -1419,17 +1405,6 @@ mod tests {
         assert!(row_overflows(600.0, 1000.0));
         assert!(!row_overflows(600.0, 600.0));
         assert!(!row_overflows(600.0, 400.0));
-    }
-
-    #[test]
-    fn the_wheel_down_moves_the_row_on() {
-        use mouse::ScrollDelta::{Lines, Pixels};
-
-        assert_eq!(wheel_to_row(Lines { x: 0.0, y: -1.0 }), WHEEL_LINE);
-        assert_eq!(wheel_to_row(Lines { x: 0.0, y: 2.0 }), -2.0 * WHEEL_LINE);
-        assert_eq!(wheel_to_row(Pixels { x: 0.0, y: -35.0 }), 35.0);
-        assert_eq!(wheel_to_row(Pixels { x: -12.0, y: 3.0 }), 12.0);
-        assert_eq!(wheel_to_row(Lines { x: 1.0, y: 0.0 }), -WHEEL_LINE);
     }
 
     #[test]
