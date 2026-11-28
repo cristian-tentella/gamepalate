@@ -8,7 +8,7 @@ use std::{
 
 use gamepalate_app::{
     AppId, Currency, DiscoverMode, FilterOptions, Gamepalate, ListId, Lists, Price, SaveChange,
-    SearchOptions, Vote, VoteKind, VotedGame, VotesOrder, VotesSettings, VotesShow,
+    SearchOptions, TrailerPlace, Vote, VoteKind, VotedGame, VotesOrder, VotesSettings, VotesShow,
 };
 use iced::{
     Center, Element, Event, Fill, Size, Subscription, Task, event,
@@ -515,6 +515,10 @@ impl Votes {
             event::listen_with(escape_message),
             trailer,
         ])
+    }
+
+    pub fn place_trailers(&mut self, place: TrailerPlace) -> Task<Message> {
+        self.showcase.place_trailers(place).map(Message::Showcase)
     }
 
     /// A game or the search over Votes stops the trailer.

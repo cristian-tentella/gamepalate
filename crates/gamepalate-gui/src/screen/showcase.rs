@@ -18,7 +18,7 @@ use std::{
 };
 
 use gamepalate_app::{
-    AppId, Block, GameDetails, GameTagsView, Gamepalate,
+    AppId, Block, GameDetails, GameTagsView, Gamepalate, TrailerPlace,
     reviews::{ReviewPage, ReviewQuery},
 };
 use iced::{
@@ -87,8 +87,9 @@ pub struct Showcase {
     hours_typed: String,
     has_reviews: bool,
     extras: Images,
-    /// The item of the gallery shown: the trailers first, then the screenshots.
+    /// The index of the item of the gallery shown, in the order `place` gives.
     item: usize,
+    place: TrailerPlace,
     last_screenshot: Option<String>,
     shown: Option<AppId>,
     browsing: bool,
@@ -256,6 +257,7 @@ impl Showcase {
             has_reviews: false,
             extras: Images::default(),
             item: 0,
+            place: gamepalate.gui_settings().trailers,
             last_screenshot: None,
             shown: None,
             browsing: false,
@@ -474,7 +476,7 @@ impl Showcase {
         let page = self.shown.and_then(|id| self.pages.get(id));
         let due = match page {
             _ if self.is_open() => Due::Never,
-            Some(Page::Ready(details)) => match media::item_of(details, self.item) {
+            Some(Page::Ready(details)) => match media::item_of(details, self.place, self.item) {
                 Some(Item::Trailer(index)) if index == armed => details
                     .store
                     .trailers

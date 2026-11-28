@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use gamepalate_app::{
     AppId, DiscoverPlace, FamilyChange, GameStanding, GameView, Gamepalate, ListId, Lists,
-    SaveChange, VoteKind,
+    SaveChange, TrailerPlace, VoteKind,
 };
 use iced::{
     Center, ContentFit, Element, Fill, Size, Subscription, Task,
@@ -324,6 +324,10 @@ impl GamePage {
             return Subscription::batch([save_menu::keys().map(Message::SaveMenu), trailer]);
         }
         Subscription::batch([keyboard::listen().filter_map(key_message), trailer])
+    }
+
+    pub fn place_trailers(&mut self, place: TrailerPlace) -> Task<Message> {
+        self.showcase.place_trailers(place).map(Message::Showcase)
     }
 
     /// The search over the page stops the trailer.
