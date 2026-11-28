@@ -22,6 +22,16 @@ pub enum ThemeChoice {
     Dark,
 }
 
+/// Where the gallery puts the trailers among the screenshots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrailerPlace {
+    #[default]
+    First,
+    Spread,
+    Last,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedWindow {
     pub width: u32,
@@ -183,6 +193,8 @@ impl From<SavedBrowse> for BrowseOptions {
 pub struct GuiSettings {
     pub theme: ThemeChoice,
     pub check_for_new_versions: bool,
+    #[serde(deserialize_with = "or_default")]
+    pub trailers: TrailerPlace,
     pub search: SearchOptions,
     pub window: Option<SavedWindow>,
     // The played games when the families were made from them.
@@ -200,6 +212,7 @@ impl Default for GuiSettings {
         GuiSettings {
             theme: ThemeChoice::default(),
             check_for_new_versions: true,
+            trailers: TrailerPlace::default(),
             search: SearchOptions::default(),
             window: None,
             families_played: None,
@@ -262,6 +275,7 @@ mod tests {
         let mut settings = GuiSettings {
             theme: ThemeChoice::Dark,
             check_for_new_versions: false,
+            trailers: TrailerPlace::Spread,
             search: SearchOptions::default(),
             window: Some(SavedWindow {
                 width: 1440,
@@ -626,5 +640,67 @@ check_for_new_versions = false",
         .unwrap();
 
         assert!(!load_gui_settings(&path).check_for_new_versions);
+    }
+
+    #[test]
+    fn a_file_without_the_trailers_puts_them_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.toml");
+        std::fs::write(
+            &path,
+            "theme = \"dark\"
+check_for_new_versions = false",
+        )
+        .unwrap();
+
+        let settings = load_gui_settings(&path);
+
+        assert_eq!(settings.trailers, TrailerPlace::First);
+        assert_eq!(settings.theme, ThemeChoice::Dark);
+        assert!(!settings.check_for_new_versions);
+    }
+
+    #[test]
+    fn every_place_of_the_trailers_is_saved_and_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.toml");
+        for trailers in [
+            TrailerPlace::First,
+            TrailerPlace::Spread,
+            TrailerPlace::Last,
+        ] {
+            let settings = GuiSettings {
+                trailers,
+                ..GuiSettings::default()
+            };
+
+            save_gui_settings(&path, &settings).unwrap();
+
+            assert_eq!(load_gui_settings(&path), settings);
+        }
+    }
+
+    #[test]
+    fn a_place_of_the_trailers_that_cannot_be_read_puts_them_first_and_keeps_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.toml");
+        for value in ["\"middle\"", "3"] {
+            std::fs::write(
+                &path,
+                format!(
+                    "theme = \"dark\"
+trailers = {value}
+[votes]
+show = \"all\""
+                ),
+            )
+            .unwrap();
+
+            let settings = load_gui_settings(&path);
+
+            assert_eq!(settings.trailers, TrailerPlace::First);
+            assert_eq!(settings.theme, ThemeChoice::Dark);
+            assert_eq!(settings.votes.show, VotesShow::All);
+        }
     }
 }
