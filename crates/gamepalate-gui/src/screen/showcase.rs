@@ -105,6 +105,8 @@ pub struct Showcase {
     /// The rows of thumbnails under the gallery and under the zoom, with how far each is scrolled.
     row_ids: [Id; 2],
     row_scroll: [Option<scrollable::Viewport>; 2],
+    /// A new Game came: the rows go back to their start, wherever they were scrolled.
+    rewind_rows: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -272,6 +274,7 @@ impl Showcase {
             loops: Loops::default(),
             row_ids: [Id::unique(), Id::unique()],
             row_scroll: [None; 2],
+            rewind_rows: false,
         }
     }
 
@@ -538,6 +541,7 @@ impl Showcase {
             self.shown = current;
             self.item = 0;
             self.row_scroll = [None; 2];
+            self.rewind_rows = true;
             self.trailers.arm(0);
             self.last_screenshot = None;
             self.browsing = false;
@@ -558,8 +562,9 @@ impl Showcase {
         nearby: &[AppId],
         similar: &[AppId],
     ) -> Task<Message> {
+        let rewind = self.rewind_rows();
         if upcoming.is_empty() {
-            return Task::none();
+            return rewind;
         }
         let details = self.load_details(upcoming, nearby);
         let images = self.load_images(upcoming, nearby, similar);
@@ -568,7 +573,19 @@ impl Showcase {
 
         let ahead = self.load_first_thumbnails(upcoming, nearby);
 
-        Task::batch([details, images, self.load_versions(), ahead])
+        Task::batch([rewind, details, images, self.load_versions(), ahead])
+    }
+
+    /// Takes the rows of a Game left behind back to their start.
+    fn rewind_rows(&mut self) -> Task<Message> {
+        if !std::mem::take(&mut self.rewind_rows) {
+            return Task::none();
+        }
+        Task::batch(
+            self.row_ids
+                .each_ref()
+                .map(|id| operation::snap_to(id.clone(), RelativeOffset::START)),
+        )
     }
 
     pub fn load_headers(&mut self, ids: &[AppId]) -> Task<Message> {
