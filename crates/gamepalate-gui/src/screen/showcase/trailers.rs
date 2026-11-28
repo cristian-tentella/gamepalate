@@ -58,12 +58,12 @@ impl Sound {
     }
 }
 
-/// The one trailer playing in a gallery, the size it is drawn at, and whether the first trailer
-/// of the game just shown may start by itself.
+/// The one trailer playing in a gallery, the size it is drawn at, and the trailer that may start
+/// by itself once the gallery shows it.
 pub(super) struct Trailers {
     playing: Option<Playing>,
     surface: Option<Surface>,
-    armed: bool,
+    armed: Option<usize>,
     sound: Arc<Mutex<Sound>>,
 }
 
@@ -72,7 +72,7 @@ impl Default for Trailers {
         Trailers {
             playing: None,
             surface: None,
-            armed: false,
+            armed: None,
             sound: Arc::clone(&SOUND),
         }
     }
@@ -83,15 +83,15 @@ struct Playing {
     player: Player,
 }
 
-/// What the gallery says about the first trailer of a new game.
+/// What the gallery says about the armed trailer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Due {
     /// The details are not there yet.
     Wait,
-    /// No trailer comes first, or something covers the gallery.
+    /// The gallery shows something else, or something covers it.
     Never,
-    /// The manifest of the first trailer.
-    Play(String),
+    /// The index and the manifest of the trailer shown.
+    Play(usize, String),
 }
 
 impl Trailers {
@@ -109,7 +109,7 @@ impl Trailers {
             return;
         };
         let (muted, volume) = self.sound().start(by_click);
-        self.armed = false;
+        self.armed = None;
         self.playing = Some(Playing {
             index,
             player: Player::new(
@@ -147,28 +147,28 @@ impl Trailers {
     /// Drops the player, which stops its threads: the poster comes back.
     pub(super) fn stop(&mut self) {
         self.playing = None;
-        self.armed = false;
+        self.armed = None;
     }
 
-    /// A new game is shown: its first trailer may start by itself.
-    pub(super) fn arm(&mut self) {
+    /// The gallery moved to a trailer, or a new game shows one first: it may start by itself.
+    pub(super) fn arm(&mut self, index: usize) {
         self.stop();
-        self.armed = true;
+        self.armed = Some(index);
     }
 
-    pub(super) fn is_armed(&self) -> bool {
+    pub(super) fn armed(&self) -> Option<usize> {
         self.armed
     }
 
-    /// The first trailer starts muted until the sound is touched, once the size of the poster
-    /// is known.
+    /// The armed trailer starts from 0, muted until the sound is touched, once the size of the
+    /// poster is known.
     pub(super) fn autoplay(&mut self, due: Due) {
         match due {
             Due::Wait => {}
-            Due::Never => self.armed = false,
-            Due::Play(manifest_url) => {
-                if self.armed {
-                    self.start(0, &manifest_url, false);
+            Due::Never => self.armed = None,
+            Due::Play(index, manifest_url) => {
+                if self.armed == Some(index) {
+                    self.start(index, &manifest_url, false);
                 }
             }
         }
@@ -264,62 +264,62 @@ mod tests {
         let mut trailers = measured();
         trailers.play(2, MANIFEST);
 
-        trailers.arm();
+        trailers.arm(0);
 
         assert!(trailers.player(2).is_none());
-        assert!(trailers.is_armed());
+        assert_eq!(trailers.armed(), Some(0));
     }
 
     #[test]
     fn the_first_trailer_starts_by_itself_muted() {
         let mut trailers = measured();
-        trailers.arm();
+        trailers.arm(0);
 
         trailers.autoplay(Due::Wait);
         assert!(trailers.player(0).is_none());
-        assert!(trailers.is_armed());
-        trailers.autoplay(Due::Play(MANIFEST.to_string()));
+        assert_eq!(trailers.armed(), Some(0));
+        trailers.autoplay(Due::Play(0, MANIFEST.to_string()));
 
         assert!(trailers.player(0).is_some_and(Player::is_muted));
-        assert!(!trailers.is_armed());
+        assert_eq!(trailers.armed(), None);
     }
 
     #[test]
     fn the_first_trailer_waits_for_the_size_of_the_poster() {
         let mut trailers = alone();
-        trailers.arm();
+        trailers.arm(0);
 
-        trailers.autoplay(Due::Play(MANIFEST.to_string()));
+        trailers.autoplay(Due::Play(0, MANIFEST.to_string()));
         assert!(trailers.player(0).is_none());
-        assert!(trailers.is_armed());
+        assert_eq!(trailers.armed(), Some(0));
 
         trailers.measured(Surface {
             height: 450,
             software: true,
         });
-        trailers.autoplay(Due::Play(MANIFEST.to_string()));
+        trailers.autoplay(Due::Play(0, MANIFEST.to_string()));
         assert!(trailers.player(0).is_some());
     }
 
     #[test]
     fn nothing_starts_by_itself_when_it_is_not_due_or_not_armed() {
         let mut trailers = measured();
-        trailers.arm();
+        trailers.arm(0);
         trailers.autoplay(Due::Never);
-        trailers.autoplay(Due::Play(MANIFEST.to_string()));
+        trailers.autoplay(Due::Play(0, MANIFEST.to_string()));
         assert!(trailers.player(0).is_none());
 
-        trailers.arm();
+        trailers.arm(0);
         trailers.stop();
-        trailers.autoplay(Due::Play(MANIFEST.to_string()));
+        trailers.autoplay(Due::Play(0, MANIFEST.to_string()));
         assert!(trailers.player(0).is_none());
     }
 
     #[test]
     fn until_the_sound_is_touched_a_click_plays_with_sound() {
         let mut trailers = measured();
-        trailers.arm();
-        trailers.autoplay(Due::Play(MANIFEST.to_string()));
+        trailers.arm(0);
+        trailers.autoplay(Due::Play(0, MANIFEST.to_string()));
         assert!(trailers.player(0).is_some_and(Player::is_muted));
 
         trailers.play(0, MANIFEST);
@@ -330,13 +330,13 @@ mod tests {
     #[test]
     fn once_unmuted_the_first_trailer_starts_with_sound() {
         let mut trailers = measured();
-        trailers.arm();
-        trailers.autoplay(Due::Play(MANIFEST.to_string()));
+        trailers.arm(0);
+        trailers.autoplay(Due::Play(0, MANIFEST.to_string()));
         trailers.update(video::Message::Mute);
         trailers.update(video::Message::Volume(0.4));
 
-        trailers.arm();
-        trailers.autoplay(Due::Play(MANIFEST.to_string()));
+        trailers.arm(0);
+        trailers.autoplay(Due::Play(0, MANIFEST.to_string()));
 
         let player = trailers.player(0).unwrap();
         assert!(!player.is_muted());
@@ -431,14 +431,88 @@ mod tests {
     #[test]
     fn the_first_unmute_brings_a_quarter_of_the_volume() {
         let mut trailers = measured();
-        trailers.arm();
-        trailers.autoplay(Due::Play(MANIFEST.to_string()));
+        trailers.arm(0);
+        trailers.autoplay(Due::Play(0, MANIFEST.to_string()));
         trailers.update(video::Message::Hovered(true));
         assert!(!trailers.sound().touched);
 
         trailers.update(video::Message::Mute);
 
         let player = trailers.player(0).unwrap();
+        assert!(!player.is_muted());
+        assert_eq!(player.volume(), START_VOLUME);
+    }
+
+    #[test]
+    fn any_trailer_can_be_armed_and_start_by_itself() {
+        let mut trailers = measured();
+        trailers.arm(2);
+
+        trailers.autoplay(Due::Play(0, MANIFEST.to_string()));
+        assert!(trailers.player(0).is_none());
+        trailers.autoplay(Due::Play(2, MANIFEST.to_string()));
+
+        assert!(trailers.player(2).is_some_and(Player::is_muted));
+        assert_eq!(trailers.armed(), None);
+    }
+
+    #[test]
+    fn leaving_a_trailer_stops_it_and_coming_back_starts_a_new_player() {
+        let mut trailers = measured();
+        trailers.arm(1);
+        trailers.autoplay(Due::Play(1, MANIFEST.to_string()));
+        trailers.update(video::Message::Hovered(true));
+
+        trailers.stop();
+        assert!(trailers.player(1).is_none());
+
+        trailers.arm(1);
+        assert!(trailers.player(1).is_none());
+        trailers.autoplay(Due::Play(1, MANIFEST.to_string()));
+        assert!(trailers.player(1).is_some());
+    }
+
+    #[test]
+    fn an_armed_trailer_waits_for_the_size_and_then_starts() {
+        let mut trailers = alone();
+        trailers.arm(1);
+
+        trailers.autoplay(Due::Play(1, MANIFEST.to_string()));
+        assert!(trailers.player(1).is_none());
+        assert_eq!(trailers.armed(), Some(1));
+
+        trailers.measured(Surface {
+            height: 450,
+            software: false,
+        });
+        trailers.autoplay(Due::Play(1, MANIFEST.to_string()));
+        assert!(trailers.player(1).is_some());
+    }
+
+    #[test]
+    fn under_a_sheet_an_armed_trailer_does_not_start() {
+        let mut trailers = measured();
+        trailers.arm(1);
+
+        trailers.autoplay(Due::Never);
+        trailers.autoplay(Due::Play(1, MANIFEST.to_string()));
+
+        assert!(trailers.player(1).is_none());
+        assert_eq!(trailers.armed(), None);
+    }
+
+    #[test]
+    fn a_trailer_reached_is_muted_until_the_sound_is_touched() {
+        let mut trailers = measured();
+        trailers.arm(1);
+        trailers.autoplay(Due::Play(1, MANIFEST.to_string()));
+        assert!(trailers.player(1).is_some_and(Player::is_muted));
+
+        trailers.update(video::Message::Mute);
+        trailers.arm(2);
+        trailers.autoplay(Due::Play(2, MANIFEST.to_string()));
+
+        let player = trailers.player(2).unwrap();
         assert!(!player.is_muted());
         assert_eq!(player.volume(), START_VOLUME);
     }

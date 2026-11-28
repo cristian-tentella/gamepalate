@@ -466,21 +466,24 @@ impl Showcase {
         }
     }
 
-    /// The first trailer of a game just shown starts by itself, when the gallery shows it.
+    /// The armed trailer starts by itself, when the gallery shows it.
     fn autoplay(&mut self) {
-        if !self.trailers.is_armed() {
+        let Some(armed) = self.trailers.armed() else {
             return;
-        }
+        };
         let page = self.shown.and_then(|id| self.pages.get(id));
         let due = match page {
-            _ if self.is_open() || self.item != 0 => Due::Never,
-            Some(Page::Ready(details)) => details
-                .store
-                .trailers
-                .first()
-                .map_or(Due::Never, |trailer| {
-                    Due::Play(trailer.manifest_url.clone())
-                }),
+            _ if self.is_open() => Due::Never,
+            Some(Page::Ready(details)) => match media::item_of(details, self.item) {
+                Some(Item::Trailer(index)) if index == armed => details
+                    .store
+                    .trailers
+                    .get(index)
+                    .map_or(Due::Never, |trailer| {
+                        Due::Play(index, trailer.manifest_url.clone())
+                    }),
+                _ => Due::Never,
+            },
             Some(Page::Loading(_)) | None if self.shown.is_some() => Due::Wait,
             _ => Due::Never,
         };
@@ -533,7 +536,7 @@ impl Showcase {
             self.shown = current;
             self.item = 0;
             self.row_scroll = [None; 2];
-            self.trailers.arm();
+            self.trailers.arm(0);
             self.last_screenshot = None;
             self.browsing = false;
             self.zoomed = false;

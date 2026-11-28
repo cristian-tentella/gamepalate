@@ -79,9 +79,17 @@ fn item_at(trailers: usize, screenshots: usize, index: usize) -> Option<Item> {
     }
 }
 
-fn item_of(details: &GameDetails, index: usize) -> Option<Item> {
+pub(super) fn item_of(details: &GameDetails, index: usize) -> Option<Item> {
     let store = &details.store;
     item_at(store.trailers.len(), store.screenshot_urls.len(), index)
+}
+
+/// The trailer the gallery just moved to, which starts by itself.
+fn arrived_on(item: Option<Item>) -> Option<usize> {
+    match item? {
+        Item::Trailer(index) => Some(index),
+        Item::Screenshot(_) => None,
+    }
 }
 
 fn item_count(details: &GameDetails) -> usize {
@@ -475,6 +483,9 @@ impl Showcase {
         self.item = index;
         if !matches!(self.current_item(), Some(Item::Screenshot(_))) {
             self.zoomed = false;
+        }
+        if let Some(trailer) = arrived_on(self.current_item()) {
+            self.trailers.arm(trailer);
         }
     }
 
@@ -1049,6 +1060,13 @@ mod tests {
     use super::*;
 
     const NO_THUMBNAIL: Option<&Picture<u8>> = None;
+
+    #[test]
+    fn moving_to_a_trailer_arms_it_and_to_a_screenshot_does_not() {
+        assert_eq!(arrived_on(item_at(3, 5, 2)), Some(2));
+        assert_eq!(arrived_on(item_at(3, 5, 3)), None);
+        assert_eq!(arrived_on(None), None);
+    }
 
     #[test]
     fn the_screenshot_grows_only_while_it_fits_in_the_height() {
