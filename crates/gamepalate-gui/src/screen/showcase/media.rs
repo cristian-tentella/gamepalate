@@ -32,8 +32,8 @@ const THUMBNAIL_WIDTH: f32 = THUMBNAIL_HEIGHT * 16.0 / 9.0;
 /// Around each thumbnail: the ring of the one shown, 2 px of accent 2 px away from it.
 const RING_ROOM: f32 = 4.0;
 const ROW_HEIGHT: f32 = THUMBNAIL_HEIGHT + 2.0 * RING_ROOM;
-/// Between the screenshot and the row: with the room of the ring, 8 px to the thumbnails.
-const ROW_GAP: f32 = 4.0;
+/// Between the screenshot and the row: with the room of the ring, 12 px to the thumbnails.
+const ROW_GAP: f32 = 8.0;
 /// The fade at an edge of the row with thumbnails hidden past it.
 const FADE_WIDTH: f32 = 40.0;
 /// How far the thumbnail shown stays from the edges of the row.
@@ -1061,7 +1061,7 @@ mod tests {
             SCREENSHOT_WIDTH
         );
         assert_eq!(
-            screenshot_width(2000.0, 639.5, SCREENSHOT_WIDTH, 1280.0),
+            screenshot_width(2000.0, 643.5, SCREENSHOT_WIDTH, 1280.0),
             1000.0
         );
         assert_eq!(
@@ -1072,9 +1072,9 @@ mod tests {
             screenshot_width(2000.0, 1200.0, SCREENSHOT_WIDTH, 1920.0),
             1920.0
         );
-        assert_eq!(screenshot_width(2000.0, 437.0, 400.0, 1280.0), 640.0);
+        assert_eq!(screenshot_width(2000.0, 441.0, 400.0, 1280.0), 640.0);
         assert_eq!(
-            screenshot_width(2000.0, 437.0, SCREENSHOT_WIDTH, 1280.0),
+            screenshot_width(2000.0, 441.0, SCREENSHOT_WIDTH, 1280.0),
             SCREENSHOT_WIDTH
         );
     }
