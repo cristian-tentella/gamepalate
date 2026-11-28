@@ -1675,7 +1675,7 @@ mod tests {
             (756.0, 425.25)
         );
         assert_eq!(
-            Layout::new(Size::new(2000.0, 596.5), 1280.0),
+            Layout::new(Size::new(2000.0, 649.5), 1280.0),
             Layout::Beside(1000.0)
         );
         assert_eq!(

@@ -40,6 +40,7 @@ pub struct ItemDetails {
 pub struct Trailer {
     pub name: String,
     pub poster_url: Option<String>,
+    pub thumbnail_url: Option<String>,
     pub manifest_url: String,
 }
 
@@ -423,14 +424,22 @@ fn trailer(trailer: SteamTrailer) -> Option<Trailer> {
         .adaptive_trailers
         .into_iter()
         .find(|adaptive| adaptive.encoding == DASH_AV1)?;
-    let poster = trailer.screenshot_full.or(trailer.screenshot_medium);
+    let format = trailer.trailer_url_format;
+    let url = |file: Option<String>| {
+        format
+            .clone()
+            .zip(file)
+            .map(|(format, file)| asset_url(format, &file))
+    };
+    let poster_url = url(trailer
+        .screenshot_full
+        .or(trailer.screenshot_medium.clone()));
+    let thumbnail_url = url(trailer.screenshot_medium).or_else(|| poster_url.clone());
 
     Some(Trailer {
         name: trailer.trailer_name,
-        poster_url: trailer
-            .trailer_url_format
-            .zip(poster)
-            .map(|(format, file)| asset_url(format, &file)),
+        poster_url,
+        thumbnail_url,
         manifest_url: format!("{TRAILERS_BASE_URL}{}", manifest.cdn_path),
     })
 }
@@ -843,6 +852,9 @@ mod tests {
                 poster_url: Some(format!(
                     "{ASSETS_BASE_URL}steam/apps/256801252/movie_full.jpg?t=1600353465"
                 )),
+                thumbnail_url: Some(format!(
+                    "{ASSETS_BASE_URL}steam/apps/256801252/movie.293x165.jpg?t=1600353465"
+                )),
                 manifest_url: "https://video.akamai.steamstatic.com/store_trailers/1145360/312686/b0312c49135823cc34946e98148abfb8da71f0fb/1750627549/dash_av1.mpd".to_string(),
             }
         );
@@ -1044,6 +1056,53 @@ mod tests {
                 "{ASSETS_BASE_URL}steam/apps/5787/movie.293x165.jpg?t=1682715616"
             ))
         );
+        assert_eq!(trailers[0].thumbnail_url, trailers[0].poster_url);
+    }
+
+    fn one_trailer(screenshots: Value) -> Trailer {
+        let mut trailer = json!({
+            "trailer_name": "Trailer",
+            "trailer_url_format": "steam/apps/${FILENAME}?t=1",
+            "adaptive_trailers": [{ "cdn_path": "1/dash_av1.mpd", "encoding": "dash_av1" }]
+        });
+        for (key, value) in screenshots.as_object().unwrap() {
+            trailer[key] = value.clone();
+        }
+        trailers(json!({ "highlights": [trailer] })).remove(0)
+    }
+
+    #[test]
+    fn the_thumbnail_of_a_trailer_is_the_medium_screenshot() {
+        let trailer = one_trailer(json!({
+            "screenshot_full": "9/movie_full.jpg",
+            "screenshot_medium": "9/movie.293x165.jpg"
+        }));
+
+        assert_eq!(
+            trailer.thumbnail_url,
+            Some(format!(
+                "{ASSETS_BASE_URL}steam/apps/9/movie.293x165.jpg?t=1"
+            ))
+        );
+    }
+
+    #[test]
+    fn without_the_medium_screenshot_the_thumbnail_is_the_poster() {
+        let trailer = one_trailer(json!({ "screenshot_full": "9/movie_full.jpg" }));
+
+        assert_eq!(
+            trailer.thumbnail_url,
+            Some(format!("{ASSETS_BASE_URL}steam/apps/9/movie_full.jpg?t=1"))
+        );
+        assert_eq!(trailer.thumbnail_url, trailer.poster_url);
+    }
+
+    #[test]
+    fn without_screenshots_a_trailer_has_no_thumbnail() {
+        let trailer = one_trailer(json!({}));
+
+        assert_eq!(trailer.thumbnail_url, None);
+        assert_eq!(trailer.poster_url, None);
     }
 
     #[test]

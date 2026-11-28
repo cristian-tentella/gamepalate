@@ -339,10 +339,6 @@ pub fn bet(every: usize) -> String {
     format!("A game your votes would rank low. 1 in {every} is a Bet.")
 }
 
-pub fn screenshot_position(index: usize, count: usize) -> String {
-    format!("{} of {count}", index + 1)
-}
-
 /// Valve's verdict, as the first line of the Steam Deck tooltip.
 pub fn steam_deck_line(deck: Option<SteamDeck>) -> &'static str {
     match deck {
@@ -1236,11 +1232,6 @@ mod tests {
     #[test]
     fn the_later_tip_says_when_the_game_comes_back() {
         assert_eq!(later_tip(7), "Back in Discover in 7 days");
-    }
-
-    #[test]
-    fn counts_the_screenshots_from_one() {
-        assert_eq!(screenshot_position(2, 10), "3 of 10");
     }
 
     #[test]

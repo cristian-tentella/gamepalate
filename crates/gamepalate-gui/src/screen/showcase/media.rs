@@ -8,10 +8,12 @@ use gamepalate_app::{
     AppId, GameDetails, ImageKind, Trailer, original_screenshot, thumbnail_screenshot,
 };
 use iced::{
-    Center, Color, ContentFit, Element, Fill, Task, mouse, padding,
+    Center, Color, ContentFit, Element, Fill, Length, Rectangle, Shrink, Task, Vector,
+    advanced::widget::{self, Operation, operate, operation::Scrollable},
+    mouse, padding,
     widget::{
-        Column, button, column, container, image, keyed_column, mouse_area, opaque, row, space,
-        stack, text, tooltip,
+        Column, button, column, container, image, keyed_column, mouse_area, opaque, row,
+        scrollable, space, stack, text, tooltip,
     },
 };
 
@@ -21,12 +23,19 @@ use super::{
     note,
     pages::Page,
 };
-use crate::{font, format, style, video};
+use crate::{font, style, video};
 
 const SCREENSHOTS_AHEAD: usize = 2;
-const DOT_SIZE: f32 = 8.0;
 const MEDIA_SPACING: f32 = 14.0;
-const DOTS_HEIGHT: f32 = 20.0;
+const THUMBNAIL_HEIGHT: f32 = 65.0;
+const THUMBNAIL_WIDTH: f32 = THUMBNAIL_HEIGHT * 16.0 / 9.0;
+/// Around each thumbnail: the ring of the one shown, 2 px of accent 2 px away from it.
+const RING_ROOM: f32 = 4.0;
+const ROW_HEIGHT: f32 = THUMBNAIL_HEIGHT + 2.0 * RING_ROOM;
+/// How far the thumbnail shown stays from the edges of the row.
+const ROW_MARGIN: f32 = 8.0;
+const THUMBNAIL_PLAY: f32 = 27.0;
+const THUMBNAIL_PLAY_SHADOW: f32 = 1.5;
 pub const SCREENSHOT_WIDTH: f32 = 820.0;
 const SOURCE_WIDTH: f32 = 1920.0;
 const IMAGE_RADIUS: f32 = 8.0;
@@ -43,8 +52,6 @@ const PLAY_HOVERED: f32 = 80.0;
 const PLAY_SHADOW: f32 = 3.0;
 const TRAILER_NAME_SIZE: f32 = 15.0;
 const TRAILER_NAME_INSET: f32 = 16.0;
-// The play glyph at this size is a triangle of about 7 by 9 pixels.
-const TRAILER_DOT_GLYPH: f32 = 15.0;
 
 /// One item of the gallery: the trailers come first, then the screenshots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,6 +86,68 @@ fn pictures(details: &GameDetails) -> Vec<String> {
         .filter_map(|trailer| trailer.poster_url.clone())
         .chain(store.screenshot_urls.iter().cloned())
         .collect()
+}
+
+/// The small pictures of the row under the gallery, in its order: the thumbnail of each trailer,
+/// then the small size of each screenshot.
+fn row_pictures(details: &GameDetails) -> Vec<Option<String>> {
+    let store = &details.store;
+    store
+        .trailers
+        .iter()
+        .map(|trailer| trailer.thumbnail_url.clone())
+        .chain(
+            store
+                .screenshot_urls
+                .iter()
+                .map(|url| thumbnail_screenshot(url)),
+        )
+        .collect()
+}
+
+/// Where the row scrolls to keep the thumbnail at `left` in sight, `ROW_MARGIN` from its edges:
+/// as little as it takes, and not at all if it is already there.
+fn row_offset(left: f32, viewport: f32, content: f32, offset: f32) -> f32 {
+    let lowest = left + THUMBNAIL_WIDTH + ROW_MARGIN - viewport;
+    let highest = left - ROW_MARGIN;
+
+    offset
+        .max(lowest)
+        .min(highest)
+        .clamp(0.0, (content - viewport).max(0.0))
+}
+
+fn thumbnail_left(index: usize) -> f32 {
+    RING_ROOM + index as f32 * (THUMBNAIL_WIDTH + 2.0 * RING_ROOM)
+}
+
+/// Scrolls the row with the given id to keep the thumbnail at `left` in sight.
+struct Reveal {
+    target: widget::Id,
+    left: f32,
+}
+
+impl<T> Operation<T> for Reveal {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<T>)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&widget::Id>,
+        bounds: Rectangle,
+        content_bounds: Rectangle,
+        translation: Vector,
+        state: &mut dyn Scrollable,
+    ) {
+        if id == Some(&self.target) {
+            let x = row_offset(self.left, bounds.width, content_bounds.width, translation.x);
+            state.scroll_to(scrollable::AbsoluteOffset {
+                x: Some(x),
+                y: None,
+            });
+        }
+    }
 }
 
 fn framed<'a>(
@@ -174,7 +243,7 @@ pub fn max_screenshot_width(scale: f32) -> f32 {
 }
 
 pub fn screenshot_width(width: f32, height: f32, min: f32, max: f32) -> f32 {
-    let fitting = (height - MEDIA_SPACING - DOTS_HEIGHT) * 16.0 / 9.0;
+    let fitting = (height - MEDIA_SPACING - ROW_HEIGHT) * 16.0 / 9.0;
 
     width.min(fitting.clamp(min, max))
 }
@@ -363,9 +432,9 @@ impl Showcase {
     ) -> Column<'a, Message> {
         column![self.screenshot(id, width, height, scale)]
             .push(
-                self.pages.details(id).and_then(|details| {
-                    self.dots(details.store.trailers.len(), item_count(details))
-                }),
+                self.pages
+                    .details(id)
+                    .and_then(|details| self.row(id, details, self.row_ids.0.clone(), Fill)),
             )
             .spacing(MEDIA_SPACING)
             .width(width)
@@ -431,12 +500,20 @@ impl Showcase {
         };
 
         let pictures = self.pictures(current);
+        let thumbnails: Vec<String> = self
+            .pages
+            .details(current)
+            .map_or_else(Vec::new, row_pictures)
+            .into_iter()
+            .flatten()
+            .collect();
         let soon = next_screenshots(&pictures, self.item);
         let similar: Vec<String> = similar
             .iter()
             .map(|&id| self.gamepalate.header_url(id))
             .collect();
-        let mut wanted = if self.current_is_loaded() {
+        let loaded = self.current_is_loaded();
+        let mut wanted = if loaded {
             let later = if self.browsing {
                 other_screenshots(&pictures, self.item)
             } else {
@@ -467,10 +544,14 @@ impl Showcase {
             kept.extend(self.first_picture(id));
         }
         kept.extend(pictures.iter().cloned());
+        kept.extend(thumbnails.iter().cloned());
         kept.extend(similar.iter().cloned());
         let mut similar = similar.into_iter();
         wanted.splice(1..1, similar.next());
         wanted.extend(similar);
+        if loaded {
+            wanted.extend(thumbnails);
+        }
 
         self.images.keep_only(&kept);
         let started = self.images.want(wanted);
@@ -519,12 +600,6 @@ impl Showcase {
         self.shown
             .and_then(|id| self.pages.details(id))
             .map_or(0, item_count)
-    }
-
-    fn trailer_count(&self) -> usize {
-        self.shown
-            .and_then(|id| self.pages.details(id))
-            .map_or(0, |details| details.store.trailers.len())
     }
 
     pub(super) fn header_url(&self, id: AppId) -> String {
@@ -793,8 +868,12 @@ impl Showcase {
                     container(close).align_right(Fill).padding(8)
                 ]]
                 .push(
-                    self.dots(self.trailer_count(), self.item_count())
-                        .map(|dots| container(dots).center_x(Fill)),
+                    self.shown
+                        .and_then(|id| Some((id, self.pages.details(id)?)))
+                        .and_then(|(id, details)| {
+                            self.row(id, details, self.row_ids.1.clone(), Shrink)
+                        })
+                        .map(|row| container(row).center_x(Fill)),
                 )
                 .spacing(8),
             )
@@ -805,41 +884,109 @@ impl Showcase {
         ))
     }
 
-    /// A dot for each item, a small triangle for a trailer.
-    fn dots<'a>(&self, trailers: usize, count: usize) -> Option<Element<'a, Message>> {
-        (count > 1).then(|| {
-            row((0..count).map(|index| {
-                let current = index == self.item;
-                let dot = if index < trailers {
-                    button(
-                        text(PLAY)
-                            .font(font::ICONS)
-                            .size(TRAILER_DOT_GLYPH)
-                            .line_height(text::LineHeight::Absolute((DOT_SIZE + 1.0).into()))
-                            .width(DOT_SIZE + 1.0)
-                            .center(),
-                    )
-                    .style(style::trailer_dot(current))
-                } else {
-                    button(space().width(DOT_SIZE).height(DOT_SIZE)).style(style::dot(current))
+    /// A thumbnail for each item, under the gallery and under the zoom. The row is new for each
+    /// game, so it starts from the left.
+    fn row<'a>(
+        &self,
+        id: AppId,
+        details: &GameDetails,
+        row_id: widget::Id,
+        width: impl Into<Length>,
+    ) -> Option<Element<'a, Message>> {
+        if item_count(details) < 2 {
+            return None;
+        }
+        let thumbnails = row_pictures(details)
+            .into_iter()
+            .enumerate()
+            .map(|(index, url)| {
+                let trailer = match item_of(details, index) {
+                    Some(Item::Trailer(trailer)) => details.store.trailers.get(trailer),
+                    _ => None,
                 };
-                dot.padding(0)
-                    .on_press(Message::ShowScreenshot(index))
-                    .into()
-            }))
-            .push(
-                container(
-                    text(format::screenshot_position(self.item, count))
-                        .size(font::NOTE_SIZE)
-                        .style(style::muted),
+                self.row_thumbnail(index, url.as_deref(), trailer)
+            });
+        let row = scrollable(row(thumbnails))
+            .direction(scrollable::Direction::Horizontal(
+                scrollable::Scrollbar::hidden(),
+            ))
+            .id(row_id)
+            .width(width);
+
+        Some(keyed_column([(id, row.into())]).into())
+    }
+
+    fn row_thumbnail<'a>(
+        &self,
+        index: usize,
+        url: Option<&str>,
+        trailer: Option<&Trailer>,
+    ) -> Element<'a, Message> {
+        let picture: Element<'a, Message> = match url.and_then(|url| self.images.get(url)) {
+            Some(Picture::Ready(allocation)) => image(allocation.handle().clone())
+                .width(THUMBNAIL_WIDTH)
+                .height(THUMBNAIL_HEIGHT)
+                .content_fit(ContentFit::Cover)
+                .border_radius(style::THUMBNAIL_RADIUS)
+                .into(),
+            _ => container(space())
+                .width(THUMBNAIL_WIDTH)
+                .height(THUMBNAIL_HEIGHT)
+                .style(style::thumbnail)
+                .into(),
+        };
+        let thumbnail: Element<'a, Message> = match trailer {
+            Some(trailer) => {
+                let icon = |color: Color| {
+                    text(PLAY)
+                        .font(font::ICONS)
+                        .size(THUMBNAIL_PLAY)
+                        .color(color)
+                };
+                let thumbnail = stack![
+                    picture,
+                    container(space())
+                        .width(Fill)
+                        .height(Fill)
+                        .style(style::thumbnail_shade),
+                    container(stack![
+                        container(icon(Color::BLACK.scale_alpha(0.4)))
+                            .padding(padding::top(THUMBNAIL_PLAY_SHADOW)),
+                        icon(Color::WHITE),
+                    ])
+                    .center(Fill),
+                ];
+                tooltip(
+                    thumbnail,
+                    container(text(trailer.name.clone()).size(font::NOTE_SIZE))
+                        .padding([6, 10])
+                        .style(style::popup),
+                    tooltip::Position::Top,
                 )
-                .padding(padding::left(6)),
-            )
-            .spacing(6)
-            .align_y(Center)
-            .wrap()
-            .into()
-        })
+                .into()
+            }
+            None => picture,
+        };
+
+        mouse_area(
+            container(thumbnail)
+                .padding(RING_ROOM)
+                .style(style::thumbnail_ring(index == self.item)),
+        )
+        .on_press(Message::ShowScreenshot(index))
+        .interaction(mouse::Interaction::Pointer)
+        .into()
+    }
+
+    /// Scrolls the rows to keep the thumbnail shown in sight.
+    pub(super) fn reveal(&self) -> Task<Message> {
+        let left = thumbnail_left(self.item);
+        Task::batch([&self.row_ids.0, &self.row_ids.1].map(|target| {
+            operate(Reveal {
+                target: target.clone(),
+                left,
+            })
+        }))
     }
 }
 
@@ -860,7 +1007,7 @@ mod tests {
             SCREENSHOT_WIDTH
         );
         assert_eq!(
-            screenshot_width(2000.0, 596.5, SCREENSHOT_WIDTH, 1280.0),
+            screenshot_width(2000.0, 649.5, SCREENSHOT_WIDTH, 1280.0),
             1000.0
         );
         assert_eq!(
@@ -871,9 +1018,9 @@ mod tests {
             screenshot_width(2000.0, 1200.0, SCREENSHOT_WIDTH, 1920.0),
             1920.0
         );
-        assert_eq!(screenshot_width(2000.0, 394.0, 400.0, 1280.0), 640.0);
+        assert_eq!(screenshot_width(2000.0, 447.0, 400.0, 1280.0), 640.0);
         assert_eq!(
-            screenshot_width(2000.0, 394.0, SCREENSHOT_WIDTH, 1280.0),
+            screenshot_width(2000.0, 447.0, SCREENSHOT_WIDTH, 1280.0),
             SCREENSHOT_WIDTH
         );
     }
@@ -1082,6 +1229,7 @@ mod tests {
                     .map(|(index, poster)| Trailer {
                         name: format!("Trailer {index}"),
                         poster_url: poster.map(str::to_string),
+                        thumbnail_url: poster.map(|poster| format!("{poster} small")),
                         manifest_url: format!("https://video/{index}/dash_av1.mpd"),
                     })
                     .collect(),
@@ -1111,13 +1259,77 @@ mod tests {
     }
 
     #[test]
-    fn the_dots_count_trailers_and_screenshots_together() {
+    fn the_row_has_a_thumbnail_for_each_trailer_and_screenshot() {
+        let game = details(
+            &[Some("poster 0"), None],
+            &[
+                "https://example.com/ss_0.1920x1080.jpg?t=1",
+                "https://example.com/ss_1.1920x1080.jpg",
+            ],
+        );
+
+        assert_eq!(item_count(&game), 4);
         assert_eq!(
-            item_count(&details(&[Some("poster")], &["ss_0", "ss_1"])),
-            3
+            row_pictures(&game),
+            [
+                Some("poster 0 small".to_string()),
+                None,
+                Some("https://example.com/ss_0.116x65.jpg?t=1".to_string()),
+                Some("https://example.com/ss_1.116x65.jpg".to_string()),
+            ]
         );
         assert_eq!(item_count(&details(&[], &["ss_0"])), 1);
         assert_eq!(next_index(2, 3), 2);
+    }
+
+    #[test]
+    fn the_row_is_as_high_as_a_thumbnail_with_its_ring() {
+        assert_eq!(ROW_HEIGHT, 73.0);
+        assert_eq!(thumbnail_left(0), RING_ROOM);
+        assert_eq!(
+            thumbnail_left(2) - thumbnail_left(1) - THUMBNAIL_WIDTH,
+            ROW_MARGIN
+        );
+    }
+
+    /// A row of 20 thumbnails, 600 px wide.
+    fn offset(index: usize, offset: f32) -> f32 {
+        row_offset(
+            thumbnail_left(index),
+            600.0,
+            thumbnail_left(20) - RING_ROOM,
+            offset,
+        )
+    }
+
+    #[test]
+    fn the_row_scrolls_to_the_first_and_to_the_last() {
+        let content = thumbnail_left(20) - RING_ROOM;
+
+        assert_eq!(offset(0, 500.0), 0.0);
+        assert_eq!(offset(19, 0.0), content - 600.0);
+    }
+
+    #[test]
+    fn a_thumbnail_in_sight_does_not_move_the_row() {
+        assert_eq!(offset(1, 0.0), 0.0);
+        assert_eq!(offset(5, 300.0), 300.0);
+    }
+
+    #[test]
+    fn the_row_scrolls_as_little_as_it_takes() {
+        let left = thumbnail_left(8);
+
+        assert_eq!(offset(8, 0.0), left + THUMBNAIL_WIDTH + ROW_MARGIN - 600.0);
+        assert_eq!(offset(8, 1500.0), left - ROW_MARGIN);
+    }
+
+    #[test]
+    fn a_row_shorter_than_its_width_does_not_scroll() {
+        let content = thumbnail_left(3) - RING_ROOM;
+
+        assert_eq!(row_offset(thumbnail_left(2), 600.0, content, 0.0), 0.0);
+        assert_eq!(row_offset(thumbnail_left(2), 600.0, content, 40.0), 0.0);
     }
 
     #[test]

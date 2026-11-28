@@ -101,6 +101,8 @@ pub struct Showcase {
     thumbnails: HashMap<String, Picture>,
     trailers: Trailers,
     loops: Loops,
+    /// The rows of thumbnails under the gallery and under the zoom.
+    row_ids: (Id, Id),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -264,10 +266,12 @@ impl Showcase {
             thumbnails: HashMap::new(),
             trailers: Trailers::default(),
             loops: Loops::default(),
+            row_ids: (Id::unique(), Id::unique()),
         }
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let before = (self.item, self.zoomed);
         match message {
             Message::ScrollUp | Message::ScrollDown if self.popups.open.is_none() => {}
             Message::ScrollUp => return scroll_sheet(-SCROLL_STEP),
@@ -389,7 +393,12 @@ impl Showcase {
         self.sync_loops();
         self.autoplay();
 
-        self.load_shown()
+        let reveal = if (self.item, self.zoomed) == before {
+            Task::none()
+        } else {
+            self.reveal()
+        };
+        Task::batch([reveal, self.load_shown()])
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
