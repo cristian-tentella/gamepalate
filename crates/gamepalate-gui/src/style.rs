@@ -968,6 +968,26 @@ pub fn thumbnail_ring(current: bool) -> impl Fn(&Theme) -> container::Style {
     }
 }
 
+/// The fade at an edge of the gallery's row, into the background, where thumbnails are hidden.
+pub fn row_fade(left: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let background = theme.extended_palette().background.base.color;
+        let (start, end) = if left {
+            (background, Color::TRANSPARENT)
+        } else {
+            (Color::TRANSPARENT, background)
+        };
+        let fade = gradient::Linear::new(std::f32::consts::FRAC_PI_2)
+            .add_stop(0.0, start)
+            .add_stop(1.0, end);
+
+        container::Style {
+            background: Some(fade.into()),
+            ..container::Style::default()
+        }
+    }
+}
+
 /// The light shade on the thumbnail of a trailer, under its play icon.
 pub fn thumbnail_shade(_theme: &Theme) -> container::Style {
     container::Style {

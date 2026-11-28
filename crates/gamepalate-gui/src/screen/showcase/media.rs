@@ -8,7 +8,7 @@ use gamepalate_app::{
     AppId, GameDetails, ImageKind, Trailer, original_screenshot, thumbnail_screenshot,
 };
 use iced::{
-    Center, Color, ContentFit, Element, Fill, Length, Rectangle, Shrink, Task, Vector,
+    Center, Color, ContentFit, Element, Fill, Length, Rectangle, Task, Vector,
     advanced::widget::{self, Operation, operate, operation::Scrollable},
     mouse, padding,
     widget::{
@@ -32,6 +32,10 @@ const THUMBNAIL_WIDTH: f32 = THUMBNAIL_HEIGHT * 16.0 / 9.0;
 /// Around each thumbnail: the ring of the one shown, 2 px of accent 2 px away from it.
 const RING_ROOM: f32 = 4.0;
 const ROW_HEIGHT: f32 = THUMBNAIL_HEIGHT + 2.0 * RING_ROOM;
+/// Between the screenshot and the row: with the room of the ring, 8 px to the thumbnails.
+const ROW_GAP: f32 = 4.0;
+/// The fade at an edge of the row with thumbnails hidden past it.
+const FADE_WIDTH: f32 = 40.0;
 /// How far the thumbnail shown stays from the edges of the row.
 const ROW_MARGIN: f32 = 8.0;
 const THUMBNAIL_PLAY: f32 = 27.0;
@@ -52,6 +56,13 @@ const PLAY_HOVERED: f32 = 80.0;
 const PLAY_SHADOW: f32 = 3.0;
 const TRAILER_NAME_SIZE: f32 = 15.0;
 const TRAILER_NAME_INSET: f32 = 16.0;
+
+/// The two rows of thumbnails: under the gallery and under the zoom.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Row {
+    Gallery,
+    Zoom,
+}
 
 /// One item of the gallery: the trailers come first, then the screenshots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +130,15 @@ fn row_offset(left: f32, viewport: f32, content: f32, offset: f32) -> f32 {
 
 fn thumbnail_left(index: usize) -> f32 {
     RING_ROOM + index as f32 * (THUMBNAIL_WIDTH + 2.0 * RING_ROOM)
+}
+
+fn row_width(count: usize) -> f32 {
+    count as f32 * (THUMBNAIL_WIDTH + 2.0 * RING_ROOM)
+}
+
+/// Whether the row fades at its left and at its right edge: only where thumbnails are hidden.
+fn row_fades(offset: f32, viewport: f32, content: f32) -> (bool, bool) {
+    (offset > 0.5, offset + viewport < content - 0.5)
 }
 
 /// Scrolls the row with the given id to keep the thumbnail at `left` in sight.
@@ -243,7 +263,7 @@ pub fn max_screenshot_width(scale: f32) -> f32 {
 }
 
 pub fn screenshot_width(width: f32, height: f32, min: f32, max: f32) -> f32 {
-    let fitting = (height - MEDIA_SPACING - ROW_HEIGHT) * 16.0 / 9.0;
+    let fitting = (height - ROW_GAP - ROW_HEIGHT) * 16.0 / 9.0;
 
     width.min(fitting.clamp(min, max))
 }
@@ -430,14 +450,15 @@ impl Showcase {
         height: f32,
         scale: f32,
     ) -> Column<'a, Message> {
-        column![self.screenshot(id, width, height, scale)]
+        let gallery = column![self.screenshot(id, width, height, scale)]
             .push(
                 self.pages
                     .details(id)
-                    .and_then(|details| self.row(id, details, self.row_ids.0.clone(), Fill)),
+                    .and_then(|details| self.row(id, details, Row::Gallery, Some(width))),
             )
-            .spacing(MEDIA_SPACING)
-            .width(width)
+            .spacing(ROW_GAP);
+
+        column![gallery].spacing(MEDIA_SPACING).width(width)
     }
 
     /// Another item stops the trailer; the zoom is only for screenshots.
@@ -870,12 +891,10 @@ impl Showcase {
                 .push(
                     self.shown
                         .and_then(|id| Some((id, self.pages.details(id)?)))
-                        .and_then(|(id, details)| {
-                            self.row(id, details, self.row_ids.1.clone(), Shrink)
-                        })
+                        .and_then(|(id, details)| self.row(id, details, Row::Zoom, None))
                         .map(|row| container(row).center_x(Fill)),
                 )
-                .spacing(8),
+                .spacing(ROW_GAP),
             )
             .padding(16)
             .width(Fill)
@@ -885,13 +904,14 @@ impl Showcase {
     }
 
     /// A thumbnail for each item, under the gallery and under the zoom. The row is new for each
-    /// game, so it starts from the left.
+    /// game, so it starts from the left. `width` is the gallery's; the zoom's row is as wide as
+    /// its thumbnails, as far as the window lets it, and only its scrolling tells how wide it is.
     fn row<'a>(
         &self,
         id: AppId,
         details: &GameDetails,
-        row_id: widget::Id,
-        width: impl Into<Length>,
+        which: Row,
+        width: Option<f32>,
     ) -> Option<Element<'a, Message>> {
         if item_count(details) < 2 {
             return None;
@@ -906,14 +926,48 @@ impl Showcase {
                 };
                 self.row_thumbnail(index, url.as_deref(), trailer)
             });
+        let scrolled = self.row_scroll[which as usize];
+        let (left, right) = match (width, scrolled) {
+            (Some(width), _) => row_fades(
+                scrolled.map_or(0.0, |viewport| viewport.absolute_offset().x),
+                width,
+                row_width(item_count(details)),
+            ),
+            (None, Some(viewport)) => row_fades(
+                viewport.absolute_offset().x,
+                viewport.bounds().width,
+                viewport.content_bounds().width,
+            ),
+            (None, None) => (false, false),
+        };
         let row = scrollable(row(thumbnails))
             .direction(scrollable::Direction::Horizontal(
                 scrollable::Scrollbar::hidden(),
             ))
-            .id(row_id)
-            .width(width);
+            .id(self.row_ids[which as usize].clone())
+            .on_scroll(move |viewport| Message::RowScrolled(which, viewport))
+            .width(width.map_or(Length::Shrink, Length::Fixed));
+        let fade = |shown: bool, left: bool| {
+            shown.then(|| {
+                container(space())
+                    .width(FADE_WIDTH)
+                    .height(ROW_HEIGHT)
+                    .style(style::row_fade(left))
+            })
+        };
 
-        Some(keyed_column([(id, row.into())]).into())
+        Some(
+            stack![
+                keyed_column([(id, row.into())]),
+                row![]
+                    .push(fade(left, true))
+                    .push(space::horizontal())
+                    .push(fade(right, false))
+                    .width(Fill),
+            ]
+            .width(width.map_or(Length::Shrink, Length::Fixed))
+            .into(),
+        )
     }
 
     fn row_thumbnail<'a>(
@@ -981,7 +1035,7 @@ impl Showcase {
     /// Scrolls the rows to keep the thumbnail shown in sight.
     pub(super) fn reveal(&self) -> Task<Message> {
         let left = thumbnail_left(self.item);
-        Task::batch([&self.row_ids.0, &self.row_ids.1].map(|target| {
+        Task::batch(self.row_ids.each_ref().map(|target| {
             operate(Reveal {
                 target: target.clone(),
                 left,
@@ -1007,7 +1061,7 @@ mod tests {
             SCREENSHOT_WIDTH
         );
         assert_eq!(
-            screenshot_width(2000.0, 649.5, SCREENSHOT_WIDTH, 1280.0),
+            screenshot_width(2000.0, 639.5, SCREENSHOT_WIDTH, 1280.0),
             1000.0
         );
         assert_eq!(
@@ -1018,9 +1072,9 @@ mod tests {
             screenshot_width(2000.0, 1200.0, SCREENSHOT_WIDTH, 1920.0),
             1920.0
         );
-        assert_eq!(screenshot_width(2000.0, 447.0, 400.0, 1280.0), 640.0);
+        assert_eq!(screenshot_width(2000.0, 437.0, 400.0, 1280.0), 640.0);
         assert_eq!(
-            screenshot_width(2000.0, 447.0, SCREENSHOT_WIDTH, 1280.0),
+            screenshot_width(2000.0, 437.0, SCREENSHOT_WIDTH, 1280.0),
             SCREENSHOT_WIDTH
         );
     }
@@ -1300,6 +1354,17 @@ mod tests {
             thumbnail_left(20) - RING_ROOM,
             offset,
         )
+    }
+
+    #[test]
+    fn the_row_fades_only_where_thumbnails_are_hidden() {
+        assert_eq!(row_fades(0.0, 600.0, 400.0), (false, false));
+        assert_eq!(row_fades(0.0, 600.0, 600.0), (false, false));
+        assert_eq!(row_fades(0.0, 600.0, 1000.0), (false, true));
+        assert_eq!(row_fades(200.0, 600.0, 1000.0), (true, true));
+        assert_eq!(row_fades(400.0, 600.0, 1000.0), (true, false));
+        assert_eq!(row_fades(399.8, 600.0, 1000.0), (true, false));
+        assert_eq!(row_width(20), thumbnail_left(20) - RING_ROOM);
     }
 
     #[test]

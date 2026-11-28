@@ -101,8 +101,9 @@ pub struct Showcase {
     thumbnails: HashMap<String, Picture>,
     trailers: Trailers,
     loops: Loops,
-    /// The rows of thumbnails under the gallery and under the zoom.
-    row_ids: (Id, Id),
+    /// The rows of thumbnails under the gallery and under the zoom, with how far each is scrolled.
+    row_ids: [Id; 2],
+    row_scroll: [Option<scrollable::Viewport>; 2],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -228,6 +229,7 @@ pub enum Message {
     Close,
     ToggleFeatures,
     Hover(bool),
+    RowScrolled(media::Row, scrollable::Viewport),
     PlayTrailer,
     PlayOrPause,
     SwitchMute,
@@ -266,7 +268,8 @@ impl Showcase {
             thumbnails: HashMap::new(),
             trailers: Trailers::default(),
             loops: Loops::default(),
-            row_ids: (Id::unique(), Id::unique()),
+            row_ids: [Id::unique(), Id::unique()],
+            row_scroll: [None; 2],
         }
     }
 
@@ -374,6 +377,7 @@ impl Showcase {
             }
             Message::ToggleFeatures => self.features_open = !self.features_open,
             Message::Hover(hovered) => self.hovered = hovered,
+            Message::RowScrolled(row, viewport) => self.row_scroll[row as usize] = Some(viewport),
             Message::PlayTrailer => self.play_trailer(),
             Message::PlayOrPause => self.play_or_pause(),
             Message::SwitchMute => {
@@ -528,6 +532,7 @@ impl Showcase {
         if current != self.shown {
             self.shown = current;
             self.item = 0;
+            self.row_scroll = [None; 2];
             self.trailers.arm();
             self.last_screenshot = None;
             self.browsing = false;
