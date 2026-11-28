@@ -198,6 +198,15 @@ fn refreshing_count(refreshing: &Refreshing) -> Option<String> {
 
 /// The tip of ⟳ while the rest of the first download comes in: the first line, then the muted
 /// ones.
+/// The update that downloads the rest of the first download: one is running and the catalog is
+/// still the provisional one. Any other update keeps the usual ⟳.
+fn second_part_refreshing(provisional: bool, refresh: &Refresh) -> Option<&Refreshing> {
+    match refresh {
+        Refresh::Running(refreshing, ..) if provisional => Some(refreshing),
+        _ => None,
+    }
+}
+
 fn second_part_lines(refreshing: &Refreshing) -> (&'static str, Vec<String>) {
     let mut muted: Vec<String> = refreshing_count(refreshing).into_iter().collect();
     muted.push(UNTIL_THEN.to_string());
@@ -485,7 +494,7 @@ impl App {
 
     /// The rest of the first download is coming in: the bar shows it on ⟳ alone.
     pub(super) fn second_part(&self) -> bool {
-        self.provisional && matches!(self.refresh, Refresh::Running(..))
+        second_part_refreshing(self.provisional, &self.refresh).is_some()
     }
 
     /// Whether the catalog is the one of the first part. When the whole one takes its place, a
@@ -507,9 +516,7 @@ impl App {
     /// ⟳ turning, with the dot in the primary colour. A click pauses the download as on any
     /// update.
     pub(super) fn second_part_button(&self) -> Option<Element<'_, Message>> {
-        let Refresh::Running(refreshing, ..) = &self.refresh else {
-            return None;
-        };
+        let refreshing = second_part_refreshing(self.provisional, &self.refresh)?;
         let icon: Element<'_, Message> = match &self.spinner {
             Some(spinner) => image(spinner.handle.clone())
                 .width(spinner.side)
@@ -658,6 +665,16 @@ mod tests {
 
     fn store_data(done: usize, total: usize) -> Step {
         Step::Catalog(gamepalate_app::update::Progress::StoreData { done, total })
+    }
+
+    #[test]
+    fn only_an_update_of_the_provisional_catalog_is_the_second_part() {
+        let (_, handle) = Task::<Message>::none().abortable();
+        let running = Refresh::Running(Refreshing::Catalog(Tracker::default()), handle);
+
+        assert!(second_part_refreshing(true, &running).is_some());
+        assert!(second_part_refreshing(false, &running).is_none());
+        assert!(second_part_refreshing(true, &Refresh::Idle).is_none());
     }
 
     #[test]
