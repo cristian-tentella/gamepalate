@@ -4,7 +4,7 @@ use std::{
     time::Instant,
 };
 
-use gamepalate_app::{AppId, GameDetails};
+use gamepalate_app::{AppId, GameDetails, thumbnail_screenshot};
 
 const MAX_PAGES: usize = 50;
 
@@ -35,8 +35,10 @@ impl Pages {
 
     pub fn is_screenshot(&self, url: &str) -> bool {
         self.pages.values().any(|page| {
-            matches!(page, Page::Ready(details) if details.store.screenshot_urls.iter().any(|shot| shot == url)
-                || details.store.trailers.iter().any(|trailer| trailer.poster_url.as_deref() == Some(url)))
+            matches!(page, Page::Ready(details) if details.store.screenshot_urls.iter().any(|shot| shot == url
+                    || thumbnail_screenshot(shot).as_deref() == Some(url))
+                || details.store.trailers.iter().any(|trailer| trailer.poster_url.as_deref() == Some(url)
+                    || trailer.thumbnail_url.as_deref() == Some(url)))
         })
     }
 
@@ -89,10 +91,11 @@ mod tests {
                 developers: Vec::new(),
                 release_date: None,
                 header_url: None,
-                screenshot_urls: vec!["https://example.com/1.jpg".to_string()],
+                screenshot_urls: vec!["https://example.com/ss_1.1920x1080.jpg".to_string()],
                 trailers: vec![Trailer {
                     name: "Launch Trailer".to_string(),
                     poster_url: Some("https://example.com/poster.jpg".to_string()),
+                    thumbnail_url: Some("https://example.com/poster.293x165.jpg".to_string()),
                     manifest_url: "https://example.com/dash_av1.mpd".to_string(),
                 }],
                 player_categories: Vec::new(),
@@ -143,8 +146,10 @@ mod tests {
         pages.want(&[AppId(1)]);
         pages.loaded(AppId(1), details());
 
-        assert!(pages.is_screenshot("https://example.com/1.jpg"));
+        assert!(pages.is_screenshot("https://example.com/ss_1.1920x1080.jpg"));
         assert!(pages.is_screenshot("https://example.com/poster.jpg"));
+        assert!(pages.is_screenshot("https://example.com/ss_1.116x65.jpg"));
+        assert!(pages.is_screenshot("https://example.com/poster.293x165.jpg"));
         assert!(!pages.is_screenshot("https://example.com/header.jpg"));
     }
 

@@ -5,13 +5,15 @@ use std::{
 
 use ::image::imageops::FilterType;
 use gamepalate_app::{
-    AppId, GameDetails, ImageKind, Trailer, original_screenshot, thumbnail_screenshot,
+    AppId, GameDetails, ImageKind, Trailer, TrailerPlace, original_screenshot, thumbnail_screenshot,
 };
 use iced::{
-    Center, Color, ContentFit, Element, Fill, Task, mouse, padding,
+    Center, Color, ContentFit, Element, Fill, Length, Rectangle, Task, Vector,
+    advanced::widget::{self, Operation, operate, operation::Scrollable},
+    mouse, padding,
     widget::{
-        Column, button, column, container, image, keyed_column, mouse_area, opaque, row, space,
-        stack, text, tooltip,
+        Column, button, column, container, image, keyed_column, mouse_area, opaque, row,
+        scrollable, space, stack, text, tooltip,
     },
 };
 
@@ -21,12 +23,23 @@ use super::{
     note,
     pages::Page,
 };
-use crate::{font, format, style, video};
+use crate::{font, sideways::sideways, style, video};
 
 const SCREENSHOTS_AHEAD: usize = 2;
-const DOT_SIZE: f32 = 8.0;
 const MEDIA_SPACING: f32 = 14.0;
-const DOTS_HEIGHT: f32 = 20.0;
+const THUMBNAIL_HEIGHT: f32 = 65.0;
+const THUMBNAIL_WIDTH: f32 = THUMBNAIL_HEIGHT * 16.0 / 9.0;
+/// Around each thumbnail: the ring of the one shown, 2 px of accent 2 px away from it.
+const RING_ROOM: f32 = 4.0;
+const ROW_HEIGHT: f32 = THUMBNAIL_HEIGHT + 2.0 * RING_ROOM;
+/// Between the screenshot and the row: with the room of the ring, 12 px to the thumbnails.
+const ROW_GAP: f32 = 8.0;
+/// The fade at an edge of the row with thumbnails hidden past it.
+const FADE_WIDTH: f32 = 40.0;
+/// How far the thumbnail shown stays from the edges of the row.
+const ROW_MARGIN: f32 = 8.0;
+const THUMBNAIL_PLAY: f32 = 27.0;
+const THUMBNAIL_PLAY_SHADOW: f32 = 1.5;
 pub const SCREENSHOT_WIDTH: f32 = 820.0;
 const SOURCE_WIDTH: f32 = 1920.0;
 const IMAGE_RADIUS: f32 = 8.0;
@@ -43,42 +56,199 @@ const PLAY_HOVERED: f32 = 80.0;
 const PLAY_SHADOW: f32 = 3.0;
 const TRAILER_NAME_SIZE: f32 = 15.0;
 const TRAILER_NAME_INSET: f32 = 16.0;
-// The play glyph at this size is a triangle of about 7 by 9 pixels.
-const TRAILER_DOT_GLYPH: f32 = 15.0;
 
-/// One item of the gallery: the trailers come first, then the screenshots.
+/// The two rows of thumbnails: under the gallery and under the zoom.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Row {
+    Gallery,
+    Zoom,
+}
+
+/// One item of the gallery, a trailer or a screenshot, by its index among its kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Item {
     Trailer(usize),
     Screenshot(usize),
 }
 
-fn item_at(trailers: usize, screenshots: usize, index: usize) -> Option<Item> {
-    match index.checked_sub(trailers) {
-        None => Some(Item::Trailer(index)),
-        Some(screenshot) if screenshot < screenshots => Some(Item::Screenshot(screenshot)),
-        Some(_) => None,
+/// The order of the gallery: the trailers and the screenshots of a game, each in the order of
+/// Steam, with the trailers where the Settings put them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Order {
+    trailers: usize,
+    screenshots: usize,
+    place: TrailerPlace,
+}
+
+impl Order {
+    pub(super) fn of(details: &GameDetails, place: TrailerPlace) -> Order {
+        Order {
+            trailers: details.store.trailers.len(),
+            screenshots: details.store.screenshot_urls.len(),
+            place,
+        }
+    }
+
+    fn len(self) -> usize {
+        self.trailers + self.screenshots
+    }
+
+    /// How many screenshots come before the trailer; spread, trailer k goes after
+    /// round((k + 1) * S / (T + 1)) screenshots, half rounded up.
+    fn screenshots_before(self, trailer: usize) -> usize {
+        match self.place {
+            TrailerPlace::First => 0,
+            TrailerPlace::Last => self.screenshots,
+            TrailerPlace::Spread => {
+                let parts = self.trailers + 1;
+                (2 * (trailer + 1) * self.screenshots + parts) / (2 * parts)
+            }
+        }
+    }
+
+    pub(super) fn item_at(self, index: usize) -> Option<Item> {
+        if index >= self.len() {
+            return None;
+        }
+        let mut trailers_before = 0;
+        for trailer in 0..self.trailers {
+            let position = trailer + self.screenshots_before(trailer);
+            if position == index {
+                return Some(Item::Trailer(trailer));
+            }
+            if position < index {
+                trailers_before += 1;
+            }
+        }
+        Some(Item::Screenshot(index - trailers_before))
+    }
+
+    pub(super) fn index_of(self, item: Item) -> Option<usize> {
+        match item {
+            Item::Trailer(trailer) if trailer < self.trailers => {
+                Some(trailer + self.screenshots_before(trailer))
+            }
+            Item::Screenshot(screenshot) if screenshot < self.screenshots => {
+                let trailers_before = (0..self.trailers)
+                    .filter(|&trailer| self.screenshots_before(trailer) <= screenshot)
+                    .count();
+                Some(screenshot + trailers_before)
+            }
+            Item::Trailer(_) | Item::Screenshot(_) => None,
+        }
+    }
+
+    fn items(self) -> impl Iterator<Item = Item> {
+        (0..self.len()).filter_map(move |index| self.item_at(index))
     }
 }
 
-fn item_of(details: &GameDetails, index: usize) -> Option<Item> {
-    let store = &details.store;
-    item_at(store.trailers.len(), store.screenshot_urls.len(), index)
+pub(super) fn item_of(details: &GameDetails, place: TrailerPlace, index: usize) -> Option<Item> {
+    Order::of(details, place).item_at(index)
+}
+
+/// Where the item at `index` goes when the trailers move to `place`.
+fn moved(order: Order, place: TrailerPlace, index: usize) -> usize {
+    order
+        .item_at(index)
+        .and_then(|item| Order { place, ..order }.index_of(item))
+        .unwrap_or(index)
+}
+
+/// The trailer the gallery just moved to, which starts by itself.
+fn arrived_on(item: Option<Item>) -> Option<usize> {
+    match item? {
+        Item::Trailer(index) => Some(index),
+        Item::Screenshot(_) => None,
+    }
 }
 
 fn item_count(details: &GameDetails) -> usize {
     details.store.trailers.len() + details.store.screenshot_urls.len()
 }
 
-/// The pictures of the gallery in its order: the posters of the trailers, then the screenshots.
-fn pictures(details: &GameDetails) -> Vec<String> {
+/// The picture of each item in the order of the gallery: the poster of a trailer, a screenshot.
+fn pictures(details: &GameDetails, place: TrailerPlace) -> Vec<Option<String>> {
     let store = &details.store;
-    store
-        .trailers
-        .iter()
-        .filter_map(|trailer| trailer.poster_url.clone())
-        .chain(store.screenshot_urls.iter().cloned())
+    Order::of(details, place)
+        .items()
+        .map(|item| match item {
+            Item::Trailer(index) => store.trailers[index].poster_url.clone(),
+            Item::Screenshot(index) => Some(store.screenshot_urls[index].clone()),
+        })
         .collect()
+}
+
+/// The small pictures of the row under the gallery, in its order: the thumbnail of a trailer,
+/// the small size of a screenshot.
+fn row_pictures(details: &GameDetails, place: TrailerPlace) -> Vec<Option<String>> {
+    let store = &details.store;
+    Order::of(details, place)
+        .items()
+        .map(|item| match item {
+            Item::Trailer(index) => store.trailers[index].thumbnail_url.clone(),
+            Item::Screenshot(index) => thumbnail_screenshot(&store.screenshot_urls[index]),
+        })
+        .collect()
+}
+
+/// Where the row scrolls to keep the thumbnail at `left` in sight, `ROW_MARGIN` from its edges:
+/// as little as it takes, and not at all if it is already there.
+fn row_offset(left: f32, viewport: f32, content: f32, offset: f32) -> f32 {
+    let lowest = left + THUMBNAIL_WIDTH + ROW_MARGIN - viewport;
+    let highest = left - ROW_MARGIN;
+
+    offset
+        .max(lowest)
+        .min(highest)
+        .clamp(0.0, (content - viewport).max(0.0))
+}
+
+fn thumbnail_left(index: usize) -> f32 {
+    RING_ROOM + index as f32 * (THUMBNAIL_WIDTH + 2.0 * RING_ROOM)
+}
+
+fn row_width(count: usize) -> f32 {
+    count as f32 * (THUMBNAIL_WIDTH + 2.0 * RING_ROOM)
+}
+
+/// Whether the row has more thumbnails than it shows, so the wheel over it scrolls it.
+fn row_overflows(viewport: f32, content: f32) -> bool {
+    content > viewport + 0.5
+}
+
+/// Whether the row fades at its left and at its right edge: only where thumbnails are hidden.
+fn row_fades(offset: f32, viewport: f32, content: f32) -> (bool, bool) {
+    (offset > 0.5, offset + viewport < content - 0.5)
+}
+
+/// Scrolls the row with the given id to keep the thumbnail at `left` in sight.
+struct Reveal {
+    target: widget::Id,
+    left: f32,
+}
+
+impl<T> Operation<T> for Reveal {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<T>)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&widget::Id>,
+        bounds: Rectangle,
+        content_bounds: Rectangle,
+        translation: Vector,
+        state: &mut dyn Scrollable,
+    ) {
+        if id == Some(&self.target) {
+            let x = row_offset(self.left, bounds.width, content_bounds.width, translation.x);
+            state.scroll_to(scrollable::AbsoluteOffset {
+                x: Some(x),
+                y: None,
+            });
+        }
+    }
 }
 
 fn framed<'a>(
@@ -174,7 +344,7 @@ pub fn max_screenshot_width(scale: f32) -> f32 {
 }
 
 pub fn screenshot_width(width: f32, height: f32, min: f32, max: f32) -> f32 {
-    let fitting = (height - MEDIA_SPACING - DOTS_HEIGHT) * 16.0 / 9.0;
+    let fitting = (height - ROW_GAP - ROW_HEIGHT) * 16.0 / 9.0;
 
     width.min(fitting.clamp(min, max))
 }
@@ -205,14 +375,14 @@ fn download_order(
     wanted
 }
 
-fn next_screenshots(screenshots: &[String], index: usize) -> &[String] {
+fn next_screenshots<T>(screenshots: &[T], index: usize) -> &[T] {
     let start = index.min(screenshots.len());
     let end = (index + 1 + SCREENSHOTS_AHEAD).min(screenshots.len());
 
     &screenshots[start..end]
 }
 
-fn other_screenshots(screenshots: &[String], index: usize) -> Vec<String> {
+fn other_screenshots<T: Clone>(screenshots: &[T], index: usize) -> Vec<T> {
     let start = index.min(screenshots.len());
     let end = (index + 1 + SCREENSHOTS_AHEAD).min(screenshots.len());
 
@@ -361,14 +531,28 @@ impl Showcase {
         height: f32,
         scale: f32,
     ) -> Column<'a, Message> {
-        column![self.screenshot(id, width, height, scale)]
+        let gallery = column![self.screenshot(id, width, height, scale)]
             .push(
-                self.pages.details(id).and_then(|details| {
-                    self.dots(details.store.trailers.len(), item_count(details))
-                }),
+                self.pages
+                    .details(id)
+                    .and_then(|details| self.row(id, details, Row::Gallery, Some(width))),
             )
-            .spacing(MEDIA_SPACING)
-            .width(width)
+            .spacing(ROW_GAP);
+
+        column![gallery].spacing(MEDIA_SPACING).width(width)
+    }
+
+    /// The row takes the new order and the same item stays shown: a trailer playing goes on.
+    pub fn place_trailers(&mut self, place: TrailerPlace) -> Task<Message> {
+        if place == self.place {
+            return Task::none();
+        }
+        if let Some(details) = self.shown.and_then(|id| self.pages.details(id)) {
+            self.item = moved(Order::of(details, self.place), place, self.item);
+        }
+        self.place = place;
+
+        self.reveal()
     }
 
     /// Another item stops the trailer; the zoom is only for screenshots.
@@ -386,6 +570,9 @@ impl Showcase {
         if !matches!(self.current_item(), Some(Item::Screenshot(_))) {
             self.zoomed = false;
         }
+        if let Some(trailer) = arrived_on(self.current_item()) {
+            self.trailers.arm(trailer);
+        }
     }
 
     pub(super) fn current_is_loaded(&self) -> bool {
@@ -398,7 +585,7 @@ impl Showcase {
     }
 
     pub(super) fn current_item(&self) -> Option<Item> {
-        item_of(self.pages.details(self.shown?)?, self.item)
+        item_of(self.pages.details(self.shown?)?, self.place, self.item)
     }
 
     pub(super) fn current_screenshot(&self) -> Option<&String> {
@@ -431,14 +618,30 @@ impl Showcase {
         };
 
         let pictures = self.pictures(current);
-        let soon = next_screenshots(&pictures, self.item);
+        let thumbnails: Vec<String> = self
+            .pages
+            .details(current)
+            .map_or_else(Vec::new, |details| row_pictures(details, self.place))
+            .into_iter()
+            .flatten()
+            .collect();
+        let soon: Vec<String> = next_screenshots(&pictures, self.item)
+            .iter()
+            .flatten()
+            .cloned()
+            .collect();
+        let soon = soon.as_slice();
         let similar: Vec<String> = similar
             .iter()
             .map(|&id| self.gamepalate.header_url(id))
             .collect();
-        let mut wanted = if self.current_is_loaded() {
+        let loaded = self.current_is_loaded();
+        let mut wanted = if loaded {
             let later = if self.browsing {
                 other_screenshots(&pictures, self.item)
+                    .into_iter()
+                    .flatten()
+                    .collect()
             } else {
                 Vec::new()
             };
@@ -466,11 +669,15 @@ impl Showcase {
             );
             kept.extend(self.first_picture(id));
         }
-        kept.extend(pictures.iter().cloned());
+        kept.extend(pictures.iter().flatten().cloned());
+        kept.extend(thumbnails.iter().cloned());
         kept.extend(similar.iter().cloned());
         let mut similar = similar.into_iter();
         wanted.splice(1..1, similar.next());
         wanted.extend(similar);
+        if loaded {
+            wanted.extend(thumbnails);
+        }
 
         self.images.keep_only(&kept);
         let started = self.images.want(wanted);
@@ -506,25 +713,21 @@ impl Showcase {
             .map_or(&[], |details| details.store.screenshot_urls.as_slice())
     }
 
-    fn pictures(&self, id: AppId) -> Vec<String> {
-        self.pages.details(id).map_or_else(Vec::new, pictures)
+    fn pictures(&self, id: AppId) -> Vec<Option<String>> {
+        self.pages
+            .details(id)
+            .map_or_else(Vec::new, |details| pictures(details, self.place))
     }
 
-    /// The poster of the first trailer, or the first screenshot.
+    /// The first picture of the gallery: a poster or a screenshot.
     fn first_picture(&self, id: AppId) -> Option<String> {
-        self.pictures(id).into_iter().next()
+        self.pictures(id).into_iter().flatten().next()
     }
 
     pub(super) fn item_count(&self) -> usize {
         self.shown
             .and_then(|id| self.pages.details(id))
             .map_or(0, item_count)
-    }
-
-    fn trailer_count(&self) -> usize {
-        self.shown
-            .and_then(|id| self.pages.details(id))
-            .map_or(0, |details| details.store.trailers.len())
     }
 
     pub(super) fn header_url(&self, id: AppId) -> String {
@@ -584,7 +787,7 @@ impl Showcase {
     ) -> Element<'a, Message> {
         let content: Element<'a, Message> = match self.pages.get(id) {
             Some(Page::Ready(details)) => {
-                let picture = match item_of(details, self.item) {
+                let picture = match item_of(details, self.place, self.item) {
                     Some(Item::Trailer(index)) => {
                         let trailer = &details.store.trailers[index];
                         match self.trailers.player(index) {
@@ -793,10 +996,12 @@ impl Showcase {
                     container(close).align_right(Fill).padding(8)
                 ]]
                 .push(
-                    self.dots(self.trailer_count(), self.item_count())
-                        .map(|dots| container(dots).center_x(Fill)),
+                    self.shown
+                        .and_then(|id| Some((id, self.pages.details(id)?)))
+                        .and_then(|(id, details)| self.row(id, details, Row::Zoom, None))
+                        .map(|row| container(row).center_x(Fill)),
                 )
-                .spacing(8),
+                .spacing(ROW_GAP),
             )
             .padding(16)
             .width(Fill)
@@ -805,41 +1010,154 @@ impl Showcase {
         ))
     }
 
-    /// A dot for each item, a small triangle for a trailer.
-    fn dots<'a>(&self, trailers: usize, count: usize) -> Option<Element<'a, Message>> {
-        (count > 1).then(|| {
-            row((0..count).map(|index| {
-                let current = index == self.item;
-                let dot = if index < trailers {
-                    button(
-                        text(PLAY)
-                            .font(font::ICONS)
-                            .size(TRAILER_DOT_GLYPH)
-                            .line_height(text::LineHeight::Absolute((DOT_SIZE + 1.0).into()))
-                            .width(DOT_SIZE + 1.0)
-                            .center(),
-                    )
-                    .style(style::trailer_dot(current))
-                } else {
-                    button(space().width(DOT_SIZE).height(DOT_SIZE)).style(style::dot(current))
+    /// A thumbnail for each item, under the gallery and under the zoom. The row is new for each
+    /// game, so it starts from the left. `width` is the gallery's; the zoom's row is as wide as
+    /// its thumbnails, as far as the window lets it, and only its scrolling tells how wide it is.
+    fn row<'a>(
+        &self,
+        id: AppId,
+        details: &GameDetails,
+        which: Row,
+        width: Option<f32>,
+    ) -> Option<Element<'a, Message>> {
+        if item_count(details) < 2 {
+            return None;
+        }
+        let thumbnails = row_pictures(details, self.place)
+            .into_iter()
+            .enumerate()
+            .map(|(index, url)| {
+                let trailer = match item_of(details, self.place, index) {
+                    Some(Item::Trailer(trailer)) => details.store.trailers.get(trailer),
+                    _ => None,
                 };
-                dot.padding(0)
-                    .on_press(Message::ShowScreenshot(index))
-                    .into()
-            }))
-            .push(
-                container(
-                    text(format::screenshot_position(self.item, count))
-                        .size(font::NOTE_SIZE)
-                        .style(style::muted),
-                )
-                .padding(padding::left(6)),
-            )
-            .spacing(6)
-            .align_y(Center)
-            .wrap()
-            .into()
+                self.row_thumbnail(index, url.as_deref(), trailer)
+            });
+        let scrolled = self.row_scroll[which as usize];
+        let measures = match (width, scrolled) {
+            (Some(width), _) => Some((
+                scrolled.map_or(0.0, |viewport| viewport.absolute_offset().x),
+                width,
+                row_width(item_count(details)),
+            )),
+            (None, Some(viewport)) => Some((
+                viewport.absolute_offset().x,
+                viewport.bounds().width,
+                viewport.content_bounds().width,
+            )),
+            (None, None) => None,
+        };
+        let (left, right) = measures.map_or((false, false), |(offset, viewport, content)| {
+            row_fades(offset, viewport, content)
+        });
+        let overflows =
+            measures.is_some_and(|(_, viewport, content)| row_overflows(viewport, content));
+        let row = scrollable(row(thumbnails))
+            .direction(scrollable::Direction::Horizontal(
+                scrollable::Scrollbar::hidden(),
+            ))
+            .id(self.row_ids[which as usize].clone())
+            .on_scroll(move |viewport| Message::RowScrolled(which, viewport))
+            .width(width.map_or(Length::Shrink, Length::Fixed));
+        let fade = |shown: bool, left: bool| {
+            shown.then(|| {
+                container(space())
+                    .width(FADE_WIDTH)
+                    .height(ROW_HEIGHT)
+                    .style(style::row_fade(left))
+            })
+        };
+
+        let row = stack![
+            keyed_column([(id, row.into())]),
+            row![]
+                .push(fade(left, true))
+                .push(space::horizontal())
+                .push(fade(right, false))
+                .width(Fill),
+        ]
+        .width(width.map_or(Length::Shrink, Length::Fixed));
+
+        // Over a row with hidden thumbnails the vertical wheel scrolls it sideways, like
+        // Shift+wheel; a row that fits leaves the wheel to the page.
+        Some(if overflows {
+            sideways(row).into()
+        } else {
+            row.into()
         })
+    }
+
+    fn row_thumbnail<'a>(
+        &self,
+        index: usize,
+        url: Option<&str>,
+        trailer: Option<&Trailer>,
+    ) -> Element<'a, Message> {
+        let picture: Element<'a, Message> = match url.and_then(|url| self.images.get(url)) {
+            Some(Picture::Ready(allocation)) => image(allocation.handle().clone())
+                .width(THUMBNAIL_WIDTH)
+                .height(THUMBNAIL_HEIGHT)
+                .content_fit(ContentFit::Cover)
+                .border_radius(style::THUMBNAIL_RADIUS)
+                .into(),
+            _ => container(space())
+                .width(THUMBNAIL_WIDTH)
+                .height(THUMBNAIL_HEIGHT)
+                .style(style::thumbnail)
+                .into(),
+        };
+        let thumbnail: Element<'a, Message> = match trailer {
+            Some(trailer) => {
+                let icon = |color: Color| {
+                    text(PLAY)
+                        .font(font::ICONS)
+                        .size(THUMBNAIL_PLAY)
+                        .color(color)
+                };
+                let thumbnail = stack![
+                    picture,
+                    container(space())
+                        .width(Fill)
+                        .height(Fill)
+                        .style(style::thumbnail_shade),
+                    container(stack![
+                        container(icon(Color::BLACK.scale_alpha(0.4)))
+                            .padding(padding::top(THUMBNAIL_PLAY_SHADOW)),
+                        icon(Color::WHITE),
+                    ])
+                    .center(Fill),
+                ];
+                tooltip(
+                    thumbnail,
+                    container(text(trailer.name.clone()).size(font::NOTE_SIZE))
+                        .padding([6, 10])
+                        .style(style::popup),
+                    tooltip::Position::Top,
+                )
+                .into()
+            }
+            None => picture,
+        };
+
+        mouse_area(
+            container(thumbnail)
+                .padding(RING_ROOM)
+                .style(style::thumbnail_ring(index == self.item)),
+        )
+        .on_press(Message::ShowScreenshot(index))
+        .interaction(mouse::Interaction::Pointer)
+        .into()
+    }
+
+    /// Scrolls the rows to keep the thumbnail shown in sight.
+    pub(super) fn reveal(&self) -> Task<Message> {
+        let left = thumbnail_left(self.item);
+        Task::batch(self.row_ids.each_ref().map(|target| {
+            operate(Reveal {
+                target: target.clone(),
+                left,
+            })
+        }))
     }
 }
 
@@ -848,6 +1166,15 @@ mod tests {
     use super::*;
 
     const NO_THUMBNAIL: Option<&Picture<u8>> = None;
+
+    #[test]
+    fn moving_to_a_trailer_arms_it_and_to_a_screenshot_does_not() {
+        let order = order(3, 5, TrailerPlace::First);
+
+        assert_eq!(arrived_on(order.item_at(2)), Some(2));
+        assert_eq!(arrived_on(order.item_at(3)), None);
+        assert_eq!(arrived_on(None), None);
+    }
 
     #[test]
     fn the_screenshot_grows_only_while_it_fits_in_the_height() {
@@ -860,7 +1187,7 @@ mod tests {
             SCREENSHOT_WIDTH
         );
         assert_eq!(
-            screenshot_width(2000.0, 596.5, SCREENSHOT_WIDTH, 1280.0),
+            screenshot_width(2000.0, 643.5, SCREENSHOT_WIDTH, 1280.0),
             1000.0
         );
         assert_eq!(
@@ -871,9 +1198,9 @@ mod tests {
             screenshot_width(2000.0, 1200.0, SCREENSHOT_WIDTH, 1920.0),
             1920.0
         );
-        assert_eq!(screenshot_width(2000.0, 394.0, 400.0, 1280.0), 640.0);
+        assert_eq!(screenshot_width(2000.0, 441.0, 400.0, 1280.0), 640.0);
         assert_eq!(
-            screenshot_width(2000.0, 394.0, SCREENSHOT_WIDTH, 1280.0),
+            screenshot_width(2000.0, 441.0, SCREENSHOT_WIDTH, 1280.0),
             SCREENSHOT_WIDTH
         );
     }
@@ -966,7 +1293,7 @@ mod tests {
         let shots: Vec<String> = (0..2).map(|index| format!("ss_{index}.jpg")).collect();
 
         assert_eq!(next_screenshots(&shots, 1), &shots[1..]);
-        assert!(next_screenshots(&[], 0).is_empty());
+        assert!(next_screenshots::<String>(&[], 0).is_empty());
     }
 
     #[test]
@@ -1082,6 +1409,7 @@ mod tests {
                     .map(|(index, poster)| Trailer {
                         name: format!("Trailer {index}"),
                         poster_url: poster.map(str::to_string),
+                        thumbnail_url: poster.map(|poster| format!("{poster} small")),
                         manifest_url: format!("https://video/{index}/dash_av1.mpd"),
                     })
                     .collect(),
@@ -1097,45 +1425,308 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_trailers_come_before_the_screenshots() {
-        let game = details(&[Some("poster 0"), Some("poster 1")], &["ss_0", "ss_1"]);
+    fn order(trailers: usize, screenshots: usize, place: TrailerPlace) -> Order {
+        Order {
+            trailers,
+            screenshots,
+            place,
+        }
+    }
 
-        assert_eq!(item_of(&game, 0), Some(Item::Trailer(0)));
-        assert_eq!(item_of(&game, 1), Some(Item::Trailer(1)));
-        assert_eq!(item_of(&game, 2), Some(Item::Screenshot(0)));
-        assert_eq!(item_of(&game, 3), Some(Item::Screenshot(1)));
-        assert_eq!(item_of(&game, 4), None);
-        assert_eq!(item_at(0, 1, 0), Some(Item::Screenshot(0)));
-        assert_eq!(item_at(0, 0, 0), None);
+    /// The trailers and the screenshots in the order of the gallery, as T0 and 0.
+    fn sequence(order: Order) -> Vec<String> {
+        order
+            .items()
+            .map(|item| match item {
+                Item::Trailer(index) => format!("T{index}"),
+                Item::Screenshot(index) => index.to_string(),
+            })
+            .collect()
+    }
+
+    /// Where the trailers are: how many items come before each.
+    fn trailer_indexes(order: Order) -> Vec<usize> {
+        (0..order.trailers)
+            .map(|trailer| order.index_of(Item::Trailer(trailer)).unwrap())
+            .collect()
     }
 
     #[test]
-    fn the_dots_count_trailers_and_screenshots_together() {
+    fn the_trailers_come_first() {
+        let game = details(&[Some("poster 0"), Some("poster 1")], &["ss_0", "ss_1"]);
+
         assert_eq!(
-            item_count(&details(&[Some("poster")], &["ss_0", "ss_1"])),
-            3
+            item_of(&game, TrailerPlace::First, 0),
+            Some(Item::Trailer(0))
+        );
+        assert_eq!(
+            item_of(&game, TrailerPlace::First, 1),
+            Some(Item::Trailer(1))
+        );
+        assert_eq!(
+            item_of(&game, TrailerPlace::First, 2),
+            Some(Item::Screenshot(0))
+        );
+        assert_eq!(
+            item_of(&game, TrailerPlace::First, 3),
+            Some(Item::Screenshot(1))
+        );
+        assert_eq!(item_of(&game, TrailerPlace::First, 4), None);
+        assert_eq!(
+            trailer_indexes(order(3, 20, TrailerPlace::First)),
+            [0, 1, 2]
+        );
+        assert_eq!(
+            order(0, 1, TrailerPlace::First).item_at(0),
+            Some(Item::Screenshot(0))
+        );
+        assert_eq!(order(0, 0, TrailerPlace::First).item_at(0), None);
+    }
+
+    #[test]
+    fn the_trailers_come_last() {
+        assert_eq!(
+            sequence(order(2, 3, TrailerPlace::Last)),
+            ["0", "1", "2", "T0", "T1"]
+        );
+        assert_eq!(
+            trailer_indexes(order(3, 20, TrailerPlace::Last)),
+            [20, 21, 22]
+        );
+        assert_eq!(sequence(order(2, 0, TrailerPlace::Last)), ["T0", "T1"]);
+    }
+
+    #[test]
+    fn spread_trailers_split_the_screenshots_evenly() {
+        // After the 5th, the 10th and the 15th screenshot.
+        assert_eq!(
+            trailer_indexes(order(3, 20, TrailerPlace::Spread)),
+            [5, 11, 17]
+        );
+        assert_eq!(
+            sequence(order(1, 6, TrailerPlace::Spread)),
+            ["0", "1", "2", "T0", "3", "4", "5"]
+        );
+        assert_eq!(
+            sequence(order(2, 3, TrailerPlace::Spread)),
+            ["0", "T0", "1", "T1", "2"]
+        );
+        assert_eq!(sequence(order(2, 0, TrailerPlace::Spread)), ["T0", "T1"]);
+        assert_eq!(
+            sequence(order(0, 5, TrailerPlace::Spread)),
+            ["0", "1", "2", "3", "4"]
+        );
+        // 2.5 screenshots round up to 3.
+        assert_eq!(trailer_indexes(order(1, 5, TrailerPlace::Spread)), [3]);
+    }
+
+    #[test]
+    fn moving_the_trailers_keeps_the_item_shown() {
+        let first = order(2, 3, TrailerPlace::First);
+
+        // The second trailer, then the first screenshot.
+        assert_eq!(moved(first, TrailerPlace::Last, 1), 4);
+        assert_eq!(moved(first, TrailerPlace::Spread, 1), 3);
+        assert_eq!(moved(first, TrailerPlace::Last, 2), 0);
+        assert_eq!(moved(first, TrailerPlace::First, 2), 2);
+        assert_eq!(
+            moved(order(0, 0, TrailerPlace::First), TrailerPlace::Last, 0),
+            0
+        );
+    }
+
+    #[test]
+    fn an_item_and_its_index_lead_to_each_other() {
+        let cases = [(3, 20), (1, 6), (2, 3), (2, 0), (0, 5), (1, 5), (0, 0)];
+        for place in [
+            TrailerPlace::First,
+            TrailerPlace::Spread,
+            TrailerPlace::Last,
+        ] {
+            for (trailers, screenshots) in cases {
+                let order = order(trailers, screenshots, place);
+                for index in 0..trailers + screenshots {
+                    let item = order.item_at(index).unwrap();
+                    assert_eq!(order.index_of(item), Some(index), "{order:?} at {index}");
+                }
+                assert_eq!(order.item_at(trailers + screenshots), None);
+                assert_eq!(order.index_of(Item::Trailer(trailers)), None);
+                assert_eq!(order.index_of(Item::Screenshot(screenshots)), None);
+                let mut seen: Vec<Item> = order.items().collect();
+                seen.sort_by_key(|item| match item {
+                    Item::Trailer(index) => (0, *index),
+                    Item::Screenshot(index) => (1, *index),
+                });
+                let every: Vec<Item> = (0..trailers)
+                    .map(Item::Trailer)
+                    .chain((0..screenshots).map(Item::Screenshot))
+                    .collect();
+                assert_eq!(seen, every, "{order:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_row_has_a_thumbnail_for_each_trailer_and_screenshot() {
+        let game = details(
+            &[Some("poster 0"), None],
+            &[
+                "https://example.com/ss_0.1920x1080.jpg?t=1",
+                "https://example.com/ss_1.1920x1080.jpg",
+            ],
+        );
+
+        assert_eq!(item_count(&game), 4);
+        assert_eq!(
+            row_pictures(&game, TrailerPlace::First),
+            [
+                Some("poster 0 small".to_string()),
+                None,
+                Some("https://example.com/ss_0.116x65.jpg?t=1".to_string()),
+                Some("https://example.com/ss_1.116x65.jpg".to_string()),
+            ]
+        );
+        assert_eq!(
+            row_pictures(&game, TrailerPlace::Spread),
+            [
+                Some("https://example.com/ss_0.116x65.jpg?t=1".to_string()),
+                Some("poster 0 small".to_string()),
+                None,
+                Some("https://example.com/ss_1.116x65.jpg".to_string()),
+            ]
         );
         assert_eq!(item_count(&details(&[], &["ss_0"])), 1);
         assert_eq!(next_index(2, 3), 2);
     }
 
     #[test]
+    fn the_row_is_as_high_as_a_thumbnail_with_its_ring() {
+        assert_eq!(ROW_HEIGHT, 73.0);
+        assert_eq!(thumbnail_left(0), RING_ROOM);
+        assert_eq!(
+            thumbnail_left(2) - thumbnail_left(1) - THUMBNAIL_WIDTH,
+            ROW_MARGIN
+        );
+    }
+
+    /// A row of 20 thumbnails, 600 px wide.
+    fn offset(index: usize, offset: f32) -> f32 {
+        row_offset(
+            thumbnail_left(index),
+            600.0,
+            thumbnail_left(20) - RING_ROOM,
+            offset,
+        )
+    }
+
+    #[test]
+    fn the_row_fades_only_where_thumbnails_are_hidden() {
+        assert_eq!(row_fades(0.0, 600.0, 400.0), (false, false));
+        assert_eq!(row_fades(0.0, 600.0, 600.0), (false, false));
+        assert_eq!(row_fades(0.0, 600.0, 1000.0), (false, true));
+        assert_eq!(row_fades(200.0, 600.0, 1000.0), (true, true));
+        assert_eq!(row_fades(400.0, 600.0, 1000.0), (true, false));
+        assert_eq!(row_fades(399.8, 600.0, 1000.0), (true, false));
+        assert_eq!(row_width(20), thumbnail_left(20) - RING_ROOM);
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_row_only_when_it_overflows() {
+        assert!(row_overflows(600.0, 1000.0));
+        assert!(!row_overflows(600.0, 600.0));
+        assert!(!row_overflows(600.0, 400.0));
+    }
+
+    #[test]
+    fn the_row_scrolls_to_the_first_and_to_the_last() {
+        let content = thumbnail_left(20) - RING_ROOM;
+
+        assert_eq!(offset(0, 500.0), 0.0);
+        assert_eq!(offset(19, 0.0), content - 600.0);
+    }
+
+    #[test]
+    fn a_thumbnail_in_sight_does_not_move_the_row() {
+        assert_eq!(offset(1, 0.0), 0.0);
+        assert_eq!(offset(5, 300.0), 300.0);
+    }
+
+    #[test]
+    fn the_row_scrolls_as_little_as_it_takes() {
+        let left = thumbnail_left(8);
+
+        assert_eq!(offset(8, 0.0), left + THUMBNAIL_WIDTH + ROW_MARGIN - 600.0);
+        assert_eq!(offset(8, 1500.0), left - ROW_MARGIN);
+    }
+
+    #[test]
+    fn a_row_shorter_than_its_width_does_not_scroll() {
+        let content = thumbnail_left(3) - RING_ROOM;
+
+        assert_eq!(row_offset(thumbnail_left(2), 600.0, content, 0.0), 0.0);
+        assert_eq!(row_offset(thumbnail_left(2), 600.0, content, 40.0), 0.0);
+    }
+
+    #[test]
     fn the_poster_takes_the_place_of_the_first_screenshot() {
         let game = details(&[Some("poster 0"), None], &["ss_0", "ss_1"]);
-        let pictures = pictures(&game);
+        let pictures = pictures(&game, TrailerPlace::First);
+        let some = |url: &str| Some(url.to_string());
 
-        assert_eq!(pictures, ["poster 0", "ss_0", "ss_1"]);
+        assert_eq!(
+            pictures,
+            [some("poster 0"), None, some("ss_0"), some("ss_1")]
+        );
         assert_eq!(
             download_order(
                 "next header".to_string(),
                 &[],
                 Vec::new(),
-                vec![("header".to_string(), pictures.first().cloned())],
+                vec![("header".to_string(), pictures.first().cloned().flatten())],
             ),
             ["next header", "header", "poster 0"]
         );
-        assert_eq!(next_screenshots(&pictures, 0), ["poster 0", "ss_0", "ss_1"]);
+        assert_eq!(
+            next_screenshots(&pictures, 0),
+            [some("poster 0"), None, some("ss_0")]
+        );
+    }
+
+    #[test]
+    fn the_pictures_follow_the_place_of_the_trailers() {
+        let game = details(
+            &[Some("poster 0"), Some("poster 1")],
+            &["ss_0", "ss_1", "ss_2"],
+        );
+        let some = |url: &str| Some(url.to_string());
+
+        assert_eq!(
+            pictures(&game, TrailerPlace::Last),
+            [
+                some("ss_0"),
+                some("ss_1"),
+                some("ss_2"),
+                some("poster 0"),
+                some("poster 1")
+            ]
+        );
+        let spread = pictures(&game, TrailerPlace::Spread);
+        assert_eq!(
+            spread,
+            [
+                some("ss_0"),
+                some("poster 0"),
+                some("ss_1"),
+                some("poster 1"),
+                some("ss_2")
+            ]
+        );
+        // From the first screenshot, the next ones in the row: a poster among them.
+        assert_eq!(
+            next_screenshots(&spread, 0),
+            [some("ss_0"), some("poster 0"), some("ss_1")]
+        );
+        assert_eq!(other_screenshots(&spread, 1), [some("ss_2"), some("ss_0")]);
     }
 
     #[test]

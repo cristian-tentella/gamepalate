@@ -12,7 +12,7 @@ use std::{
 
 use gamepalate_app::{
     AppId, Blame, DiscoverMode, FilterOptions, Gamepalate, ListId, RecommendError, Recommendation,
-    RecommendedGame, SaveChange, SearchOptions, VoteKind,
+    RecommendedGame, SaveChange, SearchOptions, TrailerPlace, VoteKind,
 };
 use iced::{
     Center, Element, Event, Fill, Length, Size, Subscription, Task, event,
@@ -579,6 +579,10 @@ impl Discover {
             event::listen_with(escape_message),
             trailer,
         ])
+    }
+
+    pub fn place_trailers(&mut self, place: TrailerPlace) -> Task<Message> {
+        self.showcase.place_trailers(place).map(Message::Showcase)
     }
 
     /// Leaving Discover, or covering it with a game or the search, stops the trailer.
@@ -1675,7 +1679,7 @@ mod tests {
             (756.0, 425.25)
         );
         assert_eq!(
-            Layout::new(Size::new(2000.0, 596.5), 1280.0),
+            Layout::new(Size::new(2000.0, 643.5), 1280.0),
             Layout::Beside(1000.0)
         );
         assert_eq!(

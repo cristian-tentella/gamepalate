@@ -18,7 +18,7 @@ use std::{
 };
 
 use gamepalate_app::{
-    AppId, Block, GameDetails, GameTagsView, Gamepalate,
+    AppId, Block, GameDetails, GameTagsView, Gamepalate, TrailerPlace,
     reviews::{ReviewPage, ReviewQuery},
 };
 use iced::{
@@ -87,8 +87,9 @@ pub struct Showcase {
     hours_typed: String,
     has_reviews: bool,
     extras: Images,
-    /// The item of the gallery shown: the trailers first, then the screenshots.
+    /// The index of the item of the gallery shown, in the order `place` gives.
     item: usize,
+    place: TrailerPlace,
     last_screenshot: Option<String>,
     shown: Option<AppId>,
     browsing: bool,
@@ -101,6 +102,9 @@ pub struct Showcase {
     thumbnails: HashMap<String, Picture>,
     trailers: Trailers,
     loops: Loops,
+    /// The rows of thumbnails under the gallery and under the zoom, with how far each is scrolled.
+    row_ids: [Id; 2],
+    row_scroll: [Option<scrollable::Viewport>; 2],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -226,6 +230,7 @@ pub enum Message {
     Close,
     ToggleFeatures,
     Hover(bool),
+    RowScrolled(media::Row, scrollable::Viewport),
     PlayTrailer,
     PlayOrPause,
     SwitchMute,
@@ -252,6 +257,7 @@ impl Showcase {
             has_reviews: false,
             extras: Images::default(),
             item: 0,
+            place: gamepalate.gui_settings().trailers,
             last_screenshot: None,
             shown: None,
             browsing: false,
@@ -264,10 +270,13 @@ impl Showcase {
             thumbnails: HashMap::new(),
             trailers: Trailers::default(),
             loops: Loops::default(),
+            row_ids: [Id::unique(), Id::unique()],
+            row_scroll: [None; 2],
         }
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let before = (self.item, self.zoomed);
         match message {
             Message::ScrollUp | Message::ScrollDown if self.popups.open.is_none() => {}
             Message::ScrollUp => return scroll_sheet(-SCROLL_STEP),
@@ -370,6 +379,7 @@ impl Showcase {
             }
             Message::ToggleFeatures => self.features_open = !self.features_open,
             Message::Hover(hovered) => self.hovered = hovered,
+            Message::RowScrolled(row, viewport) => self.row_scroll[row as usize] = Some(viewport),
             Message::PlayTrailer => self.play_trailer(),
             Message::PlayOrPause => self.play_or_pause(),
             Message::SwitchMute => {
@@ -389,7 +399,12 @@ impl Showcase {
         self.sync_loops();
         self.autoplay();
 
-        self.load_shown()
+        let reveal = if (self.item, self.zoomed) == before {
+            Task::none()
+        } else {
+            self.reveal()
+        };
+        Task::batch([reveal, self.load_shown()])
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -453,21 +468,24 @@ impl Showcase {
         }
     }
 
-    /// The first trailer of a game just shown starts by itself, when the gallery shows it.
+    /// The armed trailer starts by itself, when the gallery shows it.
     fn autoplay(&mut self) {
-        if !self.trailers.is_armed() {
+        let Some(armed) = self.trailers.armed() else {
             return;
-        }
+        };
         let page = self.shown.and_then(|id| self.pages.get(id));
         let due = match page {
-            _ if self.is_open() || self.item != 0 => Due::Never,
-            Some(Page::Ready(details)) => details
-                .store
-                .trailers
-                .first()
-                .map_or(Due::Never, |trailer| {
-                    Due::Play(trailer.manifest_url.clone())
-                }),
+            _ if self.is_open() => Due::Never,
+            Some(Page::Ready(details)) => match media::item_of(details, self.place, self.item) {
+                Some(Item::Trailer(index)) if index == armed => details
+                    .store
+                    .trailers
+                    .get(index)
+                    .map_or(Due::Never, |trailer| {
+                        Due::Play(index, trailer.manifest_url.clone())
+                    }),
+                _ => Due::Never,
+            },
             Some(Page::Loading(_)) | None if self.shown.is_some() => Due::Wait,
             _ => Due::Never,
         };
@@ -519,7 +537,8 @@ impl Showcase {
         if current != self.shown {
             self.shown = current;
             self.item = 0;
-            self.trailers.arm();
+            self.row_scroll = [None; 2];
+            self.trailers.arm(0);
             self.last_screenshot = None;
             self.browsing = false;
             self.zoomed = false;

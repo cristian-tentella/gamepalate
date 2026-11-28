@@ -8,7 +8,7 @@ use std::{
 };
 
 use gamepalate_app::{
-    ConfigValue, Gamepalate, Region, ThemeChoice, Timestamp,
+    ConfigValue, Gamepalate, Region, ThemeChoice, Timestamp, TrailerPlace,
     catalog_file::{export_catalog, export_folder},
     settings::{self, ConfigKey, change_config},
     setup::error_chain,
@@ -55,6 +55,7 @@ pub struct Settings {
     export: Export,
     toasts: Toasts,
     error: Option<String>,
+    trailers: TrailerPlace,
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -98,6 +99,7 @@ pub enum Message {
     OpenPrivacy,
     RegionSaved(Result<(), String>),
     Theme(ThemeChoice),
+    Trailers(TrailerPlace),
     OpenFolder,
     OpenConfig,
     ClearCache,
@@ -142,6 +144,7 @@ pub enum Action {
     None,
     Run(Task<Message>),
     Theme(ThemeChoice),
+    Trailers(TrailerPlace),
     Reopen,
     RegionChanged,
     Close(Page, Task<Message>),
@@ -165,6 +168,7 @@ impl Settings {
             export: Export::default(),
             toasts: Toasts::default(),
             error: None,
+            trailers: gamepalate.gui_settings().trailers,
         };
         let task = settings.measure_cache();
 
@@ -234,6 +238,10 @@ impl Settings {
             | Message::CancelRegion
             | Message::RegionSaved(_) => self.update_account(message),
             Message::Theme(choice) => Action::Theme(choice),
+            Message::Trailers(place) => {
+                self.trailers = place;
+                Action::Trailers(place)
+            }
             Message::OpenFolder => {
                 open(&self.settings.data_dir);
                 Action::None
@@ -373,22 +381,43 @@ impl Settings {
             .spacing(12),
         );
         let region = group("Store region", self.region_line());
+        let trailers = |label, place| {
+            radio(label, place, Some(self.trailers), Message::Trailers)
+                .size(16)
+                .text_size(font::BAR_SIZE)
+        };
         let appearance = group(
             "Appearance",
-            setting(
-                "Theme",
-                row![
-                    radio("Light", ThemeChoice::Light, Some(theme), Message::Theme)
-                        .size(16)
-                        .text_size(font::BAR_SIZE),
-                    radio("Dark", ThemeChoice::Dark, Some(theme), Message::Theme)
-                        .size(16)
-                        .text_size(font::BAR_SIZE),
-                ]
-                .spacing(24)
-                .into(),
-                None,
-            ),
+            column![
+                setting(
+                    "Theme",
+                    row![
+                        radio("Light", ThemeChoice::Light, Some(theme), Message::Theme)
+                            .size(16)
+                            .text_size(font::BAR_SIZE),
+                        radio("Dark", ThemeChoice::Dark, Some(theme), Message::Theme)
+                            .size(16)
+                            .text_size(font::BAR_SIZE),
+                    ]
+                    .spacing(24)
+                    .into(),
+                    None,
+                ),
+                setting(
+                    "Trailers",
+                    row![
+                        trailers("First", TrailerPlace::First),
+                        trailers("Among screenshots", TrailerPlace::Spread),
+                        trailers("Last", TrailerPlace::Last),
+                    ]
+                    .spacing(24)
+                    .wrap()
+                    .vertical_spacing(12)
+                    .into(),
+                    None,
+                ),
+            ]
+            .spacing(12),
         );
         let taste = group("Taste", self.config_lines(&TASTE));
         let discover = group("Discover", self.config_lines(&DISCOVER));

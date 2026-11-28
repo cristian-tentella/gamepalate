@@ -14,7 +14,7 @@ use std::{
 
 use account::Account;
 use gamepalate_app::{
-    AppId, Gamepalate, GuiSettings, PendingUpdate, SavedWindow,
+    AppId, Gamepalate, GuiSettings, PendingUpdate, SavedWindow, TrailerPlace,
     install::{Downloaded, Installed, Target},
     new_version::NewVersion,
     refresh::{Plan, Step},
@@ -387,6 +387,10 @@ impl App {
                     settings::Action::None => Task::none(),
                     settings::Action::Run(task) => task.map(Message::Settings),
                     settings::Action::Theme(choice) => self.set_theme(choice),
+                    settings::Action::Trailers(place) => Task::batch([
+                        self.place_trailers(place),
+                        self.change_gui_settings(move |settings| settings.trailers = place),
+                    ]),
                     settings::Action::Reopen => self.reopen(),
                     settings::Action::RegionChanged => Task::batch([
                         self.reopen(),
@@ -518,6 +522,25 @@ impl App {
             | Message::NewVersionDownloaded(_)
             | Message::InstallNewVersion => self.update_install(message),
         }
+    }
+
+    /// Every gallery takes the new place of the trailers at once, Discover set aside too.
+    fn place_trailers(&mut self, place: TrailerPlace) -> Task<Message> {
+        let parked = self
+            .parked
+            .as_mut()
+            .map(|parked| parked.discover.place_trailers(place).map(Message::Discover));
+        let screen = match &mut self.screen {
+            Screen::Discover(screen) => Some(screen.place_trailers(place).map(Message::Discover)),
+            Screen::Votes(screen) => Some(screen.place_trailers(place).map(Message::Votes)),
+            _ => None,
+        };
+        let page = self
+            .game_page
+            .as_mut()
+            .map(|page| page.place_trailers(place).map(Message::GamePage));
+
+        Task::batch(parked.into_iter().chain(screen).chain(page))
     }
 
     fn change_gui_settings(

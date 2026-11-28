@@ -45,6 +45,7 @@ const DARK_YELLOW: Color = Color::from_rgb8(0xf0, 0xc2, 0x4f);
 const LIGHT_RED: Color = Color::from_rgb8(0xc6, 0x28, 0x28);
 const DARK_RED: Color = Color::from_rgb8(0xef, 0x9a, 0x9a);
 const DIVIDER_HEIGHT: f32 = 20.0;
+pub const THUMBNAIL_RADIUS: f32 = 6.0;
 pub const DIVIDER_INSET: f32 = 8.0;
 
 pub fn top_bar(theme: &Theme) -> container::Style {
@@ -942,33 +943,60 @@ pub fn picture(theme: &Theme) -> container::Style {
     }
 }
 
-fn dot_color(theme: &Theme, current: bool, status: button::Status) -> Color {
-    let palette = theme.extended_palette();
-    if current {
-        palette.primary.base.color
-    } else if matches!(status, button::Status::Hovered) {
-        faded(theme, 0.4)
-    } else {
-        palette.background.strong.color
-    }
-}
-
-pub fn dot(current: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |theme, status| button::Style {
-        background: Some(dot_color(theme, current, status).into()),
+/// The place of a thumbnail of the gallery's row, seen while its picture loads or if it never comes.
+pub fn thumbnail(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(theme.extended_palette().background.weak.color.into()),
         border: Border {
-            radius: 4.0.into(),
+            radius: THUMBNAIL_RADIUS.into(),
             ..Border::default()
         },
-        ..button::Style::default()
+        ..container::Style::default()
     }
 }
 
-/// The dot of a trailer: a small triangle drawn by the play glyph, in the colors of the dots.
-pub fn trailer_dot(current: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |theme, status| button::Style {
-        text_color: dot_color(theme, current, status),
-        ..button::Style::default()
+/// The ring around the thumbnail shown: the accent, 2 px away from it so the background shows
+/// between them. The others have the same room, without the ring, so nothing moves.
+pub fn thumbnail_ring(current: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| container::Style {
+        border: Border {
+            color: theme.extended_palette().primary.base.color,
+            width: if current { 2.0 } else { 0.0 },
+            radius: (THUMBNAIL_RADIUS + 4.0).into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// The fade at an edge of the gallery's row, into the background, where thumbnails are hidden.
+pub fn row_fade(left: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let background = theme.extended_palette().background.base.color;
+        let (start, end) = if left {
+            (background, Color::TRANSPARENT)
+        } else {
+            (Color::TRANSPARENT, background)
+        };
+        let fade = gradient::Linear::new(std::f32::consts::FRAC_PI_2)
+            .add_stop(0.0, start)
+            .add_stop(1.0, end);
+
+        container::Style {
+            background: Some(fade.into()),
+            ..container::Style::default()
+        }
+    }
+}
+
+/// The light shade on the thumbnail of a trailer, under its play icon.
+pub fn thumbnail_shade(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::BLACK.scale_alpha(0.18).into()),
+        border: Border {
+            radius: THUMBNAIL_RADIUS.into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
     }
 }
 
